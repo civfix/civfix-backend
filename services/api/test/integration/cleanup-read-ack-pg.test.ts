@@ -19,10 +19,11 @@ import {
 import { makeDrizzleCleanupRepository } from "../../src/services/cleanup-repository.drizzle.js"
 import { makeCleanupService } from "../../src/services/cleanup-service.js"
 import { makeDrizzleChatRepository } from "../../src/services/chat-repository.drizzle.js"
-import { makeDrizzleChatReadState } from "../../src/services/chat-read-state.drizzle.js"
+import { makeDrizzleChatReadState } from "../../src/services/read-watermark-repository.drizzle.js"
 
 type MarkRead = (cleanupId: string, userId: string, upToId: string) => Promise<void>
 
+// eslint-disable-next-line @typescript-eslint/no-unnecessary-type-assertion -- the assertion is the field's declared type: vi.hoisted infers the record from this literal
 const { captured } = vi.hoisted(() => ({ captured: {} as { markRead?: MarkRead } }))
 
 vi.mock("../../src/ws/gateway.js", async (importOriginal) => {

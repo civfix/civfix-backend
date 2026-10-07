@@ -1,19 +1,19 @@
 /**
- * P4 Task 4.4 integration test (Docker-gated): the group-room REALTIME lane + the unified reaction
+ * Integration test (Docker-gated): the group-room REALTIME lane + the unified reaction
  * toggle, against a live PostGIS container (via withPg).
  *
- *   WS seam (handleClientFrame over real Drizzle repos + WsChatService/InMemoryChatPubSub — the same
+ *   WS seam (handleClientFrame over real Drizzle repos + WsChatService/InMemoryChatPubSub, the same
  *   pieces chat-gateway-wiring composes):
  *     - member send round-trips: sender gets the ack, a second joined member receives the broadcast
  *       {type:"message"} frame, and the row lands group-scoped (roomKind "group");
- *     - NON-member join / send / typing all reject FORBIDDEN (member-only for BOTH kinds until P5's
- *       public-channel read-joins) and persist nothing;
+ *     - NON-member join / send / typing all reject FORBIDDEN and persist nothing (public-channel
+ *       read-joins are chat-channels-pg's);
  *     - joining marks the room read (chat_group_members.last_read_at stamped via markReadOnOpen) and
  *       ack {upToId} advances the watermark to that message's created_at;
  *     - @mention of a group MEMBER resolves + records the chat_message_mentions row; a non-member
- *       handle resolves to nothing (no row) — the chat-mention-resolver group scope end-to-end.
+ *       handle resolves to nothing (no row): the chat-mention-resolver group scope end-to-end.
  *
- *   HTTP (buildServer + chatOverrides on real repos, FakeChatService watcher for broadcast frames):
+ *   HTTP (makeServer + chatOverrides on real repos, FakeChatService watcher for broadcast frames):
  *     - PATCH /messages roomKind:"group" edits the sender's message (200 + message_update broadcast);
  *       a NON-member 403s (the chat-edit-service group lane);
  *     - POST /messages/reactions toggles in a group room (200, refreshed summary, legacy
@@ -29,12 +29,12 @@ import { randomUUID } from "node:crypto"
 import type { FastifyInstance } from "fastify"
 import { FakeMailer } from "@civfix/shared/fakes"
 import { withPg, type PgHarness, testHandle } from "../helpers/pg.js"
-import { buildServer } from "../../src/server.js"
-import { buildContainer, type Container } from "../../src/di.js"
+import { makeServer } from "../../src/server.js"
+import { makeContainer, type Container } from "../../src/di.js"
 import { loadEnv } from "../../src/env.js"
 import { InMemoryCacheClient } from "../../src/auth/cache.js"
 import { makeInMemoryStores } from "../../src/auth/stores.js"
-import { buildAuthServices, type AuthServices } from "../../src/auth/auth-services.js"
+import { makeAuthServices, type AuthServices } from "../../src/auth/auth-services.js"
 import { StubJwksVerifier } from "../helpers/auth.js"
 import { InMemoryThreadsRepository, MockConnection } from "../helpers/chat.js"
 import type { ChatGatewayOverrides } from "../../src/routes/chat.routes.js"
@@ -52,11 +52,14 @@ import { makeDrizzleDmRepository } from "../../src/services/dm-repository.drizzl
 import { makeDrizzleBlocksRepository } from "../../src/services/blocks-repository.drizzle.js"
 import { makeDrizzleCleanupRepository } from "../../src/services/cleanup-repository.drizzle.js"
 import { makeReportChatRepository } from "../../src/services/report-chat-repository.drizzle.js"
-import { canPostToGroup, makeChatGroupRepository } from "../../src/services/chat-group-repository.drizzle.js"
+import {
+  canPostToGroup,
+  makeChatGroupRepository,
+} from "../../src/services/chat-group-repository.drizzle.js"
 import { makeCleanupService } from "../../src/services/cleanup-service.js"
 import { makeChatMentionResolver } from "../../src/services/chat-mention-resolver.js"
-import { recordChatMentions } from "../../src/services/chat-mentions.drizzle.js"
-import { resolveMentionTargets } from "../../src/services/mention-resolver.drizzle.js"
+import { recordChatMentions } from "../../src/services/chat-mentions-repository.drizzle.js"
+import { resolveMentionTargets } from "../../src/services/mention-targets-repository.drizzle.js"
 
 const pg = await withPg()
 
@@ -79,7 +82,7 @@ describe.skipIf(!pg)("chat groups WS lane + unified reactions (integration)", ()
     return u!.id
   }
 
-  /** Direct-SQL group fixture: owner + plain members (management gates are 4.3's suite, not this one). */
+  /** Direct-SQL group fixture: owner + plain members (management gates are chat-groups-pg's, not this suite's). */
   async function newGroup(ownerId: string, memberIds: string[]): Promise<string> {
     const [g] = await h.sql<{ id: string }[]>`
       INSERT INTO chat_groups (name, owner_id) VALUES ('WS Crew', ${ownerId}) RETURNING id
@@ -139,7 +142,7 @@ describe.skipIf(!pg)("chat groups WS lane + unified reactions (integration)", ()
             listGroupMemberIds: (groupId) => groups.listMemberIds(groupId),
           }),
           recordChatMentions: (messageId, ids) => recordChatMentions(h.sql, messageId, ids),
-          // Bells are 4.5's — the WS lane only needs resolve+record here.
+          // Bells are chat-groups-threads-pg's; the WS lane only needs resolve+record here.
           notifyChatMention: () => Promise.resolve(),
         },
       }
@@ -147,7 +150,13 @@ describe.skipIf(!pg)("chat groups WS lane + unified reactions (integration)", ()
     }
 
     function sessionFor(userId: string, conn: MockConnection, deps: GatewayDeps): GatewaySession {
-      return { userId, conn, joined: new Set<string>(), typingThrottle: new Map<string, number>(), deps }
+      return {
+        userId,
+        conn,
+        joined: new Set<string>(),
+        typingThrottle: new Map<string, number>(),
+        deps,
+      }
     }
 
     const frame = (f: Record<string, unknown>) => JSON.stringify(f)
@@ -162,19 +171,32 @@ describe.skipIf(!pg)("chat groups WS lane + unified reactions (integration)", ()
       const bConn = new MockConnection("B")
       const aSession = sessionFor(aId, aConn, deps)
       const bSession = sessionFor(bId, bConn, deps)
-      await handleClientFrame(aSession, frame({ type: "join", cleanupId: groupId, roomKind: "group" }))
-      await handleClientFrame(bSession, frame({ type: "join", cleanupId: groupId, roomKind: "group" }))
+      await handleClientFrame(
+        aSession,
+        frame({ type: "join", cleanupId: groupId, roomKind: "group" }),
+      )
+      await handleClientFrame(
+        bSession,
+        frame({ type: "join", cleanupId: groupId, roomKind: "group" }),
+      )
       expect(aConn.framesOfType("error")).toHaveLength(0)
       expect(aSession.joined.has(`group:${groupId}`)).toBe(true)
 
       await handleClientFrame(
         aSession,
-        frame({ type: "send", cleanupId: groupId, roomKind: "group", clientId: "c1", body: "hello group" }),
+        frame({
+          type: "send",
+          cleanupId: groupId,
+          roomKind: "group",
+          clientId: "c1",
+          body: "hello group",
+        }),
       )
 
       const acks = aConn.framesOfType("ack")
       expect(acks).toHaveLength(1)
-      const acked = (acks[0] as { message: { id: string; roomKind?: string; body: string } }).message
+      const acked = (acks[0] as { message: { id: string; roomKind?: string; body: string } })
+        .message
       expect(acked.roomKind).toBe("group")
       expect(acked.body).toBe("hello group")
 
@@ -182,7 +204,7 @@ describe.skipIf(!pg)("chat groups WS lane + unified reactions (integration)", ()
       expect(received).toHaveLength(1)
       expect((received[0] as { message: { id: string } }).message.id).toBe(acked.id)
 
-      // Persisted group-scoped (group_id set, cleanup/report refs NULL — the 0047 three-way XOR).
+      // Persisted group-scoped (group_id set, cleanup/report refs NULL: the 0047 three-way XOR).
       const rows = await h.sql<{ group_id: string | null; cleanup_id: string | null }[]>`
         SELECT group_id, cleanup_id FROM chat_messages WHERE id = ${acked.id}
       `
@@ -197,7 +219,10 @@ describe.skipIf(!pg)("chat groups WS lane + unified reactions (integration)", ()
 
       const conn = new MockConnection("S")
       const session = sessionFor(strangerId, conn, deps)
-      await handleClientFrame(session, frame({ type: "join", cleanupId: groupId, roomKind: "group" }))
+      await handleClientFrame(
+        session,
+        frame({ type: "join", cleanupId: groupId, roomKind: "group" }),
+      )
 
       const errors = conn.framesOfType("error")
       expect(errors).toHaveLength(1)
@@ -215,7 +240,13 @@ describe.skipIf(!pg)("chat groups WS lane + unified reactions (integration)", ()
       const session = sessionFor(strangerId, conn, deps)
       await handleClientFrame(
         session,
-        frame({ type: "send", cleanupId: groupId, roomKind: "group", clientId: "cx", body: "let me in" }),
+        frame({
+          type: "send",
+          cleanupId: groupId,
+          roomKind: "group",
+          clientId: "cx",
+          body: "let me in",
+        }),
       )
 
       expect(conn.framesOfType("ack")).toHaveLength(0)
@@ -239,17 +270,29 @@ describe.skipIf(!pg)("chat groups WS lane + unified reactions (integration)", ()
       const bConn = new MockConnection("B")
       const aSession = sessionFor(aId, aConn, deps)
       const bSession = sessionFor(bId, bConn, deps)
-      await handleClientFrame(aSession, frame({ type: "join", cleanupId: groupId, roomKind: "group" }))
-      await handleClientFrame(bSession, frame({ type: "join", cleanupId: groupId, roomKind: "group" }))
+      await handleClientFrame(
+        aSession,
+        frame({ type: "join", cleanupId: groupId, roomKind: "group" }),
+      )
+      await handleClientFrame(
+        bSession,
+        frame({ type: "join", cleanupId: groupId, roomKind: "group" }),
+      )
 
-      await handleClientFrame(aSession, frame({ type: "typing", cleanupId: groupId, roomKind: "group" }))
+      await handleClientFrame(
+        aSession,
+        frame({ type: "typing", cleanupId: groupId, roomKind: "group" }),
+      )
       const typing = bConn.framesOfType("typing")
       expect(typing).toHaveLength(1)
       expect(typing[0]).toMatchObject({ cleanupId: groupId, roomKind: "group", userId: aId })
 
       const sConn = new MockConnection("S")
       const sSession = sessionFor(strangerId, sConn, deps)
-      await handleClientFrame(sSession, frame({ type: "typing", cleanupId: groupId, roomKind: "group" }))
+      await handleClientFrame(
+        sSession,
+        frame({ type: "typing", cleanupId: groupId, roomKind: "group" }),
+      )
       expect(sConn.framesOfType("error")).toHaveLength(1)
     })
 
@@ -265,7 +308,10 @@ describe.skipIf(!pg)("chat groups WS lane + unified reactions (integration)", ()
       const bConn = new MockConnection("B")
       const aSession = sessionFor(aId, aConn, deps)
       const bSession = sessionFor(bId, bConn, deps)
-      await handleClientFrame(bSession, frame({ type: "join", cleanupId: groupId, roomKind: "group" }))
+      await handleClientFrame(
+        bSession,
+        frame({ type: "join", cleanupId: groupId, roomKind: "group" }),
+      )
       // Mark-read-on-join (mirrors the cleanup lane) is FIRE-AND-FORGET behind a real SQL round-trip,
       // so poll briefly rather than racing a single microtask flush.
       let afterJoin: Date | null = null
@@ -276,12 +322,22 @@ describe.skipIf(!pg)("chat groups WS lane + unified reactions (integration)", ()
       expect(afterJoin).not.toBeNull()
 
       // A message lands AFTER the join stamp; B acks it -> watermark advances to its created_at.
-      await handleClientFrame(aSession, frame({ type: "join", cleanupId: groupId, roomKind: "group" }))
       await handleClientFrame(
         aSession,
-        frame({ type: "send", cleanupId: groupId, roomKind: "group", clientId: "c1", body: "new msg" }),
+        frame({ type: "join", cleanupId: groupId, roomKind: "group" }),
       )
-      const acked = (aConn.framesOfType("ack")[0] as { message: { id: string; createdAt: string } }).message
+      await handleClientFrame(
+        aSession,
+        frame({
+          type: "send",
+          cleanupId: groupId,
+          roomKind: "group",
+          clientId: "c1",
+          body: "new msg",
+        }),
+      )
+      const acked = (aConn.framesOfType("ack")[0] as { message: { id: string; createdAt: string } })
+        .message
       await handleClientFrame(
         bSession,
         frame({ type: "ack", cleanupId: groupId, roomKind: "group", upToId: acked.id }),
@@ -303,7 +359,10 @@ describe.skipIf(!pg)("chat groups WS lane + unified reactions (integration)", ()
 
       const conn = new MockConnection("A")
       const session = sessionFor(authorId, conn, deps)
-      await handleClientFrame(session, frame({ type: "join", cleanupId: groupId, roomKind: "group" }))
+      await handleClientFrame(
+        session,
+        frame({ type: "join", cleanupId: groupId, roomKind: "group" }),
+      )
 
       // Member mention: resolved (scoped to chat_group_members), recorded, and riding the ack DTO.
       await handleClientFrame(
@@ -351,7 +410,7 @@ describe.skipIf(!pg)("chat groups WS lane + unified reactions (integration)", ()
 
     beforeAll(async () => {
       const env = loadEnv({ NODE_ENV: "test" })
-      authServices = buildAuthServices({
+      authServices = makeAuthServices({
         stores: makeInMemoryStores(),
         cache: new InMemoryCacheClient(() => Date.now()),
         mailer: new FakeMailer(),
@@ -369,8 +428,8 @@ describe.skipIf(!pg)("chat groups WS lane + unified reactions (integration)", ()
         reportChat: makeReportChatRepository(h.sql),
         groups: makeChatGroupRepository(h.sql),
       }
-      container = buildContainer(env)
-      app = await buildServer({ env, container, authServices, chatOverrides: overrides })
+      container = makeContainer(env)
+      app = await makeServer({ env, container, authServices, chatOverrides: overrides })
     })
 
     afterAll(async () => {
@@ -520,7 +579,7 @@ describe.skipIf(!pg)("chat groups WS lane + unified reactions (integration)", ()
       const frames = watcher.framesOfType("reaction")
       expect(frames).toHaveLength(1)
       expect(frames[0]).toMatchObject({ type: "reaction", cleanupId, message: { id: msg.id } })
-      // Cleanup rooms omit roomKind on the legacy frame — mirrored exactly.
+      // Cleanup rooms omit roomKind on the legacy frame; mirrored exactly.
       expect(frames[0]).not.toHaveProperty("roomKind")
     })
 

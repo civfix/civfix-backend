@@ -1,19 +1,20 @@
-
 import type { Container } from "../../di.js"
 import type { InboundMail, ParsedMail, Storage } from "@civfix/shared/interfaces"
 import type { MailAttachment } from "@civfix/shared"
 import {
   makeDrizzleMailRepository,
+  type MailMessageRecord,
   type MailRepository,
   type MailThreadRecord,
 } from "./mail-repository.drizzle.js"
 import {
   INBOUND_AUTH_VERDICT_HEADER,
   makeDrizzleInboundRepository,
-  type InboundRepository,
 } from "./inbound-repository.drizzle.js"
-import type { AdminReportRepository, ReporterNotifier } from "./admin-report-service.js"
-import { detectBounce, handleBounce, type BounceDetection } from "./inbound-bounce.js"
+import type { InboundRepository } from "./inbound-repository.js"
+import type { ReporterNotifier } from "./admin-report-service.js"
+import type { AdminReportRepository } from "./admin-report-repository.js"
+import { detectBounce, handleBounce } from "./inbound-bounce.js"
 import {
   applyInboundEffects,
   findThreadByReferences,
@@ -22,7 +23,6 @@ import {
   type InboundLogger,
   isJurisdictionSender,
   isSelfOriginated,
-  parseMessageIdList,
   resolveMessageId,
 } from "./inbound-thread-correlation.js"
 import type { CleanupRepository } from "../cleanup-service.js"
@@ -34,15 +34,11 @@ import {
 } from "../../adapters/inbound-mail.cf.js"
 import { sanitizeInboundHtml } from "./inbound-html-sanitizer.js"
 import { htmlToText } from "./mail-preview.js"
+import { ATTACHMENT_FILENAME_MAX_CHARS, safeFilenameChars } from "../../lib/filename.js"
+import { sha256HexSync } from "../../lib/hash.js"
+import { passThroughRejection, settleWithin } from "../../lib/timeout.js"
 
-export {
-  detectBounce,
-  resolveMessageId,
-  parseMessageIdList,
-  type BounceDetection,
-  type InboundLogger,
-}
-export { readMailAuthVerdict, sanitizeInboundHtml, type MailAuthVerdict }
+export { detectBounce, resolveMessageId }
 
 export const INBOUND_PENDING_PREFIX = "inbound/pending/"
 const INBOUND_FAILED_PREFIX = "inbound/failed/"
@@ -51,24 +47,32 @@ export const INBOUND_PENDING_KEY_RE = /^inbound\/pending\/[^/]+\.eml$/
 export const INBOUND_ATTACHMENT_MAX_BYTES = 25 * 1024 * 1024
 
 export const INBOUND_ATTACHMENT_MAX_COUNT = 50
-export const INBOUND_ATTACHMENT_TOTAL_MAX_BYTES = 30 * 1024 * 1024
+const INBOUND_ATTACHMENT_TOTAL_MAX_BYTES = 30 * 1024 * 1024
 
-export const INBOUND_OBJECT_MAX_BYTES = 30 * 1024 * 1024
+const INBOUND_OBJECT_MAX_BYTES = 30 * 1024 * 1024
 
 export const INBOUND_PARSE_TIMEOUT_MS = 20_000
 
-async function withTimeout<T>(work: Promise<T>, ms: number): Promise<T> {
-  let timer: ReturnType<typeof setTimeout> | undefined
-  try {
-    return await Promise.race([
-      work,
-      new Promise<never>((_resolve, reject) => {
-        timer = setTimeout(() => reject(new Error("inbound parse timed out")), ms)
-      }),
-    ])
-  } finally {
-    if (timer !== undefined) clearTimeout(timer)
-  }
+export const INBOUND_HTML_SOURCE_MAX_CHARS = 1024 * 1024
+export const INBOUND_BODY_TEXT_MAX_CHARS = 256 * 1024
+const INBOUND_HEADER_VALUE_MAX_CHARS = 4 * 1024
+const BODY_TRUNCATION_MARKER = "\n… [truncated]"
+
+const THREADED_ATTACHMENT_PREFIX = "inbound-mail/"
+const INBOX_ATTACHMENT_PREFIX = "inbound-emails/"
+const ATTACHMENT_CONTENT_TYPE = "application/octet-stream"
+const RAW_MAIL_CONTENT_TYPE = "message/rfc822"
+
+const CIVFIX_HEADER_PREFIX = "x-civfix-"
+
+// At the 5-minute sweep cadence this parks a DSN after roughly half an hour of failing bookkeeping, long
+// enough to ride out a transient fault and short enough that poison DSNs cannot fill the sweep batch.
+export const INBOUND_BOUNCE_MAX_ATTEMPTS = 6
+
+const CONTENT_DIGEST_HEX_CHARS = 32
+
+function contentDigest(bytes: Uint8Array): string {
+  return sha256HexSync(bytes).slice(0, CONTENT_DIGEST_HEX_CHARS)
 }
 
 export type ProcessOutcome = "threaded" | "inbox" | "replay" | "skipped" | "failed"
@@ -121,7 +125,10 @@ export async function processInboundObject(
 
   let mail: ParsedMail
   try {
-    mail = await withTimeout(inboundMail.parse(bytes), INBOUND_PARSE_TIMEOUT_MS)
+    mail = await settleWithin(inboundMail.parse(bytes), INBOUND_PARSE_TIMEOUT_MS, {
+      timeoutError: () => new Error("inbound parse timed out"),
+      normalizeError: passThroughRejection,
+    })
   } catch (err) {
     logger.warn({ key, err: errorText(err) }, "inbound: parse failed; parked under inbound/failed/")
     await moveToFailed(storage, key, bytes)
@@ -133,16 +140,23 @@ export async function processInboundObject(
   const bounce = detectBounce(mail)
   if (bounce.isBounce) {
     const bounceVerdict = readMailAuthVerdict(mail)
-    const result = await routeInbox(storage, inboundRepo, key, mail, messageId, bounceVerdict)
-    if (result.outcome === "inbox") {
+    const result = await routeInbox(storage, inboundRepo, bytes, mail, messageId, bounceVerdict)
+    if (result.outcome !== "inbox" && result.outcome !== "replay") return result
+    // A replay re-runs the bookkeeping too: the object is only still pending when an earlier run
+    // stored the DSN but failed part-way through handleBounce.
+    try {
       await handleBounce(container, mailRepo, bounce, {
         fromAddr: mail.from?.address ?? null,
         authVerdict: bounceVerdict,
-      }).catch((err: unknown) => {
-        logger.warn({ key, err: errorText(err) }, "inbound: bounce bookkeeping failed")
+      })
+    } catch (err) {
+      return deferOrParkBounce(storage, inboundRepo, logger, key, bytes, result, {
+        originalMessageId: bounce.originalMessageId,
+        err: errorText(err),
       })
     }
-    if (result.outcome === "inbox" || result.outcome === "replay") await storage.delete(key)
+    await inboundRepo.clearBounceFailures(key)
+    await storage.delete(key)
     return result
   }
 
@@ -158,12 +172,13 @@ export async function processInboundObject(
 
   const result =
     resolvedThread === null
-      ? await routeInbox(storage, inboundRepo, key, mail, messageId, authVerdict)
+      ? await routeInbox(storage, inboundRepo, bytes, mail, messageId, authVerdict)
       : await routeThreaded(
           container,
           injected,
           storage,
           mailRepo,
+          bytes,
           mail,
           messageId,
           resolvedThread,
@@ -187,6 +202,8 @@ async function correlateThread(
   try {
     token = inboundMail.extractThreadToken(mail)
   } catch {
+    // The token is parsed out of sender-controlled recipient addresses; a malformed one means only
+    // that this mail carries no usable token, so correlation falls through to References.
     token = null
   }
 
@@ -203,6 +220,7 @@ async function routeThreaded(
   injected: InboundEffectDeps,
   storage: Storage,
   mailRepo: MailRepository,
+  raw: Uint8Array,
   mail: ParsedMail,
   messageId: string,
   thread: MailThreadRecord,
@@ -212,8 +230,93 @@ async function routeThreaded(
   const unaffiliated =
     authVerdict !== "pass" || !(await isJurisdictionSender(mailRepo, thread.id, mail))
   const withheld = unaffiliated && (thread.reportId !== null || thread.cleanupId !== null)
-  const { attachments, oversize } = await streamAttachments(storage, `inbound-mail/${thread.id}`, mail)
-  const inserted = await mailRepo.insertMessage({
+  // Message-ID is globally unique, so a stored row means this mail can only be a replay. Skipping
+  // the upload keeps a sender who reuses someone else's Message-ID from writing any object. A failed
+  // lookup throws so the pending object stays for the sweep instead of being treated as new mail.
+  const existing = await mailRepo.findMessageByMessageId(messageId)
+  const insert =
+    existing === null
+      ? await insertThreadedMessage(
+          storage,
+          mailRepo,
+          raw,
+          mail,
+          messageId,
+          thread,
+          unaffiliated,
+          authVerdict,
+          withheld,
+        )
+      : null
+  if (insert?.inserted === true) {
+    await mailRepo.recordEvent({
+      threadId: thread.id,
+      messageId: insert.message.id,
+      type: "delivered",
+      meta: {
+        direction: "in",
+        from: mail.from?.address ?? null,
+        messageId,
+        authVerdict,
+        ...(unaffiliated ? { unaffiliated: true } : {}),
+        ...(insert.oversize.length > 0 ? { oversizeAttachments: insert.oversize } : {}),
+      },
+    })
+    if (withheld) {
+      logger.warn(
+        {
+          threadId: thread.id,
+          messageId: insert.message.id,
+          fromDomain: domainOf(mail.from?.address ?? null),
+          authVerdict,
+        },
+        "inbound: reply withheld from public effects pending operator review",
+      )
+    }
+  }
+
+  // A failed re-read only defers the side effects: the sweep re-drives every message whose effects
+  // were never applied.
+  const message =
+    existing ?? (insert === null ? null : insert.inserted ? insert.message : insert.stored)
+  if (message !== null && message.threadId === thread.id) {
+    await applyInboundEffects(container, injected, mailRepo, thread, message).catch(
+      (err: unknown) => {
+        logger.warn(
+          { err: errorText(err), threadId: thread.id, messageId: message.id },
+          "inbound: side effects failed (claim released; the sweep re-drives it)",
+        )
+      },
+    )
+  }
+  if (insert?.inserted !== true) return { outcome: "replay" }
+  return { outcome: "threaded", id: insert.message.id }
+}
+
+type ThreadedInsert =
+  | { inserted: true; message: MailMessageRecord; oversize: string[] }
+  | { inserted: false; stored: MailMessageRecord | null }
+
+async function insertThreadedMessage(
+  storage: Storage,
+  mailRepo: MailRepository,
+  raw: Uint8Array,
+  mail: ParsedMail,
+  messageId: string,
+  thread: MailThreadRecord,
+  unaffiliated: boolean,
+  authVerdict: MailAuthVerdict,
+  withheld: boolean,
+): Promise<ThreadedInsert> {
+  // One folder per raw message, as in routeInbox: a lost insert race discards the objects its row
+  // does not hold, and a folder shared with another message of the thread would lose that message's
+  // attachment.
+  const { attachments, oversize } = await streamAttachments(
+    storage,
+    `${THREADED_ATTACHMENT_PREFIX}${thread.id}/${contentDigest(raw)}`,
+    mail,
+  )
+  const message = await mailRepo.insertMessage({
     threadId: thread.id,
     direction: "in",
     fromAddr: mail.from?.address ?? null,
@@ -227,44 +330,10 @@ async function routeThreaded(
     authVerdict,
     ...(withheld ? { threadStatus: "needs_action" as const } : {}),
   })
-  if (inserted !== null) {
-    await mailRepo.recordEvent({
-      threadId: thread.id,
-      messageId: inserted.id,
-      type: "delivered",
-      meta: {
-        direction: "in",
-        from: mail.from?.address ?? null,
-        messageId,
-        authVerdict,
-        ...(unaffiliated ? { unaffiliated: true } : {}),
-        ...(oversize.length > 0 ? { oversizeAttachments: oversize } : {}),
-      },
-    })
-    if (withheld) {
-      logger.warn(
-        {
-          threadId: thread.id,
-          messageId: inserted.id,
-          fromDomain: domainOf(mail.from?.address ?? null),
-          authVerdict,
-        },
-        "inbound: reply withheld from public effects pending operator review",
-      )
-    }
-  }
-
-  const message = inserted ?? (await mailRepo.findMessageByMessageId(messageId).catch(() => null))
-  if (message !== null && message.threadId === thread.id) {
-    await applyInboundEffects(container, injected, mailRepo, thread, message).catch((err: unknown) => {
-      logger.warn(
-        { err: errorText(err), threadId: thread.id, messageId: message.id },
-        "inbound: side effects failed (claim released; the sweep re-drives it)",
-      )
-    })
-  }
-  if (inserted === null) return { outcome: "replay" }
-  return { outcome: "threaded", id: inserted.id }
+  if (message !== null) return { inserted: true, message, oversize }
+  const stored = await mailRepo.findMessageByMessageId(messageId)
+  await discardUnreferenced(storage, attachments, stored?.attachments ?? [])
+  return { inserted: false, stored }
 }
 
 function plainTextBody(mail: ParsedMail): string | null {
@@ -273,8 +342,6 @@ function plainTextBody(mail: ParsedMail): string | null {
   return clipBodyText(htmlToText(mail.html.slice(0, INBOUND_HTML_SOURCE_MAX_CHARS)))
 }
 
-export const INBOUND_HTML_SOURCE_MAX_CHARS = 1024 * 1024
-
 function errorText(err: unknown): string {
   return err instanceof Error ? err.message : String(err)
 }
@@ -282,15 +349,18 @@ function errorText(err: unknown): string {
 async function routeInbox(
   storage: Storage,
   inboundRepo: InboundRepository,
-  key: string,
+  raw: Uint8Array,
   mail: ParsedMail,
   messageId: string,
   authVerdict: MailAuthVerdict,
 ): Promise<ProcessResult> {
-  const folder = key.startsWith(INBOUND_PENDING_PREFIX)
-    ? key.slice(INBOUND_PENDING_PREFIX.length).replace(/\.eml$/i, "")
-    : sanitizeFilename(messageId)
-  const { attachments } = await streamAttachments(storage, `inbound-emails/${folder}`, mail)
+  // One folder per raw message, never shared between rows: the retention reaper deletes a row's
+  // attachment objects, so a folder another row also pointed at would lose that row's evidence.
+  const { attachments } = await streamAttachments(
+    storage,
+    `${INBOX_ATTACHMENT_PREFIX}${contentDigest(raw)}`,
+    mail,
+  )
   const recipient = mail.to[0]?.address ?? null
   const toAddr =
     mail.to
@@ -309,16 +379,27 @@ async function routeInbox(
     headers: buildStoredHeaders(mail.headers, authVerdict),
     attachments,
   })
+  if (!inserted) {
+    const kept = (await inboundRepo.get(id))?.attachments ?? []
+    await discardUnreferenced(storage, attachments, kept)
+  }
   return { outcome: inserted ? "inbox" : "replay", id }
 }
 
-export const INBOUND_BODY_TEXT_MAX_CHARS = 256 * 1024
-const INBOUND_HEADER_VALUE_MAX_CHARS = 4 * 1024
+async function discardUnreferenced(
+  storage: Storage,
+  written: readonly MailAttachment[],
+  kept: readonly MailAttachment[],
+): Promise<void> {
+  const keptKeys = new Set(kept.map((att) => att.key))
+  const orphans = new Set(written.map((att) => att.key).filter((key) => !keptKeys.has(key)))
+  for (const key of orphans) await storage.delete(key)
+}
 
 function clipBodyText(text: string | null | undefined): string | null {
   if (text === null || text === undefined) return null
   if (text.length <= INBOUND_BODY_TEXT_MAX_CHARS) return text
-  return `${text.slice(0, INBOUND_BODY_TEXT_MAX_CHARS)}\n… [truncated]`
+  return `${text.slice(0, INBOUND_BODY_TEXT_MAX_CHARS)}${BODY_TRUNCATION_MARKER}`
 }
 
 const STORED_HEADER_ALLOWLIST = new Set([
@@ -342,12 +423,9 @@ function buildStoredHeaders(
   const out: Record<string, string> = {}
   for (const [rawKey, value] of Object.entries(headers)) {
     const key = rawKey.toLowerCase()
-    if (!STORED_HEADER_ALLOWLIST.has(key) && !key.startsWith("x-civfix-")) continue
+    if (!STORED_HEADER_ALLOWLIST.has(key) && !key.startsWith(CIVFIX_HEADER_PREFIX)) continue
     if (typeof value !== "string") continue
-    out[key] =
-      value.length > INBOUND_HEADER_VALUE_MAX_CHARS
-        ? value.slice(0, INBOUND_HEADER_VALUE_MAX_CHARS)
-        : value
+    out[key] = value.slice(0, INBOUND_HEADER_VALUE_MAX_CHARS)
   }
   out[INBOUND_AUTH_VERDICT_HEADER] = authVerdict
   return out
@@ -384,8 +462,8 @@ async function streamAttachments(
       recordSkipped(oversize, filename)
       continue
     }
-    const objKey = `${keyPrefix}/${index}-${sanitizeFilename(filename)}`
-    await storage.put(objKey, bytes, { contentType: "application/octet-stream" })
+    const objKey = `${keyPrefix}/${contentDigest(bytes)}/${sanitizeFilename(filename)}`
+    await storage.put(objKey, bytes, { contentType: ATTACHMENT_CONTENT_TYPE })
     attachments.push({ key: objKey, filename, size: bytes.byteLength })
     totalBytes += bytes.byteLength
   }
@@ -396,15 +474,36 @@ function recordSkipped(oversize: string[], filename: string): void {
   if (oversize.length < INBOUND_ATTACHMENT_MAX_COUNT) oversize.push(filename)
 }
 
+async function deferOrParkBounce(
+  storage: Storage,
+  inboundRepo: InboundRepository,
+  logger: InboundLogger,
+  key: string,
+  bytes: Uint8Array,
+  result: ProcessResult,
+  context: { originalMessageId: string | null; err: string },
+): Promise<ProcessResult> {
+  logger.warn({ key, ...context }, "inbound: bounce bookkeeping failed")
+  const attempts = await inboundRepo.recordBounceFailure(key)
+  if (attempts < INBOUND_BOUNCE_MAX_ATTEMPTS) return result
+  logger.error(
+    { key, attempts, originalMessageId: context.originalMessageId },
+    "inbound: bounce bookkeeping kept failing; parked under inbound/failed/",
+  )
+  await moveToFailed(storage, key, bytes)
+  await inboundRepo.clearBounceFailures(key)
+  return { outcome: "failed", reason: "bounce-bookkeeping" }
+}
+
 async function moveToFailed(storage: Storage, key: string, bytes: Uint8Array): Promise<void> {
   const failedKey = key.startsWith(INBOUND_PENDING_PREFIX)
     ? INBOUND_FAILED_PREFIX + key.slice(INBOUND_PENDING_PREFIX.length)
     : INBOUND_FAILED_PREFIX + key
-  await storage.put(failedKey, bytes, { contentType: "message/rfc822" })
+  await storage.put(failedKey, bytes, { contentType: RAW_MAIL_CONTENT_TYPE })
   await storage.delete(key)
 }
 
 function sanitizeFilename(name: string): string {
-  const cleaned = name.replace(/[^A-Za-z0-9._-]+/g, "_").replace(/^\.+/, "")
-  return cleaned.length > 0 ? cleaned.slice(0, 120) : "file"
+  const cleaned = safeFilenameChars(name)
+  return cleaned.length > 0 ? cleaned.slice(0, ATTACHMENT_FILENAME_MAX_CHARS) : "file"
 }

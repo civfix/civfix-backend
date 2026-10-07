@@ -1,11 +1,11 @@
 /**
- * F132: every anonymous submit opens a moderation_items row ("Held report" / "Hidden pending review")
- * inside the held-create transaction, but the AUTOMATED release path only ever flipped the report to
- * published — nothing closed the item. The admin queue lists `WHERE status='open'` with no join to the
+ * Every anonymous submit opens a moderation_items row ("Held report" / "Hidden pending review") inside
+ * the held-create transaction, but the AUTOMATED release path used to only flip the report to published,
+ * so nothing closed the item. The admin queue lists `WHERE status='open'` with no join to the
  * report's current status, so it accumulated one permanently-open row per anonymous report ever
  * submitted, each asserting a report is hidden pending review while it is in fact live on the public map.
  *
- * The item now closes ATOMICALLY with the release, in publishHeldReport's own transaction — which is the
+ * The item now closes ATOMICALLY with the release, in publishHeldReport's own transaction, which is the
  * only place it can be asserted, so this runs against the real schema (Docker-gated). The gate cases
  * matter as much as the happy one: a release that is REFUSED (media not ready, an open abuse flag) must
  * leave the item open for the human it is queued for.
@@ -14,8 +14,8 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest"
 import { randomUUID } from "node:crypto"
 import { withPg, type PgHarness } from "../helpers/pg.js"
-import { makeDrizzleAnonHoldReleaseRepo } from "../../src/services/anon-hold-release-repo.drizzle.js"
-import type { AnonHoldReleaseRepo } from "../../src/services/anon-hold-release.js"
+import { makeDrizzleAnonHoldReleaseRepository } from "../../src/services/anon-hold-release-repository.drizzle.js"
+import type { AnonHoldReleaseRepository } from "../../src/services/anon-hold-release-repository.js"
 
 const pg = await withPg()
 
@@ -23,11 +23,11 @@ const PUBLISHED_AT = new Date("2026-08-01T00:00:00.000Z")
 
 describe.skipIf(!pg)("F132: releasing a held anon report closes its moderation item", () => {
   let h: PgHarness
-  let repo: AnonHoldReleaseRepo
+  let repo: AnonHoldReleaseRepository
 
   beforeAll(() => {
     h = pg as PgHarness
-    repo = makeDrizzleAnonHoldReleaseRepo(h.sql)
+    repo = makeDrizzleAnonHoldReleaseRepository(h.sql)
   })
 
   beforeEach(async () => {

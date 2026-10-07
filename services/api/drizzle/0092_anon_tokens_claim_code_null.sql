@@ -1,7 +1,7 @@
 -- =============================================================================
 -- 0092_anon_tokens_claim_code_null.sql
 -- -----------------------------------------------------------------------------
--- FINDING F150 (part 2): anon_tokens.claim_code is a DEAD plaintext column — the
+-- FINDING F150 (part 2): anon_tokens.claim_code is a DEAD plaintext column; the
 -- per-report claim secret moved to reports.claim_code (0005) and now to its hash
 -- (0091); nothing reads anon_tokens.claim_code anymore. NULL it out so no stale
 -- plaintext secret sits in the token table. The column DROP is deferred to the

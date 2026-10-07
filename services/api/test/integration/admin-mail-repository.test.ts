@@ -1,4 +1,3 @@
-
 import { readFile } from "node:fs/promises"
 import { fileURLToPath } from "node:url"
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest"
@@ -99,7 +98,7 @@ describe.skipIf(!pg)("admin mail repository (integration: real schema)", () => {
     const dto = await repo.getThread(t.id)
     const [small, huge] = dto!.messages
     expect(small!.truncated).toBeUndefined()
-    expect(huge!.body!.length).toBe(MAIL_BODY_DETAIL_CHARS)
+    expect(huge!.body.length).toBe(MAIL_BODY_DETAIL_CHARS)
     expect(huge!.truncated).toBe(true)
 
     expect(await repo.getLastOutboundRecipient(t.id)).toBe("clerk@city.gov")
@@ -249,7 +248,11 @@ describe.skipIf(!pg)("admin mail repository (integration: real schema)", () => {
               'published', '8a2a1072b59ffff', ${GEOID})
       RETURNING id
     `
-    const t = await repo.createThread({ subject: "Verdict", status: "replied", reportId: report!.id })
+    const t = await repo.createThread({
+      subject: "Verdict",
+      status: "replied",
+      reportId: report!.id,
+    })
     const loose = await repo.createThread({ subject: "Composed" })
     await repo.insertMessage({ threadId: loose.id, direction: "in", unaffiliated: true })
     expect(await repo.hasWithheldReply(loose.id)).toBe(false)
@@ -408,7 +411,9 @@ describe.skipIf(!pg)("admin mail repository (integration: real schema)", () => {
       messageId: "<lease@lacity.gov>",
     })
 
-    expect(await repo.claimMessageEffects(msg!.id, { leaseBefore: new Date(Date.now() - 600_000) })).toBe(0)
+    expect(
+      await repo.claimMessageEffects(msg!.id, { leaseBefore: new Date(Date.now() - 600_000) }),
+    ).toBe(0)
     await repo.setMessageEffectsStage(msg!.id, 1)
 
     expect(

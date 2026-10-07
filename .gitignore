@@ -6,6 +6,12 @@ coverage
 .DS_Store
 *.log
 
+# Editor state
+.idea/
+.vscode/
+*.swp
+*~
+
 # Env files: ignore real ones, keep the example committed.
 .env
 .env.*

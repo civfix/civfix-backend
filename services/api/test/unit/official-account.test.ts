@@ -62,9 +62,11 @@ describe("the official account can never hold a session", () => {
   it("refuses to mint one, in any letter case of the id", async () => {
     const { service, store } = makeSessions()
 
-    await expect(service.createSession(CIVFIX_OFFICIAL_USER_ID, ["citizen"])).rejects.toMatchObject({
-      httpStatus: 403,
-    })
+    await expect(service.createSession(CIVFIX_OFFICIAL_USER_ID, ["citizen"])).rejects.toMatchObject(
+      {
+        httpStatus: 403,
+      },
+    )
     await expect(
       service.createSession(CIVFIX_OFFICIAL_USER_ID.toUpperCase(), ["citizen"]),
     ).rejects.toMatchObject({ httpStatus: 403 })

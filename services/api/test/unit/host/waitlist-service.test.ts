@@ -2,13 +2,13 @@ import { beforeEach, describe, expect, it } from "vitest"
 import { randomUUID } from "node:crypto"
 import { AppError } from "@civfix/shared"
 import { sha256Hex } from "../../../src/auth/crypto.js"
-import { InMemoryHostRegistrationRepository } from "../../../src/services/host/registration-repository.memory.js"
+import { InMemoryHostRegistrationRepository } from "../../helpers/host/registration-repository.memory.js"
 import {
   makeWaitlistService,
   WAITLIST_CLAIM_WINDOW_MS,
   type WaitlistService,
 } from "../../../src/services/host/waitlist-service.js"
-import type { SeatDraft } from "../../../src/services/host/registration-repository.types.js"
+import type { SeatDraft } from "../../../src/services/host/registration-repository.js"
 import { makeTicketTokenSigner } from "../../../src/services/host/ticket-token.js"
 
 const EVENT = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
@@ -117,7 +117,10 @@ describe("waitlist service", () => {
   it("refuses to join a ticket type with no waitlist", async () => {
     const type = h.repo.seedTicketType({ cleanupId: EVENT, capacity: 1 })
     await expect(
-      h.service.join({ id: EVENT, ticketTypeId: type.id, partySize: 1 }, { kind: "user", userId: ALICE }),
+      h.service.join(
+        { id: EVENT, ticketTypeId: type.id, partySize: 1 },
+        { kind: "user", userId: ALICE },
+      ),
     ).rejects.toBeInstanceOf(AppError)
   })
 
@@ -143,8 +146,14 @@ describe("waitlist service", () => {
 
   it("promotes strictly FIFO, holds the seat and notifies the offered member", async () => {
     const type = h.repo.seedTicketType({ cleanupId: EVENT, capacity: 1, waitlistEnabled: true })
-    await h.service.join({ id: EVENT, ticketTypeId: type.id, partySize: 1 }, { kind: "user", userId: ALICE })
-    await h.service.join({ id: EVENT, ticketTypeId: type.id, partySize: 1 }, { kind: "user", userId: BOB })
+    await h.service.join(
+      { id: EVENT, ticketTypeId: type.id, partySize: 1 },
+      { kind: "user", userId: ALICE },
+    )
+    await h.service.join(
+      { id: EVENT, ticketTypeId: type.id, partySize: 1 },
+      { kind: "user", userId: BOB },
+    )
 
     const offered = await h.service.runPromote({ ticketTypeId: type.id })
     expect(offered).toBe(1)
@@ -161,8 +170,14 @@ describe("waitlist service", () => {
       maxPartySize: 4,
       waitlistEnabled: true,
     })
-    await h.service.join({ id: EVENT, ticketTypeId: type.id, partySize: 4 }, { kind: "user", userId: ALICE })
-    await h.service.join({ id: EVENT, ticketTypeId: type.id, partySize: 1 }, { kind: "user", userId: BOB })
+    await h.service.join(
+      { id: EVENT, ticketTypeId: type.id, partySize: 4 },
+      { kind: "user", userId: ALICE },
+    )
+    await h.service.join(
+      { id: EVENT, ticketTypeId: type.id, partySize: 1 },
+      { kind: "user", userId: BOB },
+    )
 
     expect(await h.service.runPromote({ ticketTypeId: type.id })).toBe(0)
     expect(h.repo.ticketTypes.get(type.id)?.reservedSeats).toBe(0)
@@ -234,7 +249,10 @@ describe("waitlist service", () => {
 
   it("releases the held seats when an offered member leaves the queue", async () => {
     const type = h.repo.seedTicketType({ cleanupId: EVENT, capacity: 1, waitlistEnabled: true })
-    await h.service.join({ id: EVENT, ticketTypeId: type.id, partySize: 1 }, { kind: "user", userId: ALICE })
+    await h.service.join(
+      { id: EVENT, ticketTypeId: type.id, partySize: 1 },
+      { kind: "user", userId: ALICE },
+    )
     await h.service.runPromote({ ticketTypeId: type.id })
 
     await h.service.leave({ id: EVENT, ticketTypeId: type.id }, { kind: "user", userId: ALICE })
@@ -339,7 +357,10 @@ describe("waitlist service", () => {
       now: h.now(),
     })
     await expect(
-      h.service.join({ id: EVENT, ticketTypeId: type.id, partySize: 1 }, { kind: "user", userId: ALICE }),
+      h.service.join(
+        { id: EVENT, ticketTypeId: type.id, partySize: 1 },
+        { kind: "user", userId: ALICE },
+      ),
     ).rejects.toBeInstanceOf(AppError)
   })
 
@@ -413,7 +434,11 @@ describe("waitlist service", () => {
 
   it("keeps the promotion when the guest email fails, and says so in the log", async () => {
     const broken = build({ guestNotifyFails: true })
-    const type = broken.repo.seedTicketType({ cleanupId: EVENT, capacity: 1, waitlistEnabled: true })
+    const type = broken.repo.seedTicketType({
+      cleanupId: EVENT,
+      capacity: 1,
+      waitlistEnabled: true,
+    })
     const joined = await broken.service.join(
       { id: EVENT, ticketTypeId: type.id, partySize: 1 },
       { kind: "guest", guestId: GUEST },

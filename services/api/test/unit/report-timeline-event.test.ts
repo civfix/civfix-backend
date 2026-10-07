@@ -6,10 +6,9 @@ import {
 } from "../../src/services/report-timeline-event.js"
 
 /**
- * Offline unit tests for the report-chat SYSTEM-message CHOKE POINT (Task D-D1). The emitter mirrors a
- * report timeline event into the report chat: insertSystemMessage -> broadcast -> notify, in that order.
- * It is FULLY best-effort: a throw at ANY step is swallowed so a failed system message never fails (nor
- * rolls back) the underlying status change.
+ * The report-chat SYSTEM-message choke point mirrors a report timeline event into the report chat:
+ * insertSystemMessage -> broadcast -> notify, in that order. It is FULLY best-effort: a throw at ANY step
+ * is swallowed so a failed system message never fails (nor rolls back) the underlying status change.
  */
 
 const REPORT = "11111111-1111-1111-1111-111111111111"
@@ -58,11 +57,16 @@ function recorder(over?: Partial<ReportChatSystemEmitterDeps>): Recorder {
 }
 
 describe("report-chat system-message emitter (D-D1 choke point)", () => {
-  it("emit persists, then broadcasts to the room, then notifies members — in order", async () => {
+  it("emit persists, then broadcasts to the room, then notifies members, in order", async () => {
     const { calls, deps } = recorder()
     const emitter = makeReportChatSystemEmitter(deps)
 
-    await emitter.emit({ reportId: REPORT, status: "in_progress", kind: "status", note: "Status set to In progress" })
+    await emitter.emit({
+      reportId: REPORT,
+      status: "in_progress",
+      kind: "status",
+      note: "Status set to In progress",
+    })
 
     expect(calls).toEqual([
       `insert:${REPORT}:in_progress`,
@@ -96,9 +100,7 @@ describe("report-chat system-message emitter (D-D1 choke point)", () => {
       },
     })
     const emitter = makeReportChatSystemEmitter(deps)
-    await expect(
-      emitter.emit({ reportId: REPORT, status: "in_progress" }),
-    ).resolves.toBeUndefined()
+    await expect(emitter.emit({ reportId: REPORT, status: "in_progress" })).resolves.toBeUndefined()
   })
 
   it("swallows a broadcast failure and does not reach notify", async () => {
@@ -143,7 +145,10 @@ describe("report-chat system-message emitter (D-D1 choke point)", () => {
       propagateInsertFailure: true,
     })
     await expect(
-      makeReportChatSystemEmitter(failedInsert.deps).emit({ reportId: REPORT, status: "in_progress" }),
+      makeReportChatSystemEmitter(failedInsert.deps).emit({
+        reportId: REPORT,
+        status: "in_progress",
+      }),
     ).rejects.toThrow("insert boom")
 
     const failedNotify = recorder({
@@ -153,7 +158,10 @@ describe("report-chat system-message emitter (D-D1 choke point)", () => {
       propagateInsertFailure: true,
     })
     await expect(
-      makeReportChatSystemEmitter(failedNotify.deps).emit({ reportId: REPORT, status: "in_progress" }),
+      makeReportChatSystemEmitter(failedNotify.deps).emit({
+        reportId: REPORT,
+        status: "in_progress",
+      }),
     ).resolves.toBeUndefined()
   })
 
@@ -164,8 +172,6 @@ describe("report-chat system-message emitter (D-D1 choke point)", () => {
       },
     })
     const emitter = makeReportChatSystemEmitter(deps)
-    await expect(
-      emitter.emit({ reportId: REPORT, status: "in_progress" }),
-    ).resolves.toBeUndefined()
+    await expect(emitter.emit({ reportId: REPORT, status: "in_progress" })).resolves.toBeUndefined()
   })
 })

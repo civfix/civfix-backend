@@ -1,4 +1,3 @@
-
 import { describe, it, expect, vi, afterEach } from "vitest"
 import {
   fetchJsonWithTimeout,
@@ -7,7 +6,11 @@ import {
 } from "../../src/adapters/http-fetch.js"
 
 function jsonResponse(body: unknown, status = 200): Response {
-  return { ok: status >= 200 && status < 300, status, json: async () => body } as unknown as Response
+  return {
+    ok: status >= 200 && status < 300,
+    status,
+    json: async () => body,
+  } as unknown as Response
 }
 
 function streamResponse(
@@ -198,14 +201,14 @@ describe("fetchJsonWithTimeout", () => {
     const single = streamResponse(JSON.stringify({ a: 1 }))
     const r1 = await fetchJsonWithTimeout<{ a: number }>("https://x/y", {
       timeoutMs: 50,
-      fetchImpl: (async () => single.res) as unknown as typeof fetch,
+      fetchImpl: async () => single.res,
     })
     expect(r1).toEqual({ ok: true, status: 200, json: { a: 1 } })
 
     const multi = streamResponse(JSON.stringify({ hello: "world", n: 42 }), { chunks: 5 })
     const r2 = await fetchJsonWithTimeout<{ hello: string; n: number }>("https://x/y", {
       timeoutMs: 50,
-      fetchImpl: (async () => multi.res) as unknown as typeof fetch,
+      fetchImpl: async () => multi.res,
     })
     expect(r2.ok && r2.json).toEqual({ hello: "world", n: 42 })
   })
@@ -215,7 +218,7 @@ describe("fetchJsonWithTimeout", () => {
     const result = await fetchJsonWithTimeout("https://x/y", {
       timeoutMs: 50,
       maxBytes: 100,
-      fetchImpl: (async () => big.res) as unknown as typeof fetch,
+      fetchImpl: async () => big.res,
     })
     expect(result.ok).toBe(false)
     expect(result.ok === false && result.kind).toBe("body")
@@ -231,7 +234,7 @@ describe("fetchJsonWithTimeout", () => {
     const result = await fetchJsonWithTimeout("https://x/y", {
       timeoutMs: 50,
       maxBytes: 500,
-      fetchImpl: (async () => lying.res) as unknown as typeof fetch,
+      fetchImpl: async () => lying.res,
     })
     expect(result.ok === false && result.kind).toBe("body")
     expect(result.ok === false && result.kind === "body" && result.error).toBeInstanceOf(
@@ -241,14 +244,18 @@ describe("fetchJsonWithTimeout", () => {
 
   it("still parses a bare {ok,json} double (no body) via the res.json() fallback under the cap", async () => {
     const fetchImpl = vi.fn(async () => jsonResponse({ ok: 1 })) as unknown as typeof fetch
-    const result = await fetchJsonWithTimeout("https://x/y", { timeoutMs: 50, maxBytes: 10, fetchImpl })
+    const result = await fetchJsonWithTimeout("https://x/y", {
+      timeoutMs: 50,
+      maxBytes: 10,
+      fetchImpl,
+    })
     expect(result).toEqual({ ok: true, status: 200, json: { ok: 1 } })
   })
 
   it("resolves globalThis.fetch at CALL time when no fetchImpl is injected", async () => {
     const original = globalThis.fetch
     try {
-      globalThis.fetch = vi.fn(async () => jsonResponse({ via: "global" })) as unknown as typeof fetch
+      globalThis.fetch = vi.fn(async () => jsonResponse({ via: "global" }))
       const result = await fetchJsonWithTimeout<{ via: string }>("https://x/y", { timeoutMs: 50 })
       expect(result.ok && result.json).toEqual({ via: "global" })
     } finally {
@@ -267,7 +274,9 @@ describe("fetchJsonOrNull (fail-open wrapper)", () => {
     const http = vi.fn(
       async () => ({ ok: false, status: 500, json: async () => ({}) }) as unknown as Response,
     ) as unknown as typeof fetch
-    await expect(fetchJsonOrNull("https://x", { timeoutMs: 50, fetchImpl: http })).resolves.toBeNull()
+    await expect(
+      fetchJsonOrNull("https://x", { timeoutMs: 50, fetchImpl: http }),
+    ).resolves.toBeNull()
 
     const transport = vi.fn(async () => {
       throw new Error("net")

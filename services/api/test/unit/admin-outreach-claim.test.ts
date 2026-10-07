@@ -1,16 +1,18 @@
-import { describe, it, expect } from "vitest"
+import { describe, it, expect, vi } from "vitest"
 import { FakeMailer } from "@civfix/shared/fakes"
 import type { OutboundEmail } from "@civfix/shared/interfaces"
-import { InMemoryMailRepository } from "../../src/services/admin/mail-repository.memory.js"
-import { InMemoryOutreachRepository } from "../../src/services/admin/outreach-repository.memory.js"
-import { makeOutboundMailService } from "../../src/services/admin/outbound-mail-service.js"
+import { InMemoryMailRepository } from "../helpers/admin/mail-repository.memory.js"
+import { InMemoryOutreachRepository } from "../helpers/admin/outreach-repository.memory.js"
+import {
+  makeOutboundMailService,
+  OutboundSendDeadlineError,
+} from "../../src/services/admin/outbound-mail-service.js"
 import {
   makeOutreachService,
   type OutreachService,
 } from "../../src/services/admin/outreach-service.js"
 import type { OutboundMailService } from "../../src/services/admin/outbound-mail-service.js"
 import type { OutreachStateRecord } from "../../src/services/admin/mail-repository.js"
-
 
 const NOW = new Date("2026-06-06T00:00:00.000Z")
 const THROTTLE_DAYS = 7
@@ -66,7 +68,9 @@ function harness(): Harness {
   })
   const claim = outreachRepo.claimOutreachWindow
   if (claim === undefined) {
-    throw new Error("harness must construct InMemoryOutreachRepository with the shared outreach_state map")
+    throw new Error(
+      "harness must construct InMemoryOutreachRepository with the shared outreach_state map",
+    )
   }
   return { outreachRepo, mailRepo, mailer, state, svc, claim }
 }
@@ -96,7 +100,11 @@ describe("InMemoryOutreachRepository.claimOutreachWindow mirrors the SQL upsert-
 
   it("WINS again once the previous send falls outside the window", async () => {
     const { claim, state } = harness()
-    state.set(GEOID, { geoid: GEOID, lastOutreachAt: daysAgo(THROTTLE_DAYS + 1), suppressed: false })
+    state.set(GEOID, {
+      geoid: GEOID,
+      lastOutreachAt: daysAgo(THROTTLE_DAYS + 1),
+      suppressed: false,
+    })
     const won = await claim(GEOID, {
       at: NOW,
       windowStart: new Date(NOW.getTime() - WINDOW_MS),
@@ -244,6 +252,36 @@ describe("outreach digest: a delivered digest is never re-sent (F109)", () => {
 
     await expect(svc.runForGeoid(GEOID)).rejects.toThrow("thread re-read failed after delivery")
     expect(state.get(GEOID)?.lastOutreachAt).toEqual(NOW)
+  })
+
+  it("keeps the claim when the send hit its deadline, because the digest may still be delivered", async () => {
+    const { svc, state } = serviceWith(() => Promise.reject(new OutboundSendDeadlineError(1000)))
+
+    await expect(svc.runForGeoid(GEOID)).rejects.toMatchObject({ outboundSendDeadline: true })
+    expect(state.get(GEOID)?.lastOutreachAt).toEqual(NOW)
+  })
+
+  it("logs a failed claim release instead of swallowing it, and still surfaces the send error", async () => {
+    const { outreachRepo, mailRepo } = harness()
+    const warn = vi.fn()
+    const releaseFailure = new Error("db down")
+    mailRepo.setOutreachState = () => Promise.reject(releaseFailure)
+    const svc = makeOutreachService({
+      outreachRepo,
+      mailRepo,
+      outboundMail: {
+        sendToCity: () => Promise.reject(new Error("OCI mail transient 500")),
+      } as unknown as OutboundMailService,
+      throttleDays: THROTTLE_DAYS,
+      now: () => NOW,
+      logger: { warn },
+    })
+
+    await expect(svc.runForGeoid(GEOID)).rejects.toThrow("OCI mail transient 500")
+    expect(warn).toHaveBeenCalledWith(
+      expect.objectContaining({ geoid: GEOID, err: releaseFailure }),
+      expect.any(String),
+    )
   })
 
   it("STILL releases the claim on a plain delivery failure (untagged error), so it retries", async () => {

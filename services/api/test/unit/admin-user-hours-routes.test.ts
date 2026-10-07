@@ -1,19 +1,19 @@
 import { afterEach, describe, expect, it } from "vitest"
 import type { FastifyInstance } from "fastify"
 import { FakeMailer } from "@civfix/shared/fakes"
-import { buildServer } from "../../src/server.js"
+import { makeServer } from "../../src/server.js"
 import { loadEnv } from "../../src/env.js"
 import { InMemoryCacheClient } from "../../src/auth/cache.js"
 import { makeInMemoryStores } from "../../src/auth/stores.js"
-import { buildAuthServices } from "../../src/auth/auth-services.js"
+import { makeAuthServices } from "../../src/auth/auth-services.js"
 import { makeCsrf } from "../../src/auth/csrf.js"
 import { CIVFIX_OFFICIAL_USER_ID } from "../../src/auth/official-account.js"
 import { StubJwksVerifier } from "../helpers/auth.js"
 import type { WriteAuditInput } from "../../src/services/admin/audit.js"
-import { InMemoryAdminUserRepository } from "../../src/services/admin/admin-user-repository.memory.js"
-import { InMemoryCertificateRepository } from "../../src/services/certificate-repository.memory.js"
+import { InMemoryAdminUserRepository } from "../helpers/admin/admin-user-repository.memory.js"
+import { InMemoryCertificateRepository } from "../helpers/certificate-repository.memory.js"
 import type { NotificationService } from "../../src/services/notification-service.js"
-import { InMemoryVolunteerHoursRepository } from "../../src/services/volunteer-hours-repository.memory.js"
+import { InMemoryVolunteerHoursRepository } from "../helpers/volunteer-hours-repository.memory.js"
 import type { CleanupHoursView } from "../../src/services/volunteer-hours-service.js"
 
 const OPERATOR_EMAIL = "ops@civfix.org"
@@ -24,6 +24,7 @@ const GEOID = "0644000"
 const ENDED_EVENT: CleanupHoursView = {
   organizerUserId: "11111111-1111-4111-8111-111111111111",
   status: "done",
+  visibility: "public",
   jurisdictionGeoid: GEOID,
   title: "Ocean Beach sweep",
   scheduledAt: new Date("2026-07-04T08:00:00.000Z"),
@@ -50,7 +51,7 @@ afterEach(async () => {
 
 async function makeHarness(): Promise<Harness> {
   const stores = makeInMemoryStores()
-  const services = buildAuthServices({
+  const services = makeAuthServices({
     stores,
     cache: new InMemoryCacheClient(() => Date.now()),
     mailer: new FakeMailer(),
@@ -58,7 +59,7 @@ async function makeHarness(): Promise<Harness> {
     verifier: new StubJwksVerifier(),
     now: () => Date.now(),
   })
-  app = await buildServer({
+  app = await makeServer({
     env: loadEnv({ NODE_ENV: "test", ADMIN_EMAILS: OPERATOR_EMAIL }),
     authServices: services,
   })
@@ -137,7 +138,7 @@ describe("admin user hours routes", () => {
       payload: { kind: "event", eventId: EVENT, hours: 3, reason: "Signed up at the event" },
     })
     expect(credited.statusCode).toBe(200)
-    const { entryId, totalHours } = credited.json() as { entryId: string; totalHours: number }
+    const { entryId, totalHours } = credited.json()
     expect(totalHours).toBe(3)
     expect(h.notices).toEqual(["notification.hours_logged.body"])
     expect(h.hours.audits).toEqual([

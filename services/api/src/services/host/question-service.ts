@@ -7,18 +7,22 @@ import type {
 } from "@civfix/shared"
 import { assertNoSlur } from "../../abuse/slur-filter.js"
 import { toEventQuestionDTO } from "./registration-dto.js"
-import type {
-  DesiredQuestion,
-  HostRegistrationRepository,
-} from "./registration-repository.types.js"
+import type { DesiredQuestion, HostRegistrationRepository } from "./registration-repository.js"
 
 export interface QuestionServiceDeps {
   repo: HostRegistrationRepository
   now?: () => Date
 }
 
+export interface QuestionViewer {
+  canManage: boolean
+}
+
 export interface QuestionService {
-  list(query: ListEventQuestionsRequest): Promise<ListEventQuestionsResponse>
+  list(
+    query: ListEventQuestionsRequest,
+    viewer: QuestionViewer,
+  ): Promise<ListEventQuestionsResponse>
   save(input: SaveEventQuestionsRequest): Promise<SaveEventQuestionsResponse>
 }
 
@@ -26,11 +30,21 @@ export function makeQuestionService(deps: QuestionServiceDeps): QuestionService 
   const now = deps.now ?? (() => new Date())
 
   return {
-    async list(query): Promise<ListEventQuestionsResponse> {
+    async list(query, viewer): Promise<ListEventQuestionsResponse> {
       const records = await deps.repo.listQuestions(query.id, {
         ...(query.ticketTypeId !== undefined ? { ticketTypeId: query.ticketTypeId } : {}),
       })
-      return { items: records.map(toEventQuestionDTO) }
+      if (viewer.canManage || records.every((record) => record.ticketTypeId === null)) {
+        return { items: records.map(toEventQuestionDTO) }
+      }
+      // A hidden type is host-assigned only; its questions would publish its id to anyone.
+      const types = await deps.repo.listTicketTypes(query.id)
+      const hidden = new Set(types.filter((t) => t.visibility === "hidden").map((t) => t.id))
+      return {
+        items: records
+          .filter((record) => record.ticketTypeId === null || !hidden.has(record.ticketTypeId))
+          .map(toEventQuestionDTO),
+      }
     },
 
     async save(input): Promise<SaveEventQuestionsResponse> {
@@ -58,8 +72,7 @@ export function makeQuestionService(deps: QuestionServiceDeps): QuestionService 
           helpText: question.helpText ?? null,
           required: question.required,
           options: "options" in question ? question.options : [],
-          maxSelections:
-            question.kind === "multi_select" ? (question.maxSelections ?? null) : null,
+          maxSelections: question.kind === "multi_select" ? (question.maxSelections ?? null) : null,
           consentText: question.kind === "consent" ? question.consentText : null,
           showIf: question.showIf ?? null,
           sortOrder: question.sortOrder ?? index,
@@ -74,6 +87,14 @@ export function makeQuestionService(deps: QuestionServiceDeps): QuestionService 
           throw AppError.validation({
             showIf: "must reference another question kept in this same save",
           })
+        }
+      }
+
+      const typeIds = desired.map((q) => q.ticketTypeId).filter((id): id is string => id !== null)
+      if (typeIds.length > 0) {
+        const own = new Set((await deps.repo.listTicketTypes(input.id)).map((type) => type.id))
+        if (typeIds.some((id) => !own.has(id))) {
+          throw AppError.validation({ ticketTypeId: "not a ticket type on this event" })
         }
       }
 

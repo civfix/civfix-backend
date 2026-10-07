@@ -1,4 +1,3 @@
-
 import { randomUUID } from "node:crypto"
 import { AppError } from "@civfix/shared"
 import type {
@@ -8,41 +7,43 @@ import type {
   FinalizeMediaResponse,
   MediaDTO,
   MediaKind,
-  MediaStatus,
 } from "@civfix/shared"
 import { MAX_IMAGE_BYTES, MAX_VIDEO_BYTES } from "@civfix/shared"
-import type { MEDIA_PURPOSE_VALUES } from "../db/schema/types-host.js"
-
-type MediaPurpose = (typeof MEDIA_PURPOSE_VALUES)[number]
 import type { Jobs, Storage } from "@civfix/shared/interfaces"
 import { readEtag } from "./media-etag.js"
+import { uploaderOf, uploadersOf } from "./media-uploader.js"
+import { MEDIA_CLAIM_WINDOW_SEC } from "./host/event-media.js"
 import { makeMediaPresigner, makePrivateMediaPresigner } from "./media-presign.js"
 import {
   makeUnboundOnlyMediaViewAuthorizer,
   type MediaViewAuthorizer,
 } from "./media-authorization.js"
+import { MS_PER_SECOND } from "../lib/time.js"
+import { MEDIA_CHECKS_JOB } from "../lib/queue-names.js"
+import type { MediaAssetView, MediaRepository } from "./media-repository.js"
 
 interface IntakeLogger {
   warn(obj: unknown, msg?: string): void
 }
 
-export const MEDIA_CHECKS_JOB = "media.checks"
-
 export const MEDIA_GET_URL_TTL_SEC = 15 * 60
 
 export const MEDIA_PRIVATE_GET_URL_TTL_SEC = 5 * 60
 
-export const ALLOWED_IMAGE_CONTENT_TYPES: ReadonlySet<string> = new Set([
+const ALLOWED_IMAGE_CONTENT_TYPES: ReadonlySet<string> = new Set([
   "image/jpeg",
   "image/png",
   "image/webp",
 ])
-export const ALLOWED_VIDEO_CONTENT_TYPES: ReadonlySet<string> = new Set([
-  "video/mp4",
-  "video/quicktime",
-])
+const ALLOWED_VIDEO_CONTENT_TYPES: ReadonlySet<string> = new Set(["video/mp4", "video/quicktime"])
 
 const SHA256_HEX = /^[0-9a-f]{64}$/
+const UPLOAD_KEY_PREFIX = "uploads/"
+const USER_QUOTA_PREFIX = "u:"
+const ANON_QUOTA_PREFIX = "a:"
+const IP_QUOTA_PREFIX = "ip:"
+const UNKNOWN_IP_KEY = "unknown"
+const MEDIA_NOT_FOUND = "Media not found"
 
 export interface MediaChecksJob {
   mediaId: string
@@ -55,43 +56,8 @@ export interface MediaChecksJob {
 export interface MediaOwner {
   userId?: string | undefined
   anonSessionId?: string | undefined
+  guestAnonSessionId?: string | undefined
   ipKey?: string | undefined
-}
-
-export interface MediaAssetView {
-  id: string
-  uploadId: string
-  kind: MediaKind
-  codec: string | null
-  r2Key: string
-  servedKey: string | null
-  thumbKey: string | null
-  status: MediaStatus
-  width: number | null
-  height: number | null
-  byteSize: number | null
-  purpose?: MediaPurpose
-  reportId?: string | null
-  chatMessageId?: string | null
-  postId?: string | null
-  createdAt?: Date | null
-  finalizedAt?: Date | null
-}
-
-export interface NewMediaAsset {
-  id: string
-  uploadId: string
-  kind: MediaKind
-  r2Key: string
-  status: MediaStatus
-  byteSize: number
-}
-
-export interface MediaRepository {
-  insert(row: NewMediaAsset): Promise<void>
-  findByUploadId(uploadId: string): Promise<MediaAssetView | null>
-  findById(id: string): Promise<MediaAssetView | null>
-  markFinalized(uploadId: string): Promise<MediaAssetView | null>
 }
 
 export interface MediaIntakeDeps {
@@ -121,8 +87,7 @@ export interface MediaIntakeService {
 
 export function precheckUpload(input: CreateMediaUploadRequest): void {
   const max = input.kind === "video" ? MAX_VIDEO_BYTES : MAX_IMAGE_BYTES
-  const allowed =
-    input.kind === "video" ? ALLOWED_VIDEO_CONTENT_TYPES : ALLOWED_IMAGE_CONTENT_TYPES
+  const allowed = input.kind === "video" ? ALLOWED_VIDEO_CONTENT_TYPES : ALLOWED_IMAGE_CONTENT_TYPES
 
   if (!allowed.has(input.contentType)) {
     throw AppError.mediaRejected(
@@ -146,15 +111,36 @@ export function precheckUpload(input: CreateMediaUploadRequest): void {
 export function buildR2Key(uploadId: string, now: Date): string {
   const yyyy = String(now.getUTCFullYear()).padStart(4, "0")
   const mm = String(now.getUTCMonth() + 1).padStart(2, "0")
-  return `uploads/${yyyy}/${mm}/${uploadId}`
+  return `${UPLOAD_KEY_PREFIX}${yyyy}/${mm}/${uploadId}`
 }
 
 const SIZE_MISMATCH_TOLERANCE = 1024
 
 export function quotaSubjects(owner: MediaOwner): string[] {
-  if (owner.userId) return [`u:${owner.userId}`]
-  const ipSubject = `ip:${owner.ipKey ?? "unknown"}`
-  return owner.anonSessionId ? [`a:${owner.anonSessionId}`, ipSubject] : [ipSubject]
+  if (owner.userId) return [`${USER_QUOTA_PREFIX}${owner.userId}`]
+  const ipSubject = `${IP_QUOTA_PREFIX}${owner.ipKey ?? UNKNOWN_IP_KEY}`
+  return owner.anonSessionId
+    ? [`${ANON_QUOTA_PREFIX}${owner.anonSessionId}`, ipSubject]
+    : [ipSubject]
+}
+
+async function enforceByteQuota(
+  quota: MediaByteQuota,
+  owner: MediaOwner,
+  byteSize: number,
+  logger: IntakeLogger | undefined,
+): Promise<void> {
+  let over: { subject: string; total: number } | null = null
+  for (const subject of quotaSubjects(owner)) {
+    const total = await quota.charge(subject, byteSize)
+    if (total > quota.limitBytes && over === null) over = { subject, total }
+  }
+  if (!over) return
+  logger?.warn(
+    { subject: over.subject, totalBytes: over.total, limitBytes: quota.limitBytes },
+    "media upload byte quota exceeded",
+  )
+  throw AppError.rateLimited("Upload quota exceeded. Try again later.")
 }
 
 export function makeMediaIntakeService(deps: MediaIntakeDeps): MediaIntakeService {
@@ -164,6 +150,20 @@ export function makeMediaIntakeService(deps: MediaIntakeDeps): MediaIntakeServic
   const presignPrivate = makePrivateMediaPresigner(deps.storage)
   const authorizer = deps.authorizer ?? makeUnboundOnlyMediaViewAuthorizer(now)
 
+  // The uploadId is readable from every served URL, so only the session that created the upload may
+  // finalize it and set the worker on its bytes. A NULL uploader predates attribution and passes only
+  // inside the claim window, after which the orphan sweep has already reclaimed it.
+  function finalizableBy(asset: MediaAssetView, owner: MediaOwner): boolean {
+    if (asset.uploader == null) {
+      const createdAt = asset.createdAt?.getTime()
+      return (
+        createdAt !== undefined &&
+        now().getTime() - createdAt < MEDIA_CLAIM_WINDOW_SEC * MS_PER_SECOND
+      )
+    }
+    return uploadersOf(owner).includes(asset.uploader)
+  }
+
   return {
     async createUpload(
       input: CreateMediaUploadRequest,
@@ -171,20 +171,8 @@ export function makeMediaIntakeService(deps: MediaIntakeDeps): MediaIntakeServic
     ): Promise<CreateMediaUploadResponse> {
       precheckUpload(input)
 
-      const quota = deps.byteQuota
-      if (quota) {
-        let over: { subject: string; total: number } | null = null
-        for (const subject of quotaSubjects(owner)) {
-          const total = await quota.charge(subject, input.byteSize)
-          if (total > quota.limitBytes && over === null) over = { subject, total }
-        }
-        if (over) {
-          deps.logger?.warn(
-            { subject: over.subject, totalBytes: over.total, limitBytes: quota.limitBytes },
-            "media upload byte quota exceeded",
-          )
-          throw AppError.rateLimited("Upload quota exceeded. Try again later.")
-        }
+      if (deps.byteQuota) {
+        await enforceByteQuota(deps.byteQuota, owner, input.byteSize, deps.logger)
       }
 
       const uploadId = newId()
@@ -197,6 +185,7 @@ export function makeMediaIntakeService(deps: MediaIntakeDeps): MediaIntakeServic
         r2Key,
         status: "validating",
         byteSize: input.byteSize,
+        uploader: uploaderOf(owner),
       })
 
       const presigned = await deps.storage.presignPut(r2Key, {
@@ -211,13 +200,17 @@ export function makeMediaIntakeService(deps: MediaIntakeDeps): MediaIntakeServic
       }
     },
 
-    async finalize(
-      input: FinalizeMediaRequest,
-      _owner: MediaOwner,
-    ): Promise<FinalizeMediaResponse> {
+    async finalize(input: FinalizeMediaRequest, owner: MediaOwner): Promise<FinalizeMediaResponse> {
       const asset = await deps.repo.findByUploadId(input.uploadId)
-      if (!asset) {
+      // A foreign upload answers exactly like a missing one, so the uploadId never confirms it exists.
+      if (!asset || !finalizableBy(asset, owner)) {
         throw AppError.notFound("Unknown upload")
+      }
+
+      // Once finalized, the worker may already have deleted the raw upload and overwritten byte_size with
+      // the processed size, so a client retry must be answered before either is checked again.
+      if (asset.status !== "validating" || asset.finalizedAt != null) {
+        return { mediaId: asset.id, status: "validating" }
       }
 
       const head = await deps.storage.head(asset.r2Key)
@@ -231,11 +224,8 @@ export function makeMediaIntakeService(deps: MediaIntakeDeps): MediaIntakeServic
         throw AppError.mediaRejected("Uploaded object size does not match the declared byteSize")
       }
 
-      if (asset.status !== "validating") {
-        return { mediaId: asset.id, status: "validating" }
-      }
-
-      const claimed = await deps.repo.markFinalized(input.uploadId)
+      const uploadEtag = readEtag(head)
+      const claimed = await deps.repo.markFinalized(input.uploadId, uploadEtag)
       if (claimed === null) {
         return { mediaId: asset.id, status: "validating" }
       }
@@ -249,7 +239,7 @@ export function makeMediaIntakeService(deps: MediaIntakeDeps): MediaIntakeServic
             uploadId: input.uploadId,
             r2Key: asset.r2Key,
             kind: asset.kind,
-            uploadEtag: readEtag(head),
+            uploadEtag,
           } satisfies MediaChecksJob,
           { singletonKey: input.uploadId },
         )
@@ -266,16 +256,16 @@ export function makeMediaIntakeService(deps: MediaIntakeDeps): MediaIntakeServic
     async getMedia(id: string, viewer: MediaOwner): Promise<MediaDTO> {
       const asset = await deps.repo.findById(id)
       if (!asset || asset.status !== "ready") {
-        throw AppError.notFound("Media not found")
+        throw AppError.notFound(MEDIA_NOT_FOUND)
       }
 
       const decision = await authorizer.authorize(asset, viewer)
       if (!decision.allowed) {
-        throw AppError.notFound("Media not found")
+        throw AppError.notFound(MEDIA_NOT_FOUND)
       }
 
       if (asset.servedKey === null) {
-        throw AppError.notFound("Media not found")
+        throw AppError.notFound(MEDIA_NOT_FOUND)
       }
       const issue = decision.private ? presignPrivate : presign
       const { url, thumbUrl } = await issue(asset.servedKey, asset.thumbKey)

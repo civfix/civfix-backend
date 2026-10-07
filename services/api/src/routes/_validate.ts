@@ -1,6 +1,9 @@
 import { AppError } from "@civfix/shared"
-import { z, type ZodTypeAny } from "zod"
 import type { FastifyRequest } from "fastify"
+import { z, type ZodTypeAny } from "zod"
+
+// Field key for an issue on the value itself (a non-object body, a refine on the whole schema).
+const ROOT_FIELD_KEY = "_"
 
 export function parse<S extends ZodTypeAny>(schema: S, data: unknown): z.infer<S> {
   try {
@@ -11,11 +14,12 @@ export function parse<S extends ZodTypeAny>(schema: S, data: unknown): z.infer<S
       err.name === "ZodError" &&
       Array.isArray((err as unknown as { issues?: unknown }).issues)
     ) {
-      const issues = (err as unknown as { issues: { path: (string | number)[]; message: string }[] })
-        .issues
+      const issues = (
+        err as unknown as { issues: { path: (string | number)[]; message: string }[] }
+      ).issues
       const fields: Record<string, string> = {}
       for (const issue of issues) {
-        const key = issue.path.length > 0 ? issue.path.join(".") : "_"
+        const key = issue.path.length > 0 ? issue.path.join(".") : ROOT_FIELD_KEY
         fields[key] = issue.message
       }
       throw AppError.validation(fields)
@@ -47,9 +51,16 @@ export function trimTextFields<S extends ZodTypeAny>(
   }, schema)
 }
 
-export const validateBody = <S extends ZodTypeAny>(schema: S, request: FastifyRequest): z.infer<S> =>
-  parse(schema, request.body)
-export const validateQuery = <S extends ZodTypeAny>(schema: S, request: FastifyRequest): z.infer<S> =>
-  parse(schema, request.query)
-export const validateParams = <S extends ZodTypeAny>(schema: S, request: FastifyRequest): z.infer<S> =>
-  parse(schema, request.params)
+// Path params spread last: the URL path is authoritative, so a body or query field can never address a
+// different row than the path names.
+export function paramsOverBody(request: FastifyRequest): Record<string, unknown> {
+  const params = (request.params ?? {}) as Record<string, unknown>
+  const body = (request.body ?? {}) as Record<string, unknown>
+  return { ...body, ...params }
+}
+
+export function paramsOverQuery(request: FastifyRequest): Record<string, unknown> {
+  const params = (request.params ?? {}) as Record<string, unknown>
+  const query = (request.query ?? {}) as Record<string, unknown>
+  return { ...query, ...params }
+}

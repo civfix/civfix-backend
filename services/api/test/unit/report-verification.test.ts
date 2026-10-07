@@ -3,8 +3,8 @@ import { randomUUID } from "node:crypto"
 import { FakeJobs, FakeMailer } from "@civfix/shared/fakes"
 import { AppError } from "@civfix/shared"
 import type { CreateReportRequest } from "@civfix/shared"
-import { InMemoryAdminReportRepository } from "../../src/services/admin/admin-report-repository.memory.js"
-import { InMemoryAdminUserRepository } from "../../src/services/admin/admin-user-repository.memory.js"
+import { InMemoryAdminReportRepository } from "../helpers/admin/admin-report-repository.memory.js"
+import { InMemoryAdminUserRepository } from "../helpers/admin/admin-user-repository.memory.js"
 import {
   makeAdminReportService,
   REPORT_VERIFIED_THRESHOLD,
@@ -14,19 +14,18 @@ import {
   makeAdminUserService,
   type AdminUserService,
 } from "../../src/services/admin/admin-user-service.js"
-import { InMemoryMailRepository } from "../../src/services/admin/mail-repository.memory.js"
+import { InMemoryMailRepository } from "../helpers/admin/mail-repository.memory.js"
 import {
   makeOutboundMailService,
   OutboundSendDeadlineError,
   type OutboundMailService,
 } from "../../src/services/admin/outbound-mail-service.js"
 import { runAutoForwardWith } from "../../src/services/admin/autoforward-jobs.js"
-import { makeReportService, REPORT_AUTOFORWARD_JOB } from "../../src/services/report-service.js"
+import { makeReportService } from "../../src/services/report-service.js"
+import { REPORT_AUTOFORWARD_JOB } from "../../src/lib/queue-names.js"
 import { InMemoryReportRepository } from "../helpers/reports.js"
 
-
 const NOW = new Date("2026-06-22T00:00:00.000Z")
-
 
 function reporter(id: string) {
   return {
@@ -57,8 +56,7 @@ function verdictHarness(): VerdictHarness {
   return { repo, svc }
 }
 
-
-describe("setVerdict (D7) — verdict write + count + flip", () => {
+describe("setVerdict (D7): verdict write + count + flip", () => {
   it("approve-once: records the verdict but leaves report_verified false (count=1 < threshold)", async () => {
     const { repo, svc } = verdictHarness()
     const uid = "user-1"
@@ -169,8 +167,7 @@ describe("setVerdict (D7) — verdict write + count + flip", () => {
   })
 })
 
-
-describe("setUserReportVerified (D18) — manual override/revoke", () => {
+describe("setUserReportVerified (D18): manual override/revoke", () => {
   function userHarness(): { repo: InMemoryAdminUserRepository; svc: AdminUserService } {
     const repo = new InMemoryAdminUserRepository()
     const svc = makeAdminUserService({
@@ -194,7 +191,10 @@ describe("setUserReportVerified (D18) — manual override/revoke", () => {
 
     await svc.setReportVerified("u1", { value: false, actorId: "op-1" })
     expect(repo.users.get("u1")?.reportVerified).toBe(false)
-    expect(repo.audits.at(-1)).toMatchObject({ action: "user.report_unverified", target: "user:u1" })
+    expect(repo.audits.at(-1)).toMatchObject({
+      action: "user.report_unverified",
+      target: "user:u1",
+    })
 
     const dto = await svc.get("u1")
     expect(dto.reportVerified).toBe(false)
@@ -207,7 +207,6 @@ describe("setUserReportVerified (D18) — manual override/revoke", () => {
     ).rejects.toMatchObject({ httpStatus: 404 })
   })
 })
-
 
 describe("createReport auto-forward enqueue gate (D9)", () => {
   const VERIFIED_UID = "11111111-1111-1111-1111-111111111111"
@@ -295,9 +294,8 @@ describe("createReport auto-forward enqueue gate (D9)", () => {
   })
 })
 
-
-describe("report.autoforward handler (D9) — runAutoForwardWith", () => {
-  function handlerHarness(opts: { sendError?: unknown } = {}) {
+describe("report.autoforward handler (D9): runAutoForwardWith", () => {
+  function handlerHarness({ sendError }: { sendError?: Error } = {}) {
     const repo = new InMemoryAdminReportRepository()
     repo.now = NOW
     const mailer = new FakeMailer()
@@ -308,14 +306,14 @@ describe("report.autoforward handler (D9) — runAutoForwardWith", () => {
       env: { MAIL_FROM_OUTREACH: "outreach@civfix.org", MAIL_REPLY_DOMAIN: "civfix.org" },
     })
     const outboundMail: OutboundMailService =
-      opts.sendError !== undefined
+      sendError !== undefined
         ? {
             ...realOutbound,
             async prepareReportToJurisdiction(input) {
               const prepared = await realOutbound.prepareReportToJurisdiction(input)
-              return { thread: prepared.thread, deliver: () => Promise.reject(opts.sendError) }
+              return { thread: prepared.thread, deliver: () => Promise.reject(sendError) }
             },
-            sendReportToJurisdiction: () => Promise.reject(opts.sendError),
+            sendReportToJurisdiction: () => Promise.reject(sendError),
           }
         : realOutbound
     const svc = makeAdminReportService({ repo, outboundMail, now: () => NOW })
@@ -390,7 +388,7 @@ describe("report.autoforward handler (D9) — runAutoForwardWith", () => {
     expect(mailer.sent).toHaveLength(0)
   })
 
-  it("(c) a TERMINAL send failure (409 sender-not-approved) is swallowed — handler completes, never throws", async () => {
+  it("(c) a TERMINAL send failure (409 sender-not-approved) is swallowed; handler completes, never throws", async () => {
     const { repo, svc } = handlerHarness({ sendError: AppError.conflict("sender not approved") })
     repo.seedReport({
       id: "rep-1",
@@ -432,7 +430,7 @@ describe("report.autoforward handler (D9) — runAutoForwardWith", () => {
     expect(warnings).toHaveLength(1)
   })
 
-  it("(c'') a DEADLINE expiry is NOT retried — the handler completes and leaves it to the operator", async () => {
+  it("(c'') a DEADLINE expiry is NOT retried; the handler completes and leaves it to the operator", async () => {
     const { repo, svc } = handlerHarness({ sendError: new OutboundSendDeadlineError(30_000) })
     repo.seedReport({
       id: "rep-1",

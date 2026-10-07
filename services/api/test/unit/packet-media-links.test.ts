@@ -1,10 +1,10 @@
 import { describe, it, expect } from "vitest"
 import { FakeMailer } from "@civfix/shared/fakes"
 import type { AdminReportStatus, ReportVisibility } from "@civfix/shared"
-import { InMemoryAdminReportRepository } from "../../src/services/admin/admin-report-repository.memory.js"
-import type { AdminReportMediaRecord } from "../../src/services/admin/admin-report-types.js"
+import { InMemoryAdminReportRepository } from "../helpers/admin/admin-report-repository.memory.js"
+import type { AdminReportMediaRecord } from "../../src/services/admin/admin-report-repository.js"
 import { makeAdminReportService } from "../../src/services/admin/admin-report-service.js"
-import { InMemoryMailRepository } from "../../src/services/admin/mail-repository.memory.js"
+import { InMemoryMailRepository } from "../helpers/admin/mail-repository.memory.js"
 import { makeOutboundMailService } from "../../src/services/admin/outbound-mail-service.js"
 import {
   makePacketMediaPresigner,
@@ -47,7 +47,13 @@ async function routeWith(
     id: "rep-1",
     status,
     visibility,
-    routing: { geoid: "0644000", dept: "Public Works", place: "Los Angeles", contact: "311@lacity.gov", routed: false },
+    routing: {
+      geoid: "0644000",
+      dept: "Public Works",
+      place: "Los Angeles",
+      contact: "311@lacity.gov",
+      routed: false,
+    },
     media,
   })
   await svc.routeToJurisdiction("rep-1", { note: null, actorId: "op-1" })
@@ -83,13 +89,16 @@ describe("packet photo links", () => {
     ["submitted", "public"],
     ["held", "public"],
     ["published", "hidden"],
-  ] as const)("keeps signed links for a %s %s report, which the public cannot see", async (status, visibility) => {
-    const { calls, text } = await routeWith(status, visibility)
-    expect(calls).toEqual([
-      { key: "processed/uploads/a", ttlSec: PACKET_MEDIA_URL_TTL_SEC, forceSigned: true },
-    ])
-    expect(text).not.toContain("https://cdn.test/")
-  })
+  ] as const)(
+    "keeps signed links for a %s %s report, which the public cannot see",
+    async (status, visibility) => {
+      const { calls, text } = await routeWith(status, visibility)
+      expect(calls).toEqual([
+        { key: "processed/uploads/a", ttlSec: PACKET_MEDIA_URL_TTL_SEC, forceSigned: true },
+      ])
+      expect(text).not.toContain("https://cdn.test/")
+    },
+  )
 
   it("lists every photo and video in media order, numbered per kind", async () => {
     const { text } = await routeWith("published", "public", [

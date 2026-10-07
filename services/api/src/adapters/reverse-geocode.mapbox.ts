@@ -1,22 +1,12 @@
 /**
- * Mapbox reverse geocoder - the OPT-IN primary. Selected only when MAPBOX_TOKEN is configured (di.ts);
- * with no token the chain is Photon-only and everything still works, one ladder rung lower on average.
- * Mapbox interpolates rooftop/parcel addresses where OSM simply has no house number, which is the single
- * biggest quality lever available here, but it is a spend decision, so nothing requires it.
+ * Opt-in primary, selected only when MAPBOX_TOKEN is set: Mapbox interpolates rooftop addresses where OSM
+ * has no house number, but it is a spend decision, so nothing requires it. Never throws; null on any
+ * failure.
  *
- * Same contract as every provider on this seam: never throws, never blocks, null on any failure.
- *
- * PRECISION. Mapbox will happily answer a coordinate in the middle of nowhere with the city name. That
- * answer is worse than useless HERE: returning it would claim a rung this adapter did not reach and, far
- * worse, short-circuit the rest of the chain with the least specific line available. So this adapter
- * returns only what it can prove -
- *
- *   street       a house number is present (context.address.address_number, or an address label -
- *                context.address.name, or the feature's own name when feature_type is `address` -
- *                that starts with one)                          "123 Main St, Inglewood, CA"
- *   intersection a named street but no number                   "Main St, Inglewood, CA"
- *
- * - and hands anything coarser to the next provider, ending at the local TIGER `locality` label.
+ * Mapbox answers a coordinate in the middle of nowhere with the city name. Returning that would claim a
+ * rung this adapter did not reach and short-circuit the rest of the chain with the least specific line,
+ * so only `street` (a house number is present) and `intersection` (a named street, no number) are
+ * returned; anything coarser goes to the next provider.
  */
 
 import type { AddressPrecision } from "@civfix/shared"
@@ -25,6 +15,15 @@ import { fetchJsonOrNull } from "./http-fetch.js"
 
 const MAPBOX_REVERSE_URL = "https://api.mapbox.com/search/geocode/v6/reverse"
 const DEFAULT_TIMEOUT_MS = 4000
+const HOME_COUNTRY_CODE = "US"
+const PROVIDER_NAME = "mapbox"
+const LEADING_DIGIT_RE = /^\d/
+
+const MAPBOX_QUERY_PARAMS = {
+  limit: "1",
+  types: "address",
+  language: "en",
+} as const
 
 interface MapboxReverseContext {
   address?: { name?: string; address_number?: string; street_name?: string }
@@ -57,7 +56,7 @@ export function formatMapboxReverse(p: MapboxReverseProps): string | null {
   const tail = [
     ctx.place?.name && ctx.place.name !== primary ? ctx.place.name : null,
     region,
-    cc && cc.toUpperCase() !== "US" ? (ctx.country?.name ?? cc.toUpperCase()) : null,
+    cc && cc.toUpperCase() !== HOME_COUNTRY_CODE ? (ctx.country?.name ?? cc.toUpperCase()) : null,
   ].filter((v): v is string => !!v)
   return [primary, ...tail].join(", ")
 }
@@ -67,13 +66,9 @@ export function formatMapboxReverse(p: MapboxReverseProps): string | null {
  * address. A digit can lead any POI name ("24 Hour Fitness"), and a POI is not a rooftop.
  */
 function startsWithHouseNumber(name: string | undefined): boolean {
-  return name !== undefined && /^\d/.test(name.trim())
+  return name !== undefined && LEADING_DIGIT_RE.test(name.trim())
 }
 
-/**
- * The rung this feature proves, or null when it proves nothing better than a locality (which this
- * adapter never claims - the chain's last provider owns that rung).
- */
 export function mapboxPrecision(p: MapboxReverseProps): AddressPrecision | null {
   const ctx = p.context ?? {}
   const hasNumber =
@@ -99,9 +94,7 @@ export function makeMapboxReverseGeocode(opts: MapboxReverseOptions): ReverseGeo
       u.searchParams.set("longitude", String(lng))
       u.searchParams.set("latitude", String(lat))
       u.searchParams.set("access_token", opts.token)
-      u.searchParams.set("limit", "1")
-      u.searchParams.set("types", "address")
-      u.searchParams.set("language", "en")
+      for (const [key, value] of Object.entries(MAPBOX_QUERY_PARAMS)) u.searchParams.set(key, value)
       url = u.toString()
     } catch {
       return null
@@ -116,6 +109,6 @@ export function makeMapboxReverseGeocode(opts: MapboxReverseOptions): ReverseGeo
     const precision = mapboxPrecision(props)
     if (precision === null) return null
     const line = formatMapboxReverse(props)
-    return line === null ? null : { line, precision, provider: "mapbox" }
+    return line === null ? null : { line, precision, provider: PROVIDER_NAME }
   }
 }

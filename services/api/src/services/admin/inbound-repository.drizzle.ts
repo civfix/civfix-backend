@@ -1,14 +1,14 @@
-
 import type { Sql } from "../../db/client.js"
-import { cursorAtSql, cursorInstantSql } from "../../db/cursor-helpers.js"
-import { clampLimit, decodeCursor, encodeCursor } from "./pagination.js"
-import { likeContains } from "./like.js"
-import { writeAudit } from "./audit.js"
+import { clampLimit } from "./pagination.js"
 import {
-  HTML_PREVIEW_SOURCE_CHARS,
-  PREVIEW_SOURCE_CHARS,
-  toPreview,
-} from "./mail-preview.js"
+  keysetInstant,
+  keysetPredicate,
+  paginateKeyset,
+  parseKeysetCursor,
+} from "../../db/cursor-helpers.js"
+import { likeContains } from "../../db/like.js"
+import { insertAuditRow } from "./audit-repository.drizzle.js"
+import { HTML_PREVIEW_SOURCE_CHARS, PREVIEW_SOURCE_CHARS, toPreview } from "./mail-preview.js"
 import { normalizeAuthVerdict } from "./mail-mappers.js"
 import type {
   InboundEmailDTO,
@@ -18,28 +18,7 @@ import type {
   InboxListResponse,
   MailAttachment,
 } from "@civfix/shared"
-
-export interface InboundEmailInsert {
-  messageId: string
-  fromAddr: string | null
-  toAddr: string | null
-  recipient: string | null
-  subject: string | null
-  bodyText: string | null
-  bodyHtml: string | null
-  headers: Record<string, string>
-  attachments: MailAttachment[]
-  receivedAt?: Date
-}
-
-export interface InboundRepository {
-  insertIdempotent(input: InboundEmailInsert): Promise<{ id: string; inserted: boolean }>
-  list(query: InboxListQuery): Promise<InboxListResponse>
-  get(id: string): Promise<InboundEmailDTO | null>
-  setStatus(id: string, status: InboundEmailStatus, actorId: string | null): Promise<boolean>
-}
-
-export { toPreview }
+import type { InboundEmailInsert, InboundRepository } from "./inbound-repository.js"
 
 export function localPartOf(recipient: string | null): string {
   if (!recipient) return ""
@@ -121,8 +100,8 @@ export function makeDrizzleInboundRepository(sql: Sql): InboundRepository {
           ${input.subject},
           ${input.bodyText},
           ${input.bodyHtml},
-          ${sql.json(input.headers as Parameters<typeof sql.json>[0])},
-          ${sql.json(input.attachments as Parameters<typeof sql.json>[0])},
+          ${sql.json(input.headers)},
+          ${sql.json(input.attachments)},
           ${input.attachments.length > 0},
           ${receivedAt}
         )
@@ -140,10 +119,10 @@ export function makeDrizzleInboundRepository(sql: Sql): InboundRepository {
 
     async list(query: InboxListQuery): Promise<InboxListResponse> {
       const limit = clampLimit(query.limit)
-      const anchor = decodeCursor(query.cursor, true)
+      const anchor = parseKeysetCursor(query.cursor)
       const cursorFilter =
         anchor !== null
-          ? sql`AND (received_at, id) < (${cursorAtSql(sql, anchor)}, ${anchor.id}::uuid)`
+          ? sql`AND ${keysetPredicate(sql, sql`received_at`, sql`id`, anchor)}`
           : sql``
       const statusFilter =
         query.status === "unread"
@@ -167,7 +146,7 @@ export function makeDrizzleInboundRepository(sql: Sql): InboundRepository {
                left(body_text, ${PREVIEW_SOURCE_CHARS}) AS preview_text,
                left(body_html, ${HTML_PREVIEW_SOURCE_CHARS}) AS preview_html,
                has_attachments, status, received_at,
-               ${cursorInstantSql(sql, sql`received_at`)} AS cursor_at,
+               ${keysetInstant(sql, sql`received_at`)} AS cursor_at,
                headers->>${INBOUND_AUTH_VERDICT_HEADER}::text AS auth_verdict
         FROM inbound_emails
         WHERE true
@@ -178,13 +157,11 @@ export function makeDrizzleInboundRepository(sql: Sql): InboundRepository {
         ORDER BY received_at DESC, id DESC
         LIMIT ${limit + 1}
       `
-      const hasMore = rows.length > limit
-      const page = hasMore ? rows.slice(0, limit) : rows
-      const items = page.map(toListItem)
-      const last = page[page.length - 1]
-      const nextCursor =
-        hasMore && last ? encodeCursor({ createdAt: last.cursor_at, id: last.id }) : null
-      return { items, nextCursor }
+      const { items, nextCursor } = paginateKeyset(rows, limit, (r) => ({
+        atText: r.cursor_at,
+        id: r.id,
+      }))
+      return { items: items.map(toListItem), nextCursor }
     },
 
     async get(id: string): Promise<InboundEmailDTO | null> {
@@ -215,7 +192,7 @@ export function makeDrizzleInboundRepository(sql: Sql): InboundRepository {
               archived_at = CASE WHEN ${status === "archived"} THEN COALESCE(archived_at, now()) ELSE NULL END
           WHERE id = ${id}
         `
-        await writeAudit(tx, {
+        await insertAuditRow(tx, {
           actorId,
           action: "inbox.status_changed",
           target: `inbound_email:${id}`,
@@ -223,6 +200,23 @@ export function makeDrizzleInboundRepository(sql: Sql): InboundRepository {
         })
         return true
       })
+    },
+
+    async recordBounceFailure(objectKey: string): Promise<number> {
+      const rows = await sql<{ attempts: number }[]>`
+        INSERT INTO inbound_bounce_attempts (object_key, attempts, last_attempt_at)
+        VALUES (${objectKey}, 1, now())
+        ON CONFLICT (object_key) DO UPDATE
+          SET attempts = inbound_bounce_attempts.attempts + 1, last_attempt_at = now()
+        RETURNING attempts
+      `
+      const attempts = rows[0]?.attempts
+      if (attempts === undefined) throw new Error("recordBounceFailure: upsert returned no row")
+      return attempts
+    },
+
+    async clearBounceFailures(objectKey: string): Promise<void> {
+      await sql`DELETE FROM inbound_bounce_attempts WHERE object_key = ${objectKey}`
     },
   }
 }

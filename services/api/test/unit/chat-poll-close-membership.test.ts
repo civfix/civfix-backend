@@ -6,7 +6,6 @@ import {
   type ChatPollServiceDeps,
 } from "../../src/services/chat-poll-service.js"
 
-
 const CLEANUP = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
 const POLL_MSG = "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"
 const AUTHOR = "cccccccc-cccc-cccc-cccc-cccccccccccc"
@@ -60,12 +59,13 @@ async function statusOf(run: () => Promise<unknown>): Promise<{ status: number; 
     await run()
     return { status: 200 }
   } catch (err) {
-    if (err instanceof AppError) return { status: err.httpStatus, code: err.fields?.["code"] as string }
+    if (err instanceof AppError)
+      return { status: err.httpStatus, code: err.fields?.["code"] as string }
     throw err
   }
 }
 
-describe("F047 — closePoll requires room membership on the author branch", () => {
+describe("F047: closePoll requires room membership on the author branch", () => {
   it("an author who is NOT a member and NOT a moderator is refused (403 poll_close_forbidden)", async () => {
     const { svc, close } = makeService({ isMember: false, isModerator: false })
     const res = await statusOf(() => svc.closePoll({ messageId: POLL_MSG, userId: AUTHOR }))

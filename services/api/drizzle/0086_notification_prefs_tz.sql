@@ -4,7 +4,7 @@
 -- FINDING F086: quiet-hours suppression compares the current time against
 -- notification_prefs.quiet_start/quiet_end, but those are `time` (no zone) values
 -- and there is no per-user timezone, so suppression was evaluated in the server's
--- zone — silencing (or failing to silence) users at the wrong wall-clock hour. Add
+-- zone, silencing (or failing to silence) users at the wrong wall-clock hour. Add
 -- a nullable `tz` (IANA name). notif's code disables suppression entirely when tz
 -- IS NULL (never suppress at a guessed hour) and evaluates quiet hours in the
 -- user's zone when set.

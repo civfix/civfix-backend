@@ -1,17 +1,17 @@
 import { AppError } from "@civfix/shared"
 import type { FastifyBaseLogger } from "fastify"
 import type { Container } from "../../di.js"
+import type { Queryable } from "../../db/client.js"
 import { domainOf } from "../../adapters/mail-text.js"
-import { writeAudit } from "../admin/audit.js"
+import { apiBaseUrlOf, webBaseUrlOf } from "../../lib/base-url.js"
+import type { WriteAuditInput } from "../admin/audit.js"
+import { insertAuditRow } from "../admin/audit-repository.drizzle.js"
 import { makeRouteNotificationService } from "../route-notifier.js"
 import { makeDrizzleAnalyticsRepository } from "./analytics-repository.drizzle.js"
 import { makeAnalyticsService, type AnalyticsService } from "./analytics-service.js"
 import { makeDrizzleEventAnalyticsRepository } from "./event-analytics-repository.drizzle.js"
-import {
-  makeEventAnalyticsService,
-  type EventAnalyticsService,
-} from "./event-analytics-service.js"
-import { makeDrizzleAnnouncementIdentityRepository } from "./announcement-repository.drizzle.js"
+import { makeEventAnalyticsService, type EventAnalyticsService } from "./event-analytics-service.js"
+import { makeDrizzleAnnouncementIdentityRepository } from "./announcement-identity-repository.drizzle.js"
 import { makeAnnouncementService, type AnnouncementService } from "./announcement-service.js"
 import { MEDIA_GET_URL_TTL_SEC } from "../media-intake-service.js"
 import { makeInsightsService, type InsightsService } from "./insights-service.js"
@@ -26,20 +26,21 @@ import {
 } from "./broadcast-service.js"
 import { makeBroadcastPipeline, type BroadcastPipeline } from "./broadcast-pipeline.js"
 import { makeBroadcastLanes, type BroadcastLanes } from "./broadcast-lanes.js"
-import {
-  BROADCAST_CHUNK_JOB,
-  BROADCAST_PLAN_JOB,
-} from "./broadcast-queues.js"
-import { makeDrizzleMetricsRepository, type MetricsRepository } from "./metrics-repository.drizzle.js"
+import { BROADCAST_CHUNK_JOB, BROADCAST_PLAN_JOB } from "../../lib/queue-names.js"
+import { makeDrizzleMetricsRepository } from "./metrics-repository.drizzle.js"
+import type { MetricsRepository } from "./metrics-repository.js"
 import { makeMetricsService, type MetricsService } from "./metrics-service.js"
 import { makeDrizzleHostExportRepository } from "./export-repository.drizzle.js"
 import {
   DEFAULT_EXPORT_MAX_BYTES,
+  EXPORT_NOT_FOUND,
   makeHostExportService,
   type HostExportService,
 } from "./export-service.js"
 import { registerEventExportBuilders } from "./host-export-builders.js"
 import { requireCapability } from "./authz.js"
+
+const BROADCAST_JOB_RETRY_LIMIT = 3
 
 export type CommsLogger = Pick<FastifyBaseLogger, "info" | "warn" | "error">
 
@@ -57,16 +58,26 @@ export interface CommsRuntime {
   exports: HostExportService
 }
 
-export function webBaseUrlOf(webOrigins: readonly string[]): string {
-  const origin = webOrigins[0]
-  return origin !== undefined && origin.length > 0
-    ? origin.replace(/\/+$/, "")
-    : "https://civfix.org"
-}
+export { apiBaseUrlOf, webBaseUrlOf } from "../../lib/base-url.js"
 
-export function apiBaseUrlOf(publicApiUrl: string): string {
-  const trimmed = publicApiUrl.trim().replace(/\/+$/, "")
-  return trimmed.length > 0 ? trimmed : "https://api.civfix.org"
+/**
+ * The effect this row records has already happened (a send), so a failed audit
+ * write must not turn it into an error the caller would retry. It is logged instead of dropped so the
+ * gap in the trail is visible.
+ */
+export async function auditBestEffort(
+  sql: Queryable,
+  entry: WriteAuditInput,
+  logger: Pick<CommsLogger, "warn"> | undefined,
+): Promise<void> {
+  try {
+    await insertAuditRow(sql, entry)
+  } catch (err) {
+    logger?.warn(
+      { err, action: entry.action, target: entry.target ?? null },
+      "audit write failed (suppressed)",
+    )
+  }
 }
 
 function selfHostsOf(webOrigins: readonly string[]): string[] {
@@ -75,6 +86,7 @@ function selfHostsOf(webOrigins: readonly string[]): string[] {
     try {
       hosts.push(new URL(origin).hostname.toLowerCase())
     } catch {
+      // A malformed origin cannot match any referrer, so skipping it only drops a no-op entry.
       continue
     }
   }
@@ -96,8 +108,8 @@ export function broadcastConfigOf(container: Container): BroadcastConfig {
     linkAllowedHosts: env.BROADCAST_LINK_ALLOWED_HOSTS,
     mailFromEvents: env.MAIL_FROM_EVENTS,
     unsubscribeSigningKey: env.UNSUBSCRIBE_SIGNING_KEY,
-    webBaseUrl: webBaseUrlOf(container.env.WEB_ORIGINS),
-    apiBaseUrl: apiBaseUrlOf(container.env.PUBLIC_API_URL),
+    webBaseUrl: webBaseUrlOf(env),
+    apiBaseUrl: apiBaseUrlOf(env),
     eventUpdatePerEventPerHour: env.HOST_EVENT_UPDATE_PER_EVENT_PER_HOUR,
   }
 }
@@ -108,6 +120,7 @@ export function makeCommsRuntime(container: Container, logger?: CommsLogger): Co
   const env = container.env
   const sql = container.getDb().sql
   const config = broadcastConfigOf(container)
+  const optionalLogger = logger !== undefined ? { logger } : {}
 
   if (!buildersRegistered) {
     registerEventExportBuilders(() => container.getDb().sql)
@@ -117,19 +130,21 @@ export function makeCommsRuntime(container: Container, logger?: CommsLogger): Co
   const repo = makeDrizzleBroadcastRepository(sql)
   const metricsRepo = makeDrizzleMetricsRepository(sql)
 
+  const enqueuePlan = async (broadcastId: string): Promise<void> => {
+    await container.jobs.enqueue(
+      BROADCAST_PLAN_JOB,
+      { broadcastId },
+      { singletonKey: `plan:${broadcastId}`, retryLimit: BROADCAST_JOB_RETRY_LIMIT },
+    )
+  }
+
   const broadcasts = makeBroadcastService({
     repo,
     counters: container.getCounterStore(),
     config,
     mailer: container.mailer,
-    enqueuePlan: async (broadcastId) => {
-      await container.jobs.enqueue(
-        BROADCAST_PLAN_JOB,
-        { broadcastId },
-        { singletonKey: `plan:${broadcastId}`, retryLimit: 3 },
-      )
-    },
-    ...(logger !== undefined ? { logger } : {}),
+    enqueuePlan,
+    ...optionalLogger,
   })
 
   const announcements = makeAnnouncementService({
@@ -139,12 +154,13 @@ export function makeCommsRuntime(container: Container, logger?: CommsLogger): Co
     ),
     broadcasts,
     config,
+    ...optionalLogger,
   })
 
   const pipeline = makeBroadcastPipeline({
     repo,
     service: broadcasts,
-    notifications: makeRouteNotificationService(container, logger as FastifyBaseLogger | undefined),
+    notifications: makeRouteNotificationService(container, logger),
     mailer: container.mailer,
     cache: container.getCache(),
     config,
@@ -155,33 +171,22 @@ export function makeCommsRuntime(container: Container, logger?: CommsLogger): Co
         { broadcastId, chunkNo, authRetry: opts?.authRetry ?? 0 },
         {
           singletonKey: `chunk:${broadcastId}:${chunkNo}`,
-          retryLimit: 3,
+          retryLimit: BROADCAST_JOB_RETRY_LIMIT,
           ...(opts?.startAfterSec !== undefined ? { startAfter: opts.startAfterSec } : {}),
         },
       )
     },
-    audit: async (action, actorId, target, meta) => {
-      try {
-        await writeAudit(sql, { action, actorId, target, meta })
-      } catch (err) {
-        logger?.warn({ err, action }, "broadcast audit write failed (suppressed)")
-      }
-    },
-    ...(logger !== undefined ? { logger } : {}),
+    audit: (action, actorId, target, meta) =>
+      auditBestEffort(sql, { action, actorId, target, meta }, logger),
+    ...optionalLogger,
   })
 
   const lanes = makeBroadcastLanes({
     repo,
     counters: container.getCounterStore(),
     perEventPerHour: config.eventUpdatePerEventPerHour,
-    enqueuePlan: async (broadcastId) => {
-      await container.jobs.enqueue(
-        BROADCAST_PLAN_JOB,
-        { broadcastId },
-        { singletonKey: `plan:${broadcastId}`, retryLimit: 3 },
-      )
-    },
-    ...(logger !== undefined ? { logger } : {}),
+    enqueuePlan,
+    ...optionalLogger,
   })
 
   const metrics = makeMetricsService({
@@ -189,14 +194,14 @@ export function makeCommsRuntime(container: Container, logger?: CommsLogger): Co
     cache: container.getCache(),
     selfHosts: selfHostsOf(container.env.WEB_ORIGINS),
     lookbackDays: env.METRICS_ROLLUP_LOOKBACK_DAYS,
-    ...(logger !== undefined ? { logger } : {}),
+    ...optionalLogger,
   })
 
   const analyticsRepo = makeDrizzleAnalyticsRepository(sql)
   const analyticsCache = makeHostAnalyticsCache({
     cache: container.getCache(),
     ttlSeconds: env.HOST_ANALYTICS_CACHE_TTL_SEC,
-    ...(logger !== undefined ? { logger } : {}),
+    ...optionalLogger,
   })
 
   const analytics = makeAnalyticsService({
@@ -227,10 +232,10 @@ export function makeCommsRuntime(container: Container, logger?: CommsLogger): Co
       ttlHours: env.HOST_EXPORT_TTL_HOURS,
     },
     authorize: async (record) => {
-      if (record.cleanupId === null) throw AppError.notFound("Export not found")
+      if (record.cleanupId === null) throw AppError.notFound(EXPORT_NOT_FOUND)
       await requireCapability(sql, record.cleanupId, record.requestedBy, "export")
     },
-    ...(logger !== undefined ? { logger } : {}),
+    ...optionalLogger,
   })
 
   return {

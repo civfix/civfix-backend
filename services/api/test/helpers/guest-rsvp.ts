@@ -10,8 +10,8 @@ import type {
   GuestRsvpRepository,
   InsertGuestOtpArgs,
   UpsertGuestArgs,
-} from "../../src/services/guest-rsvp-service.js"
-import type { InMemoryHostRegistrationRepository } from "../../src/services/host/registration-repository.memory.js"
+} from "../../src/services/guest-rsvp-repository.js"
+import type { InMemoryHostRegistrationRepository } from "./host/registration-repository.memory.js"
 import type { GuestCountSource } from "./cleanups.js"
 
 export interface StoredGuest {
@@ -72,6 +72,7 @@ export class InMemoryGuestRsvpRepository implements GuestRsvpRepository, GuestCo
       id: event.id,
       title: event.title ?? "Beach cleanup",
       status: event.status ?? "upcoming",
+      visibility: event.visibility ?? "public",
       scheduledAt: event.scheduledAt ?? new Date(this.clock() + 86_400_000),
       endsAt: event.endsAt ?? null,
       address: event.address ?? "123 Ocean Ave",
@@ -96,7 +97,9 @@ export class InMemoryGuestRsvpRepository implements GuestRsvpRepository, GuestCo
   }
 
   goingCount(cleanupId: string): Promise<number> {
-    return Promise.resolve((this.memberCounts.get(cleanupId) ?? 0) + this.activeGuestCount(cleanupId))
+    return Promise.resolve(
+      (this.memberCounts.get(cleanupId) ?? 0) + this.activeGuestCount(cleanupId),
+    )
   }
 
   isPhoneOptedOut(phone: string): Promise<boolean> {
@@ -173,10 +176,12 @@ export class InMemoryGuestRsvpRepository implements GuestRsvpRepository, GuestCo
     return Promise.resolve(true)
   }
 
-  upsertVerifiedGuest(args: UpsertGuestArgs): Promise<{ id: string }> {
+  upsertVerifiedGuest(args: UpsertGuestArgs): Promise<{ id: string; created: boolean }> {
     const existing = this.guests.find(
       (g) =>
-        g.cleanupId === args.cleanupId && g.cancelledAt === null && g.contactKey === args.contactKey,
+        g.cleanupId === args.cleanupId &&
+        g.cancelledAt === null &&
+        g.contactKey === args.contactKey,
     )
     if (existing !== undefined) {
       existing.name = args.name
@@ -186,7 +191,7 @@ export class InMemoryGuestRsvpRepository implements GuestRsvpRepository, GuestCo
       existing.manageTokenHash = args.manageTokenHash
       existing.verifiedAt = args.now
       existing.contactScrubbedAt = null
-      return Promise.resolve({ id: existing.id })
+      return Promise.resolve({ id: existing.id, created: false })
     }
     const row: StoredGuest = {
       id: randomUUID(),
@@ -203,7 +208,7 @@ export class InMemoryGuestRsvpRepository implements GuestRsvpRepository, GuestCo
       createdAt: this.nextCreatedAt(),
     }
     this.guests.push(row)
-    return Promise.resolve({ id: row.id })
+    return Promise.resolve({ id: row.id, created: true })
   }
 
   findGuestByManageTokenHash(
@@ -333,11 +338,7 @@ export class InMemoryGuestRsvpRepository implements GuestRsvpRepository, GuestCo
     return Promise.resolve(rows)
   }
 
-  scrubExpiredGuestContacts(args: {
-    cutoff: Date
-    now: Date
-    batchSize: number
-  }): Promise<number> {
+  scrubExpiredGuestContacts(args: { cutoff: Date; now: Date; batchSize: number }): Promise<number> {
     let scrubbed = 0
     for (const guest of this.guests) {
       if (scrubbed >= args.batchSize) break

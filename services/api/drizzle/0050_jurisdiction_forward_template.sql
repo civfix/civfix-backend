@@ -5,10 +5,10 @@
 --
 -- Adds two nullable text columns to `jurisdictions` that let an operator override
 -- the built-in default packet civfix forwards to a routing contact:
---   forward_subject_template — the Subject line template (max 300, app-side via
+--   forward_subject_template: the Subject line template (max 300, app-side via
 --     the shared PatchJurisdictionRequest bound); interpolated with the report's
 --     {referenceCode}/{category}/{place}/… tokens (FORWARD_TEMPLATE_VARIABLES).
---   forward_body_template — the body template (max 8000, app-side bound); split
+--   forward_body_template: the body template (max 8000, app-side bound); split
 --     on blank lines into paragraph blocks and rendered through the civfix card.
 --
 -- Both are NULLABLE: NULL = use the built-in refined default (see mail-format.ts

@@ -1,5 +1,5 @@
 /**
- * Pure pagination (DP §8.2). Measured row heights come in as plain numbers, so every page boundary in
+ * Pure pagination. Measured row heights come in as plain numbers, so every page boundary in
  * the transcript is provable without pdfkit, fonts or Docker.
  */
 
@@ -13,7 +13,7 @@ import {
 } from "../../src/services/certificate-layout.js"
 
 const ROW = 22
-/** DP §3.4: 17 rows fit below the page-1 furniture, 28 below a continuation header. */
+/** 17 rows fit below the page-1 furniture, 28 below a continuation header. */
 const FIRST_PAGE_ROWS = 17
 const CONTINUATION_ROWS = 28
 
@@ -70,10 +70,8 @@ describe("planPages", () => {
 
   it("paginates 1000 rows into the expected page count", () => {
     const pages = planPages(uniform(1000))
-    // 17 on page 1 + 28 per continuation.
     expect(pages).toHaveLength(1 + Math.ceil((1000 - FIRST_PAGE_ROWS) / CONTINUATION_ROWS))
     expect(pages.at(-1)?.endIndex).toBe(1000)
-    // No page may cross the content floor.
     for (const page of pages) expect(page.endY).toBeLessThanOrEqual(OPTS.contentFloor)
   })
 

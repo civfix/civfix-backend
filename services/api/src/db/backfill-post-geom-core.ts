@@ -1,9 +1,6 @@
-import type postgres from "postgres"
-import type { Sql } from "./client.js"
+import type { Sql, SqlFragment } from "./client.js"
 
-type SqlFragment = postgres.Fragment
-
-export const POST_GEOM_BACKFILL_BATCH = 1000
+const POST_GEOM_BACKFILL_BATCH = 1000
 
 export async function backfillPostGeom(
   sql: Sql,
@@ -50,7 +47,9 @@ export async function backfillPostGeom(
     scanned += page.length
     filled += updated.length
     cursor = page[page.length - 1]!.id
-    log(`page of ${page.length} (filled ${updated.length}); running scanned=${scanned}, filled=${filled}`)
+    log(
+      `page of ${page.length} (filled ${updated.length}); running scanned=${scanned}, filled=${filled}`,
+    )
   }
 
   return { scanned, filled }

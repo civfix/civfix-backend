@@ -1,5 +1,5 @@
 /**
- * Reply threading integration test (P2 Task 2.3, Docker-gated). Boots against a live PostGIS container
+ * Reply threading integration test (Docker-gated). Boots against a live PostGIS container
  * (via withPg) and exercises the DB-backed reply persist/validation/hydration paths:
  *
  *   - persist accepts replyToId and the returned DTO + a later history read both carry the hydrated
@@ -52,7 +52,6 @@ describe.skipIf(!pg)("chat replies (integration)", () => {
     await h.teardown()
   })
 
-  /** Insert a user and return its id. */
   async function newUser(name: string): Promise<string> {
     const [u] = await h.sql<{ id: string }[]>`
       INSERT INTO users (display_name, handle) VALUES (${name}, ${testHandle()}) RETURNING id

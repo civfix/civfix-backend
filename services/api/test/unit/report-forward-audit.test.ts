@@ -1,4 +1,3 @@
-
 import { describe, it, expect, vi } from "vitest"
 import {
   forwardReportCityMention,
@@ -7,14 +6,14 @@ import {
   CITY_FORWARD_PER_GEOID_PER_HOUR,
 } from "../../src/services/report-city-forward.js"
 import { InMemoryCounterStore, type CounterStore } from "../../src/abuse/counter-store.js"
-import type { ReportForwardAudit } from "../../src/services/report-forward-audit.drizzle.js"
+import type { ReportForwardAuditRepository } from "../../src/services/report-forward-audit-repository.js"
 import type {
   AppendOutboundInput,
   OutboundMailService,
   SendReportInput,
 } from "../../src/services/admin/outbound-mail-service.js"
 import type { MailThreadRecord } from "../../src/services/admin/mail-repository.drizzle.js"
-import type { ReportJurisdictionView } from "../../src/services/discussion-types.js"
+import type { ReportJurisdictionView } from "../../src/services/discussion-repository.js"
 
 const REPORT = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
 const MSG = "dddddddd-dddd-dddd-dddd-dddddddddddd"
@@ -80,7 +79,9 @@ function mailer(opts: { fail?: boolean; thread?: MailThreadRecord | null } = {})
   }
 }
 
-function spyAudit(overrides: Partial<ReportForwardAudit> = {}): ReportForwardAudit & {
+function spyAudit(
+  overrides: Partial<ReportForwardAuditRepository> = {},
+): ReportForwardAuditRepository & {
   recordMention: ReturnType<typeof vi.fn>
   markForwarded: ReturnType<typeof vi.fn>
 } {
@@ -88,7 +89,7 @@ function spyAudit(overrides: Partial<ReportForwardAudit> = {}): ReportForwardAud
     recordMention: vi.fn(() => Promise.resolve()),
     markForwarded: vi.fn(() => Promise.resolve()),
     ...overrides,
-  } as ReportForwardAudit & {
+  } as ReportForwardAuditRepository & {
     recordMention: ReturnType<typeof vi.fn>
     markForwarded: ReturnType<typeof vi.fn>
   }
@@ -217,7 +218,13 @@ describe("forwardReportCityMention audit writes (report_message_forwards)", () =
     expect(named.calls[0]!.body).toContain("there is a tag here")
 
     const anon = mailer()
-    await forwardReportCityMention(anon, { ...ctx(SF), actorDisplayName: null }, "@sf hi", CREATED, {})
+    await forwardReportCityMention(
+      anon,
+      { ...ctx(SF), actorDisplayName: null },
+      "@sf hi",
+      CREATED,
+      {},
+    )
     expect(anon.calls[0]!.body).toContain("A neighbor commented on a graffiti report in SF")
   })
 
@@ -292,6 +299,7 @@ describe("makeCityForwardThrottle (F023: durable per-actor / per-geoid city-forw
     const broken: CounterStore = {
       incr: () => Promise.reject(new Error("redis down")),
       incrBy: () => Promise.reject(new Error("redis down")),
+      decrBy: () => Promise.reject(new Error("redis down")),
     }
     const gate = makeCityForwardThrottle(broken)
     await expect(gate(R2, GEO, ACTOR)).resolves.toBe(false)

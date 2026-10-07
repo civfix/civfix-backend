@@ -2,15 +2,12 @@
  * German (de) catalog for server-generated, user-facing copy. Translated key-by-key from en.ts.
  * Preserves all {{interpolation}} placeholders exactly. "civfix", URLs, and @handles are not translated.
  * Tone: concise, natural app German (informal "du" register appropriate for a community platform).
- *
- * SCOPE: push/bell notification titles + bodies; account/OTP email subjects + bodies.
- * Falls back to English (via renderMessage) for any key not present here.
+ * Missing keys fall back to English in renderMessage.
  */
 
 import type { MessageKey } from "./en.js"
 
 export const de: Partial<Record<MessageKey, string>> = {
-  // ---- Push / in-app bell notifications --------------------------------------------------------
   "notification.follower.title": "Neuer Follower",
   "notification.follower.body": "{{name}} folgt dir jetzt.",
 
@@ -77,11 +74,9 @@ export const de: Partial<Record<MessageKey, string>> = {
   "notification.cleanup_slot.moved.body":
     'Die Schicht "{{slot}}" bei {{title}} hat eine neue Zeit. Öffne das Event, um sie zu prüfen.',
 
-  // ---- Account / OTP emails --------------------------------------------------------------------
   "email.otp.subject": "Dein civfix-Anmeldecode",
-  "email.otp.body_line1": "Dein civfix-Anmeldecode lautet {{code}}.",
   "email.otp.body_expiry":
-    "Er läuft in 5 Minuten ab. Falls du ihn nicht angefordert hast, kannst du diese E-Mail ignorieren.",
+    "Er läuft in {{minutes}} Minuten ab. Falls du ihn nicht angefordert hast, kannst du diese E-Mail ignorieren.",
   "email.otp.html_intro": "Dein civfix-Anmeldecode lautet:",
 
   "email.report_update.subject": "Dein civfix-Bericht wurde {{status}}",
@@ -89,9 +84,8 @@ export const de: Partial<Record<MessageKey, string>> = {
 
   "email.generic.subject": "Eine civfix-Benachrichtigung",
   "email.generic.body": "Du hast eine neue civfix-Benachrichtigung.",
-  // ---- Nachweis über ehrenamtliche Arbeit (PDF, P5) -----------------------------------------------
   "certificate.doc.title": "Nachweis über ehrenamtliche Arbeit",
-  "certificate.doc.pdf_title": "civfix-Einsatzstunden — {{name}} — {{code}}",
+  "certificate.doc.pdf_title": "civfix-Einsatzstunden: {{name}}, {{code}}",
   "certificate.header.number": "Zertifikatsnr.",
   "certificate.holder.eyebrow": "Ausgestellt für",
   "certificate.holder.period": "Einsatzzeitraum",
@@ -116,13 +110,12 @@ export const de: Partial<Record<MessageKey, string>> = {
   "certificate.seal.line": "Verifizierter Nachweis",
   "certificate.issuer.line": "Ausgestellt von civfix · civfix.org",
   "certificate.issuer.generated": "Erstellt {{timestamp}}",
-  "certificate.verify.prompt": "Diesen Nachweis auf civfix.org/service-record prüfen",
+  "certificate.verify.prompt": "Diesen Nachweis auf {{url}} prüfen",
   "certificate.verify.fingerprint": "Dokument-Fingerabdruck",
   "certificate.footer.page": "Seite {{page}} von {{total}}",
   "certificate.footer.timezone": "Datumsangaben in Pazifikzeit (America/Los_Angeles).",
   "certificate.error.no_hours": "Du hast noch keine erfassten Einsatzstunden.",
 
-  // ---- Guest event RSVP -------------------------------------------------------------------------
   "email.guest_otp.subject": "Dein Code für die Anmeldung zu {{title}}",
   "email.guest_otp.html_intro": "Dein Code für die Anmeldung zu {{title}} lautet:",
   "email.guest_otp.body_expiry":
@@ -157,5 +150,4 @@ export const de: Partial<Record<MessageKey, string>> = {
     "{{title}} geändert: jetzt {{when}} an folgendem Ort: {{place}}. Antworte mit STOP, um dich abzumelden.",
   "sms.guest_cancelled.body":
     "{{title}} wurde von der Veranstalterin oder dem Veranstalter abgesagt. Antworte mit STOP, um dich abzumelden.",
-
 }

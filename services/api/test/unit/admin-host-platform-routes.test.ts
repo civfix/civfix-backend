@@ -8,11 +8,11 @@ import { registerAdminMediaRoutes } from "../../src/routes/admin/media.routes.js
 import { registerAdminLegalRoutes } from "../../src/routes/admin/legal.routes.js"
 import { registerAdminBroadcastRoutes } from "../../src/routes/admin/broadcasts.routes.js"
 import { registerAdminOrgRoutes } from "../../src/routes/admin/orgs.routes.js"
-import type { AdminEventPageRow } from "../../src/services/host/admin-pages-repository.drizzle.js"
-import { InMemoryBroadcastRepository } from "../../src/services/host/broadcast-repository.memory.js"
-import { InMemoryOrganizationRepository } from "../../src/services/host/organization-repository.memory.js"
-import { InMemoryAdminEventRepository } from "../../src/services/admin/admin-event-repository.memory.js"
-import type { MediaAssetView, MediaRepository } from "../../src/services/media-intake-service.js"
+import type { AdminEventPageRow } from "../../src/services/host/admin-pages-repository.js"
+import { InMemoryBroadcastRepository } from "../helpers/host/broadcast-repository.memory.js"
+import { InMemoryOrganizationRepository } from "../helpers/host/organization-repository.memory.js"
+import { InMemoryAdminEventRepository } from "../helpers/admin/admin-event-repository.memory.js"
+import type { MediaAssetView, MediaRepository } from "../../src/services/media-repository.js"
 
 const OPERATOR = "11111111-1111-1111-1111-111111111111"
 const CLEANUP = "22222222-2222-2222-2222-222222222222"
@@ -43,7 +43,7 @@ function pageRow(patch: Partial<AdminEventPageRow> = {}): AdminEventPageRow {
     flaggedByName: null,
     flaggedByHandle: null,
     flaggedByJoined: null,
-    sortAt: new Date("2026-08-01T00:00:00.000Z"),
+    cursorAt: "2026-08-01T00:00:00.000000Z",
     ...patch,
   }
 }
@@ -105,11 +105,7 @@ async function harness(options: { media?: MediaAssetView | null } = {}): Promise
   const mediaRepo = {
     findById: (id: string) =>
       Promise.resolve(
-        options.media === undefined
-          ? id === MEDIA
-            ? mediaAsset()
-            : null
-          : options.media,
+        options.media === undefined ? (id === MEDIA ? mediaAsset() : null) : options.media,
       ),
   } as unknown as MediaRepository
 
@@ -202,10 +198,9 @@ async function createOrg(
     },
   })
   if (res.statusCode !== 201) throw new Error(`create failed: ${res.statusCode} ${res.body}`)
-  return res.json() as { id: string; slug: string }
+  return res.json<{ id: string; slug: string }>()
 }
 
-/** Seed an org owned by HOST with one open (pending) verification application. */
 async function seedPendingOrg(orgs: InMemoryOrganizationRepository): Promise<string> {
   orgs.seedUser({ id: HOST, displayName: "Ada", handle: "ada", email: "ada@example.org" })
   const org = await orgs.createOrganizationTx({
@@ -242,7 +237,7 @@ describe("admin signup-page moderation", () => {
   it("lists pages with the operator moderation state", async () => {
     const res = await h.app.inject({ method: "GET", url: "/v1/admin/pages" })
     expect(res.statusCode).toBe(200)
-    const body = res.json() as { items: { cleanupId: string; viewCount: number }[] }
+    const body = res.json<{ items: { cleanupId: string; viewCount: number }[] }>()
     expect(body.items).toHaveLength(1)
     expect(body.items[0]?.cleanupId).toBe(CLEANUP)
     expect(body.items[0]?.viewCount).toBe(12)
@@ -255,7 +250,7 @@ describe("admin signup-page moderation", () => {
       payload: { flagged: true, reason: "impersonates a city agency" },
     })
     expect(res.statusCode).toBe(200)
-    expect((res.json() as { flaggedAt: string | null }).flaggedAt).not.toBeNull()
+    expect(res.json<{ flaggedAt: string | null }>().flaggedAt).not.toBeNull()
     expect(h.pages[0]?.flagReason).toBe("impersonates a city agency")
   })
 
@@ -266,7 +261,7 @@ describe("admin signup-page moderation", () => {
       payload: { reason: "off-platform payment link" },
     })
     expect(res.statusCode).toBe(200)
-    expect((res.json() as { status: string }).status).toBe("unpublished")
+    expect(res.json<{ status: string }>().status).toBe("unpublished")
   })
 
   it("404s a page that does not exist rather than inventing one", async () => {
@@ -293,7 +288,7 @@ describe("admin media read", () => {
     const h = await harness()
     const res = await h.app.inject({ method: "GET", url: `/v1/admin/media/${MEDIA}` })
     expect(res.statusCode).toBe(200)
-    const body = res.json() as { media: { id: string; url: string }; expiresAt: string }
+    const body = res.json<{ media: { id: string; url: string }; expiresAt: string }>()
     expect(body.media.id).toBe(MEDIA)
     expect(body.media.url.length).toBeGreaterThan(0)
     expect(Date.parse(body.expiresAt)).toBeGreaterThan(Date.now())
@@ -319,7 +314,7 @@ describe("admin legal versions", () => {
     const h = await harness()
     const res = await h.app.inject({ method: "GET", url: "/v1/admin/legal/versions" })
     expect(res.statusCode).toBe(200)
-    const body = res.json() as { documents: { type: string; version: string; sha256: string }[] }
+    const body = res.json<{ documents: { type: string; version: string; sha256: string }[] }>()
     expect(body.documents.length).toBeGreaterThan(0)
     for (const doc of body.documents) {
       expect(doc.version.length).toBeGreaterThan(0)
@@ -329,10 +324,8 @@ describe("admin legal versions", () => {
 })
 
 describe("admin org verification decision", () => {
-  // The decision's operator audit is written INSIDE the repository transaction (decideVerificationTx ->
-  // writeHostAudit), not by the route like the sibling admin mutations. These tests pin that the row exists
-  // with the operator as actor, the org as target and the decision detail as meta, so the route's lack of a
-  // second writeAudit call is a deliberate no-double-write, not a gap.
+  // The operator audit is written inside the repository transaction, not by the route like sibling admin
+  // mutations, so the route's missing insertAuditRow call is a deliberate no-double-write, not a gap.
   it("approves, audits the operator + decision, and notifies the owner", async () => {
     const h = await harness()
     const id = await seedPendingOrg(h.orgs)
@@ -398,13 +391,23 @@ describe("admin org verification decision", () => {
 describe("admin host list", () => {
   it("returns a suspended host even with no broadcast activity in the window", async () => {
     const h = await harness()
-    await h.broadcasts.setHostMessagingSuspended(HOST, true)
+    h.broadcasts.seedHost(HOST)
+    await h.broadcasts.setHostMessagingSuspended(HOST, true, {
+      action: "host.messaging_suspended",
+      actorId: OPERATOR,
+      target: `user:${HOST}`,
+    })
 
     const res = await h.app.inject({ method: "GET", url: "/v1/admin/hosts" })
     expect(res.statusCode).toBe(200)
-    const body = res.json() as {
-      items: { host: { id: string }; messagingSuspended: boolean; broadcastCount: number; windowDays: number }[]
-    }
+    const body = res.json<{
+      items: {
+        host: { id: string }
+        messagingSuspended: boolean
+        broadcastCount: number
+        windowDays: number
+      }[]
+    }>()
     expect(body.items).toHaveLength(1)
     expect(body.items[0]?.host.id).toBe(HOST)
     expect(body.items[0]?.messagingSuspended).toBe(true)
@@ -414,13 +417,18 @@ describe("admin host list", () => {
 
   it("filters to the suspended set when asked", async () => {
     const h = await harness()
-    await h.broadcasts.setHostMessagingSuspended(HOST, true)
+    h.broadcasts.seedHost(HOST)
+    await h.broadcasts.setHostMessagingSuspended(HOST, true, {
+      action: "host.messaging_suspended",
+      actorId: OPERATOR,
+      target: `user:${HOST}`,
+    })
 
     const suspended = await h.app.inject({ method: "GET", url: "/v1/admin/hosts?suspended=true" })
-    expect((suspended.json() as { items: unknown[] }).items).toHaveLength(1)
+    expect(suspended.json<{ items: unknown[] }>().items).toHaveLength(1)
 
     const active = await h.app.inject({ method: "GET", url: "/v1/admin/hosts?suspended=false" })
-    expect((active.json() as { items: unknown[] }).items).toHaveLength(0)
+    expect(active.json<{ items: unknown[] }>().items).toHaveLength(0)
   })
 
   it("rejects an activity window longer than a year", async () => {
@@ -477,7 +485,12 @@ describe("admin org management (0.41.0)", () => {
     const noOwner = await h.app.inject({
       method: "POST",
       url: "/v1/admin/orgs",
-      payload: { name: "X", slug: "x-org", ownerUserId: "99999999-9999-4999-8999-999999999999", reason: "r" },
+      payload: {
+        name: "X",
+        slug: "x-org",
+        ownerUserId: "99999999-9999-4999-8999-999999999999",
+        reason: "r",
+      },
     })
     expect(noOwner.statusCode).toBe(422)
     await createOrg(h)
@@ -501,17 +514,28 @@ describe("admin org management (0.41.0)", () => {
     })
     const all = await h.app.inject({ method: "GET", url: "/v1/admin/orgs" })
     expect(all.statusCode).toBe(200)
-    const body = all.json() as { items: { slug: string }[]; counts: unknown; nextCursor: string | null }
+    const body = all.json<{
+      items: { slug: string }[]
+      counts: unknown
+      nextCursor: string | null
+    }>()
     expect(body.items.map((o) => o.slug).sort()).toEqual(["reach-out-la", "second"])
     expect(body.counts).toEqual({ all: 2, verified: 1, pending: 0, suspended: 1 })
     expect(h.audits.map((a) => a.action)).toContain("org.list_viewed")
 
     const suspended = await h.app.inject({ method: "GET", url: "/v1/admin/orgs?suspended=true" })
-    expect((suspended.json() as { items: { slug: string }[] }).items.map((o) => o.slug)).toEqual(["second"])
-    const verified = await h.app.inject({ method: "GET", url: "/v1/admin/orgs?verified=verified&kind=nonprofit" })
-    expect((verified.json() as { items: { slug: string }[] }).items.map((o) => o.slug)).toEqual(["reach-out-la"])
+    expect(suspended.json<{ items: { slug: string }[] }>().items.map((o) => o.slug)).toEqual([
+      "second",
+    ])
+    const verified = await h.app.inject({
+      method: "GET",
+      url: "/v1/admin/orgs?verified=verified&kind=nonprofit",
+    })
+    expect(verified.json<{ items: { slug: string }[] }>().items.map((o) => o.slug)).toEqual([
+      "reach-out-la",
+    ])
     const q = await h.app.inject({ method: "GET", url: "/v1/admin/orgs?q=reach" })
-    expect((q.json() as { items: unknown[] }).items).toHaveLength(1)
+    expect(q.json<{ items: unknown[] }>().items).toHaveLength(1)
     const bad = await h.app.inject({ method: "GET", url: "/v1/admin/orgs?suspended=maybe" })
     expect(bad.statusCode).toBe(422)
   })
@@ -524,10 +548,17 @@ describe("admin org management (0.41.0)", () => {
     const res = await h.app.inject({
       method: "PATCH",
       url: `/v1/admin/orgs/${a.id}`,
-      payload: { name: "Reach Out Los Angeles", slug: "reach-out-los-angeles", reason: "legal name" },
+      payload: {
+        name: "Reach Out Los Angeles",
+        slug: "reach-out-los-angeles",
+        reason: "legal name",
+      },
     })
     expect(res.statusCode).toBe(200)
-    expect(res.json()).toMatchObject({ name: "Reach Out Los Angeles", slug: "reach-out-los-angeles" })
+    expect(res.json()).toMatchObject({
+      name: "Reach Out Los Angeles",
+      slug: "reach-out-los-angeles",
+    })
     expect(h.orgs.audits.find((x) => x.action === "org.updated")?.meta).toEqual({
       reason: "legal name",
       changed: ["name", "slug"],
@@ -566,8 +597,14 @@ describe("admin org management (0.41.0)", () => {
       url: `/v1/admin/orgs/${a.id}/suspend`,
       payload: { suspended: false, reason: "resolved with the org" },
     })
-    expect(off.json()).toMatchObject({ suspendedAt: null, suspendedReason: null, verifiedStatus: "verified" })
-    expect(h.orgs.audits.filter((x) => x.action === "org.suspended" || x.action === "org.unsuspended")).toHaveLength(2)
+    expect(off.json()).toMatchObject({
+      suspendedAt: null,
+      suspendedReason: null,
+      verifiedStatus: "verified",
+    })
+    expect(
+      h.orgs.audits.filter((x) => x.action === "org.suspended" || x.action === "org.unsuspended"),
+    ).toHaveLength(2)
   })
 
   it("manages members: list, add, owner transfer, sole-owner demotion, remove owner", async () => {
@@ -590,7 +627,7 @@ describe("admin org management (0.41.0)", () => {
 
     const list = await h.app.inject({ method: "GET", url: `/v1/admin/orgs/${a.id}/members` })
     expect(list.statusCode).toBe(200)
-    expect((list.json() as { items: { user: { handle: string }; role: string }[] }).items).toEqual([
+    expect(list.json<{ items: { user: { handle: string }; role: string }[] }>().items).toEqual([
       expect.objectContaining({ user: expect.objectContaining({ handle: "ada" }), role: "owner" }),
       expect.objectContaining({ user: expect.objectContaining({ handle: "bea" }), role: "admin" }),
     ])
@@ -651,7 +688,7 @@ describe("admin org management (0.41.0)", () => {
     const index = h.orgs.members.findIndex((m) => m.organizationId === a.id && m.role === "owner")
     h.orgs.members.splice(index, 1)
     const before = await h.app.inject({ method: "GET", url: `/v1/admin/orgs/${a.id}` })
-    expect((before.json() as { owner: unknown }).owner).toBeNull()
+    expect(before.json<{ owner: unknown }>().owner).toBeNull()
     const add = await h.app.inject({
       method: "POST",
       url: `/v1/admin/orgs/${a.id}/members`,
@@ -667,7 +704,7 @@ describe("admin org management (0.41.0)", () => {
       reason: "repair",
     })
     const after = await h.app.inject({ method: "GET", url: `/v1/admin/orgs/${a.id}` })
-    expect((after.json() as { owner: { id: string } }).owner).toMatchObject({ id: SECOND })
+    expect(after.json<{ owner: { id: string } }>().owner).toMatchObject({ id: SECOND })
     expect(h.notes).toEqual([
       { userId: HOST, type: "org_invite" },
       { userId: SECOND, type: "org_invite" },
@@ -694,14 +731,24 @@ describe("admin org management (0.41.0)", () => {
 
     const all = await h.app.inject({ method: "GET", url: `/v1/admin/orgs/${a.id}/events` })
     expect(all.statusCode).toBe(200)
-    const items = (all.json() as { items: { title: string; id: string }[] }).items
+    const items = all.json<{ items: { title: string; id: string }[] }>().items
     expect(items.map((e) => e.title)).toEqual(["Future sweep", "Past sweep"])
     expect(items[0]?.id).toBe(CLEANUP)
 
-    const upcoming = await h.app.inject({ method: "GET", url: `/v1/admin/orgs/${a.id}/events?when=upcoming` })
-    expect((upcoming.json() as { items: { title: string }[] }).items.map((e) => e.title)).toEqual(["Future sweep"])
-    const past = await h.app.inject({ method: "GET", url: `/v1/admin/orgs/${a.id}/events?when=past` })
-    expect((past.json() as { items: { title: string }[] }).items.map((e) => e.title)).toEqual(["Past sweep"])
+    const upcoming = await h.app.inject({
+      method: "GET",
+      url: `/v1/admin/orgs/${a.id}/events?when=upcoming`,
+    })
+    expect(upcoming.json<{ items: { title: string }[] }>().items.map((e) => e.title)).toEqual([
+      "Future sweep",
+    ])
+    const past = await h.app.inject({
+      method: "GET",
+      url: `/v1/admin/orgs/${a.id}/events?when=past`,
+    })
+    expect(past.json<{ items: { title: string }[] }>().items.map((e) => e.title)).toEqual([
+      "Past sweep",
+    ])
     expect(h.audits.map((x) => x.action)).toContain("org.events_viewed")
 
     const missing = await h.app.inject({
@@ -709,7 +756,10 @@ describe("admin org management (0.41.0)", () => {
       url: "/v1/admin/orgs/99999999-9999-4999-8999-999999999999/events",
     })
     expect(missing.statusCode).toBe(404)
-    const bad = await h.app.inject({ method: "GET", url: `/v1/admin/orgs/${a.id}/events?when=someday` })
+    const bad = await h.app.inject({
+      method: "GET",
+      url: `/v1/admin/orgs/${a.id}/events?when=someday`,
+    })
     expect(bad.statusCode).toBe(422)
   })
 

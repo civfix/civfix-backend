@@ -1,20 +1,15 @@
 /**
- * Service-hours transcript orchestration (P5 / DP §4.3): ledger read -> pure model -> fingerprint ->
- * render -> R2 -> row, plus the holder's list/revoke reads and the PUBLIC verification projection.
+ * The only impure half of the certificate stack: `certificate-model.ts`, `certificate-layout.ts` and
+ * `certificate-pdf.ts` are pure, so every I/O and every `AppError` lives here.
  *
- * This is the only impure half of the certificate stack. `certificate-model.ts` (the model +
- * fingerprint), `certificate-layout.ts` (pagination) and `certificate-pdf.ts` (the renderer) are pure;
- * everything below does I/O and throws `AppError`. Routes never build error bodies.
+ * THE MEDIA-WORKER ORPHAN SWEEP MUST NEVER REAP `certificates/`.
  *
- * ─────────────────────────────────────────────────────────────────────────────────────────────────
- * ⚠ DB T2 — THE MEDIA-WORKER ORPHAN SWEEP MUST NEVER REAP `certificates/`.
- *
- * These PDFs live in the MEDIA bucket (B41b: `container.storage`, no new env var) under the
+ * These PDFs live in the MEDIA bucket (`container.storage`, no new env var) under the
  * `certificates/service-hours/…` prefix, but they are deliberately NOT `media_assets` rows: creating one
  * would drag in the byte quota, the NSFW check and the orphan sweep, and would widen `MediaPurposeSchema`
  * for something that is not user media.
  *
- * Today that is safe, because the media-worker's orphan reaper is ROW-DRIVEN — it walks
+ * Today that is safe, because the media-worker's orphan reaper is ROW-DRIVEN: it walks
  * `media_reap_tombstones` / `media_assets` and deletes the keys those rows name; it never lists the
  * bucket by prefix. A certificate object has no row there, so nothing can reach it.
  *
@@ -22,10 +17,9 @@
  * Every object under this prefix is referenced by a `service_hours_certificates` row and is the durable
  * cache behind a document a volunteer has already handed to a school or a court. A prefix sweep that does
  * not know about this table would silently break every issued transcript.
- * ─────────────────────────────────────────────────────────────────────────────────────────────────
  */
 
-import { createHash, randomUUID } from "node:crypto"
+import { randomUUID } from "node:crypto"
 import {
   AppError,
   CERTIFICATE_GET_URL_TTL_SEC,
@@ -41,10 +35,9 @@ import type {
 } from "@civfix/shared"
 import type { StorageHead, StoragePutMeta } from "@civfix/shared/interfaces"
 import { resolveLocale } from "../i18n/locales.js"
-import {
-  CERTIFICATE_CODE_MINT_ATTEMPTS,
-  generateCertificateCode,
-} from "./certificate-code.js"
+import { sha256HexSync } from "../lib/hash.js"
+import { MS_PER_SECOND } from "../lib/time.js"
+import { CERTIFICATE_CODE_MINT_ATTEMPTS, generateCertificateCode } from "./certificate-code.js"
 import {
   buildTranscriptModel,
   certificateTranslator,
@@ -56,21 +49,32 @@ import { buildServiceHoursPdf } from "./certificate-pdf.js"
 import type {
   VolunteerHoursEntryView,
   VolunteerHoursRepository,
-} from "./volunteer-hours-service.js"
+} from "./volunteer-hours-repository.js"
+import type {
+  CertificateHolder,
+  CertificateRepository,
+  CertificateRow,
+} from "./certificate-repository.js"
 
-// ---- storage seam -------------------------------------------------------------------------------
+const CERTIFICATE_KEY_PREFIX = "certificates/service-hours"
+const PDF_CONTENT_TYPE = "application/pdf"
+const HOLDER_REVOKED_REASON = "holder"
+const TOMBSTONE_REVOKED_REASON = "account_closed"
+
+interface StoredDocument {
+  documentSha256: string
+  byteSize: number
+}
 
 /**
- * Structural slice of the storage adapter, declared locally exactly as `services/media-presign.ts:9-15`
- * does — and for the same reason (H9):
- *
- * the shared `Storage` interface declares `presignGet(key, ttlSec)` with only TWO parameters. The third
+ * Structural slice of the storage adapter, declared locally for the same reason as in
+ * `services/media-presign.ts`: the shared `Storage` interface declares `presignGet(key, ttlSec)` with only TWO parameters. The third
  * `opts` argument is honoured by `R2Storage` but is not on the interface, so a slice that declares it
  * keeps `FakeStorage` (two params, method-bivariant) assignable while making `{ forceSigned: true }`
  * expressible at every call site.
  *
  * `forceSigned` is NOT optional in practice here: `R2_PUBLIC_BASE` is set in production, and without it
- * `R2Storage.presignGet` returns an UNSIGNED, PERMANENT CDN URL — which would publish every volunteer's
+ * `R2Storage.presignGet` returns an UNSIGNED, PERMANENT CDN URL, which would publish every volunteer's
  * itemised service record forever, with no expiry and no revocation path. Always
  * `presignGet(key, CERTIFICATE_GET_URL_TTL_SEC, { forceSigned: true })`.
  *
@@ -81,80 +85,6 @@ export interface CertificateStorage {
   head(key: string): Promise<StorageHead | null>
   put(key: string, body: Uint8Array, meta?: StoragePutMeta): Promise<void>
   delete(key: string): Promise<void>
-}
-
-// ---- repository contract ------------------------------------------------------------------------
-
-/** The holder identity frozen onto the document, read from `users`. */
-export interface CertificateHolder {
-  userId: string
-  displayName: string
-  handle: string | null
-  /** `users.locale`; the default when the request does not pin one. */
-  locale: string
-}
-
-/**
- * One certificate row as every read path projects it.
- *
- * `snapshot` is DELIBERATELY ABSENT. At 1000 entries the jsonb is ~200 KB and lives out of line in TOAST;
- * a read path that selects it detoasts on every list and every public verification. Every repo query
- * therefore names its columns explicitly (never `SELECT *`) and none of them names `snapshot` —
- * `service-hours-certificates-pg.test.ts` greps the repo source to keep it that way.
- */
-export interface CertificateRow {
-  id: string
-  userId: string
-  code: string
-  locale: string
-  holderName: string
-  holderHandle: string | null
-  holderVerified: boolean
-  totalHours: number
-  entryCount: number
-  periodStart: Date | null
-  periodEnd: Date | null
-  ledgerFingerprint: string
-  r2Key: string
-  documentSha256: string
-  byteSize: number
-  issuedAt: Date
-  regeneratedAt: Date | null
-  revokedAt: Date | null
-  revokedReason: string | null
-}
-
-/**
- * The verification read. `holderDeleted` mirrors `users.deleted_at IS NOT NULL` from the join: the
- * projection cannot simply filter tombstoned holders out, because "no such code" and "that account was
- * closed" are materially different answers for the person holding the paper (DP §5.3).
- */
-export interface CertificateVerifyRow extends CertificateRow {
-  holderDeleted: boolean
-}
-
-export interface CertificateInsert {
-  id: string
-  userId: string
-  code: string
-  locale: string
-  holderName: string
-  holderHandle: string | null
-  holderVerified: boolean
-  totalHours: number
-  entryCount: number
-  periodStart: Date | null
-  periodEnd: Date | null
-  ledgerFingerprint: string
-  /**
-   * The exact rendered model, stored so the object is re-renderable. Written once; only
-   * `liveCodesListingEntry` reads inside it.
-   */
-  snapshot: TranscriptModel
-  r2Key: string
-  documentSha256: string
-  byteSize: number
-  issuedAt: Date
 }
 
 /** Which unique index an `insert` lost to. The two have completely different recoveries. */
@@ -171,51 +101,13 @@ export class CertificateConflictError extends Error {
   }
 }
 
-export interface CertificateRepository {
-  /**
-   * @throws CertificateConflictError("code") on `service_hours_certificates_code_uidx`
-   * @throws CertificateConflictError("fingerprint") on the partial
-   *         `(user_id, ledger_fingerprint) WHERE revoked_at IS NULL` index
-   */
-  insert(row: CertificateInsert): Promise<CertificateRow>
-  findLiveByFingerprint(userId: string, fingerprint: string): Promise<CertificateRow | null>
-  listFor(userId: string): Promise<CertificateRow[]>
-  /** Joins `users` so a tombstoned holder is DISTINGUISHABLE from an unknown code. */
-  findByCode(code: string): Promise<CertificateVerifyRow | null>
-  /**
-   * Idempotent: returns the row whether or not it was already revoked, and null only when the code does
-   * not exist OR does not belong to `userId` — the service turns that null into a 404, never a 403, so
-   * the endpoint is not an existence oracle over someone else's codes.
-   */
-  revoke(userId: string, code: string, reason: string, at: Date): Promise<CertificateRow | null>
-  /** The DP §4.4 operator-error path: the row survived, its object did not, and it was re-rendered. */
-  markRegenerated(args: {
-    id: string
-    documentSha256: string
-    byteSize: number
-    at: Date
-  }): Promise<void>
-  findHolder(userId: string): Promise<CertificateHolder | null>
-  /**
-   * Live (unrevoked) certificates of `userId` whose frozen snapshot itemised ledger entry `entryId`,
-   * newest first. An operator void does not change an issued document, so the admin plane lists these
-   * for a revoke through `db:certificate:revoke`.
-   */
-  liveCodesListingEntry(userId: string, entryId: string): Promise<CertificateEntryCode[]>
-}
-
-export interface CertificateEntryCode {
-  code: string
-  issuedAt: Date
-}
-
-// ---- service ------------------------------------------------------------------------------------
-
 export interface CertificateServiceDeps {
   repo: CertificateRepository
   /** The ledger read lives on the volunteer-hours repo; this service owns only the certificate rows. */
   hours: Pick<VolunteerHoursRepository, "entriesForCertificate">
   storage: CertificateStorage
+  /** Printed and QR-encoded on every document; the deployment's own web origin, so staging never points at production. */
+  verifyBaseUrl?: string
   now?: () => Date
   newId?: () => string
   /** Injected in tests to force the code-collision retry. */
@@ -231,32 +123,26 @@ export interface CertificateService {
 }
 
 /**
- * `certificates/service-hours/{YYYY}/{MM}/{id}.pdf` (C16), in the EXISTING media bucket (B41b — no new
- * env var, which is DL R13's rule). The `{id}` segment is the row's `gen_random_uuid()` and is NEVER
- * disclosed by the public verify endpoint, so even `<R2_PUBLIC_BASE>/<key>` is unguessable — the same
- * defence-in-depth posture as `buildR2Key(uploadId, now)` in media-intake-service.ts.
+ * Lives in the EXISTING media bucket (no new env var). The `{id}` segment is the row's
+ * `gen_random_uuid()` and is NEVER disclosed by the public verify endpoint, so even
+ * `<R2_PUBLIC_BASE>/<key>` is unguessable: the same defence-in-depth posture as `buildR2Key(uploadId, now)` in media-intake-service.ts.
  */
-export function certificateObjectKey(id: string, issuedAt: Date): string {
+function certificateObjectKey(id: string, issuedAt: Date): string {
   const year = issuedAt.getUTCFullYear().toString().padStart(4, "0")
   const month = (issuedAt.getUTCMonth() + 1).toString().padStart(2, "0")
-  return `certificates/service-hours/${year}/${month}/${id}.pdf`
+  return `${CERTIFICATE_KEY_PREFIX}/${year}/${month}/${id}.pdf`
 }
 
 /**
- * `inline`, NOT `attachment` (C17). On web the holder opens the URL in a new tab: `attachment` fires a
+ * `inline`, NOT `attachment`. On web the holder opens the URL in a new tab: `attachment` fires a
  * download and leaves an empty orphan tab behind, while `inline` renders in the browser's own PDF viewer,
  * which already offers Download and Print. On mobile it is what makes Safari/Chrome show the document
  * with a Share affordance.
  */
-export function certificateContentDisposition(code: string): string {
+function certificateContentDisposition(code: string): string {
   return `inline; filename="civfix-service-hours-${formatCertificateCode(code)}.pdf"`
 }
 
-function sha256Hex(bytes: Uint8Array): string {
-  return createHash("sha256").update(bytes).digest("hex")
-}
-
-/** The ledger row shape the pure model consumes, from the repo's join-hydrated view. */
 function toLedgerRow(view: VolunteerHoursEntryView): TranscriptLedgerRow {
   return {
     id: view.id,
@@ -265,7 +151,7 @@ function toLedgerRow(view: VolunteerHoursEntryView): TranscriptLedgerRow {
     occurredAt: view.occurredAt,
     eventTitle: view.cleanupTitle,
     eventReferenceCode: view.cleanupReferenceCode,
-    // The ledger read does not join `reports` — a public list of every report a user filed is a privacy
+    // The ledger read does not join `reports`: a public list of every report a user filed is a privacy
     // leak, and the transcript deliberately names no report (certificate-model.activityLabel prints the
     // localized "Verified report" label, whose {{ref}} is simply empty here).
     reportReferenceCode: null,
@@ -281,7 +167,7 @@ export function makeCertificateService(deps: CertificateServiceDeps): Certificat
   const mintCode = (): string => deps.mintCode?.() ?? generateCertificateCode()
 
   function presign(key: string): Promise<string> {
-    // H9: `forceSigned` is load-bearing, not decoration. See the CertificateStorage doc comment.
+    // `forceSigned` is load-bearing, not decoration. See the CertificateStorage doc comment.
     return storage.presignGet(key, CERTIFICATE_GET_URL_TTL_SEC, { forceSigned: true })
   }
 
@@ -317,26 +203,42 @@ export function makeCertificateService(deps: CertificateServiceDeps): Certificat
       url,
       urlExpiresAt:
         url !== null
-          ? new Date(at.getTime() + CERTIFICATE_GET_URL_TTL_SEC * 1000).toISOString()
+          ? new Date(at.getTime() + CERTIFICATE_GET_URL_TTL_SEC * MS_PER_SECOND).toISOString()
           : null,
       revokedAt: row.revokedAt?.toISOString() ?? null,
     }
   }
 
-  async function issue(
+  async function renderAndStore(
+    model: TranscriptModel,
+    fingerprint: string,
+    key: string,
+    code: string,
+    issuedAt: Date,
+  ): Promise<StoredDocument> {
+    const bytes = await buildServiceHoursPdf({
+      model,
+      code,
+      issuedAt,
+      fingerprint,
+      ...(deps.verifyBaseUrl !== undefined ? { verifyBaseUrl: deps.verifyBaseUrl } : {}),
+    })
+    const documentSha256 = sha256HexSync(bytes)
+    await storage.put(key, bytes, {
+      contentType: PDF_CONTENT_TYPE,
+      contentDisposition: certificateContentDisposition(code),
+    })
+    return { documentSha256, byteSize: bytes.byteLength }
+  }
+
+  async function buildLedgerModel(
     userId: string,
-    requestedLocale?: string,
-  ): Promise<IssueServiceHoursCertificateResponse> {
-    const at = now()
-    const holder = await repo.findHolder(userId)
-    // Only reachable for a session whose user row is gone/tombstoned; 404 rather than 500.
-    if (holder === null) throw AppError.notFound()
-
-    const locale = resolveLocale(requestedLocale ?? holder.locale)
-
-    // v1 issues over the WHOLE ledger: no geoid / from / to filters (C2). `entryCount` is the full
-    // matching count; `totalHours` is the sum of the RETURNED rows (B40b — a printed total that does not
-    // equal the sum of the printed lines is a self-contradicting document).
+    holder: CertificateHolder,
+    locale: string,
+  ): Promise<TranscriptModel> {
+    // v1 issues over the WHOLE ledger: no geoid / from / to filters. `entryCount` is the full matching
+    // count; `totalHours` is the sum of the RETURNED rows, because a printed total that does not equal
+    // the sum of the printed lines is a self-contradicting document.
     const page = await hours.entriesForCertificate({
       userId,
       geoid: null,
@@ -350,7 +252,7 @@ export function makeCertificateService(deps: CertificateServiceDeps): Certificat
       throw AppError.conflict(certificateTranslator(locale)("certificate.error.no_hours"))
     }
 
-    const model = buildTranscriptModel({
+    return buildTranscriptModel({
       holder: {
         userId,
         displayName: holder.displayName,
@@ -360,51 +262,57 @@ export function makeCertificateService(deps: CertificateServiceDeps): Certificat
       totals: { entryCount: page.entryCount, totalHours: page.totalHours },
       locale,
     })
-    const fingerprint = ledgerFingerprint(model)
+  }
 
-    const existing = await repo.findLiveByFingerprint(userId, fingerprint)
-    if (existing !== null) {
-      const head = await storage.head(existing.r2Key)
-      if (head !== null) {
-        // The common repeat call renders NOTHING: a row lookup, a HEAD and a presign (DP §4.1).
-        return { certificate: toCertificateDTO(existing, await presign(existing.r2Key), at), reused: true }
-      }
-      // DP §4.4, expected to be exercised approximately never (operator error / a bucket incident). The
-      // row is the record of truth, so re-render THIS document — same code, same issue date, same key —
-      // rather than minting a second certificate over the same ledger, which the partial unique index
-      // would reject anyway. The model rebuilt above has the same fingerprint as the stored snapshot, so
-      // it is used directly instead of detoasting `snapshot` on a path that is otherwise free.
-      const bytes = await buildServiceHoursPdf({
-        model,
-        code: existing.code,
-        issuedAt: existing.issuedAt,
-        fingerprint,
-      })
-      const documentSha256 = sha256Hex(bytes)
-      await storage.put(existing.r2Key, bytes, {
-        contentType: "application/pdf",
-        contentDisposition: certificateContentDisposition(existing.code),
-      })
-      await repo.markRegenerated({
-        id: existing.id,
-        documentSha256,
-        byteSize: bytes.byteLength,
-        at,
-      })
-      deps.logger?.warn(
-        { certificateId: existing.id, r2Key: existing.r2Key },
-        "certificate object missing for a live row; re-rendered from the ledger",
-      )
+  async function reuseLive(
+    existing: CertificateRow,
+    model: TranscriptModel,
+    fingerprint: string,
+    at: Date,
+  ): Promise<IssueServiceHoursCertificateResponse> {
+    const head = await storage.head(existing.r2Key)
+    if (head !== null) {
+      // The common repeat call renders NOTHING: a row lookup, a HEAD and a presign.
       return {
-        certificate: toCertificateDTO(
-          { ...existing, documentSha256, byteSize: bytes.byteLength, regeneratedAt: at },
-          await presign(existing.r2Key),
-          at,
-        ),
+        certificate: toCertificateDTO(existing, await presign(existing.r2Key), at),
         reused: true,
       }
     }
+    // Expected to be exercised approximately never (operator error / a bucket incident). The row is
+    // the record of truth, so re-render THIS document (same code, same issue date, same key) rather
+    // than minting a second certificate over the same ledger, which the partial unique index would
+    // reject anyway. The freshly built model has the same fingerprint as the stored snapshot, so it is
+    // used directly instead of detoasting `snapshot` on a path that is otherwise free.
+    const { documentSha256, byteSize } = await renderAndStore(
+      model,
+      fingerprint,
+      existing.r2Key,
+      existing.code,
+      existing.issuedAt,
+    )
+    await repo.markRegenerated({ id: existing.id, documentSha256, byteSize, at })
+    deps.logger?.warn(
+      { certificateId: existing.id, r2Key: existing.r2Key },
+      "certificate object missing for a live row; re-rendered from the ledger",
+    )
+    return {
+      certificate: toCertificateDTO(
+        { ...existing, documentSha256, byteSize, regeneratedAt: at },
+        await presign(existing.r2Key),
+        at,
+      ),
+      reused: true,
+    }
+  }
 
+  async function mintNew(
+    userId: string,
+    holder: CertificateHolder,
+    locale: string,
+    model: TranscriptModel,
+    fingerprint: string,
+    at: Date,
+  ): Promise<IssueServiceHoursCertificateResponse> {
     const id = newId()
     const r2Key = certificateObjectKey(id, at)
 
@@ -412,12 +320,7 @@ export function makeCertificateService(deps: CertificateServiceDeps): Certificat
       // The code is PRINTED on the document, so a re-mint must re-render. The key is derived from the
       // row id, which does not change across attempts, so the re-put overwrites rather than orphaning.
       const code = mintCode()
-      const bytes = await buildServiceHoursPdf({ model, code, issuedAt: at, fingerprint })
-      const documentSha256 = sha256Hex(bytes)
-      await storage.put(r2Key, bytes, {
-        contentType: "application/pdf",
-        contentDisposition: certificateContentDisposition(code),
-      })
+      const { documentSha256, byteSize } = await renderAndStore(model, fingerprint, r2Key, code, at)
 
       try {
         const row = await repo.insert({
@@ -436,7 +339,7 @@ export function makeCertificateService(deps: CertificateServiceDeps): Certificat
           snapshot: model,
           r2Key,
           documentSha256,
-          byteSize: bytes.byteLength,
+          byteSize,
           issuedAt: at,
         })
         return { certificate: toCertificateDTO(row, await presign(r2Key), at), reused: false }
@@ -466,6 +369,24 @@ export function makeCertificateService(deps: CertificateServiceDeps): Certificat
     throw AppError.internal("Could not mint a unique certificate code")
   }
 
+  async function issue(
+    userId: string,
+    requestedLocale?: string,
+  ): Promise<IssueServiceHoursCertificateResponse> {
+    const at = now()
+    const holder = await repo.findHolder(userId)
+    // Only reachable for a session whose user row is gone/tombstoned; 404 rather than 500.
+    if (holder === null) throw AppError.notFound()
+
+    const locale = resolveLocale(requestedLocale ?? holder.locale)
+    const model = await buildLedgerModel(userId, holder, locale)
+    const fingerprint = ledgerFingerprint(model)
+
+    const existing = await repo.findLiveByFingerprint(userId, fingerprint)
+    if (existing !== null) return reuseLive(existing, model, fingerprint, at)
+    return mintNew(userId, holder, locale, model, fingerprint, at)
+  }
+
   async function list(userId: string): Promise<ListMyCertificatesResponse> {
     const at = now()
     const rows = await repo.listFor(userId)
@@ -477,8 +398,8 @@ export function makeCertificateService(deps: CertificateServiceDeps): Certificat
 
   async function revoke(userId: string, code: string): Promise<RevokeCertificateResponse> {
     const at = now()
-    const row = await repo.revoke(userId, code, "holder", at)
-    // Someone else's code is 404, NOT 403 — a 403 would confirm that the code exists (the existence-oracle
+    const row = await repo.revoke(userId, code, HOLDER_REVOKED_REASON, at)
+    // Someone else's code is 404, NOT 403: a 403 would confirm that the code exists (the existence-oracle
     // rule documented in media.routes.ts).
     if (row === null) throw AppError.notFound()
     await bestEffortDelete(row.r2Key, "revoke")
@@ -497,11 +418,11 @@ export function makeCertificateService(deps: CertificateServiceDeps): Certificat
      * code far more damaging than a leaked page.
      *
      * `jurisdictionNames` is deliberately OMITTED even though the contract allows it: the only source is
-     * the ~200 KB TOASTed `snapshot`, and no verification read may detoast that (DP §4.5). The field is
+     * the ~200 KB TOASTed `snapshot`, and no verification read may detoast that. The field is
      * `.optional()`, so an absent value parses cleanly on every client.
      *
-     * `showVolunteerHours` does NOT gate this (C2/DB B32c). That flag governs the public PROFILE
-     * projection — a surface the holder never explicitly shared. A certificate is a document the holder
+     * `showVolunteerHours` does NOT gate this. That flag governs the public PROFILE projection, a
+     * surface the holder never explicitly shared. A certificate is a document the holder
      * deliberately handed to a verifier, and conflating the two would break every already-issued
      * transcript the moment someone toggled a profile switch. Revocation is the control, and it exists.
      */
@@ -517,13 +438,13 @@ export function makeCertificateService(deps: CertificateServiceDeps): Certificat
 
     if (row.holderDeleted) {
       // A tombstoned holder (docs/erasure-behavior.md). The document stops being good, and the identity
-      // fields are omitted entirely rather than echoing a name the account has erased — which is now
+      // fields are omitted entirely rather than echoing a name the account has erased. That is now
       // belt-and-braces, because erasure also BLANKS `holder_name`/`holder_handle`/`snapshot` on the row
       // (softDeleteAndAnonymize) and deletes the object.
       return {
         ...facts,
         status: "revoked",
-        // Erasure stamps `revoked_at` (reason `account_closed`), so this is normally the closure time —
+        // Erasure stamps `revoked_at` (reason `account_closed`), so this is normally the closure time,
         // or the holder's own earlier revocation, which COALESCE preserves. It stays NULLABLE for rows
         // tombstoned before that scrub existed: this projection does not read `users.deleted_at`'s
         // timestamp, and inventing one (e.g. echoing issuedAt) would put a false date in front of a
@@ -531,7 +452,7 @@ export function makeCertificateService(deps: CertificateServiceDeps): Certificat
         revokedAt: row.revokedAt?.toISOString() ?? null,
         // Hardcoded rather than echoing `row.revokedReason`: the tombstone is the authoritative answer
         // even for a row the holder had already revoked for their own reason.
-        revokedReason: "account_closed",
+        revokedReason: TOMBSTONE_REVOKED_REASON,
       }
     }
 
@@ -543,7 +464,7 @@ export function makeCertificateService(deps: CertificateServiceDeps): Certificat
 
     if (row.revokedAt !== null) {
       // Revoked keeps holderName + issuedAt on purpose: the person holding the paper learns WHY it is not
-      // good. That is a mild oracle over a 60-bit secret and is worth the clarity (DP §5.3).
+      // good. That is a mild oracle over a 60-bit secret and is worth the clarity.
       return {
         ...facts,
         ...identity,

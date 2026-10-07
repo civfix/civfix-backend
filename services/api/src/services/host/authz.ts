@@ -6,7 +6,8 @@ import {
 } from "@civfix/shared"
 import { can, hostCapabilities, type HostStanding } from "@civfix/shared/host"
 import type { Queryable } from "../../db/client.js"
-import { hostStandingOf, orgStandingOf, type HostStandingResolution } from "./host-standing.js"
+import { hostStandingOf, orgStandingOf } from "./host-standing-repository.drizzle.js"
+import type { HostStandingResolution } from "./host-standing-repository.js"
 
 const FORBIDDEN_COPY: Record<HostCapability, string> = {
   view_event_private: "Only the event team can view this.",
@@ -50,15 +51,7 @@ export function hasHostStanding(standing: HostStanding): boolean {
   return standing.eventRole !== null || standing.orgRole !== null
 }
 
-function isPubliclyVisible(resolution: HostStandingResolution): boolean {
-  return isEventPubliclyVisible(resolution.visibility)
-}
-
-function isMember(standing: HostStanding): boolean {
-  return hasHostStanding(standing)
-}
-
-export function notFoundCleanup(): AppError {
+function notFoundCleanup(): AppError {
   return AppError.notFound("Cleanup not found")
 }
 
@@ -69,7 +62,9 @@ export async function resolveVisibleStanding(
 ): Promise<HostStandingResolution> {
   const resolution = await hostStandingOf(sql, cleanupId, userId)
   if (resolution === null) throw notFoundCleanup()
-  if (!isMember(resolution.standing) && !isPubliclyVisible(resolution)) throw notFoundCleanup()
+  if (!hasHostStanding(resolution.standing) && !isEventPubliclyVisible(resolution.visibility)) {
+    throw notFoundCleanup()
+  }
   return resolution
 }
 

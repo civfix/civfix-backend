@@ -3,7 +3,11 @@ import { FakeMailer } from "@civfix/shared/fakes"
 import type { Mailer } from "@civfix/shared/interfaces"
 import { AppError, ErrorCode } from "@civfix/shared"
 import { InMemoryCacheClient } from "../../src/auth/cache.js"
-import { InMemoryOtpStore, InMemoryUserStore } from "../../src/auth/stores.js"
+import {
+  InMemoryOAuthIdentityStore,
+  InMemoryOtpStore,
+  InMemoryUserStore,
+} from "../../src/auth/stores.js"
 import {
   OtpService,
   OTP_TTL_SECONDS,
@@ -57,7 +61,14 @@ function makeOtp(startMs = 1_700_000_000_000) {
   const users = new InMemoryUserStore()
   const cache = new InMemoryCacheClient(now)
   const mailer = new FakeMailer()
-  const service = new OtpService({ store, users, cache, mailer, now })
+  const service = new OtpService({
+    store,
+    users,
+    identities: new InMemoryOAuthIdentityStore(),
+    cache,
+    mailer,
+    now,
+  })
   return {
     service,
     store,
@@ -75,7 +86,15 @@ function makeReviewerOtp(startMs = 1_700_000_000_000) {
   const users = new InMemoryUserStore()
   const cache = new InMemoryCacheClient(now)
   const mailer = new FakeMailer()
-  const service = new OtpService({ store, users, cache, mailer, now, reviewer: REVIEWER })
+  const service = new OtpService({
+    store,
+    users,
+    identities: new InMemoryOAuthIdentityStore(),
+    cache,
+    mailer,
+    now,
+    reviewer: REVIEWER,
+  })
   return { service, store, users, cache, mailer, advance: (ms: number) => (clockRef.value += ms) }
 }
 
@@ -147,7 +166,14 @@ describe("OtpService.issueOtp", () => {
     const users = new InMemoryUserStore()
     const cache = new InMemoryCacheClient(now)
     const mailer = new FlakyMailer(1)
-    const service = new OtpService({ store, users, cache, mailer, now })
+    const service = new OtpService({
+      store,
+      users,
+      identities: new InMemoryOAuthIdentityStore(),
+      cache,
+      mailer,
+      now,
+    })
 
     await expect(service.issueOtp(EMAIL, IP)).rejects.toThrow()
     expect(await cache.get(`otp:rl:email:${EMAIL.toLowerCase()}`)).toBeNull()
@@ -456,7 +482,10 @@ describe("OtpService reviewer-OTP bypass", () => {
 
   it("when the bypass is NOT configured, the reviewer email behaves like a normal email", async () => {
     const { service, users } = makeOtp()
-    await expectAppError(service.verifyOtp(REVIEWER_EMAIL, REVIEWER_CODE, IP), ErrorCode.UNAUTHORIZED)
+    await expectAppError(
+      service.verifyOtp(REVIEWER_EMAIL, REVIEWER_CODE, IP),
+      ErrorCode.UNAUTHORIZED,
+    )
     expect(await users.findByEmail(REVIEWER_EMAIL)).toBeNull()
   })
 
@@ -543,10 +572,7 @@ describe("OTP per-IP counters normalize IPv6 to the /64 (F004)", () => {
     for (let i = 0; i < OTP_IP_MAX_PER_WINDOW; i++) {
       await service.issueOtp(`user${i}@example.com`, i % 2 === 0 ? IPV6_A : IPV6_B)
     }
-    await expectAppError(
-      service.issueOtp("overflow@example.com", IPV6_B),
-      ErrorCode.RATE_LIMITED,
-    )
+    await expectAppError(service.issueOtp("overflow@example.com", IPV6_B), ErrorCode.RATE_LIMITED)
   })
 
   it("two addresses in one /64 share the verify-failure throttle", async () => {

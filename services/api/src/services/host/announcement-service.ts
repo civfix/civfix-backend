@@ -14,24 +14,27 @@ import type {
   ListEventAnnouncementsResponse,
   PersonDTO,
 } from "@civfix/shared"
-import { encodeTimeCursor, parseTimeCursor } from "../../db/cursor-helpers.js"
+import type { FastifyBaseLogger } from "fastify"
+import { paginateKeyset, parseKeysetCursor } from "../../db/cursor-helpers.js"
+import { clampPageLimit } from "../../lib/page-limit.js"
 import type { AnnouncementCap, BroadcastRepository } from "./broadcast-repository.js"
 import type { BroadcastRecord } from "./broadcast-types.js"
-import { broadcastLinkWarnings } from "./broadcast-render.js"
-import { announcementPath } from "./broadcast-pipeline.js"
+import { ANNOUNCEMENT_VISIBLE_STATUSES } from "./broadcast-types.js"
+import { announcementPath, broadcastLinkWarnings } from "./broadcast-render.js"
 import type { BroadcastConfig, BroadcastService } from "./broadcast-service.js"
-import type { AnnouncementIdentityRepository } from "./announcement-repository.drizzle.js"
+import type { AnnouncementIdentityRepository } from "./announcement-identity-repository.js"
 
-export const ANNOUNCEMENT_DEFAULT_LIMIT = 20
-export const ANNOUNCEMENT_MAX_LIMIT = 50
-export const ANNOUNCEMENT_WINDOW_MS = 24 * 60 * 60 * 1000
-export const ANNOUNCEMENT_CTA_LABEL = "View announcement"
+const ANNOUNCEMENT_DEFAULT_LIMIT = 20
+const ANNOUNCEMENT_MAX_LIMIT = 50
+const ANNOUNCEMENT_WINDOW_MS = 24 * 60 * 60 * 1000
+const ANNOUNCEMENT_CTA_LABEL = "View announcement"
 
 export interface AnnouncementServiceDeps {
   repo: BroadcastRepository
   identities: AnnouncementIdentityRepository
   broadcasts: BroadcastService
   config: Pick<BroadcastConfig, "chunkSize" | "linkAllowedHosts" | "webBaseUrl">
+  logger?: Pick<FastifyBaseLogger, "warn">
   now?: () => Date
 }
 
@@ -57,9 +60,9 @@ export interface AnnouncementService {
   ): Promise<AnnouncementDTO>
 }
 
-export function announcementRateLimited(): AppError {
+function announcementRateLimited(): AppError {
   return AppError.rateLimited(
-    "Announcement limit reached for today — use the group chat for ongoing discussion.",
+    "Announcement limit reached for today. Use the group chat for ongoing discussion.",
   )
 }
 
@@ -193,7 +196,12 @@ export function makeAnnouncementService(deps: AnnouncementServiceDeps): Announce
         }
         await deps.broadcasts.sendAnnouncement(cleanupId, actorId, draft.id)
       } catch (err) {
-        await repo.deleteDraft(cleanupId, draft.id).catch(() => false)
+        await repo.deleteDraft(cleanupId, draft.id).catch((cleanupErr: unknown) => {
+          deps.logger?.warn(
+            { err: cleanupErr, cleanupId, announcementId: draft.id },
+            "announcement: failed send left its draft behind; it counts toward today's cap",
+          )
+        })
         throw err
       }
 
@@ -203,26 +211,23 @@ export function makeAnnouncementService(deps: AnnouncementServiceDeps): Announce
     },
 
     async list(cleanupId, query, projection) {
-      const limit = Math.min(query.limit ?? ANNOUNCEMENT_DEFAULT_LIMIT, ANNOUNCEMENT_MAX_LIMIT)
-      const cursor = parseTimeCursor(query.cursor, { direction: "desc" })
+      const limit = clampPageLimit(query.limit, ANNOUNCEMENT_DEFAULT_LIMIT, ANNOUNCEMENT_MAX_LIMIT)
       const rows = await repo.listAnnouncements({
         cleanupId,
-        cursor: cursor === null ? null : { createdAt: cursor.at, id: cursor.id },
+        cursor: parseKeysetCursor(query.cursor, { direction: "desc" }),
         limit: limit + 1,
       })
-      const page = rows.slice(0, limit)
-      const last = page.at(-1)
-      const nextCursor =
-        rows.length > limit && last !== undefined
-          ? encodeTimeCursor({ at: last.createdAt, id: last.id })
-          : null
-      return { items: await hydrate(cleanupId, page, projection), nextCursor }
+      const { items, nextCursor } = paginateKeyset(rows, limit, (row) => ({
+        atText: row.cursorAt,
+        id: row.id,
+      }))
+      return { items: await hydrate(cleanupId, items, projection), nextCursor }
     },
 
     async get(cleanupId, announcementId, projection) {
       const record = await repo.findForEvent(cleanupId, announcementId)
       if (record === null || record.kind !== ANNOUNCEMENT_BROADCAST_KIND) throw notFound()
-      if (!projection.host && record.status !== "sending" && record.status !== "sent") {
+      if (!projection.host && !ANNOUNCEMENT_VISIBLE_STATUSES.includes(record.status)) {
         throw notFound()
       }
       return hydrateOne(cleanupId, record, projection)

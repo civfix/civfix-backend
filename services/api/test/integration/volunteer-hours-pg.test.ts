@@ -1,11 +1,10 @@
-
 import { afterAll, beforeAll, describe, expect, it } from "vitest"
 import { randomUUID } from "node:crypto"
 import { withPg, type PgHarness } from "../helpers/pg.js"
 import { seedCleanup } from "../helpers/cleanups.js"
 import { makeDrizzleVolunteerHoursRepository } from "../../src/services/volunteer-hours-repository.drizzle.js"
 import { makeVolunteerHoursService } from "../../src/services/volunteer-hours-service.js"
-import { parseTimeCursor } from "../../src/db/cursor-helpers.js"
+import { parseKeysetCursor } from "../../src/db/cursor-helpers.js"
 import { CALIFORNIA, LA_CITY, LA_COUNTY } from "../../src/db/seed-fixtures.js"
 
 const GEOID = LA_CITY.geoid
@@ -160,8 +159,18 @@ describe.skipIf(!pg)("volunteer hours (integration)", () => {
       status: "done",
     })
     const repo = makeDrizzleVolunteerHoursRepository(h.sql)
-    await repo.logEventHours({ actorId: org, cleanupId: mapped, geoid: GEOID, entries: [{ userId: alice, hours: 2 }] })
-    await repo.logEventHours({ actorId: org, cleanupId: unmapped, geoid: null, entries: [{ userId: alice, hours: 1.5 }] })
+    await repo.logEventHours({
+      actorId: org,
+      cleanupId: mapped,
+      geoid: GEOID,
+      entries: [{ userId: alice, hours: 2 }],
+    })
+    await repo.logEventHours({
+      actorId: org,
+      cleanupId: unmapped,
+      geoid: null,
+      entries: [{ userId: alice, hours: 1.5 }],
+    })
 
     const ledgerRows = await h.sql<{ total: number }[]>`
       SELECT COALESCE(SUM(hours), 0)::float8 AS total FROM volunteer_hours
@@ -232,7 +241,12 @@ describe.skipIf(!pg)("volunteer hours (integration)", () => {
       status: "done",
     })
     const repo = makeDrizzleVolunteerHoursRepository(h.sql)
-    await repo.logEventHours({ actorId: org, cleanupId, geoid: null, entries: [{ userId: org, hours: 1 }] })
+    await repo.logEventHours({
+      actorId: org,
+      cleanupId,
+      geoid: null,
+      entries: [{ userId: org, hours: 1 }],
+    })
     const credited = await repo.logEventHours({
       actorId: org,
       cleanupId,
@@ -272,13 +286,33 @@ describe.skipIf(!pg)("volunteer hours (integration)", () => {
       `
     }
 
-    await repo.logEventHours({ actorId: org, cleanupId, geoid: GEOID, entries: [{ userId: alice, hours: 2 }] })
+    await repo.logEventHours({
+      actorId: org,
+      cleanupId,
+      geoid: GEOID,
+      entries: [{ userId: alice, hours: 2 }],
+    })
     let rows = await auditRows()
     expect(rows).toHaveLength(1)
-    expect(rows[0]).toMatchObject({ user_id: alice, actor_user_id: org, previous_hours: null, new_hours: 2 })
+    expect(rows[0]).toMatchObject({
+      user_id: alice,
+      actor_user_id: org,
+      previous_hours: null,
+      new_hours: 2,
+    })
 
-    await repo.logEventHours({ actorId: org, cleanupId, geoid: GEOID, entries: [{ userId: alice, hours: 20 }] })
-    await repo.logEventHours({ actorId: cohost, cleanupId, geoid: GEOID, entries: [{ userId: alice, hours: 2 }] })
+    await repo.logEventHours({
+      actorId: org,
+      cleanupId,
+      geoid: GEOID,
+      entries: [{ userId: alice, hours: 20 }],
+    })
+    await repo.logEventHours({
+      actorId: cohost,
+      cleanupId,
+      geoid: GEOID,
+      entries: [{ userId: alice, hours: 2 }],
+    })
 
     rows = await auditRows()
     expect(rows).toHaveLength(3)
@@ -308,8 +342,18 @@ describe.skipIf(!pg)("volunteer hours (integration)", () => {
       status: "done",
     })
     const repo = makeDrizzleVolunteerHoursRepository(h.sql)
-    await repo.logEventHours({ actorId: org, cleanupId, geoid: null, entries: [{ userId: alice, hours: 1 }] })
-    await repo.logEventHours({ actorId: org, cleanupId, geoid: null, entries: [{ userId: alice, hours: 5 }] })
+    await repo.logEventHours({
+      actorId: org,
+      cleanupId,
+      geoid: null,
+      entries: [{ userId: alice, hours: 1 }],
+    })
+    await repo.logEventHours({
+      actorId: org,
+      cleanupId,
+      geoid: null,
+      entries: [{ userId: alice, hours: 5 }],
+    })
 
     const rows = await h.sql<{ previous_hours: number | null; new_hours: number }[]>`
       SELECT previous_hours::float8 AS previous_hours, new_hours::float8 AS new_hours
@@ -320,7 +364,6 @@ describe.skipIf(!pg)("volunteer hours (integration)", () => {
       [1, 5],
     ])
   })
-
 
   describe("void-aware upsert and no-op re-saves", () => {
     async function rollupAt(userId: string, geoid: string): Promise<number> {
@@ -401,7 +444,12 @@ describe.skipIf(!pg)("volunteer hours (integration)", () => {
       const cleanupId = await newCleanup(org)
       const repo = makeDrizzleVolunteerHoursRepository(h.sql)
 
-      await repo.logEventHours({ actorId: org, cleanupId, geoid: GEOID, entries: [{ userId: alice, hours: 3 }] })
+      await repo.logEventHours({
+        actorId: org,
+        cleanupId,
+        geoid: GEOID,
+        entries: [{ userId: alice, hours: 3 }],
+      })
       await voidCredit(cleanupId, alice)
       expect(await rollupFor(alice)).toBe(0)
       const voided = await eventRow(cleanupId, alice)
@@ -421,7 +469,9 @@ describe.skipIf(!pg)("volunteer hours (integration)", () => {
       expect(await rollupFor(alice)).toBe(3)
       expect(await driftFor(alice)).toEqual([])
       expect((await repo.totalsFor(alice)).totalHours).toBe(3)
-      expect((await auditFor(cleanupId, alice)).map((r) => [r.previous_hours, r.new_hours])).toEqual([
+      expect(
+        (await auditFor(cleanupId, alice)).map((r) => [r.previous_hours, r.new_hours]),
+      ).toEqual([
         [null, 3],
         [0, 3],
       ])
@@ -448,7 +498,12 @@ describe.skipIf(!pg)("volunteer hours (integration)", () => {
       const cleanupId = await newCleanup(org)
       const repo = makeDrizzleVolunteerHoursRepository(h.sql)
 
-      await repo.logEventHours({ actorId: org, cleanupId, geoid: GEOID, entries: [{ userId: alice, hours: 2 }] })
+      await repo.logEventHours({
+        actorId: org,
+        cleanupId,
+        geoid: GEOID,
+        entries: [{ userId: alice, hours: 2 }],
+      })
       await voidCredit(cleanupId, alice)
       await repo.logEventHours({
         actorId: org,
@@ -469,7 +524,12 @@ describe.skipIf(!pg)("volunteer hours (integration)", () => {
       const cleanupId = await newCleanup(org)
       const repo = makeDrizzleVolunteerHoursRepository(h.sql)
 
-      await repo.logEventHours({ actorId: org, cleanupId, geoid: GEOID, entries: [{ userId: alice, hours: 2.5 }] })
+      await repo.logEventHours({
+        actorId: org,
+        cleanupId,
+        geoid: GEOID,
+        entries: [{ userId: alice, hours: 2.5 }],
+      })
       const before = await eventRow(cleanupId, alice)
 
       const resaved = await repo.logEventHours({
@@ -495,7 +555,12 @@ describe.skipIf(!pg)("volunteer hours (integration)", () => {
       const cleanupId = await newCleanup(org)
       const repo = makeDrizzleVolunteerHoursRepository(h.sql)
 
-      await repo.logEventHours({ actorId: org, cleanupId, geoid: GEOID, entries: [{ userId: alice, hours: 2 }] })
+      await repo.logEventHours({
+        actorId: org,
+        cleanupId,
+        geoid: GEOID,
+        entries: [{ userId: alice, hours: 2 }],
+      })
       const changed = await repo.logEventHours({
         actorId: cohost,
         cleanupId,
@@ -504,7 +569,9 @@ describe.skipIf(!pg)("volunteer hours (integration)", () => {
       })
       expect(changed.changed).toEqual([{ userId: alice, hours: 3, previousHours: 2 }])
       expect((await eventRow(cleanupId, alice)).logged_by).toBe(cohost)
-      expect((await auditFor(cleanupId, alice)).map((r) => [r.actor, r.previous_hours, r.new_hours])).toEqual([
+      expect(
+        (await auditFor(cleanupId, alice)).map((r) => [r.actor, r.previous_hours, r.new_hours]),
+      ).toEqual([
         [org, null, 2],
         [cohost, 2, 3],
       ])
@@ -519,7 +586,12 @@ describe.skipIf(!pg)("volunteer hours (integration)", () => {
       const cleanupId = await newCleanup(org)
       const repo = makeDrizzleVolunteerHoursRepository(h.sql)
 
-      await repo.logEventHours({ actorId: org, cleanupId, geoid: GEOID, entries: [{ userId: alice, hours: 2 }] })
+      await repo.logEventHours({
+        actorId: org,
+        cleanupId,
+        geoid: GEOID,
+        entries: [{ userId: alice, hours: 2 }],
+      })
       const moved = await repo.logEventHours({
         actorId: org,
         cleanupId,
@@ -590,7 +662,7 @@ describe.skipIf(!pg)("volunteer hours (integration)", () => {
     expect(first.items.map((e) => e.id)).toEqual([ids[3], ids[2]])
     expect(first.nextCursor).not.toBeNull()
 
-    const parsed = parseTimeCursor(first.nextCursor)
+    const parsed = parseKeysetCursor(first.nextCursor)
     const second = await repo.listEntries({ userId: owner, cursor: parsed, limit: 2 })
     expect(second.items.map((e) => e.id)).toEqual([ids[1], ids[0]])
     expect(second.nextCursor).toBeNull()

@@ -14,7 +14,7 @@ import { InMemoryCacheClient } from "../../src/auth/cache.js"
 import { InMemoryCounterStore, type CounterStore } from "../../src/abuse/counter-store.js"
 import { InMemoryGuestRsvpRepository } from "../helpers/guest-rsvp.js"
 import { InMemoryCleanupRepository } from "../helpers/cleanups.js"
-import { InMemoryHostRegistrationRepository } from "../../src/services/host/registration-repository.memory.js"
+import { InMemoryHostRegistrationRepository } from "../helpers/host/registration-repository.memory.js"
 import { smsFailure } from "../../src/errors/sms-failure.js"
 import { formatEventWhen } from "../../src/services/host/broadcast-render.js"
 import { generateToken } from "../../src/auth/crypto.js"
@@ -75,7 +75,9 @@ function build(
   const counters = new InMemoryCounterStore(now)
   const roles = new Map<string, "organizer" | "cohost" | "member">([[HOST_ID, "organizer"]])
   const reviewer =
-    opts.reviewer === null ? undefined : (opts.reviewer ?? { email: REVIEWER_EMAIL, code: REVIEWER_CODE })
+    opts.reviewer === null
+      ? undefined
+      : (opts.reviewer ?? { email: REVIEWER_EMAIL, code: REVIEWER_CODE })
 
   const service = makeGuestRsvpService({
     repo,
@@ -125,7 +127,7 @@ function emailRequest(over: Partial<GuestRsvpRequestRequest> = {}): GuestRsvpReq
     email: "ada@example.org",
     turnstileToken: "ok",
     ...over,
-  } as GuestRsvpRequestRequest
+  }
 }
 
 function smsRequest(over: Partial<GuestRsvpRequestRequest> = {}): GuestRsvpRequestRequest {
@@ -136,7 +138,7 @@ function smsRequest(over: Partial<GuestRsvpRequestRequest> = {}): GuestRsvpReque
     phone: "+15552223333",
     turnstileToken: "ok",
     ...over,
-  } as GuestRsvpRequestRequest
+  }
 }
 
 function emailVerify(over: Partial<GuestRsvpVerifyRequest> = {}): GuestRsvpVerifyRequest {
@@ -146,7 +148,7 @@ function emailVerify(over: Partial<GuestRsvpVerifyRequest> = {}): GuestRsvpVerif
     email: "ada@example.org",
     code: CODE,
     ...over,
-  } as GuestRsvpVerifyRequest
+  }
 }
 
 const ctx = { ip: IP }
@@ -329,10 +331,7 @@ describe("guest rsvp: requesting a code", () => {
     h.advance(61_000)
 
     const known = await h.service.requestCode(emailRequest(), ctx)
-    const unknown = await h.service.requestCode(
-      emailRequest({ email: "nobody@example.org" }),
-      ctx,
-    )
+    const unknown = await h.service.requestCode(emailRequest({ email: "nobody@example.org" }), ctx)
     const honeypot = await h.service.requestCode(
       emailRequest({ email: "bot@example.org", website: "spam" }),
       ctx,
@@ -414,6 +413,7 @@ describe("guest rsvp: the SMS channel is gated and cost-capped", () => {
     const broken: CounterStore = {
       incr: () => Promise.reject(new Error("redis is down")),
       incrBy: () => Promise.reject(new Error("redis is down")),
+      decrBy: () => Promise.reject(new Error("redis is down")),
     }
     const h = build({ smsGuestEnabled: true, counters: broken })
 
@@ -497,7 +497,7 @@ describe("guest rsvp: verifying a code", () => {
     const harness = build({
       registrations: {
         register: (input, subject) => {
-          calls.push({ idempotencyKey: input.idempotencyKey as string, subject })
+          calls.push({ idempotencyKey: input.idempotencyKey, subject })
           return Promise.resolve({
             outcome: "registered" as const,
             registration: null,
@@ -608,7 +608,6 @@ describe("guest rsvp: verifying a code", () => {
     expect(h.repo.guests).toHaveLength(0)
   })
 
-
   it("refuses to join when the single-use consume is lost to a concurrent verify", async () => {
     h.repo.markOtpConsumed = () => Promise.resolve(false)
 
@@ -653,7 +652,7 @@ describe("guest rsvp: verifying a code", () => {
           channel: "sms",
           phone: "+15559998888",
           code: REVIEWER_CODE,
-        } as GuestRsvpVerifyRequest,
+        },
         ctx,
       ),
     ).rejects.toMatchObject({ code: "UNAUTHORIZED" })
@@ -738,7 +737,7 @@ describe("guest rsvp: cancelling", () => {
             consent: null,
             slotId: null,
             source: "self",
-            idempotencyKey: input.idempotencyKey as string,
+            idempotencyKey: input.idempotencyKey,
             waitlistId: null,
             now: new Date(),
           })
@@ -807,7 +806,7 @@ describe("guest rsvp: cancelling", () => {
     expect(h.repo.guests).toHaveLength(1)
   })
 
-  it("reports the registration outcome when the event has no seat left", async () => {
+  it("refuses the verify when the event has no seat left, taking the new guest back off the list", async () => {
     const h = build({
       registrations: {
         register: () =>
@@ -815,11 +814,12 @@ describe("guest rsvp: cancelling", () => {
       },
     })
     await h.service.requestCode(emailRequest(), ctx)
-    const verified = await h.service.verifyCode(emailVerify(), ctx)
 
-    expect(verified.joined).toBe(true)
-    expect(verified.registration).toBeNull()
-    expect(verified.registrationOutcome).toBe("full")
+    await expect(h.service.verifyCode(emailVerify(), ctx)).rejects.toMatchObject({
+      code: "CONFLICT",
+    })
+    expect(h.repo.guests).toHaveLength(1)
+    expect(h.repo.guests[0]?.cancelledAt).not.toBeNull()
   })
 
   it("refuses a stale consent version before the code is ever sent", async () => {
@@ -837,9 +837,9 @@ describe("guest rsvp: cancelling", () => {
       },
     })
 
-    await expect(
-      h.service.requestCode(emailRequest({ consent } as never), ctx),
-    ).rejects.toMatchObject({ code: "VALIDATION" })
+    await expect(h.service.requestCode(emailRequest({ consent }), ctx)).rejects.toMatchObject({
+      code: "VALIDATION",
+    })
     expect(h.repo.otps).toHaveLength(0)
   })
 
@@ -863,9 +863,9 @@ describe("guest rsvp: cancelling", () => {
 
     await h.service.requestCode(emailRequest(), ctx)
     valid = false
-    await expect(
-      h.service.verifyCode(emailVerify({ consent } as never), ctx),
-    ).rejects.toMatchObject({ code: "VALIDATION" })
+    await expect(h.service.verifyCode(emailVerify({ consent }), ctx)).rejects.toMatchObject({
+      code: "VALIDATION",
+    })
     expect(h.repo.otps[0]?.consumedAt ?? null).toBeNull()
     expect(h.repo.guests).toHaveLength(0)
   })
@@ -963,7 +963,10 @@ describe("guest rsvp: the host roster", () => {
   it("returns scrubbed contacts as null once retention has run", async () => {
     const h = build()
     await seedGuest(h, "ada@example.org")
-    h.repo.seedEvent({ id: EVENT_ID, scheduledAt: new Date(Date.parse("2026-01-01T00:00:00.000Z")) })
+    h.repo.seedEvent({
+      id: EVENT_ID,
+      scheduledAt: new Date(Date.parse("2026-01-01T00:00:00.000Z")),
+    })
 
     const result = await h.service.runRetentionSweep()
     expect(result.scrubbedGuests).toBe(1)
@@ -1001,7 +1004,10 @@ describe("guest rsvp: retention", () => {
     await h.service.requestCode(emailRequest(), ctx)
     await h.service.verifyCode(emailVerify(), ctx)
 
-    h.repo.seedEvent({ id: EVENT_ID, scheduledAt: new Date(Date.parse("2026-01-01T00:00:00.000Z")) })
+    h.repo.seedEvent({
+      id: EVENT_ID,
+      scheduledAt: new Date(Date.parse("2026-01-01T00:00:00.000Z")),
+    })
     h.advance(25 * 60 * 60 * 1000)
 
     const result = await h.service.runRetentionSweep()
@@ -1065,7 +1071,10 @@ describe("guest rsvp: retention", () => {
     const h = build()
     await h.service.requestCode(emailRequest(), ctx)
     await h.service.verifyCode(emailVerify(), ctx)
-    h.repo.seedEvent({ id: EVENT_ID, scheduledAt: new Date(Date.parse("2026-01-01T00:00:00.000Z")) })
+    h.repo.seedEvent({
+      id: EVENT_ID,
+      scheduledAt: new Date(Date.parse("2026-01-01T00:00:00.000Z")),
+    })
 
     await h.service.runRetentionSweep()
 
@@ -1099,7 +1108,7 @@ describe("guest rsvp: SMS title truncation", () => {
     })
     await h.service.requestCode(smsRequest(), ctx)
     await h.service.verifyCode(
-      { id: EVENT_ID, channel: "sms", phone: "+15552223333", code: CODE } as GuestRsvpVerifyRequest,
+      { id: EVENT_ID, channel: "sms", phone: "+15552223333", code: CODE },
       ctx,
     )
 
@@ -1115,7 +1124,7 @@ describe("guest rsvp: SMS title truncation", () => {
     const h = build({ smsGuestEnabled: true })
     await h.service.requestCode(smsRequest(), ctx)
     await h.service.verifyCode(
-      { id: EVENT_ID, channel: "sms", phone: "+15552223333", code: CODE } as GuestRsvpVerifyRequest,
+      { id: EVENT_ID, channel: "sms", phone: "+15552223333", code: CODE },
       ctx,
     )
 
@@ -1123,7 +1132,6 @@ describe("guest rsvp: SMS title truncation", () => {
     expect(body).toContain("Beach cleanup")
     expect(body).not.toContain("...")
   })
-
 })
 
 describe("going: members plus verified, non-cancelled guests", () => {
@@ -1215,7 +1223,7 @@ describe("guest rsvp: one global SMS budget covers every outbound text", () => {
 
     await h.service.requestCode(smsRequest(), ctx)
     await h.service.verifyCode(
-      { id: EVENT_ID, channel: "sms", phone: "+15552223333", code: CODE } as GuestRsvpVerifyRequest,
+      { id: EVENT_ID, channel: "sms", phone: "+15552223333", code: CODE },
       ctx,
     )
 
@@ -1228,7 +1236,7 @@ describe("guest rsvp: one global SMS budget covers every outbound text", () => {
 
     await h.service.requestCode(smsRequest(), ctx)
     const result = await h.service.verifyCode(
-      { id: EVENT_ID, channel: "sms", phone: "+15552223333", code: CODE } as GuestRsvpVerifyRequest,
+      { id: EVENT_ID, channel: "sms", phone: "+15552223333", code: CODE },
       ctx,
     )
 
@@ -1250,7 +1258,10 @@ describe("guest rsvp: one global SMS budget covers every outbound text", () => {
 describe("guest rsvp: retention drains rather than shaving one batch", () => {
   it("keeps paging until the backlog is gone", async () => {
     const h = build()
-    h.repo.seedEvent({ id: EVENT_ID, scheduledAt: new Date(Date.parse("2026-01-01T00:00:00.000Z")) })
+    h.repo.seedEvent({
+      id: EVENT_ID,
+      scheduledAt: new Date(Date.parse("2026-01-01T00:00:00.000Z")),
+    })
     for (let i = 0; i < 1200; i++) {
       h.repo.guests.push({
         id: randomUUID(),
@@ -1290,7 +1301,7 @@ describe("guest rsvp: the SMS half of the cancel/update notice", () => {
     const h = build({ smsGuestEnabled: true })
     await h.service.requestCode(smsRequest(), ctx)
     await h.service.verifyCode(
-      { id: EVENT_ID, channel: "sms", phone: "+15552223333", code: CODE } as GuestRsvpVerifyRequest,
+      { id: EVENT_ID, channel: "sms", phone: "+15552223333", code: CODE },
       ctx,
     )
     h.mailer.sent.length = 0
@@ -1298,7 +1309,7 @@ describe("guest rsvp: the SMS half of the cancel/update notice", () => {
     return h
   }
 
-  it("texts an SMS-only guest that the event was cancelled — the broadcast pipeline cannot see them", async () => {
+  it("texts an SMS-only guest that the event was cancelled, since the broadcast pipeline cannot see them", async () => {
     const h = await withSmsGuest()
     const sent = await h.service.notifyGuestsBySms(EVENT_ID, "cancelled")
     expect(sent).toBe(1)
@@ -1347,10 +1358,7 @@ describe("guest rsvp: the SMS half of the cancel/update notice", () => {
     expect(await h.service.notifyGuestsBySms(EVENT_ID, "updated")).toBe(1)
     const body = h.sms.sent[0]?.body ?? ""
     expect(body).toContain(
-      formatEventWhen(
-        new Date(Date.parse("2026-09-05T17:00:00.000Z")),
-        "America/Los_Angeles",
-      ),
+      formatEventWhen(new Date(Date.parse("2026-09-05T17:00:00.000Z")), "America/Los_Angeles"),
     )
     expect(body).toContain("10:00 AM PDT")
     expect(body).not.toContain("2026-09-05T17:00:00.000Z")

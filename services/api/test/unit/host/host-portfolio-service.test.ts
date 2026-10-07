@@ -1,9 +1,9 @@
 import { describe, expect, it } from "vitest"
 import { makeHostPortfolioService } from "../../../src/services/host/host-portfolio-service.js"
 import type {
-  HostedEventRecord,
   HostPortfolioRepository,
-} from "../../../src/services/host/host-portfolio-repository.drizzle.js"
+  HostedEventRecord,
+} from "../../../src/services/host/host-portfolio-repository.js"
 import type { HostedEventCounts } from "../../../src/services/host/portfolio-counts.js"
 import { makeFakeSql } from "../../helpers/fake-sql.js"
 import { hostedEventCounts } from "../../../src/services/host/portfolio-counts.js"
@@ -30,6 +30,7 @@ function record(over: Partial<HostedEventRecord> & { id: string }): HostedEventR
     orgId: null,
     orgName: null,
     pageSlug: null,
+    pageStatus: null,
     ...over,
   }
 }
@@ -45,6 +46,7 @@ function build(counts: Map<string, HostedEventCounts>) {
       kpisFor: () => Promise.resolve({ eventsHosted: 2, upcomingEvents: 0 }),
     },
     counts: () => Promise.resolve(counts),
+    totals: () => Promise.resolve({ totalRegistrations: 0, totalCheckedIn: 0 }),
     now: () => NOW,
   })
 }
@@ -131,21 +133,36 @@ function scopedRepo(records: readonly HostedEventRecord[]): HostPortfolioReposit
       const rows = inScope(args.organizationId)
       return Promise.resolve({
         eventsHosted: rows.length,
-        upcomingEvents: rows.filter(
-          (row) => row.startsAt >= args.now && row.status !== "cancelled",
-        ).length,
+        upcomingEvents: rows.filter((row) => row.startsAt >= args.now && row.status !== "cancelled")
+          .length,
       })
     },
   }
 }
 
 function portfolioService(counts: Map<string, HostedEventCounts>) {
+  const inScope = (organizationId: string | null) =>
+    organizationId === null ? PORTFOLIO : PORTFOLIO.filter((row) => row.orgId === organizationId)
   return makeHostPortfolioService({
     repo: scopedRepo(PORTFOLIO),
-    counts: (ids) => Promise.resolve(new Map(ids.flatMap((id) => {
-      const row = counts.get(id)
-      return row === undefined ? [] : [[id, row] as const]
-    }))),
+    totals: (args) => {
+      const rows = inScope(args.organizationId).map(
+        (row) => counts.get(row.id) ?? { registered: 0, checkedIn: 0 },
+      )
+      return Promise.resolve({
+        totalRegistrations: rows.reduce((sum, row) => sum + row.registered, 0),
+        totalCheckedIn: rows.reduce((sum, row) => sum + row.checkedIn, 0),
+      })
+    },
+    counts: (ids) =>
+      Promise.resolve(
+        new Map(
+          ids.flatMap((id) => {
+            const row = counts.get(id)
+            return row === undefined ? [] : [[id, row] as const]
+          }),
+        ),
+      ),
     now: () => NOW,
   })
 }
@@ -211,6 +228,7 @@ describe("F4: the portfolio KPIs obey the same org scope as the items", () => {
         },
       },
       counts: () => Promise.resolve(new Map()),
+      totals: () => Promise.resolve({ totalRegistrations: 0, totalCheckedIn: 0 }),
       now: () => NOW,
     })
 

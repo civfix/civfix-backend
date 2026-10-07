@@ -23,10 +23,14 @@ import type {
   AdminReportMediaRecord,
   AdminReportRecord,
   AdminReportRoutingRecord,
-} from "./admin-report-types.js"
+} from "./admin-report-repository.js"
 import type { MarkdownInline } from "@civfix/shared/markdown"
 
 export const NO_PHOTO_LINKS = "(none)"
+
+const SHORT_ID_CHARS = 8
+const UNKNOWN_PLACE_LABEL = "the area"
+const MAP_LINK_ZOOM = 18
 
 export interface ReportPacket {
   subject: string
@@ -68,11 +72,20 @@ function mediaListHeading(media: readonly PacketMediaLink[]): string {
 }
 
 function mapLinkFor(lat: number, lng: number): string {
-  return `https://www.openstreetmap.org/?mlat=${lat}&mlon=${lng}#map=18/${lat}/${lng}`
+  return `https://www.openstreetmap.org/?mlat=${lat}&mlon=${lng}#map=${MAP_LINK_ZOOM}/${lat}/${lng}`
 }
 
+// The API container runs in UTC, which turns a US evening report into the next day. No jurisdiction
+// carries a time zone yet, so the packet uses the platform default the certificates and events use.
+const SUBMITTED_DATE_FORMAT = new Intl.DateTimeFormat("en-US", {
+  timeZone: "America/Los_Angeles",
+  year: "numeric",
+  month: "long",
+  day: "numeric",
+})
+
 function formatSubmittedDate(d: Date): string {
-  return d.toLocaleDateString("en-US", { year: "numeric", month: "long", day: "numeric" })
+  return SUBMITTED_DATE_FORMAT.format(d)
 }
 
 function buildTemplateValues(
@@ -81,7 +94,8 @@ function buildTemplateValues(
   labelledMedia: readonly LabelledMediaLink[],
   noteText: string | null,
 ): Record<string, string> {
-  const ref = record.referenceCode ?? record.id.slice(0, 8)
+  const shortId = record.id.slice(0, SHORT_ID_CHARS)
+  const ref = record.referenceCode ?? shortId
   const categoryLabel = REPORT_CATEGORY_LABELS[record.category]
   const place = routing?.place ?? record.place
   const address = record.address && record.address.trim() !== "" ? record.address : place
@@ -89,7 +103,7 @@ function buildTemplateValues(
   return {
     referenceCode: ref,
     reportId: record.id,
-    shortId: record.id.slice(0, 8),
+    shortId,
     title: record.title,
     category: categoryLabel,
     status: ADMIN_REPORT_STATUS_LABELS[record.status],
@@ -200,9 +214,9 @@ export interface DiscussionForwardInput {
   displayName?: string | null
 }
 
-export const DISCUSSION_FORWARD_ANONYMOUS_AUTHOR = "A neighbor"
+const DISCUSSION_FORWARD_ANONYMOUS_AUTHOR = "A neighbor"
 
-export function discussionForwardAuthor(displayName: string | null | undefined): string {
+function discussionForwardAuthor(displayName: string | null | undefined): string {
   const trimmed = (displayName ?? "").trim()
   return trimmed === "" ? DISCUSSION_FORWARD_ANONYMOUS_AUTHOR : trimmed
 }
@@ -211,8 +225,8 @@ export function buildDiscussionForwardPacket(
   input: DiscussionForwardInput,
   comment: string,
 ): ReportPacket {
-  const id8 = input.reportId.slice(0, 8)
-  const place = input.place ?? input.org ?? "the area"
+  const id8 = input.reportId.slice(0, SHORT_ID_CHARS)
+  const place = input.place ?? input.org ?? UNKNOWN_PLACE_LABEL
   const subject = `civfix report: ${sanitizeHeaderValue(`${input.category} in ${place}`)} [${id8}]`
   const body = comment.trim() !== "" ? comment.trim() : "(no comment provided)"
   const author = discussionForwardAuthor(input.displayName)
@@ -244,8 +258,9 @@ export interface EventPacketInput {
 export function buildEventPacket(event: EventPacketInput, message: string): ReportPacket {
   const safeTitle = sanitizeHeaderValue(event.title)
   const ref = event.referenceCode ?? null
-  const subject = ref !== null ? `civfix event: ${safeTitle} [${ref}]` : `civfix event: ${safeTitle}`
-  const place = event.place ?? "the area"
+  const subject =
+    ref !== null ? `civfix event: ${safeTitle} [${ref}]` : `civfix event: ${safeTitle}`
+  const place = event.place ?? UNKNOWN_PLACE_LABEL
   const address = event.address && event.address.trim() !== "" ? event.address : place
   const msgText = message.trim() !== "" ? message.trim() : "(no message provided)"
 

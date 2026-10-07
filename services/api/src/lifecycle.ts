@@ -1,6 +1,8 @@
 import type { FastifyInstance } from "fastify"
 import { flushErrorReporting } from "./errors/glitchtip.js"
 import { SHUTDOWN_DRAIN_MS_MAX } from "./env/parsers.js"
+import { sleep } from "./lib/sleep.js"
+import { raceTimeout } from "./lib/timeout.js"
 
 declare module "fastify" {
   interface FastifyInstance {
@@ -9,12 +11,16 @@ declare module "fastify" {
 }
 
 export const REQUEST_TIMEOUT_MS = 15_000
+/** @alias */
 export const SHUTDOWN_CLOSE_WAIT_MS = REQUEST_TIMEOUT_MS
 export const SHUTDOWN_TEARDOWN_WATCHDOG_MS = 15_000
-export const SHUTDOWN_IDLE_SWEEP_MS = 250
+const SHUTDOWN_IDLE_SWEEP_MS = 250
 export const SHUTDOWN_FORCE_GRACE_MS = 1_000
 export const SHUTDOWN_BUDGET_MARGIN_MS = 5_000
 export const COMPOSE_STOP_GRACE_PERIOD_SECONDS = 45
+
+const EXIT_CLEAN = 0
+const EXIT_FAILURE = 1
 
 export interface Lifecycle {
   isDraining: () => boolean
@@ -32,7 +38,7 @@ export function makeLifecycle(): Lifecycle {
       draining = true
     },
     escalateExitCode: (code: number): void => {
-      if (code !== 0 && escalated === undefined) escalated = code
+      if (code !== EXIT_CLEAN && escalated === undefined) escalated = code
     },
     finalExitCode: (fallback: number): number => escalated ?? fallback,
   }
@@ -52,22 +58,12 @@ interface WebsocketHost {
   websocketServer?: { clients?: Iterable<{ terminate: () => void }> }
 }
 
-function delay(ms: number): Promise<void> {
-  return new Promise<void>((resolve) => {
-    setTimeout(resolve, ms)
-  })
-}
-
-async function settleWithin(work: Promise<unknown>, ms: number): Promise<"settled" | "timeout"> {
-  let timer: ReturnType<typeof setTimeout> | undefined
-  const expiry = new Promise<"timeout">((resolve) => {
-    timer = setTimeout(() => resolve("timeout"), ms)
-  })
-  try {
-    return await Promise.race([work.then((): "settled" => "settled"), expiry])
-  } finally {
-    if (timer) clearTimeout(timer)
-  }
+function settleOrTimeout(work: Promise<unknown>, ms: number): Promise<"settled" | "timeout"> {
+  return raceTimeout(
+    work.then((): "settled" => "settled"),
+    ms,
+    (): "timeout" => "timeout",
+  )
 }
 
 function terminateWebsockets(app: FastifyInstance): void {
@@ -90,14 +86,14 @@ async function closeServerBounded(
   sweep.unref()
   try {
     const forceAfterMs = Math.max(0, closeWaitMs - SHUTDOWN_FORCE_GRACE_MS)
-    if ((await settleWithin(closing, forceAfterMs)) === "settled") return
+    if ((await settleOrTimeout(closing, forceAfterMs)) === "settled") return
     app.log.error(
       { forceAfterMs },
       "shutdown: connections outlived the close wait; terminating websockets and destroying sockets",
     )
     terminateWebsockets(app)
     app.server.closeAllConnections()
-    if ((await settleWithin(closing, SHUTDOWN_FORCE_GRACE_MS)) === "timeout") {
+    if ((await settleOrTimeout(closing, SHUTDOWN_FORCE_GRACE_MS)) === "timeout") {
       app.log.error(
         { closeWaitMs },
         "shutdown: server close did not settle after forcing; proceeding to teardown",
@@ -116,7 +112,7 @@ export function makeShutdown(
   const teardownWatchdogMs = options.teardownWatchdogMs ?? SHUTDOWN_TEARDOWN_WATCHDOG_MS
   const idleSweepMs = options.idleSweepMs ?? SHUTDOWN_IDLE_SWEEP_MS
   const exit = options.exit ?? ((code: number): void => process.exit(code))
-  const cleanExitCode = options.exitCode ?? 0
+  const cleanExitCode = options.exitCode ?? EXIT_CLEAN
   const drainMs = Math.min(SHUTDOWN_DRAIN_MS_MAX, Math.max(0, options.drainMs))
   const hardDeadlineMs = drainMs + closeWaitMs + teardownWatchdogMs
   let started = false
@@ -140,11 +136,11 @@ export function makeShutdown(
 
     const deadline = setTimeout(() => {
       app.log.error({ hardDeadlineMs }, "shutdown: hard deadline exceeded; forcing exit")
-      exit(1)
+      exit(EXIT_FAILURE)
     }, hardDeadlineMs)
     deadline.unref()
 
-    if (drainMs > 0) await delay(drainMs)
+    if (drainMs > 0) await sleep(drainMs)
 
     app.log.info("shutdown: drain window elapsed, closing server")
 
@@ -154,9 +150,9 @@ export function makeShutdown(
         await options.closeContainer()
         await flushErrorReporting()
       })()
-      if ((await settleWithin(teardown, teardownWatchdogMs)) === "timeout") {
+      if ((await settleOrTimeout(teardown, teardownWatchdogMs)) === "timeout") {
         app.log.error({ teardownWatchdogMs }, "shutdown: teardown timed out; forcing exit")
-        exit(1)
+        exit(EXIT_FAILURE)
         return
       }
       app.log.info("shutdown: complete")
@@ -164,7 +160,7 @@ export function makeShutdown(
     } catch (err) {
       app.log.error({ err }, "shutdown: error during close")
       await flushErrorReporting()
-      exit(1)
+      exit(EXIT_FAILURE)
     } finally {
       clearTimeout(deadline)
     }

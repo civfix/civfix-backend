@@ -2,13 +2,15 @@ import type { ChatMessageDTO } from "@civfix/shared"
 import type { Container } from "../di.js"
 import { makeOutboundMailService, type OutboundMailService } from "./admin/outbound-mail-service.js"
 import { makeDrizzleMailRepository } from "./admin/mail-repository.drizzle.js"
-import { makeReportForwardAudit, type ReportForwardAudit } from "./report-forward-audit.drizzle.js"
+import { makeDrizzleReportForwardAuditRepository } from "./report-forward-audit-repository.drizzle.js"
+import type { ReportForwardAuditRepository } from "./report-forward-audit-repository.js"
 import { makeDrizzleDiscussionRepository } from "./discussion-repository.drizzle.js"
-import type { DiscussionRepository } from "./discussion-types.js"
+import type { DiscussionRepository } from "./discussion-repository.js"
 import {
   forwardReportCityMention,
   makeCityForwardThrottle,
   type CityForwardGate,
+  type CityForwardLogger,
 } from "./report-city-forward.js"
 
 export type ReportCityForwardEffect = (
@@ -20,36 +22,40 @@ export type ReportCityForwardEffect = (
 export interface ReportCityForwardWiringOverrides {
   getReportRepo?: () => DiscussionRepository
   canForward?: CityForwardGate
+  logger?: CityForwardLogger
 }
 
-export const NOOP_REPORT_CITY_FORWARD: ReportCityForwardEffect = () => Promise.resolve()
+function makeContainerOutboundMail(container: Container): OutboundMailService {
+  return makeOutboundMailService({
+    repo: makeDrizzleMailRepository(container.getDb().sql),
+    mailer: container.mailer,
+    env: {
+      MAIL_FROM_OUTREACH: container.env.MAIL_FROM_OUTREACH,
+      MAIL_REPLY_DOMAIN: container.env.MAIL_REPLY_DOMAIN,
+    },
+  })
+}
 
 export function makeContainerReportCityForward(
   container: Container,
   overrides: ReportCityForwardWiringOverrides = {},
 ): ReportCityForwardEffect {
   let outboundMail: OutboundMailService | undefined
-  let audit: ReportForwardAudit | undefined
+  let audit: ReportForwardAuditRepository | undefined
   let reportRepo: DiscussionRepository | undefined
   let throttle: CityForwardGate | undefined
 
   const canForward = (): CityForwardGate =>
-    overrides.canForward ?? (throttle ??= makeCityForwardThrottle(container.getCounterStore()))
+    overrides.canForward ??
+    (throttle ??= makeCityForwardThrottle(container.getCounterStore(), overrides.logger))
 
   const getReportRepo = (): DiscussionRepository =>
     overrides.getReportRepo?.() ??
     (reportRepo ??= makeDrizzleDiscussionRepository(container.getDb().sql))
 
   return async (reportId, message, actorUserId) => {
-    outboundMail ??= makeOutboundMailService({
-      repo: makeDrizzleMailRepository(container.getDb().sql),
-      mailer: container.mailer,
-      env: {
-        MAIL_FROM_OUTREACH: container.env.MAIL_FROM_OUTREACH,
-        MAIL_REPLY_DOMAIN: container.env.MAIL_REPLY_DOMAIN,
-      },
-    })
-    audit ??= makeReportForwardAudit(container.getDb().sql)
+    outboundMail ??= makeContainerOutboundMail(container)
+    audit ??= makeDrizzleReportForwardAuditRepository(container.getDb().sql)
     const report = await getReportRepo().findReportForDiscussion(reportId)
     if (report === null) return
     const body = typeof message.body === "string" ? message.body : ""
@@ -69,6 +75,7 @@ export function makeContainerReportCityForward(
         canForward: canForward(),
         audit,
         messageId: message.id,
+        ...(overrides.logger !== undefined ? { logger: overrides.logger } : {}),
       },
     )
   }

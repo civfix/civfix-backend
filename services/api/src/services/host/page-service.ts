@@ -1,4 +1,4 @@
-import { AppError, MAX_EVENT_PAGE_BLOCKS } from "@civfix/shared"
+import { AppError, MAX_EVENT_PAGE_BLOCKS, PAGE_SLUG_MAX, PageSlugSchema } from "@civfix/shared"
 import type {
   CheckEventPageSlugRequest,
   CheckEventPageSlugResponse,
@@ -14,26 +14,36 @@ import { currentVersion } from "@civfix/shared"
 import { parseMarkdownSubset, MARKDOWN_SUBSET_MAX_CHARS } from "@civfix/shared/markdown"
 import { can, type HostStanding } from "@civfix/shared/host"
 import { assertNoSlur } from "../../abuse/slur-filter.js"
-import { mapWithLimit, PRESIGN_CONCURRENCY } from "../media-presign.js"
-import { RESERVED_SLUGS } from "./slugs.js"
+import { mapWithLimit } from "../../lib/concurrency.js"
+import { SECONDS_PER_DAY } from "../../lib/time.js"
+import { PRESIGN_CONCURRENCY } from "../media-presign.js"
+import { assertSlugAllowed, RESERVED_SLUGS } from "./slugs.js"
 import type { CounterStore } from "../../abuse/counter-store.js"
-import {
-  toEventPageDTO,
-  toEventQuestionDTO,
-  toPublicTicketType,
-} from "./registration-dto.js"
-import type {
-  HostRegistrationRepository,
-  PageRecord,
-} from "./registration-repository.types.js"
+import { toEventPageDTO, toEventQuestionDTO, toPublicTicketType } from "./registration-dto.js"
+import type { HostRegistrationRepository, PageRecord } from "./registration-repository.js"
 import type { RegistrationAudit } from "./registration-service.js"
 
-
-export const HOST_PAGE_PUBLISH_COUNTER_KEY = "host:pagePublish"
+const HOST_PAGE_PUBLISH_COUNTER_KEY = "host:pagePublish"
 
 export const HOST_PAGE_PUBLISH_PER_DAY = 20
 
-export const DAY_SECONDS = 24 * 60 * 60
+const EXTERNAL_LINK_SCHEME = "https://"
+
+const RESERVED_PAGE_ADDRESS_MESSAGE = "that address is reserved"
+
+const RESERVED_SLUG_SUFFIXES = ["-event", "-2", "-3"] as const
+
+const TAKEN_SLUG_SUFFIXES = ["-2", "-3", "-4"] as const
+
+function pageUnderReviewError(): AppError {
+  return AppError.forbidden("This page is under review and cannot be published.")
+}
+
+function slugWithSuffix(slug: string, suffix: string): string | null {
+  const base = slug.slice(0, PAGE_SLUG_MAX - suffix.length).replace(/-+$/u, "")
+  const candidate = `${base}${suffix}`
+  return PageSlugSchema.safeParse(candidate).success ? candidate : null
+}
 
 export interface PageServiceDeps {
   repo: HostRegistrationRepository
@@ -48,7 +58,7 @@ export interface PageServiceDeps {
 
 export interface PageService {
   get(query: GetEventPageRequest): Promise<EventPageDTO>
-  save(input: SaveEventPageRequest): Promise<EventPageDTO>
+  save(input: SaveEventPageRequest, actorId: string): Promise<EventPageDTO>
   publish(input: PublishEventPageRequest, actorId: string): Promise<EventPageDTO>
   checkSlug(query: CheckEventPageSlugRequest): Promise<CheckEventPageSlugResponse>
   getPublicEventPage(
@@ -82,7 +92,7 @@ function markdownFields(block: EventPageBlock): string[] {
   }
 }
 
-export function blockMediaIds(blocks: readonly EventPageBlock[]): string[] {
+function blockMediaIds(blocks: readonly EventPageBlock[]): string[] {
   const ids: string[] = []
   for (const block of blocks) {
     if (block.kind === "hero" && block.mediaId != null) ids.push(block.mediaId)
@@ -141,7 +151,7 @@ function mediaUrlFields(block: EventPageBlock): BlockMediaUrl[] {
   return []
 }
 
-export function stripResolvedMediaUrls(blocks: readonly EventPageBlock[]): EventPageBlock[] {
+function stripResolvedMediaUrls(blocks: readonly EventPageBlock[]): EventPageBlock[] {
   return blocks.map((block) => {
     if (block.kind === "hero" && block.mediaId != null && block.imageUrl != null) {
       const { imageUrl: _dropped, ...rest } = block
@@ -213,7 +223,7 @@ export function validatePageBlocks(
     }
 
     for (const link of externalUrls(block)) {
-      if (!link.url.startsWith("https://")) {
+      if (!link.url.startsWith(EXTERNAL_LINK_SCHEME)) {
         throw AppError.validation({
           [`blocks.${index}.${link.field}`]: "must be an https:// link",
         })
@@ -225,7 +235,7 @@ export function validatePageBlocks(
       if (mediaUrlPrefixes.some((prefix) => media.url.startsWith(prefix))) continue
       throw AppError.validation({
         [`blocks.${index}.${media.field}`]:
-          "must reference platform media — upload the image and send its mediaId",
+          "must reference platform media: upload the image and send its mediaId",
       })
     }
   }
@@ -236,6 +246,7 @@ export function makePageService(deps: PageServiceDeps): PageService {
 
   async function coverUrlOf(record: PageRecord): Promise<string | null> {
     if (record.coverKey === null || deps.presignCover === undefined) return null
+    // A signing failure costs the page its image, never the page: presigning is decoration.
     try {
       return (await deps.presignCover(record.coverKey)).url
     } catch (err) {
@@ -249,18 +260,13 @@ export function makePageService(deps: PageServiceDeps): PageService {
     blocks: readonly EventPageBlock[],
   ): Promise<EventPageBlock[]> {
     const ids = blockMediaIds(blocks)
-    if (ids.length === 0 || deps.presignCover === undefined) return [...blocks]
-    let keys: Map<string, string>
-    try {
-      keys = await deps.repo.mediaKeysFor(cleanupId, ids)
-    } catch (err) {
-      deps.logger?.warn({ err }, "event page: block media lookup failed (suppressed)")
-      return [...blocks]
-    }
+    const presign = deps.presignCover
+    if (ids.length === 0 || presign === undefined) return [...blocks]
+    const keys = await deps.repo.mediaKeysFor(cleanupId, ids)
     const urls = new Map<string, string>()
     await mapWithLimit([...keys.entries()], PRESIGN_CONCURRENCY, async ([id, key]) => {
       try {
-        urls.set(id, (await (deps.presignCover as (k: string) => Promise<{ url: string }>)(key)).url)
+        urls.set(id, (await presign(key)).url)
       } catch (err) {
         deps.logger?.warn({ err }, "event page: block media presign failed (suppressed)")
       }
@@ -300,16 +306,29 @@ export function makePageService(deps: PageServiceDeps): PageService {
     )
   }
 
+  async function freeSlugSuggestion(
+    cleanupId: string,
+    slug: string,
+    suffixes: readonly string[],
+  ): Promise<string | null> {
+    for (const suffix of suffixes) {
+      const candidate = slugWithSuffix(slug, suffix)
+      if (candidate === null || RESERVED_SLUGS.has(candidate)) continue
+      if (!(await deps.repo.slugTaken(cleanupId, candidate))) return candidate
+    }
+    return null
+  }
+
   async function reservePublishBudget(actorId: string): Promise<void> {
     if (deps.counters === undefined) return
     let used: number
     try {
-      used = await deps.counters.incr(`${HOST_PAGE_PUBLISH_COUNTER_KEY}:${actorId}`, DAY_SECONDS)
-    } catch (err) {
-      deps.logger?.warn(
-        { err },
-        "event page: publish counter unavailable; refusing (fail closed)",
+      used = await deps.counters.incr(
+        `${HOST_PAGE_PUBLISH_COUNTER_KEY}:${actorId}`,
+        SECONDS_PER_DAY,
       )
+    } catch (err) {
+      deps.logger?.warn({ err }, "event page: publish counter unavailable; refusing (fail closed)")
       throw AppError.rateLimited("Publishing is temporarily unavailable.")
     }
     if (used > HOST_PAGE_PUBLISH_PER_DAY) {
@@ -324,15 +343,14 @@ export function makePageService(deps: PageServiceDeps): PageService {
       return pageDTO(record)
     },
 
-    async save(input): Promise<EventPageDTO> {
+    async save(input, actorId): Promise<EventPageDTO> {
       validatePageBlocks(input.blocks, deps.mediaUrlPrefixes ?? [])
-      if (input.slug != null && RESERVED_SLUGS.has(input.slug)) {
-        throw AppError.validation({ slug: "that address is reserved" })
-      }
+      if (input.slug != null) assertSlugAllowed(input.slug, "slug", RESERVED_PAGE_ADDRESS_MESSAGE)
 
       const blocks = stripResolvedMediaUrls(input.blocks)
       const outcome = await deps.repo.savePage({
         cleanupId: input.id,
+        actorUserId: actorId,
         slug: input.slug,
         themeAccent: input.theme?.accent,
         blocks,
@@ -356,7 +374,6 @@ export function makePageService(deps: PageServiceDeps): PageService {
     },
 
     async publish(input, actorId): Promise<EventPageDTO> {
-      await reservePublishBudget(actorId)
       const current = await deps.repo.getPage(input.id)
       if (current === null) throw AppError.notFound("Cleanup not found")
       if (input.published) {
@@ -366,18 +383,19 @@ export function makePageService(deps: PageServiceDeps): PageService {
         if (current.blocks.length === 0) {
           throw AppError.validation({ blocks: "add at least one block before publishing" })
         }
-        if (current.flaggedAt !== null) {
-          throw AppError.forbidden("This page is under review and cannot be published.")
-        }
+        if (current.flaggedAt !== null) throw pageUnderReviewError()
       }
 
-      const record = await deps.repo.publishPage({
+      await reservePublishBudget(actorId)
+      const outcome = await deps.repo.publishPage({
         cleanupId: input.id,
         published: input.published,
         actorId,
         now: now(),
       })
-      if (record === null) throw AppError.notFound("Cleanup not found")
+      if (outcome.kind === "not_found") throw AppError.notFound("Cleanup not found")
+      if (outcome.kind === "flagged") throw pageUnderReviewError()
+      const record = outcome.record
       await deps.audit?.({
         actorId,
         action: "event.page_published",
@@ -389,11 +407,19 @@ export function makePageService(deps: PageServiceDeps): PageService {
 
     async checkSlug(query): Promise<CheckEventPageSlugResponse> {
       if (RESERVED_SLUGS.has(query.slug)) {
-        return { available: false, reason: "reserved", suggestion: `${query.slug}-event` }
+        return {
+          available: false,
+          reason: "reserved",
+          suggestion: await freeSlugSuggestion(query.id, query.slug, RESERVED_SLUG_SUFFIXES),
+        }
       }
       const taken = await deps.repo.slugTaken(query.id, query.slug)
       if (!taken) return { available: true, reason: null, suggestion: null }
-      return { available: false, reason: "taken", suggestion: `${query.slug}-2` }
+      return {
+        available: false,
+        reason: "taken",
+        suggestion: await freeSlugSuggestion(query.id, query.slug, TAKEN_SLUG_SUFFIXES),
+      }
     },
 
     async getPublicEventPage(query, viewerUserId): Promise<PublicEventPageDTO> {
@@ -408,8 +434,7 @@ export function makePageService(deps: PageServiceDeps): PageService {
       const canManagePage = standing !== null && can(standing, "manage_page")
       const canViewPrivate = standing !== null && can(standing, "view_event_private")
 
-      const publiclyReadable =
-        record.page.status === "published" && record.page.flaggedAt === null
+      const publiclyReadable = record.page.status === "published" && record.page.flaggedAt === null
       if (!publiclyReadable && !canManagePage) throw notFound
       if (record.event.visibility === "private" && !canViewPrivate) throw notFound
 

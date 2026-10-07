@@ -23,7 +23,6 @@ function htmlText(value: string): string {
   return escapeHtml(value).replace(/\n/g, "<br>")
 }
 
-
 export function heading(text: string): EmailBlock {
   return {
     html: `<h2 class="cv-ink" style="margin:18px 0 8px;font-family:${FONT};font-size:15px;line-height:1.3;font-weight:700;color:${INK};">${escapeHtml(text)}</h2>`,
@@ -135,7 +134,10 @@ export function richList(list: MarkdownList): EmailBlock {
     )
     .join("")
   const text = list.items
-    .map((item, i) => `${list.ordered ? `${i + 1}.` : "-"} ${markdownInlineToPlainText(item.children)}`)
+    .map(
+      (item, i) =>
+        `${list.ordered ? `${i + 1}.` : "-"} ${markdownInlineToPlainText(item.children)}`,
+    )
     .join("\n")
   return {
     html: `<${tag} style="margin:0 0 14px;padding-left:20px;">${items}</${tag}>`,

@@ -3,7 +3,7 @@ import { dirname, join } from "node:path"
 import { fileURLToPath } from "node:url"
 import type { Queryable } from "../../src/db/client.js"
 
-export const OFFICIAL_ACCOUNT_MIGRATION = join(
+const OFFICIAL_ACCOUNT_MIGRATION = join(
   dirname(fileURLToPath(import.meta.url)),
   "..",
   "..",

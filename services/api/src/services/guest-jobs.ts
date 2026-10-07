@@ -3,13 +3,12 @@ import type { Container } from "../di.js"
 import { makeContainerGuestRsvpService } from "./guest-rsvp-wiring.js"
 import { makeCommsRuntime } from "./host/comms-wiring.js"
 import type { EventUpdateVerdict } from "./host/broadcast-lanes.js"
-import {
-  CLEANUP_GUEST_UPDATE_FANOUT_JOB,
-  GUEST_RETENTION_SWEEP_JOB,
-  type GuestUpdateFanoutJob,
-} from "./guest-rsvp-service.js"
+import type { GuestUpdateFanoutJob } from "./guest-rsvp-service.js"
+import { CLEANUP_GUEST_UPDATE_FANOUT_JOB, GUEST_RETENTION_SWEEP_JOB } from "../lib/queue-names.js"
 
-export { CLEANUP_GUEST_UPDATE_FANOUT_JOB, GUEST_RETENTION_SWEEP_JOB }
+const GUEST_UPDATE_SINGLETON_PREFIX = "guest-update:"
+
+const GUEST_UPDATE_FANOUT_RETRY_LIMIT = 3
 
 export interface GuestUpdateFanoutDeps {
   announce: (cleanupId: string) => Promise<EventUpdateVerdict>
@@ -48,10 +47,7 @@ export async function registerGuestJobs(
   await container.jobs.work(CLEANUP_GUEST_UPDATE_FANOUT_JOB, async (job) => {
     const data = parseUpdateFanoutJob(job.data)
     if (data === null) {
-      logger?.warn(
-        { jobId: job.id },
-        "cleanup.guest.update.fanout: malformed job data (skipped)",
-      )
+      logger?.warn({ jobId: job.id }, "cleanup.guest.update.fanout: malformed job data (skipped)")
       return
     }
     await runGuestUpdateFanout(
@@ -66,7 +62,11 @@ export async function registerGuestJobs(
           await container.jobs.enqueue(
             CLEANUP_GUEST_UPDATE_FANOUT_JOB,
             { cleanupId },
-            { singletonKey: `guest-update:${cleanupId}`, startAfter: startAfterSec, retryLimit: 3 },
+            {
+              singletonKey: `${GUEST_UPDATE_SINGLETON_PREFIX}${cleanupId}`,
+              startAfter: startAfterSec,
+              retryLimit: GUEST_UPDATE_FANOUT_RETRY_LIMIT,
+            },
           )
         },
         ...(logger !== undefined ? { logger } : {}),
@@ -89,7 +89,7 @@ export async function registerGuestJobs(
   })
 }
 
-export function parseUpdateFanoutJob(data: unknown): GuestUpdateFanoutJob | null {
+function parseUpdateFanoutJob(data: unknown): GuestUpdateFanoutJob | null {
   if (typeof data !== "object" || data === null) return null
   const cleanupId = (data as { cleanupId?: unknown }).cleanupId
   if (typeof cleanupId !== "string" || cleanupId.length === 0) return null

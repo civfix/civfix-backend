@@ -1,7 +1,7 @@
 /**
  * Test helper that replicates the SHARED CLIENT's query serialization (shared/src/client/client.ts
  * buildQuery) byte-for-byte, so route tests exercise the EXACT query string the web + mobile clients
- * produce. This is the regression guard for the P0 query-encoding mismatch: if the backend ever drifts
+ * produce. This is the regression guard for a query-encoding mismatch: if the backend ever drifts
  * from what the client sends, these tests fail.
  *
  * Mirrors buildQuery:
@@ -19,6 +19,7 @@ export function clientQuery(query: Record<string, unknown>): string {
     } else if (typeof value === "object") {
       sp.append(key, JSON.stringify(value))
     } else {
+      // eslint-disable-next-line @typescript-eslint/no-base-to-string -- only primitives reach here; objects are JSON-encoded above
       sp.append(key, String(value))
     }
   }

@@ -1,11 +1,5 @@
-/**
- * The prune-vs-warn matrix of every push dispatcher, tested as pure functions.
- *
- * Getting this wrong is expensive in both directions: classifying a TRANSIENT failure as "prune" revokes a
- * live device's token (the user silently stops receiving push), while failing to classify a DEAD token
- * leaves it in push_tokens forever and every future send re-attempts it. Only the Expo dispatcher had
- * coverage; APNs/FCM/WebPush had none because the classification was buried inside SDK-calling factories.
- */
+// Prune-vs-warn is expensive to get wrong both ways: pruning on a transient failure silently stops push
+// to a live device, and missing a dead token keeps it in push_tokens with every send re-attempting it.
 
 import { describe, it, expect, vi } from "vitest"
 import { isApnsPruneFailure } from "../../src/adapters/push-apns.js"
@@ -45,7 +39,7 @@ describe("isFcmPruneCode", () => {
   it("prunes only the dead-token codes", () => {
     expect(isFcmPruneCode("messaging/registration-token-not-registered")).toBe(true)
     expect(isFcmPruneCode("messaging/invalid-registration-token")).toBe(true)
-    expect(isFcmPruneCode("messaging/invalid-argument")).toBe(true)
+    expect(isFcmPruneCode("messaging/invalid-argument")).toBe(false)
   })
 
   it("warns (does not prune) on transient/quota codes and unknown values", () => {
@@ -96,7 +90,6 @@ describe("collectExpoInvalidTokens", () => {
       logger,
     )
     expect(invalid).toEqual(["dead"])
-    // The non-prune ticket error is still surfaced.
     expect(warns).toHaveLength(1)
   })
 
@@ -141,7 +134,9 @@ describe("expo dispatcher retry (429/5xx)", () => {
 
   it("gives up after ONE retry (never loops) and reports the status", async () => {
     const { logger, errors } = recordingLogger()
-    const fetchImpl = vi.fn(async () => new Response("boom", { status: 502 })) as unknown as typeof fetch
+    const fetchImpl = vi.fn(
+      async () => new Response("boom", { status: 502 }),
+    ) as unknown as typeof fetch
 
     const dispatch = makeExpoDispatcher({ fetchImpl, retryDelayMs: 1 }, logger)
     await expect(dispatch(["ExponentPushToken[a]"], { title: "Hi" })).resolves.toEqual({
@@ -153,7 +148,9 @@ describe("expo dispatcher retry (429/5xx)", () => {
 
   it("does NOT retry a 4xx that is not 429", async () => {
     const { logger } = recordingLogger()
-    const fetchImpl = vi.fn(async () => new Response("bad", { status: 400 })) as unknown as typeof fetch
+    const fetchImpl = vi.fn(
+      async () => new Response("bad", { status: 400 }),
+    ) as unknown as typeof fetch
 
     const dispatch = makeExpoDispatcher({ fetchImpl, retryDelayMs: 1 }, logger)
     await dispatch(["ExponentPushToken[a]"], { title: "Hi" })

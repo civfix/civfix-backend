@@ -8,15 +8,15 @@ import {
   type HoursModerationSink,
   type VolunteerHoursService,
 } from "../../src/services/volunteer-hours-service.js"
-import { InMemoryVolunteerHoursRepository } from "../../src/services/volunteer-hours-repository.memory.js"
+import { InMemoryVolunteerHoursRepository } from "../helpers/volunteer-hours-repository.memory.js"
 import type { InsightsInvalidator } from "../../src/services/host/host-analytics-cache.js"
 import type { NotificationService } from "../../src/services/notification-service.js"
-import { buildServer } from "../../src/server.js"
-import { buildContainer } from "../../src/di.js"
+import { makeServer } from "../../src/server.js"
+import { makeContainer } from "../../src/di.js"
 import { loadEnv } from "../../src/env.js"
 import { InMemoryCacheClient } from "../../src/auth/cache.js"
 import { makeInMemoryStores } from "../../src/auth/stores.js"
-import { buildAuthServices } from "../../src/auth/auth-services.js"
+import { makeAuthServices } from "../../src/auth/auth-services.js"
 import { StubJwksVerifier } from "../helpers/auth.js"
 
 const HOST = "11111111-1111-1111-1111-111111111111"
@@ -42,7 +42,8 @@ function makeCleanups(
     load: () => Promise.resolve(view),
     listMemberIds: () => Promise.resolve(members),
     roleOf: (_cleanupId: string, userId: string) => {
-      if (view !== null && view.organizerUserId === userId) return Promise.resolve("organizer" as const)
+      if (view !== null && view.organizerUserId === userId)
+        return Promise.resolve("organizer" as const)
       if (cohosts.includes(userId)) return Promise.resolve("cohost" as const)
       if (members.includes(userId)) return Promise.resolve("member" as const)
       return Promise.resolve(null)
@@ -63,7 +64,7 @@ function makeNotifier(throwFor?: string): RecordingNotifier {
       sent.push({
         userId,
         type: input.type,
-        vars: (input.vars ?? {}) as Record<string, string | number>,
+        vars: input.vars ?? {},
       })
       return Promise.resolve({} as Awaited<ReturnType<NotificationService["createNotification"]>>)
     },
@@ -124,6 +125,7 @@ function eventOfLength(hours: number): CleanupHoursView {
   return {
     organizerUserId: HOST,
     status: "done",
+    visibility: "public",
     jurisdictionGeoid: GEOID_A,
     title: "Ocean Beach sweep",
     scheduledAt: SCHEDULED_AT,
@@ -174,6 +176,7 @@ describe("volunteer hours: logEventHours (service gating + crediting)", () => {
   const doneEvent: CleanupHoursView = {
     organizerUserId: HOST,
     status: "done",
+    visibility: "public",
     jurisdictionGeoid: GEOID_A,
     title: "Ocean Beach sweep",
     scheduledAt: SCHEDULED_AT,
@@ -270,8 +273,16 @@ describe("volunteer hours: logEventHours (service gating + crediting)", () => {
     const repo = new InMemoryVolunteerHoursRepository()
     const service = makeService({ repo, view: doneEvent, members: [HOST, BOB, CAROL] })
 
-    await service.logEventHours({ cleanupId: CLEANUP, actorId: HOST, entries: flat([CAROL, BOB], 2) })
-    await service.logEventHours({ cleanupId: CLEANUP, actorId: HOST, entries: [{ userId: BOB, hours: 3 }] })
+    await service.logEventHours({
+      cleanupId: CLEANUP,
+      actorId: HOST,
+      entries: flat([CAROL, BOB], 2),
+    })
+    await service.logEventHours({
+      cleanupId: CLEANUP,
+      actorId: HOST,
+      entries: [{ userId: BOB, hours: 3 }],
+    })
 
     expect((await repo.totalsFor(BOB)).totalHours).toBe(3)
     expect((await repo.totalsFor(CAROL)).totalHours).toBe(2)
@@ -368,14 +379,24 @@ describe("volunteer hours: logEventHours (service gating + crediting)", () => {
     const repo = new InMemoryVolunteerHoursRepository()
     const service = makeService({ repo, view: doneEvent, members: [HOST, BOB] })
     await expect(
-      service.logEventHours({ cleanupId: CLEANUP, actorId: HOST, entries: [{ userId: BOB, hours: 0.001 }] }),
+      service.logEventHours({
+        cleanupId: CLEANUP,
+        actorId: HOST,
+        entries: [{ userId: BOB, hours: 0.001 }],
+      }),
     ).rejects.toMatchObject({ code: "VALIDATION" })
     await service.logEventHours({
       cleanupId: CLEANUP,
       actorId: HOST,
       entries: [{ userId: BOB, hours: 3.14159 }],
     })
-    const page = await repo.entriesForCertificate({ userId: BOB, geoid: null, from: null, to: null, limit: 10 })
+    const page = await repo.entriesForCertificate({
+      userId: BOB,
+      geoid: null,
+      from: null,
+      to: null,
+      limit: 10,
+    })
     expect(page.items[0]?.hours).toBe(3.14)
   })
 
@@ -386,6 +407,7 @@ describe("volunteer hours: logEventHours (service gating + crediting)", () => {
       view: {
         organizerUserId: HOST,
         status: "upcoming",
+        visibility: "public",
         jurisdictionGeoid: GEOID_A,
         title: "Ocean Beach sweep",
         scheduledAt: FUTURE_SCHEDULED_AT,
@@ -806,6 +828,7 @@ describe("volunteer hours: hours_logged notifications", () => {
   const doneEvent: CleanupHoursView = {
     organizerUserId: HOST,
     status: "done",
+    visibility: "public",
     jurisdictionGeoid: GEOID_A,
     title: "Ocean Beach sweep",
     scheduledAt: SCHEDULED_AT,
@@ -963,7 +986,7 @@ describe("volunteer hours routes: leaderboard T1/T4 tripwires", () => {
     const stores = makeInMemoryStores()
     const cache = new InMemoryCacheClient(() => Date.now())
     const mailer = new FakeMailer()
-    const authServices = buildAuthServices({
+    const authServices = makeAuthServices({
       stores,
       cache,
       mailer,
@@ -973,9 +996,9 @@ describe("volunteer hours routes: leaderboard T1/T4 tripwires", () => {
     })
     const repo = new InMemoryVolunteerHoursRepository()
     repo.seedJurisdiction(GEOID_A, "San Francisco")
-    const built = await buildServer({
+    const built = await makeServer({
       env,
-      container: buildContainer(env),
+      container: makeContainer(env),
       authServices,
       volunteerOverrides: { repo },
     })
@@ -989,7 +1012,7 @@ describe("volunteer hours routes: leaderboard T1/T4 tripwires", () => {
       headers: { "x-client": "mobile" },
       payload: { email, code: mailer.lastOtpFor(email)! },
     })
-    const body = verify.json() as { token: string; user: { id: string } }
+    const body = verify.json<{ token: string; user: { id: string } }>()
     return { app: built, token: body.token, userId: body.user.id }
   }
 
@@ -1000,12 +1023,12 @@ describe("volunteer hours routes: leaderboard T1/T4 tripwires", () => {
       url: `/v1/jurisdictions/${GEOID_A}/leaderboard`,
     })
     expect(res.statusCode).toBe(200)
-    const body = res.json() as { geoid: string; entries: unknown[] }
+    const body = res.json<{ geoid: string; entries: unknown[] }>()
     expect(body.geoid).toBe(GEOID_A)
     expect(body.entries).toEqual([])
   })
 
-  it("T4: anon gets a SHARED cache TTL and authed gets no-store — both carrying Vary", async () => {
+  it("T4: anon gets a SHARED cache TTL and authed gets no-store; both carrying Vary", async () => {
     const { app: built, token } = await makeApp()
 
     const anon = await built.inject({
@@ -1187,7 +1210,12 @@ describe("#110: hours grouped by the organization that hosted the event", () => 
   it("hides a soft-deleted or suspended organization without changing the total", async () => {
     const repo = new InMemoryVolunteerHoursRepository()
     repo.seedOrganization({ id: ORG_A, slug: "coast-guard", name: "Coast Guard", deleted: true })
-    repo.seedOrganization({ id: ORG_B, slug: "river-keepers", name: "River Keepers", suspended: true })
+    repo.seedOrganization({
+      id: ORG_B,
+      slug: "river-keepers",
+      name: "River Keepers",
+      suspended: true,
+    })
     repo.seedCleanup(CLEANUP_A1, {
       title: "Sweep",
       referenceCode: null,
@@ -1337,6 +1365,7 @@ describe("volunteer hours: void-aware re-crediting and no-op re-saves", () => {
   const doneEvent: CleanupHoursView = {
     organizerUserId: HOST,
     status: "done",
+    visibility: "public",
     jurisdictionGeoid: GEOID_A,
     title: "Ocean Beach sweep",
     scheduledAt: SCHEDULED_AT,
@@ -1363,7 +1392,12 @@ describe("volunteer hours: void-aware re-crediting and no-op re-saves", () => {
 
   it("voiding takes the row's hours back out of its jurisdiction's rollup, once", async () => {
     const repo = new InMemoryVolunteerHoursRepository()
-    await repo.logEventHours({ actorId: HOST, cleanupId: CLEANUP, geoid: GEOID_A, entries: flat([BOB], 3) })
+    await repo.logEventHours({
+      actorId: HOST,
+      cleanupId: CLEANUP,
+      geoid: GEOID_A,
+      entries: flat([BOB], 3),
+    })
     const entry = await onlyEntry(repo, BOB)
 
     repo.markVoided(entry.id)
@@ -1474,7 +1508,12 @@ describe("volunteer hours: void-aware re-crediting and no-op re-saves", () => {
     const repo = new InMemoryVolunteerHoursRepository()
     repo.seedJurisdiction(GEOID_A, "San Francisco")
     repo.seedJurisdiction(GEOID_B, "Oakland")
-    await repo.logEventHours({ actorId: HOST, cleanupId: CLEANUP, geoid: GEOID_A, entries: flat([BOB], 2) })
+    await repo.logEventHours({
+      actorId: HOST,
+      cleanupId: CLEANUP,
+      geoid: GEOID_A,
+      entries: flat([BOB], 2),
+    })
 
     const moved = await repo.logEventHours({
       actorId: HOST,
@@ -1488,7 +1527,12 @@ describe("volunteer hours: void-aware re-crediting and no-op re-saves", () => {
     expect(totals.byJurisdiction).toEqual([{ geoid: GEOID_B, name: "Oakland", hours: 2 }])
     expect((await onlyEntry(repo, BOB)).jurisdictionGeoid).toBe(GEOID_B)
 
-    await repo.logEventHours({ actorId: HOST, cleanupId: CLEANUP, geoid: null, entries: flat([BOB], 2) })
+    await repo.logEventHours({
+      actorId: HOST,
+      cleanupId: CLEANUP,
+      geoid: null,
+      entries: flat([BOB], 2),
+    })
     totals = await repo.totalsFor(BOB)
     expect(totals.totalHours).toBe(2)
     expect(totals.byJurisdiction).toEqual([])

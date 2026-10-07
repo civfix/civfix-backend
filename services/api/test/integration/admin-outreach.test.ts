@@ -1,4 +1,3 @@
-
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest"
 import { FakeMailer } from "@civfix/shared/fakes"
 import type { OutboundEmail } from "@civfix/shared/interfaces"
@@ -151,7 +150,9 @@ describe.skipIf(!pg)("outreach pipeline (integration: real schema)", () => {
     expect(mailer.sent).toHaveLength(1)
     expect(mailer.sent[0]?.to).toBe("clerk@lacity.gov")
 
-    const threads = await h.sql<{ id: string }[]>`SELECT id FROM mail_threads WHERE jurisdiction_geoid = ${GEOID}`
+    const threads = await h.sql<
+      { id: string }[]
+    >`SELECT id FROM mail_threads WHERE jurisdiction_geoid = ${GEOID}`
     expect(threads).toHaveLength(1)
     const messages = await h.sql<{ direction: string }[]>`SELECT direction FROM mail_messages`
     expect(messages).toHaveLength(1)
@@ -178,7 +179,9 @@ describe.skipIf(!pg)("outreach pipeline (integration: real schema)", () => {
     expect(mailer.sent).toHaveLength(0)
   })
 
-  async function storedState(): Promise<{ last_outreach_at: Date | null; suppressed: boolean } | undefined> {
+  async function storedState(): Promise<
+    { last_outreach_at: Date | null; suppressed: boolean } | undefined
+  > {
     const rows = await h.sql<{ last_outreach_at: Date | null; suppressed: boolean }[]>`
       SELECT last_outreach_at, suppressed FROM outreach_state WHERE geoid = ${GEOID}
     `

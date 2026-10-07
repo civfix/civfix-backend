@@ -43,7 +43,7 @@ function harness(opts: { useFakeChat?: boolean; usesRealRedis?: boolean } = {}):
     get redisOpened() {
       return state.redisOpened
     },
-  } as Harness
+  }
 }
 
 describe("makeContainerRoomFanoutDeps", () => {
@@ -78,7 +78,10 @@ describe("makeContainerRoomFanoutDeps", () => {
   it("caps the report fan-out member scan at REPORT_CHAT_FANOUT_MEMBER_CAP", async () => {
     const h = harness()
 
-    await makeContainerRoomFanoutDeps(h.container).report.listMemberIds("report-1")
+    await makeContainerRoomFanoutDeps(h.container).report.listMemberIds(
+      "report-1",
+      REPORT_CHAT_FANOUT_MEMBER_CAP,
+    )
 
     const stmt = h.fake.statements[0]!
     expect(stmt.sql).toMatch(/FROM report_chat_members/)
@@ -99,7 +102,7 @@ describe("makeContainerRoomFanoutDeps", () => {
     expect(groupMute!.values).toContain("group")
   })
 
-  it("treats a failed mute lookup as NOT muted so a Redis/DB blip cannot silence the room", async () => {
+  it("hands the fan-out a mute lookup that surfaces a failure, so the fan-out fails open once per fan-out", async () => {
     const h = harness()
     const boom = makeFakeSql()
     const throwing = {
@@ -116,7 +119,7 @@ describe("makeContainerRoomFanoutDeps", () => {
 
     const deps = makeContainerRoomFanoutDeps(throwing)
 
-    await expect(deps.report.isMuted("u1", "r1")).resolves.toBe(false)
+    await expect(deps.report.isMuted("u1", "r1")).rejects.toThrow("db down")
   })
 })
 
@@ -186,10 +189,13 @@ describe("makeWindowClaim", () => {
     const { claim, counters } = claimHarness()
     vi.spyOn(counters, "incr").mockRejectedValue(new Error("redis down"))
     const warn = vi.fn()
-    const claimWithLog = makeWindowClaim({ getCounterStore: () => counters }, {
-      warn,
-      error: vi.fn(),
-    } as never)
+    const claimWithLog = makeWindowClaim(
+      { getCounterStore: () => counters },
+      {
+        warn,
+        error: vi.fn(),
+      },
+    )
 
     expect(await claim("report", "r1", 15_000)).toBe(true)
     expect(await claimWithLog("report", "r1", 15_000)).toBe(true)

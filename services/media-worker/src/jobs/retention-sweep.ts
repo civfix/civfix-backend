@@ -1,15 +1,17 @@
-
 import type { Storage } from "@civfix/shared/interfaces"
 import type { Sql } from "@civfix/api/db"
 import {
   INBOUND_EMAIL_RETENTION_BATCH,
   INBOUND_EMAIL_RETENTION_MS,
   makeDrizzleInboundRetentionRepository,
-  type InboundRetentionRepository,
 } from "@civfix/api/inbound-retention-repo"
+import type { InboundRetentionRepository } from "@civfix/api/inbound-retention-repository"
 import { GEOCODE_CACHE_TTL_MS } from "@civfix/api/geocode-cache"
+import { makeDrizzleRetentionRepository } from "@civfix/api/retention-repo"
 import { drainPages } from "./drain.js"
 import { resolveJobObs, type JobObsDeps } from "./obs.js"
+import { MS_PER_DAY, MS_PER_HOUR } from "@civfix/api/time"
+import { RETENTION_SWEEP_JOB } from "@civfix/api/queue-names"
 
 export interface RetentionSweepDeps extends JobObsDeps {
   sql: Sql
@@ -35,14 +37,13 @@ export interface RetentionSweepResult {
   errors: number
 }
 
-export const RETENTION_GRACE_MS = 60 * 60 * 1000
-export const RETENTION_BATCH = 5000
-export const RETENTION_IDEMPOTENCY_MS = 48 * 60 * 60 * 1000
-export const RETENTION_NOTIFICATIONS_MS = 90 * 24 * 60 * 60 * 1000
+export const RETENTION_GRACE_MS = MS_PER_HOUR
+const RETENTION_BATCH = 5000
+const RETENTION_IDEMPOTENCY_MS = 48 * MS_PER_HOUR
+const RETENTION_NOTIFICATIONS_MS = 90 * MS_PER_DAY
 export const RETENTION_GEOCODE_CACHE_MS = GEOCODE_CACHE_TTL_MS
 export const RETENTION_INBOUND_EMAILS_MS = INBOUND_EMAIL_RETENTION_MS
-export const RETENTION_INBOUND_EMAILS_BATCH = INBOUND_EMAIL_RETENTION_BATCH
-export const RETENTION_MAX_PAGES = 20
+const RETENTION_MAX_PAGES = 20
 
 export async function runRetentionSweep(deps: RetentionSweepDeps): Promise<RetentionSweepResult> {
   const { log, report, now: clock } = resolveJobObs(deps)
@@ -85,92 +86,46 @@ export async function runRetentionSweep(deps: RetentionSweepDeps): Promise<Reten
       await drainPages(deletePage, (rows) => onDeleted(rows.length), { pageSize, maxPages })
     } catch (err) {
       result.errors++
-      report(err, { job: "retention.sweep", table })
+      report(err, { job: RETENTION_SWEEP_JOB, table })
       log(`retention.sweep: ${table} failed`, { err: String(err) })
     }
   }
 
+  const repo = makeDrizzleRetentionRepository(deps.sql)
+
   await drainTable(
     "email_otps",
-    (limit) => deps.sql<{ id: string }[]>`
-      DELETE FROM email_otps
-      WHERE id IN (
-        SELECT id FROM email_otps
-        WHERE consumed_at IS NOT NULL OR expires_at < ${cutoff}
-        LIMIT ${limit}
-      )
-      RETURNING id
-    `,
+    (limit) => repo.deleteExpiredOtps(cutoff, limit),
     (n) => (result.otps += n),
   )
 
   await drainTable(
     "anon_tokens",
-    (limit) => deps.sql<{ id: string }[]>`
-      DELETE FROM anon_tokens
-      WHERE id IN (
-        SELECT id FROM anon_tokens
-        WHERE expires_at < ${cutoff}
-        LIMIT ${limit}
-      )
-      RETURNING id
-    `,
+    (limit) => repo.deleteExpiredAnonTokens(cutoff, limit),
     (n) => (result.anonTokens += n),
   )
 
   await drainTable(
     "sessions",
-    (limit) => deps.sql<{ id: string }[]>`
-      DELETE FROM sessions
-      WHERE id IN (
-        SELECT id FROM sessions
-        WHERE expires_at < ${cutoff}
-        LIMIT ${limit}
-      )
-      RETURNING id
-    `,
+    (limit) => repo.deleteExpiredSessions(cutoff, limit),
     (n) => (result.sessions += n),
   )
 
   await drainTable(
     "idempotency_keys",
-    (limit) => deps.sql<{ key: string }[]>`
-      DELETE FROM idempotency_keys
-      WHERE ctid IN (
-        SELECT ctid FROM idempotency_keys
-        WHERE created_at < ${idempotencyCutoff}
-        LIMIT ${limit}
-      )
-      RETURNING key
-    `,
+    (limit) => repo.deleteOldIdempotencyKeys(idempotencyCutoff, limit),
     (n) => (result.idempotencyKeys += n),
   )
 
   await drainTable(
     "notifications",
-    (limit) => deps.sql<{ id: string }[]>`
-      DELETE FROM notifications
-      WHERE id IN (
-        SELECT id FROM notifications
-        WHERE created_at < ${notificationsCutoff}
-        LIMIT ${limit}
-      )
-      RETURNING id
-    `,
+    (limit) => repo.deleteOldNotifications(notificationsCutoff, limit),
     (n) => (result.notifications += n),
   )
 
   await drainTable(
     "geocode_cache",
-    (limit) => deps.sql<{ point_key: string }[]>`
-      DELETE FROM geocode_cache
-      WHERE point_key IN (
-        SELECT point_key FROM geocode_cache
-        WHERE resolved_at < ${geocodeCacheCutoff}
-        LIMIT ${limit}
-      )
-      RETURNING point_key
-    `,
+    (limit) => repo.deleteStaleGeocodeCache(geocodeCacheCutoff, limit),
     (n) => (result.geocodeCache += n),
   )
 
@@ -218,24 +173,12 @@ export async function runInboundEmailRetentionLane(
   let stalled = false
   try {
     await drainPages(
-      (limit) => (stalled ? Promise.resolve([]) : repo.findArchivedBefore({ before: opts.before, limit })),
+      (limit) =>
+        stalled ? Promise.resolve([]) : repo.findArchivedBefore({ before: opts.before, limit }),
       async (rows) => {
         const reaped: string[] = []
         for (const row of rows) {
-          let objectsGone = true
-          for (const key of row.attachmentKeys) {
-            try {
-              await storage.delete(key)
-            } catch (err) {
-              objectsGone = false
-              result.inboundEmailObjectsLeaked += 1
-              opts.report(err, {
-                job: "retention.sweep",
-                table: "inbound_emails",
-                phase: "attachment",
-              })
-            }
-          }
+          const objectsGone = await deleteAttachments(row.attachmentKeys, storage, result, opts)
           if (objectsGone) reaped.push(row.id)
         }
         if (reaped.length === 0) {
@@ -248,7 +191,30 @@ export async function runInboundEmailRetentionLane(
     )
   } catch (err) {
     result.errors++
-    opts.report(err, { job: "retention.sweep", table: "inbound_emails" })
+    opts.report(err, { job: RETENTION_SWEEP_JOB, table: "inbound_emails" })
     opts.log("retention.sweep: inbound_emails failed", { err: String(err) })
   }
+}
+
+async function deleteAttachments(
+  keys: readonly string[],
+  storage: Pick<Storage, "delete">,
+  result: Pick<RetentionSweepResult, "inboundEmailObjectsLeaked">,
+  opts: Pick<InboundEmailRetentionLaneOptions, "report">,
+): Promise<boolean> {
+  let objectsGone = true
+  for (const key of keys) {
+    try {
+      await storage.delete(key)
+    } catch (err) {
+      objectsGone = false
+      result.inboundEmailObjectsLeaked += 1
+      opts.report(err, {
+        job: RETENTION_SWEEP_JOB,
+        table: "inbound_emails",
+        phase: "attachment",
+      })
+    }
+  }
+  return objectsGone
 }

@@ -8,6 +8,8 @@ import {
   type SendDedupeStore,
   type SendReservation,
 } from "../ws/send-resilience.js"
+import { unrefSleep } from "../lib/sleep.js"
+import { MS_PER_SECOND } from "../lib/time.js"
 
 export interface RedisSendDedupeOptions {
   ttlSeconds?: number
@@ -16,12 +18,12 @@ export interface RedisSendDedupeOptions {
   sleep?: (ms: number) => Promise<void>
 }
 
-const realSleep = (ms: number): Promise<void> =>
-  new Promise((resolve) => {
-    const timer = setTimeout(resolve, ms)
-    if (typeof timer.unref === "function") timer.unref()
-  })
+function wholeSecondsToMs(seconds: number): number {
+  return Math.max(1, Math.ceil(seconds)) * MS_PER_SECOND
+}
 
+// Every Redis failure fails open: dedupe only suppresses retried duplicates, so an outage must not
+// block chat sends, and the shared client's error handler already logs the outage itself.
 const OPEN: SendReservation = { state: "open" }
 
 export class RedisSendDedupeStore implements SendDedupeStore {
@@ -33,11 +35,10 @@ export class RedisSendDedupeStore implements SendDedupeStore {
 
   constructor(redis: RedisClient, opts: RedisSendDedupeOptions = {}) {
     this.redis = redis
-    this.ttlMs = Math.max(1, Math.ceil(opts.ttlSeconds ?? SEND_DEDUPE_TTL_SECONDS)) * 1000
-    this.pendingTtlMs =
-      Math.max(1, Math.ceil(opts.pendingTtlSeconds ?? SEND_DEDUPE_PENDING_TTL_SECONDS)) * 1000
+    this.ttlMs = wholeSecondsToMs(opts.ttlSeconds ?? SEND_DEDUPE_TTL_SECONDS)
+    this.pendingTtlMs = wholeSecondsToMs(opts.pendingTtlSeconds ?? SEND_DEDUPE_PENDING_TTL_SECONDS)
     this.inFlightAttempts = opts.inFlightAttempts ?? SEND_DEDUPE_INFLIGHT_ATTEMPTS
-    this.sleep = opts.sleep ?? realSleep
+    this.sleep = opts.sleep ?? unrefSleep
   }
 
   async reserve(key: string): Promise<SendReservation> {

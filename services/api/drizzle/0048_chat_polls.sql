@@ -2,7 +2,7 @@
 -- 0048_chat_polls.sql
 -- -----------------------------------------------------------------------------
 -- P6 (Polls): a poll is a chat message with kind='poll'. The poll body lives in
--- this trio, keyed on the message's id — chat_polls is 1:1 with the poll
+-- this trio, keyed on the message's id: chat_polls is 1:1 with the poll
 -- message, chat_poll_options is the ordered choice list, chat_poll_votes records
 -- one row per (poll, option, voter).
 --
@@ -10,15 +10,15 @@
 -- stance as chat_message_reactions (0)/chat pins: chat_messages is PARTITIONED,
 -- and an FK pointing AT the partitioned parent is impossible in postgres. Message
 -- ids are globally unique (gen_random_uuid across every partition), so keying on
--- the bare id is safe — the app writes the poll row in the same txn as the
+-- the bare id is safe: the app writes the poll row in the same txn as the
 -- message and never orphans it.
 --
--- created_by gets a REAL FK to users with NO ON DELETE action — the same stance
+-- created_by gets a REAL FK to users with NO ON DELETE action, the same stance
 -- as chat_groups.owner_id (0047): accounts are SOFT-deleted everywhere in the
 -- product (users.routes deleteAccount -> softDeleteAndAnonymize; admin bans keep
 -- the row), so this FK can never block a deletion path; a tombstoned author just
 -- renders as "Deleted User". Vote rows, by contrast, DO cascade on user delete
--- (ON DELETE CASCADE) — a departed voter's ballots vanish rather than lingering.
+-- (ON DELETE CASCADE): a departed voter's ballots vanish rather than lingering.
 --
 -- chat_poll_options carries a composite PK (poll_id, idx) so a poll's choices are
 -- addressed by a small stable ordinal. chat_poll_votes references that composite

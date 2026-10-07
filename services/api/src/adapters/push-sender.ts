@@ -1,5 +1,3 @@
-
-import { createHash } from "node:crypto"
 import type { PushSender, PushPayload, PushPlatform } from "@civfix/shared/interfaces"
 import type { Db } from "../db/client.js"
 import { pushTokens } from "../db/schema/push_tokens.js"
@@ -8,7 +6,8 @@ import { makeApnsDispatcher } from "./push-apns.js"
 import { makeFcmDispatcher } from "./push-fcm.js"
 import { makeWebPushDispatcher } from "./push-webpush.js"
 import { makeExpoDispatcher, isExpoPushToken, type ExpoPushConfig } from "./push-expo.js"
-import { mapWithLimit } from "../services/media-presign.js"
+import { mapWithLimit } from "../lib/concurrency.js"
+import { sha256HexSync } from "../lib/hash.js"
 import type { CounterStore } from "../abuse/counter-store.js"
 import type { PushAddressResolver } from "../services/push-token-policy.js"
 
@@ -41,12 +40,18 @@ export interface PushLogger {
   error(obj: unknown, msg?: string): void
 }
 
+const LOG_HASH_HEX_CHARS = 12
+
 export function hashForLog(value: string): string {
-  return createHash("sha256").update(value).digest("hex").slice(0, 12)
+  return sha256HexSync(value).slice(0, LOG_HASH_HEX_CHARS)
 }
 
 const ACTIVE_TOKEN_SCAN_CAP_PER_USER = 20
 
+const NATIVE_PLATFORMS: readonly PushPlatform[] = ["ios", "android", "web"]
+
+// Only for callers that construct the sender without a logger; the API container always injects
+// its pino logger so redaction and request context apply.
 const consoleLogger: PushLogger = {
   warn: (obj, msg) => console.warn(msg ?? "", obj),
   error: (obj, msg) => console.error(msg ?? "", obj),
@@ -82,6 +87,7 @@ export const PUSH_MAX_PER_USER_PER_MINUTE = 60
 
 const PUSH_RATE_WINDOW_SECONDS = 60
 const PUSH_RATE_CHECK_CONCURRENCY = 16
+const PUSH_RATE_KEY_PREFIX = "push:rate:"
 
 export async function allowedByPushRate(
   userIds: string[],
@@ -94,7 +100,10 @@ export async function allowedByPushRate(
     PUSH_RATE_CHECK_CONCURRENCY,
     async (userId): Promise<boolean> => {
       try {
-        const used = await counters.incr(`push:rate:${userId}`, PUSH_RATE_WINDOW_SECONDS)
+        const used = await counters.incr(
+          `${PUSH_RATE_KEY_PREFIX}${userId}`,
+          PUSH_RATE_WINDOW_SECONDS,
+        )
         return used <= PUSH_MAX_PER_USER_PER_MINUTE
       } catch (err) {
         logger.warn({ err }, "push: per-user rate counter unavailable; allowing")
@@ -147,9 +156,7 @@ export class MultiPushSender implements PushSender {
 
   async close(): Promise<void> {
     if (!this.dispatchers) return
-    await Promise.all(
-      Object.values(this.dispatchers).map((d) => d?.close?.()),
-    )
+    await Promise.all(Object.values(this.dispatchers).map((d) => d?.close?.()))
   }
 
   private async deliver(recipientIds: string[], payload: PushPayload): Promise<void> {
@@ -159,33 +166,46 @@ export class MultiPushSender implements PushSender {
     if (tokens.length === 0) return
 
     const dispatchers = this.getDispatchers()
-    const invalidAll: string[] = []
+    const expoInvalid = await this.dispatchExpo(dispatchers.expo, tokens, payload)
+    const nativeInvalid = await this.dispatchNative(dispatchers, tokens, payload)
+    const invalidAll = [...expoInvalid, ...nativeInvalid]
+    if (invalidAll.length > 0) await this.pruneTokens(invalidAll)
+  }
 
+  private async dispatchExpo(
+    expo: PlatformDispatcher | undefined,
+    tokens: ActiveToken[],
+    payload: PushPayload,
+  ): Promise<string[]> {
     const expoTokens = [
       ...new Set(tokens.filter((t) => isExpoPushToken(t.token)).map((t) => t.token)),
     ]
-    if (expoTokens.length > 0) {
-      const expo = dispatchers.expo
-      if (expo) {
-        try {
-          const { invalidTokens } = await expo(expoTokens, payload)
-          for (const t of invalidTokens) invalidAll.push(t)
-        } catch (err) {
-          this.logger.error({ err }, "push: expo dispatch failed")
-        }
-      } else {
-        this.logger.warn(
-          { count: expoTokens.length },
-          "push: expo tokens present but no expo dispatcher; skipping",
-        )
-      }
+    if (expoTokens.length === 0) return []
+    if (!expo) {
+      this.logger.warn(
+        { count: expoTokens.length },
+        "push: expo tokens present but no expo dispatcher; skipping",
+      )
+      return []
     }
+    try {
+      const { invalidTokens } = await expo(expoTokens, payload)
+      return invalidTokens
+    } catch (err) {
+      this.logger.error({ err }, "push: expo dispatch failed")
+      return []
+    }
+  }
 
-    const rawTokens = tokens.filter((t) => !isExpoPushToken(t.token))
-    const byPlatform = groupByPlatform(rawTokens)
-    const platforms: PushPlatform[] = ["ios", "android", "web"]
+  private async dispatchNative(
+    dispatchers: PushDispatchers,
+    tokens: ActiveToken[],
+    payload: PushPayload,
+  ): Promise<string[]> {
+    const byPlatform = groupByPlatform(tokens.filter((t) => !isExpoPushToken(t.token)))
+    const invalid: string[] = []
     await Promise.all(
-      platforms.map(async (platform) => {
+      NATIVE_PLATFORMS.map(async (platform) => {
         const platformTokens = byPlatform[platform]
         if (!platformTokens || platformTokens.length === 0) return
         const dispatcher = dispatchers[platform]
@@ -198,16 +218,14 @@ export class MultiPushSender implements PushSender {
         }
         try {
           const { invalidTokens } = await dispatcher(platformTokens, payload)
-          for (const t of invalidTokens) invalidAll.push(t)
+          invalid.push(...invalidTokens)
         } catch (err) {
           this.logger.error({ err, platform }, "push: platform dispatch failed")
         }
       }),
     )
-
-    if (invalidAll.length > 0) await this.pruneTokens(invalidAll)
+    return invalid
   }
-
   private async loadActiveTokens(userIds: string[]): Promise<ActiveToken[]> {
     const rows = await this.db
       .select({
@@ -238,7 +256,9 @@ export class MultiPushSender implements PushSender {
     this.dispatchers = {
       ...(this.config.apns ? { ios: makeApnsDispatcher(this.config.apns, this.logger) } : {}),
       ...(this.config.fcm ? { android: makeFcmDispatcher(this.config.fcm, this.logger) } : {}),
-      ...(this.config.webPush ? { web: makeWebPushDispatcher(this.config.webPush, this.logger) } : {}),
+      ...(this.config.webPush
+        ? { web: makeWebPushDispatcher(this.config.webPush, this.logger) }
+        : {}),
       expo: makeExpoDispatcher(this.config.expo ?? {}, this.logger),
     }
     return this.dispatchers
@@ -260,16 +280,4 @@ export function groupByPlatform(tokens: ActiveToken[]): Record<PushPlatform, str
   return out
 }
 
-export { makeApnsDispatcher } from "./push-apns.js"
-export { makeFcmDispatcher } from "./push-fcm.js"
-export { makeWebPushDispatcher } from "./push-webpush.js"
-
-export {
-  boundedAddressResolver,
-  classifyPushToken,
-  isRegistrablePushEndpoint,
-  isSafePushEndpoint,
-  parseSubscription,
-  resolveSafePushTarget,
-  type PushTokenShape,
-} from "../services/push-token-policy.js"
+export { isSafePushEndpoint, resolveSafePushTarget } from "../services/push-token-policy.js"

@@ -1,26 +1,26 @@
 /**
- * P4 Task 4.3 integration test (Docker-gated): the /groups management surface + the group message
+ * Integration test (Docker-gated): the /groups management surface + the group message
  * lanes, against a live PostGIS container (via withPg) over HTTP.
  *
- *   Create — POST /groups seeds the owner membership + invited members; dupes, self, and anyone the
+ *   Create: POST /groups seeds the owner membership + invited members; dupes, self, and anyone the
  *   creator is blocked-either-way with are silently skipped; avatarUploadId finalizes to
  *   avatar_media_id (hydrated once 'ready').
  *
- *   Read gates — private groups 403 non-members (fields.code not_a_member) and 200 members with
+ *   Read gates: private groups 403 non-members (fields.code not_a_member) and 200 members with
  *   myRole; PUBLIC groups are viewable pre-join (myRole null).
  *
- *   Management matrix — admin updates name (member 403 update_forbidden); visibility change is
+ *   Management matrix: admin updates name (member 403 update_forbidden); visibility change is
  *   owner-only (admin 403 visibility_owner_only); role set is owner-only (admin 403 role_owner_only);
  *   owner removes an admin but an admin cannot (403 remove_forbidden); self-remove = leave; the
  *   owner's leave 409s owner_must_stay; addGroupMembers is owner/admin-only (member 403).
  *
- *   Message lanes — GET /groups/:id/messages is member-gated for private rooms (non-member 403);
+ *   Message lanes: GET /groups/:id/messages is member-gated for private rooms (non-member 403);
  *   DELETE /groups/:id/messages/:messageId lets the sender self-delete and an admin tombstone a
  *   member's message (member-on-other 403); PUT /messages/pin roomKind:"group" pins for an admin and
  *   403s pin_forbidden for a member (the chat-powers group lane end-to-end).
  *
  * Repos ride chatOverrides on the real Drizzle impls over the harness pool, chatOverrides.chatPowers
- * injects the REAL resolver over the REAL pg lookups (incl. the new chat_group_members roleOf) —
+ * injects the REAL resolver over the REAL pg lookups (incl. the chat_group_members roleOf),
  * mirroring chat-pins-pg. Skips when Docker is unavailable; CI runs it for real.
  */
 
@@ -30,12 +30,12 @@ import type { FastifyInstance } from "fastify"
 import { FakeMailer } from "@civfix/shared/fakes"
 import { withPg, type PgHarness } from "../helpers/pg.js"
 import { seedMediaAsset } from "../helpers/media-pg.js"
-import { buildServer } from "../../src/server.js"
-import { buildContainer, type Container } from "../../src/di.js"
+import { makeServer } from "../../src/server.js"
+import { makeContainer, type Container } from "../../src/di.js"
 import { loadEnv } from "../../src/env.js"
 import { InMemoryCacheClient } from "../../src/auth/cache.js"
 import { makeInMemoryStores } from "../../src/auth/stores.js"
-import { buildAuthServices, type AuthServices } from "../../src/auth/auth-services.js"
+import { makeAuthServices, type AuthServices } from "../../src/auth/auth-services.js"
 import { StubJwksVerifier } from "../helpers/auth.js"
 import { InMemoryThreadsRepository } from "../helpers/chat.js"
 import type { ChatGatewayOverrides } from "../../src/routes/chat.routes.js"
@@ -47,7 +47,7 @@ import { makeReportChatRepository } from "../../src/services/report-chat-reposit
 import { makeChatGroupRepository } from "../../src/services/chat-group-repository.drizzle.js"
 import { makeConversationMutesRepository } from "../../src/services/conversation-mutes-repository.drizzle.js"
 import { makeChatPowersResolver } from "../../src/services/chat-room-roles.js"
-import { globalRoleOf } from "../../src/routes/chat-powers-wiring.js"
+import { chatAuthorityRoleOf } from "../../src/routes/chat-powers-wiring.js"
 import type { PresignMedia } from "../../src/services/media-presign.js"
 
 const pg = await withPg()
@@ -69,7 +69,7 @@ describe.skipIf(!pg)("chat groups service + routes (integration)", () => {
     h = pg as PgHarness
 
     const env = loadEnv({ NODE_ENV: "test" })
-    authServices = buildAuthServices({
+    authServices = makeAuthServices({
       stores: makeInMemoryStores(),
       cache: new InMemoryCacheClient(() => Date.now()),
       mailer: new FakeMailer(),
@@ -94,12 +94,12 @@ describe.skipIf(!pg)("chat groups service + routes (integration)", () => {
         isDmParticipant: (threadId, userId) => dm.isParticipant(threadId, userId),
         cleanupRoleOf: (cleanupId, userId) => cleanups.roleOf(cleanupId, userId),
         reportChatRoleOf: (reportId, userId) => reportChat.roleOf(reportId, userId),
-        globalRoleOf: (userId) => globalRoleOf(h.sql, userId),
+        globalRoleOf: (userId) => chatAuthorityRoleOf(h.sql, env, userId),
         groupRoleOf: (groupId, userId) => groups.roleOf(groupId, userId),
       }),
     }
-    container = buildContainer(env)
-    app = await buildServer({
+    container = makeContainer(env)
+    app = await makeServer({
       env,
       container,
       authServices,
@@ -342,7 +342,7 @@ describe.skipIf(!pg)("chat groups service + routes (integration)", () => {
       const strangerId = await newUser("Remove Stranger")
       const nonMemberId = await newUser("Remove Nobody")
 
-      // Target IS a member: the stranger must not learn that — 403, not a role-specific error.
+      // Target IS a member: the stranger must not learn that: 403, not a role-specific error.
       const onMember = await inject(
         await token(strangerId),
         "DELETE",
@@ -411,7 +411,7 @@ describe.skipIf(!pg)("chat groups service + routes (integration)", () => {
       const newbieId = await newUser("Add Real")
       const blockedId = await newUser("Add Blocked")
       await h.sql`INSERT INTO user_blocks (blocker_id, blocked_id) VALUES (${ownerId}, ${blockedId})`
-      const unknownId = randomUUID() // schema-valid, no users row — must not trip the membership FK
+      const unknownId = randomUUID() // schema-valid, no users row; must not trip the membership FK
 
       const res = await inject(await token(ownerId), "POST", `/v1/groups/${groupId}/members`, {
         memberIds: [unknownId, blockedId, newbieId],
@@ -435,25 +435,29 @@ describe.skipIf(!pg)("chat groups service + routes (integration)", () => {
       const tok = await token(ownerId)
       const page1 = await inject(tok, "GET", `/v1/groups/${dto.id}/members?limit=3`)
       expect(page1.statusCode).toBe(200)
-      const p1 = page1.json() as {
+      const p1 = page1.json<{
         members: Array<{ user: { id: string }; role: string }>
         nextCursor: string | null
-      }
+      }>()
       expect(p1.members).toHaveLength(3)
       // Ordering: owner first, then members by joined_at ASC (insertion order within the create tx).
       expect(p1.members[0]).toMatchObject({ user: { id: ownerId }, role: "owner" })
       expect(p1.nextCursor).toBe(p1.members[2]!.user.id)
 
-      const page2 = await inject(tok, "GET", `/v1/groups/${dto.id}/members?limit=3&cursor=${p1.nextCursor}`)
+      const page2 = await inject(
+        tok,
+        "GET",
+        `/v1/groups/${dto.id}/members?limit=3&cursor=${p1.nextCursor}`,
+      )
       expect(page2.statusCode).toBe(200)
-      const p2 = page2.json() as {
+      const p2 = page2.json<{
         members: Array<{ user: { id: string } }>
         nextCursor: string | null
-      }
+      }>()
       expect(p2.members).toHaveLength(3)
       expect(p2.nextCursor).toBeNull()
 
-      // Resume correctness: the two pages tile the full roster exactly — no dupes, no gaps.
+      // Resume correctness: the two pages tile the full roster exactly: no dupes, no gaps.
       const seen = [...p1.members, ...p2.members].map((m) => m.user.id)
       expect(new Set(seen).size).toBe(6)
       expect(seen.sort()).toEqual([ownerId, ...invitees].sort())

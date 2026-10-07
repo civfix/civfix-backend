@@ -1,4 +1,3 @@
-
 import { afterAll, beforeAll, describe, expect, it } from "vitest"
 import { DEFAULT_FEED_RANKING } from "@civfix/shared"
 import { withPg, type PgHarness, testHandle } from "../helpers/pg.js"
@@ -8,16 +7,17 @@ import {
   explainFeedCandidates,
   makeDrizzlePostRepository,
   FEED_NEARBY_INDEX,
-  type FeedCandidateArgs,
-  type PostRepository,
 } from "../../src/services/post-repository.drizzle.js"
+import type { FeedCandidateArgs, PostRepository } from "../../src/services/post-repository.js"
 import { makePostService, type PostService } from "../../src/services/post-service.js"
 
 const pg = await withPg()
 
 const echoPresign = (r2Key: string, thumbKey: string | null) =>
   Promise.resolve(
-    thumbKey === null ? { url: `m://${r2Key}` } : { url: `m://${r2Key}`, thumbUrl: `m://${thumbKey}` },
+    thumbKey === null
+      ? { url: `m://${r2Key}` }
+      : { url: `m://${r2Key}`, thumbUrl: `m://${thumbKey}` },
   )
 const echoAvatar = (k: string) => Promise.resolve(`m://${k}`)
 
@@ -118,7 +118,13 @@ describe.skipIf(!pg)("ranked home feed: candidate SQL (integration)", () => {
       viewer,
     )
     const reply = await svc.createPost(
-      { kind: "post", body: "a reply", replyToId: post.id, mediaUploadIds: [], mentionedUserIds: [] },
+      {
+        kind: "post",
+        body: "a reply",
+        replyToId: post.id,
+        mediaUploadIds: [],
+        mentionedUserIds: [],
+      },
       viewer,
     )
 

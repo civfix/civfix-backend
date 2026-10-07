@@ -3,7 +3,7 @@
 -- -----------------------------------------------------------------------------
 -- Issue #56: richer report timeline + EVENT (cleanup) mail threading.
 --   * report_timeline.kind / report_timeline.body (D13): stop truncating inbound
---     reply bodies — `note` stays the short preview, `body` holds the full text,
+--     reply bodies: `note` stays the short preview, `body` holds the full text,
 --     `kind` tags the entry type. Both NULLABLE so existing INSERTs stay green.
 --   * mail_threads.cleanup_id (D10/D19): nullable FK so an event resource-request
 --     thread routes a city reply back onto the cleanup (event) it belongs to,
@@ -35,6 +35,6 @@ ALTER TABLE mail_threads ADD COLUMN IF NOT EXISTS cleanup_id uuid
   REFERENCES cleanups (id) ON DELETE SET NULL;
 
 -- Partial index over the linked rows only, mirroring mail_threads_report_idx
--- (0020) — a city reply resolves to its event thread by cleanup_id.
+-- (0020): a city reply resolves to its event thread by cleanup_id.
 CREATE INDEX IF NOT EXISTS mail_threads_cleanup_idx
   ON mail_threads (cleanup_id) WHERE cleanup_id IS NOT NULL;

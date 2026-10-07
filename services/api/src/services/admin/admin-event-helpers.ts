@@ -1,11 +1,14 @@
-// Pure helpers for the admin events domain. These hold NO DB/IO and are imported by BOTH the service and
-// the repos — keeping them here (not in admin-event-service.ts) breaks the repo->service back-edge the
-// memory repo would otherwise create by importing flaggedFromTimeline from the service.
+// Kept out of admin-event-service.ts so the repos can import these without a repo->service back-edge.
 
 import type { EventStatus, EventTimelineItem } from "@civfix/shared"
 
-// The design facet (all|upcoming|in_progress|completed|flagged) reconciles to an event status to match
-// and/or the flagged-only marker.
+export const EVENT_NOTE_FLAGGED = "Flagged for review"
+
+export const EVENT_NOTE_UNFLAGGED = "Flag cleared"
+
+/** The note an operator broadcast writes; the Drizzle repo spells it inline in its INSERT. */
+export const EVENT_NOTE_MESSAGE_POSTED = "Posted an update to attendees"
+
 export function resolveEventFilter(filter: string | undefined): {
   status: EventStatus | null
   flaggedOnly: boolean
@@ -35,12 +38,11 @@ export function eventStatusNote(status: EventStatus): string {
     case "cancelled":
       return "Event cancelled"
     default:
-      return `Status set to ${status}`
+      return `Status set to ${String(status)}`
   }
 }
 
-// flagged = the LAST flag/unflag entry in the ordered timeline is a 'flag'. The repo computes the same in
-// SQL for the list; this is the in-memory mirror.
+// The in-memory twin of flaggedEventExpr (admin-event-repository.drizzle.ts); the two must agree.
 export function flaggedFromTimeline(kinds: readonly string[]): boolean {
   let flagged = false
   for (const kind of kinds) {
@@ -50,8 +52,8 @@ export function flaggedFromTimeline(kinds: readonly string[]): boolean {
   return flagged
 }
 
-// A fallback label for a note-less cleanup_timeline row, derived from its own kind. Used so a row with a
-// null note never surfaces a blanket "Status set to Upcoming" (which would mislead on a join/done/flag).
+// A note-less timeline row is labelled from its own kind so it never surfaces a blanket "Status set to
+// Upcoming", which would mislead on a join/done/flag row.
 export function timelineDefaultNote(kind: string): string {
   switch (kind) {
     case "create":
@@ -65,9 +67,9 @@ export function timelineDefaultNote(kind: string): string {
     case "cancel":
       return "Event cancelled"
     case "flag":
-      return "Flagged for review"
+      return EVENT_NOTE_FLAGGED
     case "unflag":
-      return "Flag cleared"
+      return EVENT_NOTE_UNFLAGGED
     case "report_linked":
       return "Linked a report"
     case "report_unlinked":
@@ -77,8 +79,13 @@ export function timelineDefaultNote(kind: string): string {
   }
 }
 
-// Map a stored cleanup_timeline kind to the design's event-timeline icon kind. The stored 'flag'/'unflag'
-// map to 'warn'.
+/** The event detail shows at most this many chat messages: the most recent ones. */
+export const ADMIN_EVENT_MESSAGE_CAP = 100
+
+export function eventOutcomeNote(bags: number): string {
+  return bags === 1 ? "Outcome logged: 1 bag" : `Outcome logged: ${bags} bags`
+}
+
 export function eventTimelineKind(stored: string): EventTimelineItem["kind"] {
   switch (stored) {
     case "create":

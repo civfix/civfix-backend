@@ -1,8 +1,4 @@
-import {
-  AdminGetMediaRequestSchema,
-  AppError,
-  type AdminGetMediaResponse,
-} from "@civfix/shared"
+import { AdminGetMediaRequestSchema, AppError, type AdminGetMediaResponse } from "@civfix/shared"
 import type { FastifyInstance } from "fastify"
 import type { Container } from "../../di.js"
 import { requireOperator } from "../../auth/admin-guard.js"
@@ -11,7 +7,7 @@ import { parse } from "../_validate.js"
 import { auditRead } from "./_audit-read.js"
 import { makeDrizzleMediaRepository } from "../../services/media-repository.drizzle.js"
 import { makePrivateMediaPresigner } from "../../services/media-presign.js"
-import type { MediaRepository } from "../../services/media-intake-service.js"
+import type { MediaRepository } from "../../services/media-repository.js"
 import { MEDIA_PRIVATE_GET_URL_TTL_SEC } from "../../services/media-intake-service.js"
 
 export interface AdminMediaOverrides {

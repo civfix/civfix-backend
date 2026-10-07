@@ -12,7 +12,6 @@ import type {
   NotificationType,
   RegisterForEventRequest,
   RegisterForEventResponse,
-  RegisterOutcome,
   RemoveEventRegistrationRequest,
   SetEventRegistrationNoteRequest,
   TransferEventRegistrationRequest,
@@ -24,6 +23,8 @@ import { assertNoSlur } from "../../abuse/slur-filter.js"
 import { eventEndedError, eventWindowOf, hasEventEnded } from "../cleanup-rules.js"
 import { sha256Hex } from "../../auth/crypto.js"
 import type { CounterStore } from "../../abuse/counter-store.js"
+import type { AdminAuditAction } from "../admin/audit.js"
+import { reserveCounterBudget } from "./counter-budget.js"
 import { validateAnswers } from "./question-validation.js"
 import {
   REGISTRATION_ROSTER_DEFAULT_LIMIT,
@@ -40,21 +41,23 @@ import type {
   RegistrationRecord,
   RegistrationSubject,
   SeatDraft,
-} from "./registration-repository.types.js"
+} from "./registration-repository.js"
 
-export const REGISTER_FLIP_COUNTER_KEY = "event:register"
+const REGISTER_FLIP_COUNTER_KEY = "event:register"
 
-export const REGISTER_FLIPS_PER_HOUR = 20
+const REGISTER_FLIPS_PER_HOUR = 20
 
-export const REGISTER_FLIP_WINDOW_SECONDS = 60 * 60
+const REGISTER_FLIP_WINDOW_SECONDS = 60 * 60
 
-export const HOST_ROSTER_READ_COUNTER_KEY = "host:rosterReads"
+const HOST_ROSTER_READ_COUNTER_KEY = "host:rosterReads"
 
-export const HOST_ROSTER_READS_PER_HOUR = 200
+const HOST_ROSTER_READS_PER_HOUR = 200
+
+const HOST_ROSTER_READ_WINDOW_SECONDS = 60 * 60
 
 export const HOST_TEAM_SIGNAL_CAP = 50
 
-export const WALKUP_IDEMPOTENCY_BUCKET_MS = 60_000
+const WALKUP_IDEMPOTENCY_BUCKET_MS = 60_000
 
 export function walkupIdempotencyKey(
   actorId: string,
@@ -81,7 +84,7 @@ export interface RegistrationNotifier {
 export interface RegistrationAudit {
   (input: {
     actorId: string | null
-    action: string
+    action: AdminAuditAction
     target: string
     meta?: Record<string, unknown>
   }): Promise<void>
@@ -150,25 +153,6 @@ export interface RegistrationService {
   }): Promise<void>
 }
 
-const REFUSAL_OUTCOMES: ReadonlySet<RegisterOutcome> = new Set<RegisterOutcome>([
-  "already_registered",
-  "waitlisted",
-  "full",
-  "party_too_large",
-  "sales_closed",
-  "registration_closed",
-  "ticket_type_not_found",
-  "access_code_required",
-  "access_code_invalid",
-  "answers_invalid",
-  "banned",
-  "closed",
-])
-
-export function isRegisterRefusal(outcome: RegisterOutcome): boolean {
-  return REFUSAL_OUTCOMES.has(outcome)
-}
-
 export function makeRegistrationService(deps: RegistrationServiceDeps): RegistrationService {
   const now = deps.now ?? (() => new Date())
   const newId = deps.newId ?? (() => crypto.randomUUID())
@@ -191,11 +175,11 @@ export function makeRegistrationService(deps: RegistrationServiceDeps): Registra
   function consentWriteOf(consent: EventConsentInput | undefined): ConsentWrite | null {
     if (consent === undefined) return null
     if (consent.termsVersion !== currentVersion("terms")) {
-      throw AppError.validation({ "consent.termsVersion": "out of date — re-accept the terms" })
+      throw AppError.validation({ "consent.termsVersion": "out of date, so re-accept the terms" })
     }
     if (consent.disclosureVersion !== currentVersion("privacy")) {
       throw AppError.validation({
-        "consent.disclosureVersion": "out of date — re-accept the privacy notice",
+        "consent.disclosureVersion": "out of date, so re-accept the privacy notice",
       })
     }
     return {
@@ -224,44 +208,34 @@ export function makeRegistrationService(deps: RegistrationServiceDeps): Registra
   }
 
   async function reserveFlipBudget(subject: RegistrationSubject): Promise<void> {
-    if (deps.counters === undefined) return
     const owner = subject.kind === "user" ? subject.userId : subject.guestId
-    let used: number
-    try {
-      used = await deps.counters.incr(
-        `${REGISTER_FLIP_COUNTER_KEY}:${owner}`,
-        REGISTER_FLIP_WINDOW_SECONDS,
-      )
-    } catch (err) {
-      deps.logger?.warn(
-        { err },
-        "registration: abuse counter unavailable; refusing the write (fail closed)",
-      )
-      throw AppError.rateLimited("Registration is temporarily unavailable. Try again shortly.")
-    }
-    if (used > REGISTER_FLIPS_PER_HOUR) {
-      throw AppError.rateLimited("Too many registration changes. Try again later.")
-    }
+    await reserveCounterBudget(
+      deps.counters,
+      {
+        key: `${REGISTER_FLIP_COUNTER_KEY}:${owner}`,
+        windowSeconds: REGISTER_FLIP_WINDOW_SECONDS,
+        cap: REGISTER_FLIPS_PER_HOUR,
+        unavailableLog: "registration: abuse counter unavailable; refusing the write (fail closed)",
+        unavailableMessage: "Registration is temporarily unavailable. Try again shortly.",
+        exceededMessage: "Too many registration changes. Try again later.",
+      },
+      deps.logger,
+    )
   }
 
   async function reserveRosterBudget(actorId: string): Promise<void> {
-    if (deps.counters === undefined) return
-    let used: number
-    try {
-      used = await deps.counters.incr(
-        `${HOST_ROSTER_READ_COUNTER_KEY}:${actorId}`,
-        REGISTER_FLIP_WINDOW_SECONDS,
-      )
-    } catch (err) {
-      deps.logger?.warn(
-        { err },
-        "roster: harvest counter unavailable; refusing the read (fail closed)",
-      )
-      throw AppError.rateLimited("The roster is temporarily unavailable.")
-    }
-    if (used > HOST_ROSTER_READS_PER_HOUR) {
-      throw AppError.rateLimited("Too many roster reads. Try again later.")
-    }
+    await reserveCounterBudget(
+      deps.counters,
+      {
+        key: `${HOST_ROSTER_READ_COUNTER_KEY}:${actorId}`,
+        windowSeconds: HOST_ROSTER_READ_WINDOW_SECONDS,
+        cap: HOST_ROSTER_READS_PER_HOUR,
+        unavailableLog: "roster: harvest counter unavailable; refusing the read (fail closed)",
+        unavailableMessage: "The roster is temporarily unavailable.",
+        exceededMessage: "Too many roster reads. Try again later.",
+      },
+      deps.logger,
+    )
   }
 
   async function notifyRegistered(
@@ -520,8 +494,13 @@ export function makeRegistrationService(deps: RegistrationServiceDeps): Registra
         now: now(),
       })
       if (outcome.kind === "not_found") throw AppError.notFound("Registration not found")
-      if (outcome.kind === "cancelled") {
-        await enqueueWaitlistPromotion(deps.jobs, [outcome.ticketTypeId], deps.logger)
+      const cancelledTicketTypeId = outcome.kind === "cancelled" ? outcome.ticketTypeId : null
+      await enqueueWaitlistPromotion(
+        deps.jobs,
+        [cancelledTicketTypeId, ...outcome.releasedWaitlistTicketTypeIds],
+        deps.logger,
+      )
+      if (outcome.kind === "cancelled" || outcome.releasedWaitlistTicketTypeIds.length > 0) {
         await eventChanged(input.id)
       }
       await deps.audit?.({
@@ -542,6 +521,7 @@ export function makeRegistrationService(deps: RegistrationServiceDeps): Registra
       })
       switch (outcome.kind) {
         case "transferred":
+          await enqueueWaitlistPromotion(deps.jobs, [outcome.previousTicketTypeId], deps.logger)
           await eventChanged(input.id)
           await deps.audit?.({
             actorId,
@@ -599,6 +579,7 @@ export function makeRegistrationService(deps: RegistrationServiceDeps): Registra
         idempotencyKey: walkupIdempotencyKey(actorId, name, input.partySize, at),
         idempotencyOwner: `user:${actorId}`,
         now: at,
+        checkIn: input.checkInNow ? { actorId, method: "walkup" } : null,
       })
 
       if (outcome.kind === "not_found") throw AppError.notFound("Cleanup not found")
@@ -607,18 +588,6 @@ export function makeRegistrationService(deps: RegistrationServiceDeps): Registra
       }
       const registration = outcome.registration
       if (registration === null) return { outcome: "already_registered", registration: null }
-
-      if (input.checkInNow) {
-        for (const seat of registration.seats) {
-          await deps.repo.checkInSeat({
-            cleanupId: input.id,
-            seatId: seat.id,
-            actorId,
-            method: "walkup",
-            now: at,
-          })
-        }
-      }
 
       await deps.audit?.({
         actorId,

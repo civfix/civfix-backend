@@ -1,19 +1,22 @@
-
 import type { Sql } from "../db/client.js"
 import {
   ReportStatusSchema,
   type ChatMessageDTO,
-  type PersonDTO,
   type ReportChatParticipantDTO,
 } from "@civfix/shared"
 import type { PresignMedia } from "./media-presign.js"
-import { monotonicReadWatermarkUpdate } from "./chat-read-state.drizzle.js"
-import { publicAuthorIdentity } from "./public-author.js"
-import { officialPersonFlag } from "../auth/official-account.js"
-import { blockedPairExpr, hiddenIdentity } from "./hidden-identity.js"
+import type { ReportChatMeta } from "./report-types.js"
+import { monotonicReadWatermarkUpdate } from "./read-watermark-repository.drizzle.js"
+import { blockedPairExpr } from "./blocks-sql.js"
+import { toRoomMemberPerson, type RoomMemberIdentityRow } from "./room-member-person.js"
+import type {
+  ReportChatMetaQueries,
+  ReportChatRepository,
+  ReportChatRole,
+} from "./report-chat-repository.js"
 
-export type ChatSystemPayload = NonNullable<NonNullable<ChatMessageDTO["system"]>>
-export type ReportSystemStatus = ChatSystemPayload["status"]
+type ChatSystemPayload = NonNullable<NonNullable<ChatMessageDTO["system"]>>
+type ReportSystemStatus = ChatSystemPayload["status"]
 
 export interface SystemChatRow {
   id: string
@@ -25,42 +28,13 @@ export interface SystemChatRow {
   system_body: string | null
 }
 
-export interface ReportMemberRowSelect {
-  user_id: string
-  role: "owner" | "member"
-  joined_at: string
-  display_name: string | null
-  handle: string | null
-  bio: string | null
-  avatar_url: string | null
-  user_deleted_at: Date | null
-  is_following: boolean
-  blocked_pair: boolean
+export interface ReportMemberRowSelect extends RoomMemberIdentityRow {
+  role: ReportChatRole
+  joined_at: Date
 }
 
 export function toReportParticipantDTO(r: ReportMemberRowSelect): ReportChatParticipantDTO {
-  const author = publicAuthorIdentity({
-    id: r.user_id,
-    displayName: r.display_name ?? "",
-    handle: r.handle,
-    avatarUrl: r.avatar_url,
-    deletedAt: r.user_deleted_at,
-  })
-  const hidden = r.blocked_pair && !author.deleted ? hiddenIdentity(r.user_id) : null
-  const user: PersonDTO = {
-    id: r.user_id,
-    name: hidden?.name ?? author.name,
-    handle: hidden !== null ? null : author.handle,
-    bio: author.deleted || hidden !== null ? null : r.bio,
-    avatar: author.avatar,
-    ...(hidden === null && author.avatarUrl !== undefined ? { avatarUrl: author.avatarUrl } : {}),
-    followers: 0,
-    following: 0,
-    isFollowing: r.is_following,
-    ...(author.deleted ? { deleted: true } : {}),
-    ...(author.deleted || hidden !== null ? {} : officialPersonFlag(r.user_id)),
-  }
-  return { user, role: r.role, joinedAt: r.joined_at }
+  return { user: toRoomMemberPerson(r), role: r.role, joinedAt: r.joined_at.toISOString() }
 }
 
 export const REPORT_CHAT_ROSTER_CAP = 200
@@ -87,29 +61,10 @@ export function mapSystemRow(row: SystemChatRow): ChatMessageDTO {
   }
 }
 
-export interface ReportChatRepository {
-  isMember(reportId: string, userId: string): Promise<boolean>
-  roleOf(reportId: string, userId: string): Promise<"owner" | "member" | null>
-  join(reportId: string, userId: string, role?: "owner" | "member"): Promise<void>
-  leave(reportId: string, userId: string): Promise<void>
-  advanceReadWatermark(reportId: string, userId: string, upToMessageId: string): Promise<void>
-  markRead(reportId: string, userId: string, at: Date): Promise<void>
-  insertSystemMessage(input: {
-    reportId: string
-    status: string
-    kind?: string | null
-    note?: string | null
-    body?: string | null
-  }): Promise<ChatMessageDTO>
-  listMemberIds(reportId: string, limit?: number): Promise<string[]>
-  countMembers(reportId: string): Promise<number>
-  listMembers(reportId: string, viewerId: string): Promise<ReportChatParticipantDTO[]>
-}
-
 export function makeReportChatRepository(
   sql: Sql,
   _presignMedia?: PresignMedia,
-): ReportChatRepository {
+): ReportChatRepository & ReportChatMetaQueries {
   return {
     async isMember(reportId: string, userId: string): Promise<boolean> {
       const rows = await sql<{ exists: boolean }[]>`
@@ -121,8 +76,8 @@ export function makeReportChatRepository(
       return rows[0]?.exists ?? false
     },
 
-    async roleOf(reportId: string, userId: string): Promise<"owner" | "member" | null> {
-      const rows = await sql<{ role: "owner" | "member" }[]>`
+    async roleOf(reportId: string, userId: string): Promise<ReportChatRole | null> {
+      const rows = await sql<{ role: ReportChatRole }[]>`
         SELECT role FROM report_chat_members
         WHERE report_id = ${reportId} AND user_id = ${userId}
         LIMIT 1
@@ -130,7 +85,7 @@ export function makeReportChatRepository(
       return rows[0]?.role ?? null
     },
 
-    async join(reportId: string, userId: string, role: "owner" | "member" = "member"): Promise<void> {
+    async join(reportId: string, userId: string, role: ReportChatRole = "member"): Promise<void> {
       await sql`
         INSERT INTO report_chat_members (report_id, user_id, role)
         VALUES (${reportId}, ${userId}, ${role})
@@ -145,7 +100,11 @@ export function makeReportChatRepository(
       `
     },
 
-    async advanceReadWatermark(reportId: string, userId: string, upToMessageId: string): Promise<void> {
+    async advanceReadWatermark(
+      reportId: string,
+      userId: string,
+      upToMessageId: string,
+    ): Promise<void> {
       await monotonicReadWatermarkUpdate(
         sql,
         "report_chat_members",
@@ -232,6 +191,50 @@ export function makeReportChatRepository(
         LIMIT ${REPORT_CHAT_ROSTER_CAP}
       `
       return rows.map(toReportParticipantDTO)
+    },
+
+    async loadChatMeta(reportId: string, viewerUserId: string | null): Promise<ReportChatMeta> {
+      const rows = await sql<
+        { joined: boolean; member_count: number; message_count: number; unread: number }[]
+      >`
+        SELECT
+          EXISTS (
+            SELECT 1 FROM report_chat_members m
+            WHERE m.report_id = ${reportId} AND m.user_id = ${viewerUserId}
+          ) AS joined,
+          (
+            SELECT count(*)::int FROM report_chat_members m WHERE m.report_id = ${reportId}
+          ) AS member_count,
+          (
+            SELECT count(*)::int
+            FROM chat_messages cm
+            WHERE cm.report_id = ${reportId} AND cm.deleted_at IS NULL
+          ) AS message_count,
+          COALESCE((
+            SELECT count(*)::int
+            FROM report_chat_members mem
+            JOIN chat_messages cm ON cm.report_id = mem.report_id
+            WHERE mem.report_id = ${reportId}
+              AND mem.user_id = ${viewerUserId}
+              AND cm.deleted_at IS NULL
+              AND cm.sender_id IS DISTINCT FROM ${viewerUserId}
+              AND cm.created_at > GREATEST(mem.joined_at, COALESCE(mem.last_read_at, to_timestamp(0)))
+          ), 0) AS unread
+      `
+      const row = rows[0]
+      return {
+        joined: row?.joined ?? false,
+        memberCount: row?.member_count ?? 0,
+        messageCount: row?.message_count ?? 0,
+        unread: row?.unread ?? 0,
+      }
+    },
+
+    async isReportVerified(userId: string): Promise<boolean> {
+      const rows = await sql<{ report_verified: boolean }[]>`
+        SELECT report_verified FROM user_moderation WHERE user_id = ${userId} LIMIT 1
+      `
+      return rows[0]?.report_verified ?? false
     },
   }
 }

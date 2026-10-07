@@ -1,4 +1,3 @@
-
 import { afterAll, beforeAll, describe, expect, it } from "vitest"
 import { withPg, type PgHarness, testHandle } from "../helpers/pg.js"
 import { makeDrizzlePostRepository } from "../../src/services/post-repository.drizzle.js"
@@ -7,7 +6,11 @@ import { makePostService, type PostService } from "../../src/services/post-servi
 const pg = await withPg()
 
 const echoPresign = (r2Key: string, thumbKey: string | null) =>
-  Promise.resolve(thumbKey === null ? { url: `m://${r2Key}` } : { url: `m://${r2Key}`, thumbUrl: `m://${thumbKey}` })
+  Promise.resolve(
+    thumbKey === null
+      ? { url: `m://${r2Key}` }
+      : { url: `m://${r2Key}`, thumbUrl: `m://${thumbKey}` },
+  )
 const echoAvatar = (k: string) => Promise.resolve(`m://${k}`)
 
 describe.skipIf(!pg)("posts: repost lifecycle + public feed (integration)", () => {

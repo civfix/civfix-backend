@@ -65,14 +65,17 @@ interface Harness {
   failures: BroadcastFailure[]
 }
 
-function harness(opts: { pubsub?: ChatPubSub; dedupe?: SendDedupeStore | undefined } = {}): Harness {
+function harness(
+  opts: { pubsub?: ChatPubSub; dedupe?: SendDedupeStore | undefined } = {},
+): Harness {
   const chat = new WsChatService({ repo, pubsub: opts.pubsub ?? new InMemoryChatPubSub() })
   const failures: BroadcastFailure[] = []
   const sendResilience = makeSendResilience({
     dedupe: opts.dedupe,
     findRoomMessage: (_kind, roomId, messageId, viewerUserId) =>
       repo.findMessage(roomId, messageId, viewerUserId),
-    deliverLocally: (roomKey, frame, excludeConnId) => chat.deliverLocal(roomKey, frame, excludeConnId),
+    deliverLocally: (roomKey, frame, excludeConnId) =>
+      chat.deliverLocal(roomKey, frame, excludeConnId),
     onBroadcastFailure: (info) => failures.push(info),
     sleep: () => Promise.resolve(),
     jitter: () => 0,
@@ -81,7 +84,8 @@ function harness(opts: { pubsub?: ChatPubSub; dedupe?: SendDedupeStore | undefin
     joinRoom: (room, conn, userId) => chat.joinRoom(room, conn, userId),
     leaveRoom: (room, conn) => chat.leaveRoom(room, conn),
     persist: (input) => chat.persist(input),
-    history: (room, before, limit, viewer, around) => chat.history(room, before, limit, viewer, around),
+    history: (room, before, limit, viewer, around) =>
+      chat.history(room, before, limit, viewer, around),
     broadcast: (room, msg, o) => chat.broadcast(room, msg, o),
     broadcastEvent: (room, frame, o) => chat.broadcastEvent(room, frame, o),
     sendResilience,
@@ -91,7 +95,13 @@ function harness(opts: { pubsub?: ChatPubSub; dedupe?: SendDedupeStore | undefin
 
 function sessionFor(userId: string, conn: MockConnection, h: Harness): GatewaySession {
   const deps: GatewayDeps = { chat: h.gatewayChat, isMember: memberOf }
-  return { userId, conn, joined: new Set<string>(), typingThrottle: new Map<string, number>(), deps }
+  return {
+    userId,
+    conn,
+    joined: new Set<string>(),
+    typingThrottle: new Map<string, number>(),
+    deps,
+  }
 }
 
 beforeEach(() => {
@@ -197,7 +207,10 @@ describe("H17: a failing Redis publish never fails the sender", () => {
     const h = harness()
     const conn = new MockConnection("A")
     const session = sessionFor(ALICE, conn, h)
-    session.deps.chat = { ...h.gatewayChat, broadcast: () => Promise.reject(new Error("redis down")) }
+    session.deps.chat = {
+      ...h.gatewayChat,
+      broadcast: () => Promise.reject(new Error("redis down")),
+    }
 
     await expect(handleClientFrame(session, sendFrame("c1"))).resolves.toBeUndefined()
     expect(conn.framesOfType("ack")).toHaveLength(1)
@@ -360,8 +373,12 @@ describe("H17: clientId send idempotency", () => {
   })
 
   it("keys the reservation by user + room + clientId", () => {
-    expect(sendDedupeKey(ALICE, roomKeyFor("dm", ROOM), "c1")).toBe(`chat:send:${ALICE}:dm:${ROOM}:c1`)
-    expect(sendDedupeKey(ALICE, roomKeyFor("cleanup", ROOM), "c1")).toBe(`chat:send:${ALICE}:${ROOM}:c1`)
+    expect(sendDedupeKey(ALICE, roomKeyFor("dm", ROOM), "c1")).toBe(
+      `chat:send:${ALICE}:dm:${ROOM}:c1`,
+    )
+    expect(sendDedupeKey(ALICE, roomKeyFor("cleanup", ROOM), "c1")).toBe(
+      `chat:send:${ALICE}:${ROOM}:c1`,
+    )
   })
 
   it("rejects an over-long clientId before anything is persisted", async () => {
@@ -386,7 +403,7 @@ describe("H17: a hung Redis does not stall the per-socket frame chain", () => {
   const COLD_START_SLACK_MS = 500
 
   it("reserve is bounded, commit is fire-and-forget, so a send settles on the broadcast budget", async () => {
-    const hang = <T,>(): Promise<T> => new Promise<T>(() => undefined)
+    const hang = <T>(): Promise<T> => new Promise<T>(() => undefined)
     const hungDedupe: SendDedupeStore = {
       reserve: () => hang<SendReservation>(),
       commit: () => hang<void>(),

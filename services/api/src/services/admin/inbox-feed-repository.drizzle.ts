@@ -1,9 +1,14 @@
-import type { Sql } from "../../db/client.js"
-import { cursorAtSql, cursorInstantSql } from "../../db/cursor-helpers.js"
-import { clampLimit, decodeCursor, encodeCursor } from "./pagination.js"
+import type { Sql, SqlFragment } from "../../db/client.js"
+import { clampLimit } from "./pagination.js"
+import {
+  keysetInstant,
+  keysetPredicate,
+  paginateKeyset,
+  parseKeysetCursor,
+} from "../../db/cursor-helpers.js"
 import { HTML_PREVIEW_SOURCE_CHARS, PREVIEW_SOURCE_CHARS, toPreview } from "./mail-preview.js"
 import { normalizeAuthVerdict, replyPublication } from "./mail-mappers.js"
-import { ilikeAnyOf, type SqlFragment } from "./sql-fragments.js"
+import { ilikeAnyOf } from "./sql-fragments.js"
 import {
   INBOUND_AUTH_VERDICT_HEADER,
   toListItem,
@@ -90,28 +95,24 @@ function toInboxFeedItem(row: InboxFeedRow): InboxFeedItemDTO {
 }
 
 export function toInboxFeedPage(rows: readonly InboxFeedRow[], limit: number): InboxFeedResponse {
-  const page = rows.slice(0, limit)
-  const last = page[page.length - 1]
-  const hasMore = rows.length > limit && last !== undefined
-  return {
-    items: page.map(toInboxFeedItem),
-    nextCursor: hasMore ? encodeCursor({ createdAt: last.cursor_at, id: last.id }) : null,
-  }
+  const { items, nextCursor } = paginateKeyset(rows, limit, (r) => ({
+    atText: r.cursor_at,
+    id: r.id,
+  }))
+  return { items: items.map(toInboxFeedItem), nextCursor }
 }
 
 export function makeDrizzleInboxFeedRepository(sql: Sql): InboxFeedRepository {
   return {
     async list(query: InboxFeedQuery): Promise<InboxFeedResponse> {
       const limit = clampLimit(query.limit)
-      const anchor = decodeCursor(query.cursor, true)
+      const anchor = parseKeysetCursor(query.cursor)
       const filter = query.filter ?? "all"
       const q = query.q?.trim() ?? ""
       const search = (columns: SqlFragment[]): SqlFragment =>
         q === "" ? sql`` : sql`AND ${ilikeAnyOf(sql, columns, q)}`
       const before = (ts: SqlFragment, id: SqlFragment): SqlFragment =>
-        anchor === null
-          ? sql``
-          : sql`AND (${ts}, ${id}) < (${cursorAtSql(sql, anchor)}, ${anchor.id}::uuid)`
+        anchor === null ? sql`` : sql`AND ${keysetPredicate(sql, ts, id, anchor)}`
 
       const branches: SqlFragment[] = []
       if (INBOX_FEED_EMAIL_FILTERS.has(filter)) {
@@ -165,7 +166,7 @@ export function makeDrizzleInboxFeedRepository(sql: Sql): InboxFeedRepository {
 
       const union = branches.reduce((acc, branch) => sql`${acc} UNION ALL ${branch}`)
       const rows = await sql<InboxFeedRow[]>`
-        SELECT feed.*, ${cursorInstantSql(sql, sql`feed.ts`)} AS cursor_at
+        SELECT feed.*, ${keysetInstant(sql, sql`feed.ts`)} AS cursor_at
         FROM (${union}) feed
         ORDER BY ts DESC, id DESC
         LIMIT ${limit + 1}

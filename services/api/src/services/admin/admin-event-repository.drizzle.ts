@@ -1,16 +1,24 @@
-
-import type { Sql } from "../../db/client.js"
-import { decodeCursor, clampLimit, paginate } from "./pagination.js"
-import { writeAudit } from "./audit.js"
-import { adminEventStatusExpr } from "../cleanup-sql.js"
+import type { Queryable, Sql, SqlFragment } from "../../db/client.js"
+import { clampLimit } from "./pagination.js"
 import {
-  eventSelect,
-  flaggedEventExpr,
-  searchEventsFragment,
-  toRecord,
-  type EventRowSelect,
-} from "./admin-event-sql.js"
-import { andAll, type SqlFragment } from "./sql-fragments.js"
+  isUuid,
+  keysetInstant,
+  keysetPredicate,
+  paginateKeyset,
+  parseKeysetCursor,
+} from "../../db/cursor-helpers.js"
+import { insertAuditRow } from "./audit-repository.drizzle.js"
+import { adminEventStatusExpr } from "../cleanup-sql.js"
+import { personSelect } from "./admin-person-sql.js"
+import { toPersonRecord } from "./admin-person.js"
+import { toEventStatus } from "./event-status.js"
+import {
+  ADMIN_EVENT_MESSAGE_CAP,
+  EVENT_NOTE_FLAGGED,
+  EVENT_NOTE_UNFLAGGED,
+  eventOutcomeNote,
+} from "./admin-event-helpers.js"
+import { andAll, ilikeAnyOf } from "./sql-fragments.js"
 import { publicReportFilter } from "../report-sql.js"
 import { CIVFIX_OFFICIAL_USER_ID } from "../../auth/official-account.js"
 import type {
@@ -18,14 +26,125 @@ import type {
   AdminEventRecord,
   AdminEventRepository,
   AdminEventTimelineRecord,
+  AdminOrganizerRecord,
   ListEventsArgs,
-} from "./admin-event-service.js"
+} from "./admin-event-repository.js"
 import type { LinkedReportView } from "../cleanup-service.js"
-import type { AdminEventCounts, ReportCategory, ReportStatus } from "@civfix/shared"
-
-const MESSAGE_CAP = 100
+import type { AdminEventCounts, EventKind, ReportCategory, ReportStatus } from "@civfix/shared"
 
 const LINK_REPORTS_MAX = 100
+
+const SYSTEM_ACTOR_NAME = "system"
+
+// eventSelect and countByBucket both build their flagged column/filter from this so they cannot drift.
+export function flaggedEventExpr(sql: Queryable): SqlFragment {
+  return sql`COALESCE((
+    SELECT ct.kind = 'flag'
+    FROM cleanup_timeline ct
+    WHERE ct.cleanup_id = c.id AND ct.kind IN ('flag', 'unflag')
+    ORDER BY ct.created_at DESC, ct.id DESC
+    LIMIT 1
+  ), false)`
+}
+
+// Assumes the query selects `cleanups c` LEFT JOIN `users u`.
+function searchEventsFragment(sql: Queryable, q: string | null): SqlFragment {
+  if (q === null) return sql``
+  // ilikeAnyOf escapes the LIKE metacharacters so %/_ in q match literally (wildcard injection/trigram DoS).
+  return sql`AND ${ilikeAnyOf(
+    sql,
+    [sql`c.title`, sql`c.address`, sql`u.display_name`, sql`u.handle::text`],
+    q,
+    isUuid(q) ? [sql`c.id = ${q}::uuid`] : [],
+  )}`
+}
+
+export interface EventRowSelect {
+  id: string
+  status: string
+  event_kind: EventKind
+  flagged: boolean
+  title: string | null
+  place: string | null
+  address: string | null
+  description: string | null
+  attendees: string
+  capacity: number | null
+  bags: number
+  lat: number
+  lng: number
+  scheduled_at: Date
+  cursor_at: string | null
+  organizer_id: string | null
+  organizer_name: string | null
+  organizer_handle: string | null
+  organizer_email_verified: boolean | null
+  organizer_has_oauth: boolean | null
+  organizer_joined: Date | null
+}
+
+function toRecord(r: EventRowSelect): AdminEventRecord {
+  const organizer: AdminOrganizerRecord | null = toPersonRecord(
+    {
+      id: r.organizer_id,
+      name: r.organizer_name,
+      handle: r.organizer_handle,
+      emailVerified: r.organizer_email_verified,
+      hasOauth: r.organizer_has_oauth,
+      joinedAt: r.organizer_joined,
+    },
+    "Organizer",
+  )
+  return {
+    id: r.id,
+    status: toEventStatus(r.status),
+    eventKind: r.event_kind,
+    flagged: r.flagged,
+    title: r.title ?? "Cleanup",
+    place: r.place ?? "",
+    attendees: Number(r.attendees ?? "0"),
+    capacity: r.capacity,
+    bags: r.bags,
+    organizer,
+    desc: r.description ?? "",
+    address: r.address ?? "",
+    lat: r.lat,
+    lng: r.lng,
+    scheduledAt: r.scheduled_at,
+  }
+}
+
+// Cleanups carry only a free-text address and no jurisdiction, so the place label is that address.
+function eventSelect(
+  sql: Queryable,
+  extraWhere: SqlFragment,
+  orderLimit: SqlFragment,
+): SqlFragment {
+  return sql`
+    SELECT
+      c.id,
+      ${adminEventStatusExpr(sql)} AS status,
+      c.event_kind,
+      ${flaggedEventExpr(sql)} AS flagged,
+      c.title,
+      c.address AS place,
+      c.address,
+      c.description,
+      (SELECT COUNT(*) FROM cleanup_members cm WHERE cm.cleanup_id = c.id)::text AS attendees,
+      c.capacity,
+      c.bags,
+      ST_Y(c.geom) AS lat,
+      ST_X(c.geom) AS lng,
+      c.scheduled_at,
+      ${keysetInstant(sql, sql`c.scheduled_at`)} AS cursor_at,
+      ${personSelect(sql, "u", "organizer")}
+    FROM cleanups c
+    LEFT JOIN users u ON u.id = c.organizer_user_id
+    WHERE true
+    ${extraWhere}
+    ${orderLimit}
+  `
+}
 
 export function makeDrizzleAdminEventRepository(sql: Sql): AdminEventRepository {
   return {
@@ -33,7 +152,7 @@ export function makeDrizzleAdminEventRepository(sql: Sql): AdminEventRepository 
       args: ListEventsArgs,
     ): Promise<{ records: AdminEventRecord[]; nextCursor: string | null }> {
       const limit = clampLimit(args.limit)
-      const anchor = decodeCursor(args.cursor, true)
+      const anchor = parseKeysetCursor(args.cursor)
 
       const conds: SqlFragment[] = []
       if (args.status !== null) {
@@ -52,14 +171,14 @@ export function makeDrizzleAdminEventRepository(sql: Sql): AdminEventRepository 
         )
       }
       if (anchor !== null) {
-        conds.push(sql`AND (c.scheduled_at, c.id) < (${anchor.createdAt}, ${anchor.id}::uuid)`)
+        conds.push(sql`AND ${keysetPredicate(sql, sql`c.scheduled_at`, sql`c.id`, anchor)}`)
       }
       const extraWhere = andAll(sql, conds)
       const orderLimit = sql`ORDER BY c.scheduled_at DESC, c.id DESC LIMIT ${limit + 1}`
 
       const rows = (await eventSelect(sql, extraWhere, orderLimit)) as unknown as EventRowSelect[]
-      const { items, nextCursor } = paginate(rows, limit, (r) => ({
-        at: r.scheduled_at,
+      const { items, nextCursor } = paginateKeyset(rows, limit, (r) => ({
+        atText: r.cursor_at,
         id: r.id,
       }))
       return { records: items.map(toRecord), nextCursor }
@@ -117,7 +236,7 @@ export function makeDrizzleAdminEventRepository(sql: Sql): AdminEventRepository 
       return rows.map((r) => ({
         kind: r.kind,
         note: r.note,
-        who: r.who ?? "system",
+        who: r.who ?? SYSTEM_ACTOR_NAME,
         createdAt: r.created_at,
       }))
     },
@@ -128,26 +247,27 @@ export function makeDrizzleAdminEventRepository(sql: Sql): AdminEventRepository 
         FROM chat_messages m
         LEFT JOIN users u ON u.id = m.sender_id
         WHERE m.cleanup_id = ${id} AND m.deleted_at IS NULL
-        ORDER BY m.created_at ASC
-        LIMIT ${MESSAGE_CAP}
+        ORDER BY m.created_at DESC, m.id DESC
+        LIMIT ${ADMIN_EVENT_MESSAGE_CAP}
       `
-      return rows.map((r) => ({
-        who: r.who ?? "system",
+      return rows.reverse().map((r) => ({
+        who: r.who ?? SYSTEM_ACTOR_NAME,
         text: r.body ?? "",
         createdAt: r.created_at,
       }))
     },
 
-    async setBags(
-      id: string,
-      input: { bags: number; actorId: string | null },
-    ): Promise<boolean> {
+    async setBags(id: string, input: { bags: number; actorId: string | null }): Promise<boolean> {
       return sql.begin(async (tx) => {
         const updated = await tx<{ id: string }[]>`
           UPDATE cleanups SET bags = ${input.bags} WHERE id = ${id} RETURNING id
         `
         if (updated.length === 0) return false
-        await writeAudit(tx, {
+        await tx`
+          INSERT INTO cleanup_timeline (cleanup_id, kind, note, actor_id)
+          VALUES (${id}, 'outcome', ${eventOutcomeNote(input.bags)}, ${input.actorId})
+        `
+        await insertAuditRow(tx, {
           actorId: input.actorId,
           action: "event.outcome_logged",
           target: `cleanup:${id}`,
@@ -162,7 +282,9 @@ export function makeDrizzleAdminEventRepository(sql: Sql): AdminEventRepository 
       input: { reason: string | null; actorId: string | null },
     ): Promise<boolean | null> {
       return sql.begin(async (tx) => {
-        const exists = await tx<{ id: string }[]>`SELECT id FROM cleanups WHERE id = ${id} LIMIT 1`
+        const exists = await tx<{ id: string }[]>`
+          SELECT id FROM cleanups WHERE id = ${id} FOR NO KEY UPDATE
+        `
         if (exists.length === 0) return null
 
         const latest = await tx<{ kind: string }[]>`
@@ -177,11 +299,11 @@ export function makeDrizzleAdminEventRepository(sql: Sql): AdminEventRepository 
           INSERT INTO cleanup_timeline (cleanup_id, kind, note, actor_id)
           VALUES (
             ${id}, ${nowFlagged ? "flag" : "unflag"},
-            ${nowFlagged ? "Flagged for review" : "Flag cleared"},
+            ${nowFlagged ? EVENT_NOTE_FLAGGED : EVENT_NOTE_UNFLAGGED},
             ${input.actorId}
           )
         `
-        await writeAudit(tx, {
+        await insertAuditRow(tx, {
           actorId: input.actorId,
           action: nowFlagged ? "event.flagged" : "event.unflagged",
           target: `cleanup:${id}`,
@@ -208,7 +330,7 @@ export function makeDrizzleAdminEventRepository(sql: Sql): AdminEventRepository 
           INSERT INTO cleanup_timeline (cleanup_id, kind, note, actor_id)
           VALUES (${id}, 'cancel', ${input.note}, ${input.actorId})
         `
-        await writeAudit(tx, {
+        await insertAuditRow(tx, {
           actorId: input.actorId,
           action: "event.cancelled",
           target: `cleanup:${id}`,
@@ -241,7 +363,7 @@ export function makeDrizzleAdminEventRepository(sql: Sql): AdminEventRepository 
           WHERE cm.cleanup_id = ${id}
           RETURNING user_id
         `
-        await writeAudit(tx, {
+        await insertAuditRow(tx, {
           actorId: input.actorId,
           action: "event.message_posted",
           target: `cleanup:${id}`,
@@ -332,7 +454,7 @@ export function makeDrizzleAdminEventRepository(sql: Sql): AdminEventRepository 
             FROM unnest(${linked}::uuid[]) AS rid
           `
         }
-        await writeAudit(tx, {
+        await insertAuditRow(tx, {
           actorId,
           action: "event.reports_linked",
           target: `cleanup:${id}`,
@@ -360,7 +482,7 @@ export function makeDrizzleAdminEventRepository(sql: Sql): AdminEventRepository 
           INSERT INTO cleanup_timeline (cleanup_id, kind, note, actor_id)
           VALUES (${id}, 'report_unlinked', ${`Unlinked report ${reportId}`}, ${actorId})
         `
-        await writeAudit(tx, {
+        await insertAuditRow(tx, {
           actorId,
           action: "event.report_unlinked",
           target: `cleanup:${id}`,

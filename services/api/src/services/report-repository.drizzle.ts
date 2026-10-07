@@ -7,24 +7,32 @@ import type {
   ReportType,
   ReportVisibility,
 } from "@civfix/shared"
-import type { Queryable, Sql } from "../db/client.js"
-import { paginate, parseTimeCursor } from "../db/cursor-helpers.js"
-import { isPubliclyVisibleStatus } from "./report-visibility.js"
+import type { Queryable, Sql, SqlFragment } from "../db/client.js"
+import {
+  keysetInstant,
+  keysetPredicate,
+  paginateKeyset,
+  parseKeysetCursor,
+} from "../db/cursor-helpers.js"
+import { isPubliclyVisibleStatus, ownerStatusTransition } from "./report-visibility.js"
 import { allocateReportReferenceCode } from "../db/reference-code.js"
-import { escapeLike } from "./admin/like.js"
+import { likeContains } from "../db/like.js"
+import type { ReportVisibilityTimelineKind } from "./report-types.js"
 import type {
   BBox,
   CreateReportTxArgs,
   CreateReportTxResult,
+  OwnerToggleStatus,
   ReportMapPoint,
   ReportMediaView,
   ReportRecord,
   ReportRepository,
   ReportTimelineView,
-  ReportVisibilityTimelineKind,
-} from "./report-service.types.js"
-import { REPORT_CREATE_SCOPE } from "./report-service.types.js"
+} from "./report-repository.js"
 import { servedKeyExpr, servableMediaFilter } from "./media-served-key.js"
+import { claimableAsReportMedia } from "./media-bindings.js"
+import { lockUploadsForClaimIn } from "./media-claim-repository.drizzle.js"
+import { uploadersOf } from "./media-uploader.js"
 import {
   reportColumns,
   selectPublicPins,
@@ -37,20 +45,9 @@ import {
   type TimelineRowSelect,
 } from "./report-sql.js"
 import { touchUserActivity } from "../db/sql/user-activity.js"
-
-type SqlFragment = postgres.Fragment
-
-const PG_UNIQUE_VIOLATION = "23505"
+import { isUniqueViolation } from "../db/pg-errors.js"
 
 const REPORT_SEARCH_MIN_QUERY_LENGTH = 3
-
-function isUniqueViolation(err: unknown): boolean {
-  return (
-    typeof err === "object" &&
-    err !== null &&
-    (err as { code?: unknown }).code === PG_UNIQUE_VIOLATION
-  )
-}
 
 function notOwnerOutcome(row: {
   status: ReportStatus
@@ -58,6 +55,75 @@ function notOwnerOutcome(row: {
 }): "not_found" | "forbidden" {
   const publiclyVisible = isPubliclyVisibleStatus(row.status) && row.visibility === "public"
   return publiclyVisible ? "forbidden" : "not_found"
+}
+
+interface OwnerLockRow {
+  reporter_user_id: string | null
+  deleted_at: Date | null
+  status: ReportStatus
+  visibility: ReportVisibility
+}
+
+// Locks the row for the rest of the transaction, so the ownership verdict cannot go stale before the write.
+async function lockOwnedReport(
+  tx: Queryable,
+  reportId: string,
+  userId: string,
+): Promise<{ row: OwnerLockRow } | { outcome: "not_found" | "forbidden" }> {
+  const rows = await tx<OwnerLockRow[]>`
+          SELECT reporter_user_id, deleted_at, status, visibility
+          FROM reports
+          WHERE id = ${reportId}
+          LIMIT 1
+          FOR UPDATE
+        `
+  const row = rows[0]
+  if (!row || row.deleted_at !== null) return { outcome: "not_found" }
+  if (row.reporter_user_id !== userId) return { outcome: notOwnerOutcome(row) }
+  return { row }
+}
+
+// An asset bound to a post, a chat/DM message or any other owner is never re-bindable to a report, or
+// the holder of an uploadId could cross-publish private media into a public report gallery.
+async function claimReportMedia(
+  tx: postgres.TransactionSql,
+  args: CreateReportTxArgs,
+): Promise<void> {
+  await lockUploadsForClaimIn(tx, args.mediaUploadIds)
+  const claimed = await tx<{ upload_id: string }[]>`
+              UPDATE media_assets
+              SET report_id = ${args.reportId}
+              WHERE upload_id IN ${tx(args.mediaUploadIds)}
+                AND (report_id IS NULL OR report_id = ${args.reportId})
+                AND post_id IS NULL AND chat_message_id IS NULL
+                AND ${claimableAsReportMedia(
+                  tx,
+                  uploadersOf({
+                    userId: args.reporterUserId,
+                    guestAnonSessionId: args.guestAnonSessionId,
+                  }),
+                )}
+                AND (status = 'ready' OR (status = 'validating' AND finalized_at IS NOT NULL))
+              RETURNING upload_id
+            `
+  if (claimed.length !== new Set(args.mediaUploadIds).size) {
+    throw AppError.validation({
+      mediaUploadIds: "One or more media uploads are unavailable.",
+    })
+  }
+}
+
+export async function isReportOwnedBy(
+  sql: Queryable,
+  reportId: string,
+  userId: string,
+): Promise<boolean> {
+  const rows = await sql<{ reporter_user_id: string | null }[]>`
+    SELECT reporter_user_id FROM reports
+    WHERE id = ${reportId} AND deleted_at IS NULL
+    LIMIT 1
+  `
+  return rows[0]?.reporter_user_id === userId
 }
 
 export function makeDrizzleReportRepository(sql: Sql): ReportRepository {
@@ -182,23 +248,7 @@ export function makeDrizzleReportRepository(sql: Sql): ReportRepository {
           `
 
           if (args.mediaUploadIds.length > 0) {
-            const claimed = await tx<{ upload_id: string }[]>`
-              UPDATE media_assets
-              SET report_id = ${args.reportId}
-              WHERE upload_id IN ${tx(args.mediaUploadIds)}
-                AND (report_id IS NULL OR report_id = ${args.reportId})
-                -- L18: an asset already bound to a post or a chat/DM message must NOT be re-bindable to a
-                -- report. Guarding only report_id let the holder of an uploadId cross-publish an image from
-                -- a private DM into a public report gallery. Mirrors the post path's claim predicate.
-                AND post_id IS NULL AND chat_message_id IS NULL
-                AND (status = 'ready' OR (status = 'validating' AND finalized_at IS NOT NULL))
-              RETURNING upload_id
-            `
-            if (claimed.length !== new Set(args.mediaUploadIds).size) {
-              throw AppError.validation({
-                mediaUploadIds: "One or more media uploads are unavailable.",
-              })
-            }
+            await claimReportMedia(tx, args)
           }
 
           await tx`
@@ -229,7 +279,7 @@ export function makeDrizzleReportRepository(sql: Sql): ReportRepository {
               ${args.idempotency.key},
               ${args.idempotency.scope},
               ${args.idempotency.userOrAnon},
-              ${sql.json(dto as Parameters<typeof sql.json>[0])}
+              ${sql.json(dto)}
             )
           `
           return dto
@@ -304,11 +354,11 @@ export function makeDrizzleReportRepository(sql: Sql): ReportRepository {
       cursor: string | null,
       limit: number,
     ): Promise<{ records: ReportRecord[]; nextCursor: string | null }> {
-      const anchor = parseTimeCursor(cursor)
+      const anchor = parseKeysetCursor(cursor)
       const cursorFilter: SqlFragment =
-        anchor !== null ? sql`AND (created_at, id) < (${anchor.at}, ${anchor.id}::uuid)` : sql``
-      const rows = await sql<ReportRowSelect[]>`
-        SELECT ${reportColumns(sql)}
+        anchor !== null ? sql`AND ${keysetPredicate(sql, sql`created_at`, sql`id`, anchor)}` : sql``
+      const rows = await sql<(ReportRowSelect & { cursor_at: string | null })[]>`
+        SELECT ${reportColumns(sql)}, ${keysetInstant(sql, sql`created_at`)} AS cursor_at
         FROM reports
         WHERE reporter_user_id = ${userId}
           AND deleted_at IS NULL
@@ -316,7 +366,10 @@ export function makeDrizzleReportRepository(sql: Sql): ReportRepository {
         ORDER BY created_at DESC, id DESC
         LIMIT ${limit + 1}
       `
-      const { items, nextCursor } = paginate(rows, limit, (r) => ({ at: r.created_at, id: r.id }))
+      const { items, nextCursor } = paginateKeyset(rows, limit, (r) => ({
+        atText: r.cursor_at,
+        id: r.id,
+      }))
       return { records: items.map(toRecord), nextCursor }
     },
 
@@ -354,9 +407,11 @@ export function makeDrizzleReportRepository(sql: Sql): ReportRepository {
       if (args.q !== null && args.q.length < REPORT_SEARCH_MIN_QUERY_LENGTH) {
         return { points: [], nextCursor: null }
       }
-      const anchor = parseTimeCursor(args.cursor)
+      const anchor = parseKeysetCursor(args.cursor)
       const cursorFilter: SqlFragment =
-        anchor !== null ? sql`AND (r.created_at, r.id) < (${anchor.at}, ${anchor.id}::uuid)` : sql``
+        anchor !== null
+          ? sql`AND ${keysetPredicate(sql, sql`r.created_at`, sql`r.id`, anchor)}`
+          : sql``
       const categoryFilter: SqlFragment =
         args.categories !== null && args.categories.length > 0
           ? sql`AND r.category IN ${sql(args.categories)}`
@@ -366,7 +421,7 @@ export function makeDrizzleReportRepository(sql: Sql): ReportRepository {
       const textFilter: SqlFragment =
         args.q !== null
           ? (() => {
-              const needle = `%${escapeLike(args.q)}%`
+              const needle = likeContains(args.q)
               return sql`AND (r.title ILIKE ${needle} ESCAPE '\\' OR r.addr ILIKE ${needle} ESCAPE '\\')`
             })()
           : sql``
@@ -377,8 +432,8 @@ export function makeDrizzleReportRepository(sql: Sql): ReportRepository {
         sql`ORDER BY r.created_at DESC, r.id DESC`,
         args.limit + 1,
       )
-      const { items, nextCursor } = paginate(rows, args.limit, (r) => ({
-        at: r.created_at,
+      const { items, nextCursor } = paginateKeyset(rows, args.limit, (r) => ({
+        atText: r.cursor_at,
         id: r.id,
       }))
       return { points: items.map(toMapPoint), nextCursor }
@@ -387,27 +442,14 @@ export function makeDrizzleReportRepository(sql: Sql): ReportRepository {
     async resolveByOwner(
       reportId: string,
       userId: string,
-      input: { status: ReportStatus; note: string },
-    ): Promise<"updated" | "not_found" | "forbidden" | "invalid_state"> {
+      input: { status: OwnerToggleStatus; note: string },
+    ): Promise<"updated" | "unchanged" | "not_found" | "forbidden" | "invalid_state"> {
       return sql.begin(async (tx) => {
-        const rows = await tx<
-          {
-            reporter_user_id: string | null
-            deleted_at: Date | null
-            status: ReportStatus
-            visibility: ReportVisibility
-          }[]
-        >`
-          SELECT reporter_user_id, deleted_at, status, visibility
-          FROM reports
-          WHERE id = ${reportId}
-          LIMIT 1
-          FOR UPDATE
-        `
-        const row = rows[0]
-        if (!row || row.deleted_at !== null) return "not_found"
-        if (row.reporter_user_id !== userId) return notOwnerOutcome(row)
-        if (!isPubliclyVisibleStatus(row.status)) return "invalid_state"
+        const locked = await lockOwnedReport(tx, reportId, userId)
+        if ("outcome" in locked) return locked.outcome
+        const { row } = locked
+        const transition = ownerStatusTransition(row.status, input.status)
+        if (transition !== "apply") return transition
 
         await tx`UPDATE reports SET status = ${input.status} WHERE id = ${reportId}`
         await tx`
@@ -424,23 +466,9 @@ export function makeDrizzleReportRepository(sql: Sql): ReportRepository {
       input: { visibility: ReportVisibility; note: string; kind: ReportVisibilityTimelineKind },
     ): Promise<"updated" | "unchanged" | "not_found" | "forbidden"> {
       return sql.begin(async (tx) => {
-        const rows = await tx<
-          {
-            reporter_user_id: string | null
-            deleted_at: Date | null
-            status: ReportStatus
-            visibility: ReportVisibility
-          }[]
-        >`
-          SELECT reporter_user_id, deleted_at, status, visibility
-          FROM reports
-          WHERE id = ${reportId}
-          LIMIT 1
-          FOR UPDATE
-        `
-        const row = rows[0]
-        if (!row || row.deleted_at !== null) return "not_found"
-        if (row.reporter_user_id !== userId) return notOwnerOutcome(row)
+        const locked = await lockOwnedReport(tx, reportId, userId)
+        if ("outcome" in locked) return locked.outcome
+        const { row } = locked
         if (row.visibility === input.visibility) return "unchanged"
 
         await tx`UPDATE reports SET visibility = ${input.visibility} WHERE id = ${reportId}`
@@ -453,5 +481,3 @@ export function makeDrizzleReportRepository(sql: Sql): ReportRepository {
     },
   }
 }
-
-export { REPORT_CREATE_SCOPE }

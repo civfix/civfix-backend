@@ -6,10 +6,11 @@ import {
   MIN_EVENT_DURATION_MINUTES,
 } from "@civfix/shared"
 import { MAX_EVENT_DURATION_MS, MIN_EVENT_DURATION_MS } from "../cleanup-rules.js"
+import { MINUTES_PER_HOUR } from "../../lib/time.js"
 
 export const DEFAULT_EVENT_TIME_ZONE = "America/Los_Angeles"
 
-export const EVENT_REMINDER_OFFSET_CHOICES: readonly number[] = [60, 180, 1440, 2880, 10080]
+const EVENT_REMINDER_OFFSET_CHOICES: readonly number[] = [60, 180, 1440, 2880, 10080]
 
 const FALLBACK_TIMEZONES: readonly string[] = [
   "UTC",
@@ -27,9 +28,8 @@ let timezoneSet: ReadonlySet<string> | null = null
 
 function supportedTimezones(): ReadonlySet<string> {
   if (timezoneSet !== null) return timezoneSet
-  const supported = (
-    Intl as unknown as { supportedValuesOf?: (key: string) => string[] }
-  ).supportedValuesOf
+  const supported = (Intl as unknown as { supportedValuesOf?: (key: string) => string[] })
+    .supportedValuesOf
   const values =
     typeof supported === "function" ? supported.call(Intl, "timeZone") : [...FALLBACK_TIMEZONES]
   timezoneSet = new Set(values.length > 0 ? values : FALLBACK_TIMEZONES)
@@ -92,7 +92,7 @@ export function assertEventWindow(input: {
     }
     if (durationMs > MAX_EVENT_DURATION_MS) {
       throw AppError.validation({
-        endsAt: `an event can run for at most ${MAX_EVENT_DURATION_MINUTES / 60} hours`,
+        endsAt: `an event can run for at most ${MAX_EVENT_DURATION_MINUTES / MINUTES_PER_HOUR} hours`,
       })
     }
   }

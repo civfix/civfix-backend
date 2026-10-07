@@ -1,9 +1,10 @@
+import type { VolunteerHoursAnomalyKind } from "./volunteer-hours-repository.js"
 
-import type { VolunteerHoursAnomalyKind } from "./volunteer-hours-service.js"
+const HOURS_ANOMALY_FLAG = "Volunteer hours anomaly"
 
-export const HOURS_ANOMALY_FLAG = "Volunteer hours anomaly"
+const HOURS_ROUNDING_FACTOR = 100
 
-export const HOURS_ANOMALY_REASONS: Record<VolunteerHoursAnomalyKind, string> = {
+const HOURS_ANOMALY_REASONS: Record<VolunteerHoursAnomalyKind, string> = {
   weekly_hours: "volunteer_hours.weekly_threshold",
   reciprocal_credit: "volunteer_hours.reciprocal_credit",
 }
@@ -27,9 +28,7 @@ export interface HoursAnomalyModerationItem {
   dedupeOpen: true
 }
 
-export function toHoursAnomalyModerationItem(
-  input: HoursAnomalyInput,
-): HoursAnomalyModerationItem {
+export function toHoursAnomalyModerationItem(input: HoursAnomalyInput): HoursAnomalyModerationItem {
   const desc =
     input.kind === "weekly_hours"
       ? `${round2(input.hours ?? 0)} volunteer hours credited to this account in the last 7 days; most recent credit on event ${input.cleanupId}.`
@@ -47,5 +46,5 @@ export function toHoursAnomalyModerationItem(
 }
 
 function round2(n: number): number {
-  return Math.round(n * 100) / 100
+  return Math.round(n * HOURS_ROUNDING_FACTOR) / HOURS_ROUNDING_FACTOR
 }

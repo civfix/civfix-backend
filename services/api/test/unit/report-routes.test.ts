@@ -1,11 +1,11 @@
 import { describe, it, expect, afterEach, vi } from "vitest"
 import type { FastifyInstance } from "fastify"
 import { FakeMailer } from "@civfix/shared/fakes"
-import { buildServer } from "../../src/server.js"
+import { makeServer } from "../../src/server.js"
 import { loadEnv } from "../../src/env.js"
 import { InMemoryCacheClient } from "../../src/auth/cache.js"
 import { makeInMemoryStores } from "../../src/auth/stores.js"
-import { buildAuthServices } from "../../src/auth/auth-services.js"
+import { makeAuthServices } from "../../src/auth/auth-services.js"
 import { StubJwksVerifier } from "../helpers/auth.js"
 import { InMemoryReportRepository } from "../helpers/reports.js"
 import { clientQuery } from "../helpers/query.js"
@@ -13,7 +13,7 @@ import type { ReportServiceOverrides } from "../../src/routes/reports.routes.js"
 
 /**
  * Route-level tests for the report plugin, run with NO database: an in-memory ReportRepository (+ fake
- * jurisdiction/presign) is injected via buildServer(opts.reportOverrides), and a full in-memory auth
+ * jurisdiction/presign) is injected via makeServer(opts.reportOverrides), and a full in-memory auth
  * bundle is injected so the [auth] routes get a real bearer session. Exercised through the real Fastify
  * app via app.inject. The Drizzle/PostGIS transaction path is covered by the Docker-gated integration
  * test instead.
@@ -23,7 +23,7 @@ interface Harness {
   app: FastifyInstance
   repo: InMemoryReportRepository
   mailer: FakeMailer
-  /** A signed-in user's bearer token + id (minted through the real OTP flow). */
+  /** Minted through the real OTP flow. */
   token: string
   userId: string
 }
@@ -46,7 +46,7 @@ async function makeHarness(
   const cache = new InMemoryCacheClient(() => Date.now())
   const mailer = new FakeMailer()
   const verifier = new StubJwksVerifier()
-  const authServices = buildAuthServices({
+  const authServices = makeAuthServices({
     stores,
     cache,
     mailer,
@@ -74,7 +74,7 @@ async function makeHarness(
       ),
   }
 
-  const app = await buildServer({ env, authServices, reportOverrides })
+  const app = await makeServer({ env, authServices, reportOverrides })
 
   // Sign in through the real OTP flow (mobile transport -> bearer token in the body).
   const email = "reporter@example.com"
@@ -92,7 +92,6 @@ async function makeHarness(
   return h
 }
 
-/** Authorization header for the signed-in user. */
 function auth(token: string): Record<string, string> {
   return { authorization: `Bearer ${token}` }
 }
@@ -281,7 +280,12 @@ describe("POST /reports", () => {
       geomSource: "device",
       mediaUploadIds: [],
     }
-    const first = await app.inject({ method: "POST", url: "/v1/reports", headers: auth(token), payload })
+    const first = await app.inject({
+      method: "POST",
+      url: "/v1/reports",
+      headers: auth(token),
+      payload,
+    })
     expect(first.statusCode).toBe(201)
     const firstId = first.json().id
 
@@ -357,7 +361,7 @@ describe("POST /reports", () => {
     expect(repo.reports.size).toBe(0)
   })
 
-  // D-C2: the report's creator is auto-joined as an OWNER of its chat, once the report row is committed.
+  // The report's creator is auto-joined as an OWNER of its chat, once the report row is committed.
   it("auto-joins the creator as an 'owner' of the report chat with the new report id", async () => {
     const joinReportChatAsOwner = vi.fn(() => Promise.resolve())
     const { app, token, userId } = await makeHarness({ joinReportChatAsOwner })
@@ -401,7 +405,6 @@ describe("POST /reports", () => {
     })
     expect(res.statusCode).toBe(201)
     expect(joinReportChatAsOwner).toHaveBeenCalledTimes(1)
-    // The report was still persisted despite the auto-join failure.
     expect(repo.reports.size).toBe(1)
   })
 })
@@ -437,14 +440,18 @@ describe("GET /reports/:id", () => {
       },
     })
     // The signed-in caller is NOT the owner -> 404.
-    const res = await app.inject({ method: "GET", url: `/v1/reports/${heldId}`, headers: auth(token) })
+    const res = await app.inject({
+      method: "GET",
+      url: `/v1/reports/${heldId}`,
+      headers: auth(token),
+    })
     expect(res.statusCode).toBe(404)
     expect(res.json().code).toBe("NOT_FOUND")
   })
 
   it("treats a non-UUID id as a reference code (resolve-either): unknown code -> 404", async () => {
-    // Issue #56 resolve-either: GET /reports/:id accepts a UUID OR a reference_code. A non-UUID id is no
-    // longer a 422 — it is looked up by reference_code, and an unknown one is NOT_FOUND.
+    // GET /reports/:id accepts a UUID OR a reference_code: a non-UUID id is looked up by reference_code,
+    // and an unknown one is NOT_FOUND (not a 422).
     const { app } = await makeHarness()
     const res = await app.inject({ method: "GET", url: "/v1/reports/DU-42-999999" })
     expect(res.statusCode).toBe(404)
@@ -455,7 +462,11 @@ describe("GET /reports/:id", () => {
     let code = ""
     const { app } = await makeHarness({
       seed: (repo) => {
-        const r = repo.seedReport({ status: "published", visibility: "public", referenceCode: "DU-42-000001" })
+        const r = repo.seedReport({
+          status: "published",
+          visibility: "public",
+          referenceCode: "DU-42-000001",
+        })
         code = r.referenceCode!
       },
     })
@@ -530,7 +541,6 @@ describe("GET /reports/:id", () => {
 describe("GET /reports (my reports)", () => {
   it("lists the caller's own reports, newest first", async () => {
     const { app, token, userId } = await makeHarness()
-    // Create two reports as the signed-in user.
     for (const key of [
       "11111111-1111-1111-1111-111111111111",
       "22222222-2222-2222-2222-222222222222",
@@ -556,7 +566,6 @@ describe("GET /reports (my reports)", () => {
     expect(body.items).toHaveLength(2)
     expect(body.items.every((r: { mine: boolean }) => r.mine === true)).toBe(true)
     expect(body.nextCursor).toBeNull()
-    // Sanity: they are this user's.
     void userId
   })
 
@@ -596,21 +605,32 @@ describe("GET /reports (my reports)", () => {
 describe("GET /map/reports", () => {
   // The shared client serializes bbox as a single JSON param and categories as repeated params. We build
   // the query with clientQuery() (a byte-for-byte replica of the client's buildQuery) so these tests
-  // prove the previously-422 client calls now parse + succeed.
-  // M14: `zoom` is no longer independent of `bbox` — the service clamps it to what the requested extent
-  // can actually imply (services/report-clustering.ts effectiveMapZoom), so a per-pin (zoom >= 13) case
-  // needs a bbox that a real client could plausibly be displaying at that zoom. This ~5 km viewport
-  // implies zoom 14, which clears the cluster threshold; the old 33x22 km box did not and is now
-  // (correctly) forced to cluster no matter what zoom is claimed.
+  // prove the client's real calls parse + succeed.
+  // The service clamps `zoom` to what the requested extent can actually imply
+  // (services/report-clustering.ts effectiveMapZoom), so a per-pin (zoom >= 13) case needs a bbox a real
+  // client could plausibly be displaying at that zoom. This ~5 km viewport implies zoom 14, which clears
+  // the cluster threshold.
   const BBOX = { west: -118.36, south: 34.09, east: -118.31, north: 34.14 }
-  // A world-spanning bbox: the M14 attack shape (`zoom=22` over the whole planet).
+  // A world-spanning bbox: the attack shape (`zoom=22` over the whole planet).
   const WORLD_BBOX = { west: -180, south: -85, east: 180, north: 85 }
 
   it("returns clusters at low zoom and pins at high zoom for points in the bbox (client-encoded bbox)", async () => {
     const { app } = await makeHarness({
       seed: (repo) => {
-        repo.seedReport({ status: "published", visibility: "public", category: "trash", lat: 34.10, lng: -118.35 })
-        repo.seedReport({ status: "published", visibility: "public", category: "graffiti", lat: 34.11, lng: -118.34 })
+        repo.seedReport({
+          status: "published",
+          visibility: "public",
+          category: "trash",
+          lat: 34.1,
+          lng: -118.35,
+        })
+        repo.seedReport({
+          status: "published",
+          visibility: "public",
+          category: "graffiti",
+          lat: 34.11,
+          lng: -118.34,
+        })
       },
     })
 
@@ -639,14 +659,26 @@ describe("GET /map/reports", () => {
     const { app } = await makeHarness({
       seed: (repo) => {
         const withPhoto = repo.seedReport({
-          status: "published", visibility: "public", category: "trash",
-          lat: 34.10, lng: -118.35, title: "Mattress dumped",
+          status: "published",
+          visibility: "public",
+          category: "trash",
+          lat: 34.1,
+          lng: -118.35,
+          title: "Mattress dumped",
         })
-        repo.seedMedia({ reportId: withPhoto.id, status: "ready", r2Key: "uploads/a", thumbKey: "thumbs/a" })
+        repo.seedMedia({
+          reportId: withPhoto.id,
+          status: "ready",
+          r2Key: "uploads/a",
+          thumbKey: "thumbs/a",
+        })
         // A second report with no media -> thumbUrl null, title omitted (null).
         repo.seedReport({
-          status: "published", visibility: "public", category: "graffiti",
-          lat: 34.11, lng: -118.34,
+          status: "published",
+          visibility: "public",
+          category: "graffiti",
+          lat: 34.11,
+          lng: -118.34,
         })
       },
     })
@@ -656,7 +688,11 @@ describe("GET /map/reports", () => {
       url: `/v1/map/reports${clientQuery({ bbox: BBOX, zoom: 16 })}`,
     })
     expect(res.statusCode).toBe(200)
-    const pins = res.json().pins as { category: string; title?: string | null; thumbUrl: string | null }[]
+    const pins = res.json().pins as {
+      category: string
+      title?: string | null
+      thumbUrl: string | null
+    }[]
     const trash = pins.find((p) => p.category === "trash")!
     expect(trash.title).toBe("Mattress dumped")
     expect(trash.thumbUrl).toBe("memory://thumbs/a")
@@ -668,8 +704,20 @@ describe("GET /map/reports", () => {
   it("filters by categories sent as repeated params (the client's array encoding)", async () => {
     const { app } = await makeHarness({
       seed: (repo) => {
-        repo.seedReport({ status: "published", visibility: "public", category: "trash", lat: 34.10, lng: -118.35 })
-        repo.seedReport({ status: "published", visibility: "public", category: "graffiti", lat: 34.11, lng: -118.34 })
+        repo.seedReport({
+          status: "published",
+          visibility: "public",
+          category: "trash",
+          lat: 34.1,
+          lng: -118.35,
+        })
+        repo.seedReport({
+          status: "published",
+          visibility: "public",
+          category: "graffiti",
+          lat: 34.11,
+          lng: -118.34,
+        })
       },
     })
     // clientQuery({categories:["trash"]}) -> ?...&categories=trash (repeated-param form).
@@ -685,9 +733,27 @@ describe("GET /map/reports", () => {
   it("accepts MULTIPLE repeated categories params", async () => {
     const { app } = await makeHarness({
       seed: (repo) => {
-        repo.seedReport({ status: "published", visibility: "public", category: "trash", lat: 34.10, lng: -118.35 })
-        repo.seedReport({ status: "published", visibility: "public", category: "graffiti", lat: 34.11, lng: -118.34 })
-        repo.seedReport({ status: "published", visibility: "public", category: "water", lat: 34.12, lng: -118.33 })
+        repo.seedReport({
+          status: "published",
+          visibility: "public",
+          category: "trash",
+          lat: 34.1,
+          lng: -118.35,
+        })
+        repo.seedReport({
+          status: "published",
+          visibility: "public",
+          category: "graffiti",
+          lat: 34.11,
+          lng: -118.34,
+        })
+        repo.seedReport({
+          status: "published",
+          visibility: "public",
+          category: "water",
+          lat: 34.12,
+          lng: -118.33,
+        })
       },
     })
     // ?...&categories=trash&categories=graffiti -> both kept, water excluded.
@@ -703,8 +769,20 @@ describe("GET /map/reports", () => {
   it("still accepts a categories CSV (resilience)", async () => {
     const { app } = await makeHarness({
       seed: (repo) => {
-        repo.seedReport({ status: "published", visibility: "public", category: "trash", lat: 34.10, lng: -118.35 })
-        repo.seedReport({ status: "published", visibility: "public", category: "graffiti", lat: 34.11, lng: -118.34 })
+        repo.seedReport({
+          status: "published",
+          visibility: "public",
+          category: "trash",
+          lat: 34.1,
+          lng: -118.35,
+        })
+        repo.seedReport({
+          status: "published",
+          visibility: "public",
+          category: "graffiti",
+          lat: 34.11,
+          lng: -118.34,
+        })
       },
     })
     // A single CSV param (hand-built) is tolerated: categories=trash,graffiti.
@@ -716,7 +794,6 @@ describe("GET /map/reports", () => {
     expect(res.json().pins).toHaveLength(2)
   })
 
-  // --- M14: bbox/zoom decoupling -------------------------------------------------------------------
   // The attack was `bbox=<whole world>&zoom=22`: clustering was skipped at zoom >= 13 and `zoom` was a
   // free client parameter never correlated with the extent, so one anonymous request pulled up to
   // MAP_REPORTS_CANDIDATE_CAP full report rows AND that many media presign round-trips, with the 60s
@@ -725,8 +802,20 @@ describe("GET /map/reports", () => {
   it("M14: a continental bbox is forced to CLUSTER even when the client claims max zoom", async () => {
     const { app } = await makeHarness({
       seed: (repo) => {
-        repo.seedReport({ status: "published", visibility: "public", category: "trash", lat: 34.10, lng: -118.35 })
-        repo.seedReport({ status: "published", visibility: "public", category: "graffiti", lat: 40.71, lng: -74.0 })
+        repo.seedReport({
+          status: "published",
+          visibility: "public",
+          category: "trash",
+          lat: 34.1,
+          lng: -118.35,
+        })
+        repo.seedReport({
+          status: "published",
+          visibility: "public",
+          category: "graffiti",
+          lat: 40.71,
+          lng: -74.0,
+        })
       },
     })
     // Just inside MAX_MAP_BBOX_AREA_DEG2 (100 x 60 = 6000 deg^2) so it is the ZOOM clamp under test
@@ -754,7 +843,13 @@ describe("GET /map/reports", () => {
   it("M14: a genuine neighborhood viewport still returns individual pins", async () => {
     const { app } = await makeHarness({
       seed: (repo) => {
-        repo.seedReport({ status: "published", visibility: "public", category: "trash", lat: 34.10, lng: -118.35 })
+        repo.seedReport({
+          status: "published",
+          visibility: "public",
+          category: "trash",
+          lat: 34.1,
+          lng: -118.35,
+        })
       },
     })
     const res = await app.inject({
@@ -787,7 +882,13 @@ describe("GET /map/reports", () => {
   it("P2: 422s an INVERTED bbox (west >= east or south >= north) instead of silently empty", async () => {
     const { app } = await makeHarness({
       seed: (repo) => {
-        repo.seedReport({ status: "published", visibility: "public", category: "trash", lat: 34.10, lng: -118.35 })
+        repo.seedReport({
+          status: "published",
+          visibility: "public",
+          category: "trash",
+          lat: 34.1,
+          lng: -118.35,
+        })
       },
     })
     // west > east (transposed longitude). Before the guard this built an empty envelope -> 200 with no

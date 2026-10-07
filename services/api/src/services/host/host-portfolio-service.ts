@@ -1,27 +1,32 @@
-import type {
-  HostedEventDTO,
-  HostPortfolioKpis,
-  ListMyHostedEventsResponse,
-} from "@civfix/shared"
+import type { HostedEventDTO, HostPortfolioKpis, ListMyHostedEventsResponse } from "@civfix/shared"
 import { hostCapabilities, NO_HOST_STANDING, type HostStanding } from "@civfix/shared/host"
 import type { EventMediaPresigner } from "./event-media.js"
 import type {
-  HostedEventRecord,
-  HostPortfolioRepository,
+  HostPortfolioTotals,
+  HostPortfolioTotalsArgs,
 } from "./host-portfolio-repository.drizzle.js"
+import type { HostPortfolioRepository, HostedEventRecord } from "./host-portfolio-repository.js"
 import { ZERO_HOSTED_EVENT_COUNTS, type HostedEventCounts } from "./portfolio-counts.js"
 import { isEventPubliclyVisible } from "./authz.js"
-import { mapWithLimit, PRESIGN_CONCURRENCY } from "../media-presign.js"
+import { mapWithLimit } from "../../lib/concurrency.js"
+import { PRESIGN_CONCURRENCY } from "../media-presign.js"
 
 export const HOSTED_EVENTS_DEFAULT_LIMIT = 20
+
+const DEFAULT_HOSTED_EVENTS_WHEN = "upcoming"
 
 export interface HostPortfolioCountsLoader {
   (cleanupIds: readonly string[]): Promise<Map<string, HostedEventCounts>>
 }
 
+export interface HostPortfolioTotalsLoader {
+  (args: HostPortfolioTotalsArgs): Promise<HostPortfolioTotals>
+}
+
 export interface HostPortfolioServiceDeps {
   repo: HostPortfolioRepository
   counts: HostPortfolioCountsLoader
+  totals: HostPortfolioTotalsLoader
   presignEventMedia?: EventMediaPresigner
   now?: () => Date
 }
@@ -43,9 +48,7 @@ function standingOf(record: HostedEventRecord): HostStanding {
   return { eventRole: record.eventRole, orgRole: record.orgRole }
 }
 
-export function makeHostPortfolioService(
-  deps: HostPortfolioServiceDeps,
-): HostPortfolioService {
+export function makeHostPortfolioService(deps: HostPortfolioServiceDeps): HostPortfolioService {
   const now = deps.now ?? (() => new Date())
 
   return {
@@ -62,15 +65,16 @@ export function makeHostPortfolioService(
       const organizationId = query.orgId ?? null
       const { items, nextCursor } = await deps.repo.listHostedEvents({
         userId,
-        when: query.when ?? "upcoming",
+        when: query.when ?? DEFAULT_HOSTED_EVENTS_WHEN,
         organizationId,
         cursor: query.cursor ?? null,
         limit,
       })
       const ids = items.map((r) => r.id)
-      const [counts, kpiBase] = await Promise.all([
+      const [counts, kpiBase, totals] = await Promise.all([
         deps.counts(ids),
         deps.repo.kpisFor({ userId, organizationId, now: now() }),
+        deps.totals({ userId, organizationId }),
       ])
 
       const presign = deps.presignEventMedia
@@ -83,13 +87,9 @@ export function makeHostPortfolioService(
       )
 
       const dtos: HostedEventDTO[] = []
-      let totalRegistrations = 0
-      let totalCheckedIn = 0
       for (const [index, record] of items.entries()) {
         const standing = standingOf(record)
         const rowCounts = counts.get(record.id) ?? ZERO_HOSTED_EVENT_COUNTS
-        totalRegistrations += rowCounts.registered
-        totalCheckedIn += rowCounts.checkedIn
         const coverThumbUrl = coverUrls[index] ?? null
         dtos.push({
           id: record.id,
@@ -111,15 +111,15 @@ export function makeHostPortfolioService(
           orgId: record.orgId,
           orgName: record.orgName,
           pageSlug: record.pageSlug,
-          pageStatus: null,
+          pageStatus: record.pageStatus,
         })
       }
 
       const kpis: HostPortfolioKpis = {
         eventsHosted: kpiBase.eventsHosted,
         upcomingEvents: kpiBase.upcomingEvents,
-        totalRegistrations,
-        totalCheckedIn,
+        totalRegistrations: totals.totalRegistrations,
+        totalCheckedIn: totals.totalCheckedIn,
       }
       return { items: dtos, nextCursor, kpis }
     },

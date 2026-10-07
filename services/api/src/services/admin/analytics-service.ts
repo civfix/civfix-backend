@@ -1,12 +1,8 @@
 /**
- * Admin analytics service (Phase 2): the 11 read-only aggregate endpoints (#56-#66). The repo returns RAW
- * aggregates (counts, grouped rows, SQL-computed medians); this service does the pure shaping (pct,
- * category fill, KPI deltas, funnel/coverage, week/month/cohort labels) the wire DTOs need. Shaping lives
- * in analytics-shaping.ts (unit-tested); aggregate shapes + the repo seam in analytics-types.ts.
+ * The repo returns raw aggregates; the shaping the wire DTOs need lives in analytics-shaping.ts.
  *
- * Reconciliation: by-category + resolution-by-category use the 6 real report categories (the design's
- * "cleanup" is the Events domain, not a report category). "Avg. route time" is a Phase 3 (VRP) metric,
- * reported as 0 until routing is deployed.
+ * The by-category charts use the report categories only: the design's "cleanup" belongs to the Events
+ * domain, not to the report categories. "Avg. route time" is reported as 0 until routing is deployed.
  */
 
 import type {

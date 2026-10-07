@@ -7,9 +7,8 @@ import {
 } from "../../src/adapters/geocoder.tiger.js"
 
 /**
- * Unit tests for the TIGER geocoder's pure, DB-free helpers: the Census-GEOID -> USPS state mapping
- * (which underpins the whole "City, ST" derivation) and the label formatter. The DB-backed
- * cityStateLabel path is exercised by the Docker-gated integration test.
+ * The TIGER geocoder's DB-free helpers; the Census-GEOID -> USPS mapping underpins every "City, ST"
+ * label. The DB-backed cityStateLabel path is covered by the Docker-gated integration test.
  */
 
 describe("uspsFromGeoid", () => {
@@ -22,7 +21,6 @@ describe("uspsFromGeoid", () => {
     // County 06037 (LA County) and place 0644000 (LA city) both start with 06 -> CA.
     expect(uspsFromGeoid("06037")).toBe("CA")
     expect(uspsFromGeoid("0644000")).toBe("CA")
-    // Texas place.
     expect(uspsFromGeoid("4805000")).toBe("TX")
   })
 

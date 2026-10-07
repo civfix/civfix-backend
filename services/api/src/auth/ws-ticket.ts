@@ -1,4 +1,3 @@
-
 import { makeSingleUseSecretStore } from "./single-use-secret.js"
 import type { CacheClient } from "./cache.js"
 
@@ -26,6 +25,7 @@ function decodePayload(raw: string): WsTicketPayload | null {
     if (typeof parsed.u !== "string" || parsed.u.length === 0) return null
     return { userId: parsed.u, sessionHash: typeof parsed.s === "string" ? parsed.s : null }
   } catch {
+    // Fail closed: a ticket whose payload cannot be read never authenticates a socket.
     return null
   }
 }

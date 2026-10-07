@@ -1,24 +1,24 @@
 /**
- * P3 Tasks 3.4 + 3.5 integration test (Docker-gated): message PINNING + the moderator delete-others
+ * Integration test (Docker-gated): message PINNING + the moderator delete-others
  * override, against a live PostGIS container (via withPg) over HTTP.
  *
- *   PUT /messages/pin — the chat-powers matrix end-to-end: cleanup organizer pins (member 403
+ *   PUT /messages/pin: the chat-powers matrix end-to-end: cleanup organizer pins (member 403
  *   pin_forbidden), report owner pins (member 403), a global OPERATOR pins in a report room WITHOUT a
  *   membership row, a dm participant pins; unpin clears pinnedAt; system/deleted targets 422; a repeat
  *   pin is IDEMPOTENT (same pinnedAt, no refresh); every successful flip broadcasts a
  *   {type:"message_update"} frame carrying the new pin state to a second connected client.
  *
- *   History pins — the INITIAL page (no before/around) of all three history routes carries `pins`
+ *   History pins: the INITIAL page (no before/around) of all three history routes carries `pins`
  *   (newest-pin first, capped at PIN_LIST_CAP); before-paged and around-paged responses omit the key.
  *
- *   Delete override — a cleanup ORGANIZER deletes a member's message (tombstone broadcast); a member
+ *   Delete override: a cleanup ORGANIZER deletes a member's message (tombstone broadcast); a member
  *   deleting someone else's stays 403; an OPERATOR deletes in a report room without membership; a
  *   report OWNER deleting someone else's stays 403 (owners curate pins, never erase speech); a dm peer
  *   deleting the other's message stays 403 (unchanged).
  *
  * Repos ride chatOverrides on the real Drizzle impls over the harness pool (the established no-redis
  * pattern), and chatOverrides.chatPowers injects the REAL resolver wired to the REAL roleOf lookups
- * (cleanup_members / report_chat_members / users.role) — so the powers matrix is exercised against pg.
+ * (cleanup_members / report_chat_members / users.role), so the powers matrix is exercised against pg.
  * When Docker is unavailable the whole block SKIPS so the local suite stays green; CI runs it for real.
  */
 
@@ -28,12 +28,12 @@ import { randomUUID } from "node:crypto"
 import type { FastifyInstance } from "fastify"
 import { FakeMailer } from "@civfix/shared/fakes"
 import { withPg, type PgHarness } from "../helpers/pg.js"
-import { buildServer } from "../../src/server.js"
-import { buildContainer, type Container } from "../../src/di.js"
+import { makeServer } from "../../src/server.js"
+import { makeContainer, type Container } from "../../src/di.js"
 import { loadEnv } from "../../src/env.js"
 import { InMemoryCacheClient } from "../../src/auth/cache.js"
 import { makeInMemoryStores } from "../../src/auth/stores.js"
-import { buildAuthServices, type AuthServices } from "../../src/auth/auth-services.js"
+import { makeAuthServices, type AuthServices } from "../../src/auth/auth-services.js"
 import { StubJwksVerifier } from "../helpers/auth.js"
 import { InMemoryThreadsRepository, MockConnection } from "../helpers/chat.js"
 import { roomKeyFor } from "../../src/ws/gateway.js"
@@ -50,9 +50,13 @@ import { makeDrizzleDiscussionRepository } from "../../src/services/discussion-r
 import { makeCleanupService } from "../../src/services/cleanup-service.js"
 import { makeChatPowersResolver } from "../../src/services/chat-room-roles.js"
 import { makeChatGroupRepository } from "../../src/services/chat-group-repository.drizzle.js"
-import { globalRoleOf } from "../../src/routes/chat-powers-wiring.js"
+import { chatAuthorityRoleOf } from "../../src/routes/chat-powers-wiring.js"
 
 const pg = await withPg()
+
+// Operator chat powers only count while the account's email is on ADMIN_EMAILS, as in production.
+const PIN_OPERATOR_EMAIL = "pin-operator@civfix.test"
+const DELETE_OPERATOR_EMAIL = "delete-operator@civfix.test"
 
 describe.skipIf(!pg)("chat pins + moderator delete (integration)", () => {
   let h: PgHarness
@@ -63,8 +67,11 @@ describe.skipIf(!pg)("chat pins + moderator delete (integration)", () => {
   beforeAll(async () => {
     h = pg as PgHarness
 
-    const env = loadEnv({ NODE_ENV: "test" })
-    authServices = buildAuthServices({
+    const env = loadEnv({
+      NODE_ENV: "test",
+      ADMIN_EMAILS: [PIN_OPERATOR_EMAIL, DELETE_OPERATOR_EMAIL].join(","),
+    })
+    authServices = makeAuthServices({
       stores: makeInMemoryStores(),
       cache: new InMemoryCacheClient(() => Date.now()),
       mailer: new FakeMailer(),
@@ -82,19 +89,19 @@ describe.skipIf(!pg)("chat pins + moderator delete (integration)", () => {
       chatRepo: makeDrizzleChatRepository(h.sql),
       blocksRepo: makeDrizzleBlocksRepository(h.sql),
       reportChat,
-      // The REAL resolver over the REAL pg-backed lookups (incl. the new roleOf queries) — the same
+      // The REAL resolver over the REAL pg-backed lookups (incl. the roleOf queries): the same
       // wiring shape wireChatPowers builds in production, pointed at the harness pool.
       chatPowers: makeChatPowersResolver({
         isDmParticipant: (threadId, userId) => dm.isParticipant(threadId, userId),
         cleanupRoleOf: (cleanupId, userId) => cleanups.roleOf(cleanupId, userId),
         reportChatRoleOf: (reportId, userId) => reportChat.roleOf(reportId, userId),
-        globalRoleOf: (userId) => globalRoleOf(h.sql, userId),
-        // P4 group lane, wired to the real repo for parity (this file exercises no group rooms).
+        globalRoleOf: (userId) => chatAuthorityRoleOf(h.sql, env, userId),
+        // Group lane, wired to the real repo for parity (this file exercises no group rooms).
         groupRoleOf: (groupId, userId) => makeChatGroupRepository(h.sql).roleOf(groupId, userId),
       }),
     }
-    container = buildContainer(env)
-    app = await buildServer({
+    container = makeContainer(env)
+    app = await makeServer({
       env,
       container,
       authServices,
@@ -180,7 +187,10 @@ describe.skipIf(!pg)("chat pins + moderator delete (integration)", () => {
         tickets: TEST_TICKET_SIGNER,
         repo: makeDrizzleCleanupRepository(h.sql),
       }).joinCleanup(cleanupId, memberId)
-      const msg = await chat().insertMessage({ cleanupId, userId: memberId, body: "pin me" }, randomUUID())
+      const msg = await chat().insertMessage(
+        { cleanupId, userId: memberId, body: "pin me" },
+        randomUUID(),
+      )
 
       const watcher = new MockConnection("pin-watcher")
       await container.chatService.joinRoom(roomKeyFor("cleanup", cleanupId), watcher, memberId)
@@ -216,7 +226,10 @@ describe.skipIf(!pg)("chat pins + moderator delete (integration)", () => {
         tickets: TEST_TICKET_SIGNER,
         repo: makeDrizzleCleanupRepository(h.sql),
       }).joinCleanup(cleanupId, memberId)
-      const msg = await chat().insertMessage({ cleanupId, userId: organizerId, body: "no pin for you" }, randomUUID())
+      const msg = await chat().insertMessage(
+        { cleanupId, userId: organizerId, body: "no pin for you" },
+        randomUUID(),
+      )
 
       const res = await pin(await token(memberId), {
         roomKind: "cleanup",
@@ -262,7 +275,7 @@ describe.skipIf(!pg)("chat pins + moderator delete (integration)", () => {
     it("a global OPERATOR pins in a report room WITHOUT a membership row", async () => {
       const posterId = await newUser("Pin Poster")
       const operatorId = await newUser("Pin Operator")
-      await h.sql`UPDATE users SET role = 'operator' WHERE id = ${operatorId}`
+      await h.sql`UPDATE users SET role = 'operator', email = ${PIN_OPERATOR_EMAIL} WHERE id = ${operatorId}`
       const reportId = await newReport()
       await makeReportChatRepository(h.sql).join(reportId, posterId)
       const msg = await chat().insertMessage(
@@ -284,7 +297,11 @@ describe.skipIf(!pg)("chat pins + moderator delete (integration)", () => {
       const aliceId = await newUser("Pin DM Alice")
       const bobId = await newUser("Pin DM Bob")
       const thread = await dmRepo().openOrCreateThread(aliceId, bobId)
-      const msg = await dmRepo().persist({ threadId: thread.id, senderId: bobId, body: "keep this" })
+      const msg = await dmRepo().persist({
+        threadId: thread.id,
+        senderId: bobId,
+        body: "keep this",
+      })
 
       const aliceToken = await token(aliceId)
       const pinned = await pin(aliceToken, {
@@ -317,16 +334,29 @@ describe.skipIf(!pg)("chat pins + moderator delete (integration)", () => {
     it("pinning is IDEMPOTENT: a second pin returns the SAME pinnedAt (no refresh)", async () => {
       const organizerId = await newUser("Pin Idem Org")
       const cleanupId = await newCleanup(organizerId)
-      const msg = await chat().insertMessage({ cleanupId, userId: organizerId, body: "once" }, randomUUID())
+      const msg = await chat().insertMessage(
+        { cleanupId, userId: organizerId, body: "once" },
+        randomUUID(),
+      )
 
       const tok = await token(organizerId)
-      const first = await pin(tok, { roomKind: "cleanup", roomId: cleanupId, messageId: msg.id, pinned: true })
+      const first = await pin(tok, {
+        roomKind: "cleanup",
+        roomId: cleanupId,
+        messageId: msg.id,
+        pinned: true,
+      })
       expect(first.statusCode).toBe(200)
       const firstAt = first.json().pinnedAt
       expect(firstAt).toBeTruthy()
 
       // A repeat pin is a no-op: 200 with the ORIGINAL stamp, not a refreshed one.
-      const second = await pin(tok, { roomKind: "cleanup", roomId: cleanupId, messageId: msg.id, pinned: true })
+      const second = await pin(tok, {
+        roomKind: "cleanup",
+        roomId: cleanupId,
+        messageId: msg.id,
+        pinned: true,
+      })
       expect(second.statusCode).toBe(200)
       expect(second.json().pinnedAt).toBe(firstAt)
     })
@@ -342,7 +372,12 @@ describe.skipIf(!pg)("chat pins + moderator delete (integration)", () => {
         body: "Status changed",
       })
       const tok = await token(ownerId)
-      const sysRes = await pin(tok, { roomKind: "report", roomId: reportId, messageId: sys.id, pinned: true })
+      const sysRes = await pin(tok, {
+        roomKind: "report",
+        roomId: reportId,
+        messageId: sys.id,
+        pinned: true,
+      })
       expect(sysRes.statusCode).toBe(422)
 
       const msg = await chat().insertMessage(
@@ -350,7 +385,12 @@ describe.skipIf(!pg)("chat pins + moderator delete (integration)", () => {
         randomUUID(),
       )
       await chat().softDeleteReport(reportId, msg.id, ownerId)
-      const delRes = await pin(tok, { roomKind: "report", roomId: reportId, messageId: msg.id, pinned: true })
+      const delRes = await pin(tok, {
+        roomKind: "report",
+        roomId: reportId,
+        messageId: msg.id,
+        pinned: true,
+      })
       expect(delRes.statusCode).toBe(422)
     })
   })
@@ -360,9 +400,18 @@ describe.skipIf(!pg)("chat pins + moderator delete (integration)", () => {
       const organizerId = await newUser("Hist Org")
       const cleanupId = await newCleanup(organizerId)
       const repo = chat()
-      const m1 = await repo.insertMessage({ cleanupId, userId: organizerId, body: "one" }, randomUUID())
-      const m2 = await repo.insertMessage({ cleanupId, userId: organizerId, body: "two" }, randomUUID())
-      const m3 = await repo.insertMessage({ cleanupId, userId: organizerId, body: "three" }, randomUUID())
+      const m1 = await repo.insertMessage(
+        { cleanupId, userId: organizerId, body: "one" },
+        randomUUID(),
+      )
+      const m2 = await repo.insertMessage(
+        { cleanupId, userId: organizerId, body: "two" },
+        randomUUID(),
+      )
+      const m3 = await repo.insertMessage(
+        { cleanupId, userId: organizerId, body: "three" },
+        randomUUID(),
+      )
       await repo.setPinned(cleanupId, m1.id, organizerId, true)
       await repo.setPinned(cleanupId, m2.id, organizerId, true)
 
@@ -386,7 +435,7 @@ describe.skipIf(!pg)("chat pins + moderator delete (integration)", () => {
       expect(before.json()).not.toHaveProperty("pins")
 
       // Around-mode: the cleanup around-page reads through the container chatService (FakeChatService
-      // under the test env), which has no such message — the pins key must be absent regardless, and
+      // under the test env), which has no such message; the pins key must be absent regardless, and
       // that is what this asserts (the fake 404s the unknown target).
       const around = await app.inject({
         method: "GET",
@@ -471,7 +520,10 @@ describe.skipIf(!pg)("chat pins + moderator delete (integration)", () => {
         tickets: TEST_TICKET_SIGNER,
         repo: makeDrizzleCleanupRepository(h.sql),
       }).joinCleanup(cleanupId, memberId)
-      const msg = await chat().insertMessage({ cleanupId, userId: memberId, body: "rule-breaking" }, randomUUID())
+      const msg = await chat().insertMessage(
+        { cleanupId, userId: memberId, body: "rule-breaking" },
+        randomUUID(),
+      )
 
       const watcher = new MockConnection("del-override-watcher")
       await container.chatService.joinRoom(roomKeyFor("cleanup", cleanupId), watcher, memberId)
@@ -502,7 +554,10 @@ describe.skipIf(!pg)("chat pins + moderator delete (integration)", () => {
         tickets: TEST_TICKET_SIGNER,
         repo: makeDrizzleCleanupRepository(h.sql),
       }).joinCleanup(cleanupId, memberId)
-      const msg = await chat().insertMessage({ cleanupId, userId: organizerId, body: "keep out" }, randomUUID())
+      const msg = await chat().insertMessage(
+        { cleanupId, userId: organizerId, body: "keep out" },
+        randomUUID(),
+      )
 
       const res = await app.inject({
         method: "DELETE",
@@ -510,7 +565,6 @@ describe.skipIf(!pg)("chat pins + moderator delete (integration)", () => {
         headers: { authorization: `Bearer ${await token(memberId)}`, "x-client": "mobile" },
       })
       expect(res.statusCode).toBe(403)
-      // Still present.
       const reread = await chat().findMessage(cleanupId, msg.id, organizerId)
       expect(reread).not.toBeNull()
     })
@@ -518,7 +572,7 @@ describe.skipIf(!pg)("chat pins + moderator delete (integration)", () => {
     it("an OPERATOR deletes a report message without a membership row (200)", async () => {
       const posterId = await newUser("Del Poster")
       const operatorId = await newUser("Del Operator")
-      await h.sql`UPDATE users SET role = 'operator' WHERE id = ${operatorId}`
+      await h.sql`UPDATE users SET role = 'operator', email = ${DELETE_OPERATOR_EMAIL} WHERE id = ${operatorId}`
       const reportId = await newReport()
       await makeReportChatRepository(h.sql).join(reportId, posterId)
       const msg = await chat().insertMessage(
@@ -561,7 +615,11 @@ describe.skipIf(!pg)("chat pins + moderator delete (integration)", () => {
       const aliceId = await newUser("Del DM Alice")
       const bobId = await newUser("Del DM Bob")
       const thread = await dmRepo().openOrCreateThread(aliceId, bobId)
-      const msg = await dmRepo().persist({ threadId: thread.id, senderId: bobId, body: "bob's words" })
+      const msg = await dmRepo().persist({
+        threadId: thread.id,
+        senderId: bobId,
+        body: "bob's words",
+      })
 
       const res = await app.inject({
         method: "DELETE",

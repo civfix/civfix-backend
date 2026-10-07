@@ -1,7 +1,7 @@
 import { describe, it, expect } from "vitest"
 import { FakeMailer } from "@civfix/shared/fakes"
-import { InMemoryMailRepository } from "../../src/services/admin/mail-repository.memory.js"
-import { InMemoryOutreachRepository } from "../../src/services/admin/outreach-repository.memory.js"
+import { InMemoryMailRepository } from "../helpers/admin/mail-repository.memory.js"
+import { InMemoryOutreachRepository } from "../helpers/admin/outreach-repository.memory.js"
 import { makeOutboundMailService } from "../../src/services/admin/outbound-mail-service.js"
 import {
   makeOutreachService,
@@ -9,9 +9,8 @@ import {
   digestSubject,
   digestBody,
   type OutreachService,
-  type OutreachRepository,
 } from "../../src/services/admin/outreach-service.js"
-
+import type { OutreachRepository } from "../../src/services/admin/outreach-repository.js"
 
 const NOW = new Date("2026-06-06T00:00:00.000Z")
 const THROTTLE_DAYS = 7
@@ -75,7 +74,11 @@ describe("outreach pure helpers", () => {
 describe("outreach digest: aggregation + send", () => {
   it("aggregates a due jurisdiction's waiting reports into one digest, sends it, stamps outreach_state", async () => {
     const { outreachRepo, mailRepo, mailer, svc } = harness()
-    outreachRepo.seedJurisdiction({ geoid: "0644000", org: "City of LA", defaultEmail: "clerk@lacity.gov" })
+    outreachRepo.seedJurisdiction({
+      geoid: "0644000",
+      org: "City of LA",
+      defaultEmail: "clerk@lacity.gov",
+    })
     outreachRepo.seedReport({ geoid: "0644000", category: "trash" })
     outreachRepo.seedReport({ geoid: "0644000", category: "trash" })
     outreachRepo.seedReport({ geoid: "0644000", category: "hazard" })
@@ -149,7 +152,9 @@ describe("outreach digest: throttle (defense in depth)", () => {
     const result = await svc.runForGeoid("0644000")
     expect(result.sent).toBe(true)
     expect(mailer.sent).toHaveLength(1)
-    expect((await mailRepo.getOutreachState("0644000"))?.lastOutreachAt?.getTime()).toBe(NOW.getTime())
+    expect((await mailRepo.getOutreachState("0644000"))?.lastOutreachAt?.getTime()).toBe(
+      NOW.getTime(),
+    )
   })
 
   it("does NOT send a suppressed jurisdiction", async () => {

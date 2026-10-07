@@ -1,11 +1,11 @@
 import { describe, it, expect, afterEach } from "vitest"
 import type { FastifyInstance, FastifyRequest } from "fastify"
 import { FakeMailer } from "@civfix/shared/fakes"
-import { buildServer } from "../../src/server.js"
+import { makeServer } from "../../src/server.js"
 import { loadEnv } from "../../src/env.js"
 import { InMemoryCacheClient } from "../../src/auth/cache.js"
 import { makeInMemoryStores } from "../../src/auth/stores.js"
-import { buildAuthServices } from "../../src/auth/auth-services.js"
+import { makeAuthServices } from "../../src/auth/auth-services.js"
 import { SessionService } from "../../src/auth/session-service.js"
 import { StubJwksVerifier } from "../helpers/auth.js"
 import { InMemoryThreadsRepository } from "../helpers/chat.js"
@@ -15,7 +15,6 @@ import type { ChatGatewayOverrides } from "../../src/routes/chat.routes.js"
 import { SESSION_COOKIE } from "../../src/auth/transport.js"
 import { sha256Hex } from "../../src/auth/crypto.js"
 import type { WsTicketPayload } from "../../src/auth/ws-ticket.js"
-
 
 let current: FastifyInstance | undefined
 
@@ -36,7 +35,7 @@ async function makeThreadsHarness(seed: (repo: InMemoryThreadsRepository) => voi
   const stores = makeInMemoryStores()
   const cache = new InMemoryCacheClient(() => Date.now())
   const mailer = new FakeMailer()
-  const authServices = buildAuthServices({
+  const authServices = makeAuthServices({
     stores,
     cache,
     mailer,
@@ -52,7 +51,7 @@ async function makeThreadsHarness(seed: (repo: InMemoryThreadsRepository) => voi
     threadsRepo,
   }
 
-  const app = await buildServer({ env, authServices, chatOverrides })
+  const app = await makeServer({ env, authServices, chatOverrides })
   current = app
   return { app, mailer }
 }
@@ -102,7 +101,7 @@ describe("GET /threads", () => {
     const stores = makeInMemoryStores()
     const cache = new InMemoryCacheClient(() => Date.now())
     const mailer = new FakeMailer()
-    const authServices = buildAuthServices({
+    const authServices = makeAuthServices({
       stores,
       cache,
       mailer,
@@ -115,13 +114,17 @@ describe("GET /threads", () => {
       isMember: () => Promise.resolve(true),
       threadsRepo,
     }
-    const app = await buildServer({ env, authServices, chatOverrides })
+    const app = await makeServer({ env, authServices, chatOverrides })
     current = app
 
     const { token, userId } = await signIn(app, mailer, "member@example.com")
     const cleanupId = threadsRepo.seedCleanup("Cleanup with chatter")
     threadsRepo.addMember(cleanupId, userId, new Date("2026-06-01T10:00:00.000Z"))
-    threadsRepo.addMember(cleanupId, "99999999-9999-9999-9999-999999999999", new Date("2026-06-01T09:00:00.000Z"))
+    threadsRepo.addMember(
+      cleanupId,
+      "99999999-9999-9999-9999-999999999999",
+      new Date("2026-06-01T09:00:00.000Z"),
+    )
     threadsRepo.addMessage(cleanupId, {
       senderId: "99999999-9999-9999-9999-999999999999",
       body: "anyone bringing bags?",
@@ -147,7 +150,11 @@ describe("GET /threads", () => {
 })
 
 describe("resolveWsUser (dual handshake auth)", () => {
-  async function withSession(): Promise<{ sessions: SessionService; token: string; userId: string }> {
+  async function withSession(): Promise<{
+    sessions: SessionService
+    token: string
+    userId: string
+  }> {
     const stores = makeInMemoryStores()
     const cache = new InMemoryCacheClient(() => Date.now())
     const sessions = new SessionService({ store: stores.sessions, cache, now: () => Date.now() })
@@ -189,18 +196,14 @@ describe("resolveWsUser (dual handshake auth)", () => {
 
   it("H5: accepts ?token ONLY under the WS_ALLOW_QUERY_TOKEN break-glass flag", async () => {
     const { sessions, token } = await withSession()
-    const prev = process.env.WS_ALLOW_QUERY_TOKEN
-    process.env.WS_ALLOW_QUERY_TOKEN = "1"
-    try {
-      expect(await resolveWsUser(fakeReq({ query: { token } }), sessions)).toEqual({
-        userId: ME,
-        sessionHash: await sha256Hex(token),
-        accountStatus: "active",
-      })
-    } finally {
-      if (prev === undefined) delete process.env.WS_ALLOW_QUERY_TOKEN
-      else process.env.WS_ALLOW_QUERY_TOKEN = prev
-    }
+    const server = {
+      container: { env: { WS_ALLOW_QUERY_TOKEN: true } },
+    } as unknown as FastifyRequest["server"]
+    expect(await resolveWsUser(fakeReq({ query: { token }, server }), sessions)).toEqual({
+      userId: ME,
+      sessionHash: await sha256Hex(token),
+      accountStatus: "active",
+    })
   })
 
   it("H2: a ?ticket bound to a live session retains that session's hash for the live re-check", async () => {

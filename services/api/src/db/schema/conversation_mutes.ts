@@ -1,26 +1,15 @@
 /**
- * conversation_mutes: per-user, per-conversation mute. A user can mute notifications for a single
- * room (cleanup group chat, a DM thread, or a report chat) without leaving/muting globally.
- * room_kind + room_id together identify the room; room_id is plain `uuid` (NOT a foreign key)
- * because it points into whichever table room_kind selects (cleanups.id | dm_threads.id |
- * reports.id) -- app-level integrity, same reasoning as the no-FK message_id columns in
- * chat_message_reactions / chat_message_mentions / report_message_forwards.
+ * Per-user, per-conversation mute. room_id is a plain uuid, not a foreign key, because it points into
+ * whichever table room_kind selects (cleanups | dm_threads | reports | chat_groups); integrity is
+ * app-level, like the no-FK message_id columns elsewhere.
  *
- * Composite PK(user_id, room_kind, room_id) means a user mutes a given room at most once.
- *
- * NOTE: @civfix/shared already exports a `RoomKind` type (ws-frame room kind: 'cleanup' | 'dm' |
- * 'report' | 'report_discussion') used by src/ws/*. This table's room_kind is a DIFFERENT,
- * backend-internal enumeration (mute targets only: no 'report_discussion') so it is named
- * `ConversationMuteRoomKind` here to avoid colliding with / being confused for the shared type.
- *
- * CANONICAL DDL: drizzle/0042_conversation_mutes.sql. This mirror exists for typed queries / diff
- * inspection only; nothing reads/writes it yet (mute repo lands in D-E1).
+ * room_kind is deliberately not the shared `RoomKind` (the ws-frame kind, which includes
+ * 'report_discussion'): mute targets are a different, backend-internal set, hence the distinct name.
  */
 
 import { pgTable, primaryKey, text, timestamp, uuid } from "drizzle-orm/pg-core"
 import { users } from "./users.js"
 
-/** conversation_mutes.room_kind: which table room_id points into (P4 adds 'group' -> chat_groups.id). */
 export type ConversationMuteRoomKind = "cleanup" | "dm" | "report" | "group"
 
 export const conversationMutes = pgTable(
@@ -29,11 +18,7 @@ export const conversationMutes = pgTable(
     userId: uuid("user_id")
       .notNull()
       .references(() => users.id, { onDelete: "cascade" }),
-    // 'cleanup' | 'dm' | 'report'. Kept as plain text (not a DB enum) since it only selects which
-    // table room_id logically points into -- see header.
     roomKind: text("room_kind").$type<ConversationMuteRoomKind>().notNull(),
-    // Points into cleanups.id | dm_threads.id | reports.id depending on room_kind. Intentionally
-    // NOT a FK -- see header.
     roomId: uuid("room_id").notNull(),
     mutedAt: timestamp("muted_at", { withTimezone: true }).notNull().defaultNow(),
   },

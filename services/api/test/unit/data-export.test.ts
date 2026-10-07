@@ -45,7 +45,13 @@ function harness(
   users.seed(user.email, user)
   const mailer = new FakeMailer()
   const sql = makeFakeSql(handlers).sql as unknown as Sql
-  const service = makeDataExportService({ sql, mailer, users, fromNoReply: FROM, supportEmail: SUPPORT })
+  const service = makeDataExportService({
+    sql,
+    mailer,
+    users,
+    fromNoReply: FROM,
+    supportEmail: SUPPORT,
+  })
   return { mailer, service }
 }
 

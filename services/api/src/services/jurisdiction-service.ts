@@ -1,17 +1,16 @@
-
 import type { JurisdictionDTO } from "@civfix/shared"
 import type { Geocoder, Jobs } from "@civfix/shared/interfaces"
 import type { Sql } from "../db/client.js"
-import { resolveJurisdiction } from "../db/sql/jurisdiction.js"
 import { formatCityStateLabel, uspsFromGeoid } from "../adapters/geocoder.tiger.js"
 import type {
   JurisdictionLookup,
   JurisdictionLookupResult,
 } from "../adapters/jurisdiction-lookup.census.js"
+import { makeDrizzleJurisdictionRepository } from "./jurisdiction-repository.drizzle.js"
+import type { JurisdictionRepository } from "./jurisdiction-repository.js"
+import { JURISDICTION_DISCOVERY_JOB } from "../lib/queue-names.js"
 
-export const JURISDICTION_DISCOVERY_JOB = "jurisdiction.discovery"
-
-export const CONTACT_STALE_MONTHS = 18
+const CONTACT_STALE_MONTHS = 18
 
 export interface JurisdictionDiscoveryJob {
   geoid: string
@@ -30,26 +29,22 @@ function hasUsableLegacyContact(row: Pick<JurisdictionHealthRow, "contactEmails"
   return Array.isArray(row.contactEmails) && row.contactEmails.some((e) => e.trim() !== "")
 }
 
+function isValidDate(value: Date | null): value is Date {
+  return value instanceof Date && !Number.isNaN(value.getTime())
+}
+
 function isStale(updatedAt: Date | null, now: Date): boolean {
-  if (!(updatedAt instanceof Date) || Number.isNaN(updatedAt.getTime())) return true
+  if (!isValidDate(updatedAt)) return true
   const staleBefore = new Date(now)
   staleBefore.setMonth(staleBefore.getMonth() - CONTACT_STALE_MONTHS)
   return updatedAt.getTime() < staleBefore.getTime()
 }
 
 export function needsDiscovery(row: JurisdictionHealthRow, now: Date): boolean {
-  const hasRoutingContact = row.hasRoutingContact === true
-
-  if (!hasRoutingContact && !hasUsableLegacyContact(row)) return true
-
-  if (hasRoutingContact) {
-    if (!(row.contactUpdatedAt instanceof Date) || Number.isNaN(row.contactUpdatedAt.getTime())) {
-      return false
-    }
-    return isStale(row.contactUpdatedAt, now)
+  if (row.hasRoutingContact === true) {
+    return isValidDate(row.contactUpdatedAt) && isStale(row.contactUpdatedAt, now)
   }
-
-  return isStale(row.contactUpdatedAt, now)
+  return !hasUsableLegacyContact(row) || isStale(row.contactUpdatedAt, now)
 }
 
 export function isRoutable(
@@ -73,18 +68,19 @@ export interface JurisdictionService {
 
 export function makeJurisdictionService(deps: JurisdictionServiceDeps): JurisdictionService {
   const now = deps.now ?? (() => new Date())
+  const jurisdictions = makeDrizzleJurisdictionRepository(deps.sql)
 
   return {
     async resolveForPoint(lat: number, lng: number): Promise<JurisdictionDTO | null> {
-      const resolved = await resolveJurisdiction(deps.sql, lng, lat)
+      const resolved = await jurisdictions.resolveContaining(lng, lat)
       if (!resolved) {
         return deps.jurisdictionLookup
-          ? await resolveViaLookup(deps.sql, deps.jurisdictionLookup, lat, lng)
+          ? await resolveViaLookup(jurisdictions, deps.jurisdictionLookup, lat, lng)
           : null
       }
 
       const [health, geoLabel] = await Promise.all([
-        loadHealth(deps.sql, resolved.geoid),
+        jurisdictions.loadHealth(resolved.geoid),
         deps.geocoder.cityStateLabel(lat, lng),
       ])
       if (health && needsDiscovery(health, now())) {
@@ -103,20 +99,13 @@ export function makeJurisdictionService(deps: JurisdictionServiceDeps): Jurisdic
     },
 
     async exists(geoid: string): Promise<boolean> {
-      const rows = await deps.sql`SELECT 1 FROM jurisdictions WHERE geoid = ${geoid} LIMIT 1`
-      return rows.length > 0
+      return jurisdictions.exists(geoid)
     },
   }
 }
 
-const LAYER_PRIORITY: Record<JurisdictionLookupResult["layer"], number> = {
-  place: 2,
-  county: 3,
-  state: 4,
-}
-
 async function resolveViaLookup(
-  sql: Sql,
+  jurisdictions: JurisdictionRepository,
   lookup: JurisdictionLookup,
   lat: number,
   lng: number,
@@ -125,11 +114,13 @@ async function resolveViaLookup(
   try {
     hit = await lookup.lookup(lat, lng)
   } catch {
+    // Census is only the fallback after a local miss: its outage leaves the point unmapped and must never
+    // fail the report, anon report or cleanup being filed.
     return null
   }
   if (!hit) return null
 
-  await insertApiSourcedJurisdictionIfAbsent(sql, hit)
+  await jurisdictions.insertApiSourcedIfAbsent(hit)
 
   return {
     geoid: hit.geoid,
@@ -137,54 +128,6 @@ async function resolveViaLookup(
     layer: hit.layer,
     cityStateLabel: formatCityStateLabel(hit.name, uspsFromGeoid(hit.geoid)),
     routable: false,
-  }
-}
-
-async function insertApiSourcedJurisdictionIfAbsent(
-  sql: Sql,
-  hit: JurisdictionLookupResult,
-): Promise<void> {
-  await sql`
-    INSERT INTO jurisdictions (geoid, name, layer, priority, geom, contact_emails, code)
-    SELECT
-      ${hit.geoid}, ${hit.name}, ${hit.layer}, ${LAYER_PRIORITY[hit.layer]}, NULL, NULL,
-      nextval('jurisdiction_code_seq')
-    WHERE NOT EXISTS (SELECT 1 FROM jurisdictions WHERE geoid = ${hit.geoid})
-    ON CONFLICT (geoid) DO NOTHING
-  `
-}
-
-async function loadHealth(sql: Sql, geoid: string): Promise<JurisdictionHealthRow | null> {
-  const rows = await sql<
-    {
-      geoid: string
-      contact_emails: string[] | null
-      contact_updated_at: Date | null
-      population: number | null
-      has_routing_contact: boolean
-    }[]
-  >`
-    SELECT
-      j.geoid,
-      j.contact_emails,
-      j.contact_updated_at,
-      j.population,
-      EXISTS (
-        SELECT 1 FROM jurisdiction_contacts jc
-        WHERE jc.geoid = j.geoid AND jc.email IS NOT NULL AND jc.email <> ''
-      ) AS has_routing_contact
-    FROM jurisdictions j
-    WHERE j.geoid = ${geoid}
-    LIMIT 1
-  `
-  const row = rows[0]
-  if (!row) return null
-  return {
-    geoid: row.geoid,
-    contactEmails: row.contact_emails,
-    contactUpdatedAt: row.contact_updated_at,
-    hasRoutingContact: row.has_routing_contact,
-    population: row.population,
   }
 }
 

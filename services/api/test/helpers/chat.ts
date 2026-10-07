@@ -1,14 +1,14 @@
-
 import { randomUUID } from "node:crypto"
 import { avatarGradient, AppError } from "@civfix/shared"
 import type { ChatConnection, ChatHistoryPage, PersistChatInput } from "@civfix/shared/interfaces"
 import type { ChatMessageDTO, ReactionEmoji, ReactionSummaryDTO, ReplyToDTO } from "@civfix/shared"
-import {
-  PIN_LIST_CAP,
-  type ChatMessageMeta,
-  type ChatRepository,
-  type SoftDeleteOpts,
-} from "../../src/services/chat-repository.drizzle.js"
+import { PIN_LIST_CAP } from "../../src/services/chat-repository.drizzle.js"
+import type {
+  ChatMessageMeta,
+  ChatRepository,
+  SoftDeleteOpts,
+} from "../../src/services/chat-repository.js"
+import type { ConversationHidesRepository } from "../../src/services/conversation-hides-repository.js"
 import {
   REPLY_EXCERPT_MAX,
   replyDeletedTarget,
@@ -16,8 +16,7 @@ import {
 } from "../../src/services/chat-reply-hydration.js"
 import { aroundLimits } from "../../src/services/chat-history-window.js"
 import { toTombstoneDTO } from "../../src/services/chat-tombstone.js"
-import type { ThreadAggregate, ThreadsRepository } from "../../src/services/threads-service.js"
-import type { ConversationHidesRepository } from "../../src/services/conversation-hides-repository.drizzle.js"
+import type { ThreadAggregate, ThreadsRepository } from "../../src/services/threads-repository.js"
 import { visibleAfterHides } from "../../src/services/conversation-hides-repository.memory.js"
 import type { TimeCursor } from "../../src/db/cursor-helpers.js"
 
@@ -124,7 +123,9 @@ export class InMemoryChatRepository implements ChatRepository {
       const idx = allDesc.findIndex((m) => m.dto.id === before)
       if (idx >= 0) afterAnchor = allDesc.slice(idx + 1)
     }
-    const ordered = afterAnchor.filter((m) => !m.deleted).map((m) => this.withReply(cleanupId, m.dto))
+    const ordered = afterAnchor
+      .filter((m) => !m.deleted)
+      .map((m) => this.withReply(cleanupId, m.dto))
     const page = ordered.slice(0, limit)
     const nextCursor = ordered.length > limit ? (page[page.length - 1]?.id ?? null) : null
     return Promise.resolve({ items: page, nextCursor })
@@ -179,7 +180,10 @@ export class InMemoryChatRepository implements ChatRepository {
     const stored = (this.log.get(cleanupId) ?? []).find((m) => m.dto.id === messageId && !m.deleted)
     if (!stored) return Promise.resolve(null)
     return Promise.resolve(
-      this.withReply(cleanupId, { ...stored.dto, reactions: this.reactionsFor(messageId, viewerUserId) }),
+      this.withReply(cleanupId, {
+        ...stored.dto,
+        reactions: this.reactionsFor(messageId, viewerUserId),
+      }),
     )
   }
 
@@ -434,9 +438,7 @@ export class InMemoryThreadsRepository implements ThreadsRepository {
     cleanupId: string,
     msg: { senderId: string; body: string | null; createdAt: Date; deleted?: boolean },
   ): void {
-    this.cleanups
-      .get(cleanupId)
-      ?.messages.push({ ...msg, deleted: msg.deleted ?? false })
+    this.cleanups.get(cleanupId)?.messages.push({ ...msg, deleted: msg.deleted ?? false })
   }
 
   async listThreadsFor(

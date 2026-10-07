@@ -1,5 +1,5 @@
 import { ErrorCode } from "@civfix/shared"
-import type { FastifyInstance } from "fastify"
+import type { FastifyBaseLogger, FastifyInstance } from "fastify"
 import type { Container } from "../di.js"
 import { makeWsTicketStore } from "../auth/ws-ticket.js"
 import {
@@ -25,46 +25,47 @@ import {
   type OnChatReply,
   type OnGroupMessage,
   type OnReportMessage,
+  type ReportVisibleFn,
   type ThreadRecipientsOf,
 } from "../ws/gateway.js"
-import { resolveMentionTargets } from "../services/social-repository.drizzle.js"
+import { resolveMentionTargets } from "../services/mention-targets-repository.drizzle.js"
 import { makeChatMentionResolver } from "../services/chat-mention-resolver.js"
 import { makeDrizzleCleanupRepository } from "../services/cleanup-repository.drizzle.js"
 import { makeDrizzleDiscussionRepository } from "../services/discussion-repository.drizzle.js"
-import {
-  makeReportChatRepository,
-  type ReportChatRepository,
-} from "../services/report-chat-repository.drizzle.js"
+import { makeReportChatRepository } from "../services/report-chat-repository.drizzle.js"
+import type { ReportChatRepository } from "../services/report-chat-repository.js"
+import type { ChatGroupRepository } from "../services/chat-group-repository.js"
+import type { ChatRepository } from "../services/chat-repository.js"
+import type { ConversationMutesRepository } from "../services/conversation-mutes-repository.js"
+import type { DmRepository } from "../services/dm-repository.js"
+import type { BlocksRepository } from "../services/blocks-repository.js"
 import {
   canPostToGroup,
+  GROUP_MEMBER_SCAN_CAP,
   makeChatGroupRepository,
-  type ChatGroupRepository,
 } from "../services/chat-group-repository.drizzle.js"
-import type { GatewayGroupChat } from "../ws/types.js"
+import { WS_ROUTE, WS_SEND_LIMITS, type GatewayGroupChat } from "../ws/types.js"
 import { makeCityForwardThrottle } from "../services/report-city-forward.js"
 import { makeContainerReportCityForward } from "../services/report-city-forward-wiring.js"
 import { isReportVisibleTo } from "../services/report-visibility.js"
 import { makeTokenBucketLimiter, type RateLimiter } from "../ws/report-rate-limit.js"
-import type { ReportVisibleFn } from "../ws/gateway.js"
 import { THREAD_SIGNAL_MEMBER_CAP } from "../services/cleanup-service.js"
-import {
-  makeDrizzleChatRepository,
-  type ChatRepository,
-} from "../services/chat-repository.drizzle.js"
+import { makeDrizzleChatRepository } from "../services/chat-repository.drizzle.js"
 import { makePrivateMediaPresigner } from "../services/media-presign.js"
-import { recordChatMentions } from "../services/chat-mentions.drizzle.js"
+import {
+  recordChatMentions,
+  roomMemberIdsAmong,
+} from "../services/chat-mentions-repository.drizzle.js"
 import {
   makeDrizzleChatReadState,
   monotonicReadWatermarkUpdate,
-} from "../services/chat-read-state.drizzle.js"
+} from "../services/read-watermark-repository.drizzle.js"
+import type { NotificationService } from "../services/notification-service.js"
+import { makeRouteNotificationService } from "../services/route-notifier.js"
 import {
-  makeNotificationService,
-  type NotificationService,
-} from "../services/notification-service.js"
-import { makeDrizzleNotificationRepository } from "../services/notification-repository.drizzle.js"
-import {
+  bindMutedUserIdsFor,
   makeConversationMutesRepository,
-  type ConversationMutesRepository,
+  makeFailOpenMuteCheck,
 } from "../services/conversation-mutes-repository.drizzle.js"
 import { makeReportChatNotifier } from "../services/report-chat-notifier.js"
 import { makeGroupChatNotifier } from "../services/group-chat-notifier.js"
@@ -78,9 +79,8 @@ import {
   clearConversationBellFor,
   type ConversationBellKind,
 } from "../services/conversation-bell.js"
-import type { DmRepository } from "../services/dm-repository.drizzle.js"
 import { makeDmPeerOf } from "../services/dm-peer.js"
-import type { BlocksRepository } from "../services/blocks-repository.drizzle.js"
+import { bindBlockedIdsAmong } from "../services/blocks-repository.drizzle.js"
 import {
   InMemoryChatPresence,
   RedisChatPresence,
@@ -92,11 +92,23 @@ import type { ChatGatewayOverrides } from "./chat.routes.js"
 
 const WS_UPGRADE_RATE_LIMIT = { max: 60, timeWindow: "1 minute" } as const
 
-const REPORT_SEND_LIMIT = { capacity: 30, refillPerSec: 0.5 } as const
+const CLEANUP_MEMBERS_TABLE = "cleanup_members"
+
+const CHAT_MESSAGES_TABLE = "chat_messages"
+
+type FanoutRoomKind = "report" | "group"
+
+type CleanupRepository = ReturnType<typeof makeDrizzleCleanupRepository>
+
+type DiscussionRepository = ReturnType<typeof makeDrizzleDiscussionRepository>
+
+type BatchIdLookup = (ownerId: string, candidateIds: string[]) => Promise<Set<string>>
+
+type ClearBell = (kind: ConversationBellKind, id: string, userId: string) => Promise<void>
 
 export type ChatMentionSeam = Pick<
   GatewayChatMentions,
-  "resolveChatMentions" | "recordChatMentions"
+  "resolveChatMentions" | "recordChatMentions" | "logger"
 >
 
 const mentionSeams = new WeakMap<FastifyInstance, ChatMentionSeam>()
@@ -106,11 +118,6 @@ export function chatMentionDeps(app: FastifyInstance, container: Container): Cha
   if (cached) return cached
 
   const overrides: ChatGatewayOverrides | undefined = app.chatOverrides
-  const presignMedia = makePrivateMediaPresigner(container.storage)
-
-  let cleanups: ReturnType<typeof makeDrizzleCleanupRepository> | undefined
-  let reportChat: ReportChatRepository | undefined
-  let groups: ChatGroupRepository | undefined
 
   const seam: ChatMentionSeam = {
     resolveChatMentions: makeChatMentionResolver({
@@ -118,28 +125,38 @@ export function chatMentionDeps(app: FastifyInstance, container: Container): Cha
       dmPeerOf: makeDmPeerOf({
         getThread: (threadId) => (overrides?.dmRepo ?? container.getDmRepo()).getThread(threadId),
       }),
-      listCleanupMemberIds: (cleanupId, cap) =>
-        (cleanups ??= makeDrizzleCleanupRepository(container.getDb().sql)).listMemberIds(
-          cleanupId,
-          cap,
-        ),
-      listReportChatMemberIds: (reportId) =>
-        (
-          overrides?.reportChat ??
-          (reportChat ??= makeReportChatRepository(container.getDb().sql, presignMedia))
-        ).listMemberIds(reportId),
-      listGroupMemberIds: (groupId) => {
-        const repo = overrides
-          ? overrides.groups
-          : (groups ??= makeChatGroupRepository(container.getDb().sql, presignMedia))
-        return repo?.listMemberIds(groupId) ?? Promise.resolve([])
-      },
+      listCleanupMemberIds: (cleanupId, candidateIds) =>
+        roomMemberIdsAmong(container.getDb().sql, "cleanup", cleanupId, candidateIds),
+      listReportChatMemberIds: (reportId, candidateIds) =>
+        roomMemberIdsAmong(container.getDb().sql, "report", reportId, candidateIds),
+      listGroupMemberIds: (groupId, candidateIds) =>
+        roomMemberIdsAmong(container.getDb().sql, "group", groupId, candidateIds),
     }),
     recordChatMentions: (messageId, mentionedUserIds) =>
       recordChatMentions(container.getDb().sql, messageId, mentionedUserIds),
+    logger: app.log,
   }
   mentionSeams.set(app, seam)
   return seam
+}
+
+// A bell that fails to clear leaves a stale badge, never a failed read, so the error is logged only.
+function makeClearBell(
+  getService: () => NotificationService | undefined,
+  log: Pick<FastifyBaseLogger, "warn">,
+): ClearBell {
+  return async (kind, id, userId) => {
+    const service = getService()
+    if (!service) return
+    try {
+      await clearConversationBellFor(service, kind, id, userId)
+    } catch (err) {
+      log.warn(
+        { err, kind, id, userId },
+        "read: clear conversation notifications failed (suppressed)",
+      )
+    }
+  }
 }
 
 export interface ConversationReadSeam {
@@ -149,7 +166,10 @@ export interface ConversationReadSeam {
 
 const readSeams = new WeakMap<FastifyInstance, ConversationReadSeam>()
 
-export function conversationReadSeam(app: FastifyInstance, container: Container): ConversationReadSeam {
+export function conversationReadSeam(
+  app: FastifyInstance,
+  container: Container,
+): ConversationReadSeam {
   const cached = readSeams.get(app)
   if (cached) return cached
 
@@ -168,7 +188,7 @@ export function conversationReadSeam(app: FastifyInstance, container: Container)
       ? overrides.reportChat
       : useFakeChat
         ? undefined
-        : (reportChat ??= makeReportChatRepository(container.getDb().sql, presignMedia))
+        : (reportChat ??= makeReportChatRepository(container.getDb().sql))
 
   let groups: ChatGroupRepository | undefined
   const getGroups = (): ChatGroupRepository | undefined =>
@@ -193,18 +213,7 @@ export function conversationReadSeam(app: FastifyInstance, container: Container)
       group: async (id, userId, at) => {
         await getGroups()?.markRead(id, userId, at)
       },
-      clearBell: async (kind, id, userId) => {
-        const service = notifications()
-        if (!service) return
-        try {
-          await clearConversationBellFor(service, kind, id, userId)
-        } catch (err) {
-          app.log.warn(
-            { err, kind, id, userId },
-            "read: clear conversation notifications failed (suppressed)",
-          )
-        }
-      },
+      clearBell: makeClearBell(notifications, app.log),
     }),
   }
   readSeams.set(app, seam)
@@ -215,11 +224,9 @@ export interface ChatWiring {
   readState: ChatReadState
   isMember: IsMemberFn
   dmRepo: DmRepository
-  blocksRepo: BlocksRepository
   isBlockedEitherWay: IsBlockedEitherWayFn
   dmPeerOf: (threadId: string, userId: string) => Promise<string | null>
   getChatRepo(): ChatRepository
-  getReportChatRepo(): ReportChatRepository
   listDmThreadsFor: DmRepository["listThreadsForUser"]
 }
 
@@ -230,7 +237,9 @@ export function applyWsUpgradeRateLimit(app: FastifyInstance): void {
     keyGenerator: wsUpgradeRateLimitKey,
   })
   app.addHook("onRequest", async (request, reply) => {
-    if ((request.url ?? "").split("?")[0] !== "/ws") return
+    // The router matches on the percent-decoded path, so only the matched pattern catches every
+    // spelling of /ws that reaches the upgrade handler.
+    if (request.routeOptions.url !== WS_ROUTE) return
     const result = await limiter(request)
     if (!result.isAllowed && result.isExceeded) {
       applyRateLimitHeaders(reply, result)
@@ -241,18 +250,37 @@ export function applyWsUpgradeRateLimit(app: FastifyInstance): void {
   })
 }
 
-export function wireChatGateway(app: FastifyInstance, container: Container): ChatWiring {
-  const overrides: ChatGatewayOverrides | undefined = app.chatOverrides
-  const useFakeChat = container.env.USE_FAKE_CHAT
+interface WiringContext {
+  app: FastifyInstance
+  container: Container
+  overrides: ChatGatewayOverrides | undefined
+  useFakeChat: boolean
+}
 
-  const { readState, markRoomRead } = conversationReadSeam(app, container)
-
-  const presence: ChatPresence =
+function makePresence({ container, overrides, useFakeChat }: WiringContext): ChatPresence {
+  return (
     overrides?.presence ??
     (useFakeChat ? new InMemoryChatPresence() : new RedisChatPresence(container.getRedis()))
+  )
+}
 
-  let cleanupRepo: ReturnType<typeof makeDrizzleCleanupRepository> | undefined
-  const getCleanupRepo = (): ReturnType<typeof makeDrizzleCleanupRepository> =>
+interface ChatRepos {
+  getCleanupRepo(): CleanupRepository
+  isMember: IsMemberFn
+  blocksRepo: BlocksRepository
+  dmRepo: DmRepository
+  isBlockedEitherWay: IsBlockedEitherWayFn
+  blockedIdsFor: BatchIdLookup | undefined
+  getChatRepo(): ChatRepository
+  getReportChatRepo(): ReportChatRepository
+  getGroupsRepo(): ChatGroupRepository | undefined
+  groupWired: boolean
+  getReportRepo(): DiscussionRepository
+}
+
+function makeChatRepos({ container, overrides, useFakeChat }: WiringContext): ChatRepos {
+  let cleanupRepo: CleanupRepository | undefined
+  const getCleanupRepo = (): CleanupRepository =>
     (cleanupRepo ??= makeDrizzleCleanupRepository(container.getDb().sql))
   const isMember: IsMemberFn = overrides
     ? overrides.isMember
@@ -260,238 +288,230 @@ export function wireChatGateway(app: FastifyInstance, container: Container): Cha
 
   const blocksRepo: BlocksRepository = overrides?.blocksRepo ?? container.getBlocksRepo()
   const dmRepo: DmRepository = overrides?.dmRepo ?? container.getDmRepo()
-  const isBlockedEitherWay: IsBlockedEitherWayFn = (a, b) => blocksRepo.isBlockedEitherWay(a, b)
-
-  const blockedIdsForCandidates = (():
-    | ((actorId: string, candidateIds: string[]) => Promise<Set<string>>)
-    | undefined => {
-    const repo = blocksRepo
-    const batch = repo.blockedIdsAmong
-    if (!batch) return undefined
-    return (actorId, candidateIds) => batch.call(repo, actorId, candidateIds)
-  })()
+  const blockedIdsFor: BatchIdLookup | undefined = bindBlockedIdsAmong(blocksRepo)
 
   const presignMedia = makePrivateMediaPresigner(container.storage)
 
   let chatRepo: ChatRepository | undefined
-  const getChatRepo = (): ChatRepository =>
-    overrides?.chatRepo ??
-    (chatRepo ??= makeDrizzleChatRepository(container.getDb().sql, presignMedia))
-
   let reportChatRepo: ReportChatRepository | undefined
-  const getReportChatRepo = (): ReportChatRepository =>
-    overrides?.reportChat ??
-    (reportChatRepo ??= makeReportChatRepository(container.getDb().sql, presignMedia))
+  let groupsRepo: ChatGroupRepository | undefined
+  let reportRepo: DiscussionRepository | undefined
 
-  let lazyGroupsRepo: ChatGroupRepository | undefined
-  const getGroupsRepo = (): ChatGroupRepository | undefined =>
-    overrides
-      ? overrides.groups
-      : useFakeChat
-        ? undefined
-        : (lazyGroupsRepo ??= makeChatGroupRepository(container.getDb().sql, presignMedia))
-  const groupWired = overrides ? overrides.groups !== undefined : !useFakeChat
-  const groupChat: GatewayGroupChat | undefined = groupWired
-    ? {
-        isMember: async (groupId, userId) =>
-          (await getGroupsRepo()!.roleOf(groupId, userId)) !== null,
-        access: async (groupId, userId) => {
-          const a = await getGroupsRepo()!.accessOf(groupId, userId)
-          if (a === null) return null
-          return { isMember: a.role !== null, canPost: canPostToGroup(a), visibility: a.visibility }
-        },
-        advanceReadWatermark: (groupId, userId, upToId) =>
-          getGroupsRepo()!.advanceReadWatermark(groupId, userId, upToId),
-      }
-    : undefined
+  return {
+    getCleanupRepo,
+    isMember,
+    blocksRepo,
+    dmRepo,
+    isBlockedEitherWay: (a, b) => blocksRepo.isBlockedEitherWay(a, b),
+    blockedIdsFor,
+    getChatRepo: () =>
+      overrides?.chatRepo ??
+      (chatRepo ??= makeDrizzleChatRepository(container.getDb().sql, presignMedia)),
+    getReportChatRepo: () =>
+      overrides?.reportChat ?? (reportChatRepo ??= makeReportChatRepository(container.getDb().sql)),
+    getGroupsRepo: () =>
+      overrides
+        ? overrides.groups
+        : useFakeChat
+          ? undefined
+          : (groupsRepo ??= makeChatGroupRepository(container.getDb().sql, presignMedia)),
+    groupWired: overrides ? overrides.groups !== undefined : !useFakeChat,
+    getReportRepo: () => (reportRepo ??= makeDrizzleDiscussionRepository(container.getDb().sql)),
+  }
+}
 
-  const groupMembersInFlight = new Map<string, Promise<string[]>>()
-  const listGroupMembersShared = (groupId: string): Promise<string[]> => {
+function makeGroupChat(repos: ChatRepos): GatewayGroupChat | undefined {
+  if (!repos.groupWired) return undefined
+  const groups = (): ChatGroupRepository => repos.getGroupsRepo()!
+  return {
+    isMember: async (groupId, userId) => (await groups().roleOf(groupId, userId)) !== null,
+    access: async (groupId, userId) => {
+      const a = await groups().accessOf(groupId, userId)
+      if (a === null) return null
+      return { isMember: a.role !== null, canPost: canPostToGroup(a), visibility: a.visibility }
+    },
+    advanceReadWatermark: (groupId, userId, upToId) =>
+      groups().advanceReadWatermark(groupId, userId, upToId),
+  }
+}
+
+// One map per wiring: it dedupes concurrent member scans between the thread signal and the group
+// fan-out for the same message.
+function makeSharedGroupMemberList(
+  getGroupsRepo: () => ChatGroupRepository | undefined,
+): (groupId: string, limit?: number) => Promise<string[]> {
+  const inFlightByKey = new Map<string, Promise<string[]>>()
+  return (groupId, limit = GROUP_MEMBER_SCAN_CAP) => {
     const repo = getGroupsRepo()
     if (!repo) return Promise.resolve([])
-    const inFlight = groupMembersInFlight.get(groupId)
+    const key = `${groupId}:${limit}`
+    const inFlight = inFlightByKey.get(key)
     if (inFlight) return inFlight
-    const query = repo.listMemberIds(groupId)
-    groupMembersInFlight.set(groupId, query)
-    void query.catch(() => {}).then(() => groupMembersInFlight.delete(groupId))
+    const query = repo.listMemberIds(groupId, limit)
+    inFlightByKey.set(key, query)
+    // Only evicts the shared entry; each caller awaits `query` itself and sees the rejection.
+    void query.catch(() => {}).then(() => inFlightByKey.delete(key))
     return query
   }
+}
 
-  const dmPeerOf = makeDmPeerOf(dmRepo)
+interface ChatNotifications {
+  notificationService: NotificationService | undefined
+  conversationMutes: ConversationMutesRepository | undefined
+  isMutedFor: ReturnType<typeof makeFailOpenMuteCheck>
+  mutedUserIdsFor: Record<
+    FanoutRoomKind,
+    ((roomId: string, userIds: string[]) => Promise<Set<string>>) | undefined
+  >
+}
 
+function makeChatNotifications({
+  app,
+  container,
+  overrides,
+  useFakeChat,
+}: WiringContext): ChatNotifications {
   const notificationService: NotificationService | undefined =
     overrides?.notificationService ??
-    (useFakeChat
-      ? undefined
-      : makeNotificationService({
-          repo: makeDrizzleNotificationRepository(container.getDb().sql),
-          pushSender: container.pushSender,
-          userChannel: container.userChannel,
-          logger: app.log,
-        }))
+    (useFakeChat ? undefined : makeRouteNotificationService(container, app.log))
 
   const conversationMutes: ConversationMutesRepository | undefined =
     overrides?.conversationMutes ??
     (useFakeChat ? undefined : makeConversationMutesRepository(container.getDb().sql))
 
-  const isMutedFor = async (
-    userId: string,
-    kind: "dm" | "cleanup" | "report" | "group",
-    roomId: string,
-  ): Promise<boolean> => {
-    if (!conversationMutes) return false
-    try {
-      return await conversationMutes.isMuted(userId, kind, roomId)
-    } catch {
-      return false
-    }
-  }
+  const isMutedFor = makeFailOpenMuteCheck(conversationMutes, app.log)
 
-  const mutedUserIdsForRoom = (
-    kind: "report" | "group",
-  ): ((roomId: string, userIds: string[]) => Promise<Set<string>>) | undefined => {
-    const repo = conversationMutes
-    const batch = repo?.mutedUserIdsFor
-    if (!repo || !batch) return undefined
-    return (roomId, userIds) => batch.call(repo, kind, roomId, userIds)
-  }
-  const reportMutedUserIdsFor = mutedUserIdsForRoom("report")
-  const groupMutedUserIdsFor = mutedUserIdsForRoom("group")
-
-  const clearConversationBell = async (
-    kind: ConversationBellKind,
-    id: string,
-    userId: string,
-  ): Promise<void> => {
-    if (!notificationService) return
-    try {
-      await clearConversationBellFor(notificationService, kind, id, userId)
-    } catch (err) {
-      app.log.warn(
-        { err, kind, id, userId },
-        "read: clear conversation notifications failed (suppressed)",
-      )
-    }
-  }
-
-  const dmGatewayDeps: GatewayDmDeps = {
-    peerOf: dmPeerOf,
-    persist: (input) => dmRepo.persist(input),
-    markRead: async (threadId, userId, upToId) => {
-      const at = (await dmRepo.resolveMessageCreatedAt(threadId, upToId)) ?? new Date()
-      await dmRepo.markRead(threadId, userId, at)
-      await clearConversationBell("dm", threadId, userId)
+  return {
+    notificationService,
+    conversationMutes,
+    isMutedFor,
+    mutedUserIdsFor: {
+      report: bindMutedUserIdsFor(conversationMutes, "report"),
+      group: bindMutedUserIdsFor(conversationMutes, "group"),
     },
   }
+}
 
-  const advanceCleanupWatermark: (
-    cleanupId: string,
-    userId: string,
-    upToId: string,
-  ) => Promise<void> = useFakeChat
-    ? (cleanupId, userId) => readState.markRead(cleanupId, userId, new Date())
-    : (cleanupId, userId, upToId) =>
-        monotonicReadWatermarkUpdate(
-          container.getDb().sql,
-          "cleanup_members",
-          { cleanup_id: cleanupId, user_id: userId },
-          {
-            messagesTable: "chat_messages",
-            messageId: upToId,
-            scopeColumn: "cleanup_id",
-            scopeId: cleanupId,
-          },
-        )
+function makeCleanupWatermark(
+  { container, useFakeChat }: WiringContext,
+  readState: ChatReadState,
+): (cleanupId: string, userId: string, upToId: string) => Promise<void> {
+  if (useFakeChat) return (cleanupId, userId) => readState.markRead(cleanupId, userId, new Date())
+  return (cleanupId, userId, upToId) =>
+    monotonicReadWatermarkUpdate(
+      container.getDb().sql,
+      CLEANUP_MEMBERS_TABLE,
+      { cleanup_id: cleanupId, user_id: userId },
+      {
+        messagesTable: CHAT_MESSAGES_TABLE,
+        messageId: upToId,
+        scopeColumn: "cleanup_id",
+        scopeId: cleanupId,
+      },
+    )
+}
 
-  const threadRecipientsOf: ThreadRecipientsOf = async (kind, id, senderId) => {
+function makeThreadRecipientsOf(
+  { useFakeChat }: WiringContext,
+  repos: ChatRepos,
+  dmPeerOf: (threadId: string, userId: string) => Promise<string | null>,
+  listGroupMembers: (groupId: string) => Promise<string[]>,
+): ThreadRecipientsOf {
+  return async (kind, id, senderId) => {
     if (kind === "dm") {
       const peer = await dmPeerOf(id, senderId)
       return peer !== null ? [peer] : []
     }
     if (kind === "report") return []
     if (kind === "group") {
-      const members = await listGroupMembersShared(id)
+      const members = await listGroupMembers(id)
       return members.filter((m) => m !== senderId).slice(0, THREAD_SIGNAL_MEMBER_CAP)
     }
     if (useFakeChat) return []
-    const members = await getCleanupRepo().listMemberIds(id, THREAD_SIGNAL_MEMBER_CAP)
+    const members = await repos.getCleanupRepo().listMemberIds(id, THREAD_SIGNAL_MEMBER_CAP)
     return members.filter((m) => m !== senderId)
   }
+}
 
-  const bellDeps: ChatBellDeps | undefined =
-    useFakeChat || !notificationService
-      ? undefined
-      : {
-          notificationService,
-          isMutedFor,
-          isCleanupMember: isMember,
-          isReportChatMember: (reportId, userId) => getReportChatRepo().isMember(reportId, userId),
-          isChatGroupMember: async (groupId, userId) =>
-            ((await getGroupsRepo()?.roleOf(groupId, userId)) ?? null) !== null,
-          isBlockedEitherWay,
-          presence,
-          roomKeyFor,
-        }
+function makeBellDeps(
+  { useFakeChat }: WiringContext,
+  repos: ChatRepos,
+  notifications: ChatNotifications,
+  presence: ChatPresence,
+): ChatBellDeps | undefined {
+  const { notificationService, isMutedFor } = notifications
+  if (useFakeChat || !notificationService) return undefined
+  return {
+    notificationService,
+    isMutedFor,
+    isCleanupMember: repos.isMember,
+    isReportChatMember: (reportId, userId) => repos.getReportChatRepo().isMember(reportId, userId),
+    isChatGroupMember: async (groupId, userId) =>
+      ((await repos.getGroupsRepo()?.roleOf(groupId, userId)) ?? null) !== null,
+    isBlockedEitherWay: repos.isBlockedEitherWay,
+    presence,
+    roomKeyFor,
+  }
+}
 
-  const chatMentions: GatewayChatMentions | undefined =
-    overrides?.chatMentions ??
-    (!bellDeps
-      ? undefined
-      : {
-          ...chatMentionDeps(app, container),
-          notifyChatMention: makeChatMentionNotifier(bellDeps),
-        })
+function makeReportVisible(
+  { overrides, useFakeChat }: WiringContext,
+  repos: ChatRepos,
+): ReportVisibleFn | undefined {
+  if (overrides?.reportVisible) return overrides.reportVisible
+  if (useFakeChat) return undefined
+  return async (reportId, userId) =>
+    isReportVisibleTo(await repos.getReportRepo().findReportForDiscussion(reportId), userId)
+}
 
-  const onChatReply: OnChatReply | undefined = bellDeps
-    ? makeChatReplyNotifier(bellDeps)
-    : undefined
-
-  let reportRepo: ReturnType<typeof makeDrizzleDiscussionRepository> | undefined
-  const getReportRepo = (): ReturnType<typeof makeDrizzleDiscussionRepository> =>
-    (reportRepo ??= makeDrizzleDiscussionRepository(container.getDb().sql))
-
-  const reportVisible: ReportVisibleFn | undefined =
-    overrides?.reportVisible ??
-    (useFakeChat
-      ? undefined
-      : async (reportId, userId) =>
-          isReportVisibleTo(await getReportRepo().findReportForDiscussion(reportId), userId))
-
-  const reportSendLimiter: RateLimiter = makeTokenBucketLimiter(REPORT_SEND_LIMIT)
-
+function makeRoomFanoutHandoff({
+  app,
+  container,
+  useFakeChat,
+}: WiringContext): (
+  kind: FanoutRoomKind,
+) => Pick<RoomFanoutNotifierDeps, "dispatchToJob" | "claimWindow"> {
   const fanoutMode = roomFanoutMode({
     useFakeChat,
     useFakeJobs: container.env.USE_FAKE_JOBS,
     usesRealRedis: container.usesRealRedis === true,
   })
   const roomFanoutClaim = makeWindowClaim(container, app.log)
-  const roomFanoutHandoff = (
-    kind: "report" | "group",
-  ): Pick<RoomFanoutNotifierDeps, "dispatchToJob" | "claimWindow"> => ({
-    ...(fanoutMode.queued
-      ? { dispatchToJob: makeRoomFanoutDispatcher(container.jobs, kind) }
-      : {}),
+  return (kind) => ({
+    ...(fanoutMode.queued ? { dispatchToJob: makeRoomFanoutDispatcher(container.jobs, kind) } : {}),
     ...(fanoutMode.claimed
-      ? { claimWindow: (roomId: string, windowMs: number) => roomFanoutClaim(kind, roomId, windowMs) }
+      ? {
+          claimWindow: (roomId: string, windowMs: number) =>
+            roomFanoutClaim(kind, roomId, windowMs),
+        }
       : {}),
   })
+}
 
+function makeLazySendDedupe({ container, useFakeChat }: WiringContext): SendDedupeStore {
   let dedupeStore: SendDedupeStore | undefined
   const resolveDedupeStore = (): SendDedupeStore =>
     (dedupeStore ??= useFakeChat
       ? new InMemorySendDedupeStore()
       : new RedisSendDedupeStore(container.getRedis()))
-  const sendDedupe: SendDedupeStore = {
+  return {
     reserve: (key) => resolveDedupeStore().reserve(key),
     commit: (key, messageId) => resolveDedupeStore().commit(key, messageId),
     release: (key) => resolveDedupeStore().release(key),
   }
+}
 
+function withSendResilience(
+  { app, container }: WiringContext,
+  repos: ChatRepos,
+  dedupe: SendDedupeStore,
+): GatewayChatService {
   const baseChat = container.chatService as GatewayChatService & {
     deliverLocal?: LocalDeliver
   }
+  const { dmRepo, getChatRepo } = repos
   const sendResilience = makeSendResilience({
-    dedupe: sendDedupe,
+    dedupe,
     findRoomMessage: (kind, roomId, messageId, viewerUserId) => {
       if (kind === "dm") return dmRepo.findMessage(roomId, messageId, viewerUserId)
       if (kind === "report") return getChatRepo().findReportMessage(roomId, messageId, viewerUserId)
@@ -504,7 +524,7 @@ export function wireChatGateway(app: FastifyInstance, container: Container): Cha
       app.log.error({ ...info, component: "chat-broadcast" }, "chat: room broadcast not published"),
     logger: app.log,
   })
-  const chatWithResilience: GatewayChatService = {
+  return {
     joinRoom: (room, conn, userId) => baseChat.joinRoom(room, conn, userId),
     leaveRoom: (room, conn) => baseChat.leaveRoom(room, conn),
     persist: (input) => baseChat.persist(input),
@@ -518,72 +538,172 @@ export function wireChatGateway(app: FastifyInstance, container: Container): Cha
       : {}),
     sendResilience,
   }
+}
 
-  const canForwardCity = makeCityForwardThrottle({
-    incr: (key, ttlSeconds) => container.getCounterStore().incr(key, ttlSeconds),
-    incrBy: (key, by, ttlSeconds) => container.getCounterStore().incrBy(key, by, ttlSeconds),
-  })
+function makeContainerCityForwardThrottle({
+  app,
+  container,
+}: WiringContext): ReturnType<typeof makeCityForwardThrottle> {
+  return makeCityForwardThrottle(
+    {
+      incr: (key, ttlSeconds) => container.getCounterStore().incr(key, ttlSeconds),
+      incrBy: (key, by, ttlSeconds) => container.getCounterStore().incrBy(key, by, ttlSeconds),
+      decrBy: (key, by) => container.getCounterStore().decrBy(key, by),
+    },
+    app.log,
+  )
+}
+
+interface RoomMemberNotifiers {
+  notifyReportChatMembers: ReturnType<typeof makeReportChatNotifier> | undefined
+  onGroupMessage: OnGroupMessage | undefined
+}
+
+function makeRoomMemberNotifiers(
+  { app }: WiringContext,
+  repos: ChatRepos,
+  notifications: ChatNotifications,
+  presence: ChatPresence,
+  listGroupMembers: (groupId: string, limit?: number) => Promise<string[]>,
+  fanoutHandoff: ReturnType<typeof makeRoomFanoutHandoff>,
+): RoomMemberNotifiers {
+  const { notificationService, conversationMutes, mutedUserIdsFor } = notifications
+  const { blockedIdsFor, isBlockedEitherWay } = repos
 
   const notifyReportChatMembers =
     notificationService && conversationMutes
       ? makeReportChatNotifier({
           notificationService,
           reportChatRepo: {
-            listMemberIds: (reportId) => getReportChatRepo().listMemberIds(reportId),
+            listMemberIds: (reportId, limit) =>
+              repos.getReportChatRepo().listMemberIds(reportId, limit),
           },
-          isMuted: (userId, roomId) => isMutedFor(userId, "report", roomId),
-          ...(reportMutedUserIdsFor ? { mutedUserIdsFor: reportMutedUserIdsFor } : {}),
+          isMuted: (userId, roomId) => conversationMutes.isMuted(userId, "report", roomId),
+          ...(mutedUserIdsFor.report ? { mutedUserIdsFor: mutedUserIdsFor.report } : {}),
           presence,
           roomKeyFor,
           isBlockedEitherWay,
-          ...(blockedIdsForCandidates ? { blockedIdsFor: blockedIdsForCandidates } : {}),
-          ...roomFanoutHandoff("report"),
+          ...(blockedIdsFor ? { blockedIdsFor } : {}),
+          ...fanoutHandoff("report"),
+          logger: app.log,
         })
       : undefined
 
   const notifyGroupChatMembers =
-    notificationService && conversationMutes && groupWired
+    notificationService && conversationMutes && repos.groupWired
       ? makeGroupChatNotifier({
           notificationService,
-          groupRepo: { listMemberIds: listGroupMembersShared },
-          isMuted: (userId, roomId) => isMutedFor(userId, "group", roomId),
-          ...(groupMutedUserIdsFor ? { mutedUserIdsFor: groupMutedUserIdsFor } : {}),
+          groupRepo: {
+            listMemberIds: (groupId, limit) => listGroupMembers(groupId, limit),
+          },
+          isMuted: (userId, roomId) => conversationMutes.isMuted(userId, "group", roomId),
+          ...(mutedUserIdsFor.group ? { mutedUserIdsFor: mutedUserIdsFor.group } : {}),
           presence,
           roomKeyFor,
           isBlockedEitherWay,
-          ...(blockedIdsForCandidates ? { blockedIdsFor: blockedIdsForCandidates } : {}),
-          ...roomFanoutHandoff("group"),
+          ...(blockedIdsFor ? { blockedIdsFor } : {}),
+          ...fanoutHandoff("group"),
+          logger: app.log,
         })
       : undefined
-  const onGroupMessage: OnGroupMessage | undefined = notifyGroupChatMembers
-    ? async (groupId, message) => {
-        void notifyGroupChatMembers(groupId, message).catch(() => {})
-      }
-    : undefined
 
-  const forwardCityMention = makeContainerReportCityForward(container, {
-    getReportRepo,
-    canForward: canForwardCity,
+  return {
+    notifyReportChatMembers,
+    onGroupMessage: notifyGroupChatMembers
+      ? async (groupId, message) => {
+          void notifyGroupChatMembers(groupId, message).catch(() => {})
+        }
+      : undefined,
+  }
+}
+
+function makeOnReportMessage(
+  ctx: WiringContext,
+  repos: ChatRepos,
+  notifyReportChatMembers: RoomMemberNotifiers["notifyReportChatMembers"],
+): OnReportMessage | undefined {
+  const forwardCityMention = makeContainerReportCityForward(ctx.container, {
+    getReportRepo: repos.getReportRepo,
+    canForward: makeContainerCityForwardThrottle(ctx),
+    logger: ctx.app.log,
   })
-  const onReportMessage: OnReportMessage | undefined = useFakeChat
-    ? undefined
-    : async (reportId, message, actorUserId) => {
-        if (notifyReportChatMembers) void notifyReportChatMembers(reportId, message).catch(() => {})
-        await forwardCityMention(reportId, message, actorUserId)
-      }
+  if (ctx.useFakeChat) return undefined
+  return async (reportId, message, actorUserId) => {
+    if (notifyReportChatMembers) void notifyReportChatMembers(reportId, message).catch(() => {})
+    await forwardCityMention(reportId, message, actorUserId)
+  }
+}
 
-  applyWsUpgradeRateLimit(app)
-
-  const reportChatSource = overrides
+function makeWiredGatewayReportChat(
+  { overrides, useFakeChat }: WiringContext,
+  repos: ChatRepos,
+  clearBell: ClearBell,
+): GatewayReportChat | undefined {
+  const source = overrides
     ? overrides.reportChat
     : useFakeChat
       ? undefined
-      : getReportChatRepo()
-  const reportChat: GatewayReportChat | undefined = reportChatSource
-    ? makeGatewayReportChat(reportChatSource, (reportId, userId) =>
-        clearConversationBell("report", reportId, userId),
-      )
+      : repos.getReportChatRepo()
+  if (!source) return undefined
+  return makeGatewayReportChat(source, (reportId, userId) => clearBell("report", reportId, userId))
+}
+
+export function wireChatGateway(app: FastifyInstance, container: Container): ChatWiring {
+  const ctx: WiringContext = {
+    app,
+    container,
+    overrides: app.chatOverrides,
+    useFakeChat: container.env.USE_FAKE_CHAT,
+  }
+
+  const { readState, markRoomRead } = conversationReadSeam(app, container)
+  const presence = makePresence(ctx)
+  const repos = makeChatRepos(ctx)
+  const { isMember, dmRepo, isBlockedEitherWay } = repos
+  const groupChat = makeGroupChat(repos)
+  const listGroupMembers = makeSharedGroupMemberList(repos.getGroupsRepo)
+  const dmPeerOf = makeDmPeerOf(dmRepo)
+
+  const notifications = makeChatNotifications(ctx)
+  const { notificationService, isMutedFor } = notifications
+  const clearBell = makeClearBell(() => notificationService, app.log)
+
+  const dmGatewayDeps: GatewayDmDeps = {
+    peerOf: dmPeerOf,
+    persist: (input) => dmRepo.persist(input),
+    markRead: makeDmAckMarkRead(dmRepo, (threadId, userId) => clearBell("dm", threadId, userId)),
+  }
+  const advanceCleanupWatermark = makeCleanupWatermark(ctx, readState)
+  const threadRecipientsOf = makeThreadRecipientsOf(ctx, repos, dmPeerOf, listGroupMembers)
+
+  const bellDeps = makeBellDeps(ctx, repos, notifications, presence)
+  const chatMentions: GatewayChatMentions | undefined =
+    ctx.overrides?.chatMentions ??
+    (bellDeps
+      ? { ...chatMentionDeps(app, container), notifyChatMention: makeChatMentionNotifier(bellDeps) }
+      : undefined)
+  const onChatReply: OnChatReply | undefined = bellDeps
+    ? makeChatReplyNotifier(bellDeps)
     : undefined
+
+  const reportVisible = makeReportVisible(ctx, repos)
+  const reportSendLimiter: RateLimiter = makeTokenBucketLimiter(WS_SEND_LIMITS.report)
+  const fanoutHandoff = makeRoomFanoutHandoff(ctx)
+  const chatWithResilience = withSendResilience(ctx, repos, makeLazySendDedupe(ctx))
+
+  const { notifyReportChatMembers, onGroupMessage } = makeRoomMemberNotifiers(
+    ctx,
+    repos,
+    notifications,
+    presence,
+    listGroupMembers,
+    fanoutHandoff,
+  )
+  const onReportMessage = makeOnReportMessage(ctx, repos, notifyReportChatMembers)
+
+  applyWsUpgradeRateLimit(app)
+
+  const reportChat = makeWiredGatewayReportChat(ctx, repos, clearBell)
 
   const wsTicketCache = app.authServices?.cache
   registerChatGateway(app, {
@@ -595,7 +715,7 @@ export function wireChatGateway(app: FastifyInstance, container: Container): Cha
       : {}),
     markRead: async (cleanupId, userId, upToId) => {
       await advanceCleanupWatermark(cleanupId, userId, upToId)
-      await clearConversationBell("cleanup", cleanupId, userId)
+      await clearBell("cleanup", cleanupId, userId)
     },
     presence,
     dm: dmGatewayDeps,
@@ -621,11 +741,9 @@ export function wireChatGateway(app: FastifyInstance, container: Container): Cha
     readState,
     isMember,
     dmRepo,
-    blocksRepo,
     isBlockedEitherWay,
     dmPeerOf,
-    getChatRepo,
-    getReportChatRepo,
+    getChatRepo: repos.getChatRepo,
     listDmThreadsFor: (userId, limit, cursor) => dmRepo.listThreadsForUser(userId, limit, cursor),
   }
 }
@@ -642,6 +760,18 @@ export function roomFanoutMode(input: {
 }): RoomFanoutMode {
   const claimed = !input.useFakeChat && input.usesRealRedis
   return { claimed, queued: claimed && !input.useFakeJobs }
+}
+
+export function makeDmAckMarkRead(
+  dmRepo: Pick<DmRepository, "resolveMessageCreatedAt" | "markRead">,
+  clearBell: (threadId: string, userId: string) => Promise<void>,
+): GatewayDmDeps["markRead"] {
+  return async (threadId, userId, upToId) => {
+    const at = await dmRepo.resolveMessageCreatedAt(threadId, upToId)
+    // Like the other room kinds, an ack names a message; one this thread cannot resolve advances nothing.
+    if (at !== null) await dmRepo.markRead(threadId, userId, at)
+    await clearBell(threadId, userId)
+  }
 }
 
 export function makeGatewayReportChat(

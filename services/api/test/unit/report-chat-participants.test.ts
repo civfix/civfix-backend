@@ -22,7 +22,7 @@ function row(over: Partial<ReportMemberRowSelect> = {}): ReportMemberRowSelect {
   return {
     user_id: "11111111-1111-4111-8111-111111111111",
     role: "member",
-    joined_at: "2026-07-31T00:00:00.000Z",
+    joined_at: new Date("2026-07-31T00:00:00.000Z"),
     display_name: "Ada Lovelace",
     handle: "ada",
     bio: "counts things",
@@ -72,7 +72,6 @@ describe("toReportParticipantDTO", () => {
   it("hides a blocked pair behind the shared hidden identity", () => {
     const dto = toReportParticipantDTO(row({ blocked_pair: true }))
 
-    // Not the real display name, and none of the identifying fields survive.
     expect(dto.user.name).not.toBe("Ada Lovelace")
     expect(dto.user.handle).toBeNull()
     expect(dto.user.bio).toBeNull()

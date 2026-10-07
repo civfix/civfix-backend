@@ -22,7 +22,6 @@ import {
 } from "../../src/services/notification-service.js"
 import { clearConversationBellFor } from "../../src/services/conversation-bell.js"
 
-
 const ALICE = "11111111-1111-1111-1111-111111111111"
 const BOB = "22222222-2222-2222-2222-222222222222"
 const CLEANUP = "55555555-5555-5555-5555-555555555555"
@@ -143,10 +142,19 @@ describe("DM bell notifications (#42)", () => {
   it("a dm send creates a `dm` notification for the PEER (not the sender) and pushes", async () => {
     const aConn = new MockConnection("A")
     const aSession = sessionFor(ALICE, aConn)
-    await handleClientFrame(aSession, JSON.stringify({ type: "join", cleanupId: THREAD, roomKind: "dm" }))
     await handleClientFrame(
       aSession,
-      JSON.stringify({ type: "send", cleanupId: THREAD, roomKind: "dm", clientId: "c1", body: "hi bob" }),
+      JSON.stringify({ type: "join", cleanupId: THREAD, roomKind: "dm" }),
+    )
+    await handleClientFrame(
+      aSession,
+      JSON.stringify({
+        type: "send",
+        cleanupId: THREAD,
+        roomKind: "dm",
+        clientId: "c1",
+        body: "hi bob",
+      }),
     )
     await new Promise((r) => setTimeout(r, 0))
 
@@ -166,12 +174,24 @@ describe("DM bell notifications (#42)", () => {
     const bConn = new MockConnection("B")
     const aSession = sessionFor(ALICE, aConn)
     const bSession = sessionFor(BOB, bConn)
-    await handleClientFrame(bSession, JSON.stringify({ type: "join", cleanupId: THREAD, roomKind: "dm" }))
-    await handleClientFrame(aSession, JSON.stringify({ type: "join", cleanupId: THREAD, roomKind: "dm" }))
+    await handleClientFrame(
+      bSession,
+      JSON.stringify({ type: "join", cleanupId: THREAD, roomKind: "dm" }),
+    )
+    await handleClientFrame(
+      aSession,
+      JSON.stringify({ type: "join", cleanupId: THREAD, roomKind: "dm" }),
+    )
 
     await handleClientFrame(
       aSession,
-      JSON.stringify({ type: "send", cleanupId: THREAD, roomKind: "dm", clientId: "c1", body: "you there?" }),
+      JSON.stringify({
+        type: "send",
+        cleanupId: THREAD,
+        roomKind: "dm",
+        clientId: "c1",
+        body: "you there?",
+      }),
     )
     await new Promise((r) => setTimeout(r, 0))
 
@@ -182,17 +202,29 @@ describe("DM bell notifications (#42)", () => {
   it("reading the dm conversation clears the recipient's `dm` notification", async () => {
     const aConn = new MockConnection("A")
     const aSession = sessionFor(ALICE, aConn)
-    await handleClientFrame(aSession, JSON.stringify({ type: "join", cleanupId: THREAD, roomKind: "dm" }))
     await handleClientFrame(
       aSession,
-      JSON.stringify({ type: "send", cleanupId: THREAD, roomKind: "dm", clientId: "c1", body: "ping" }),
+      JSON.stringify({ type: "join", cleanupId: THREAD, roomKind: "dm" }),
+    )
+    await handleClientFrame(
+      aSession,
+      JSON.stringify({
+        type: "send",
+        cleanupId: THREAD,
+        roomKind: "dm",
+        clientId: "c1",
+        body: "ping",
+      }),
     )
     await new Promise((r) => setTimeout(r, 0))
     expect(unreadDmNotifs(BOB)).toHaveLength(1)
 
     const bConn = new MockConnection("B")
     const bSession = sessionFor(BOB, bConn)
-    await handleClientFrame(bSession, JSON.stringify({ type: "join", cleanupId: THREAD, roomKind: "dm" }))
+    await handleClientFrame(
+      bSession,
+      JSON.stringify({ type: "join", cleanupId: THREAD, roomKind: "dm" }),
+    )
     await handleClientFrame(
       bSession,
       JSON.stringify({

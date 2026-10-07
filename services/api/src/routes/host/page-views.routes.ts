@@ -7,7 +7,9 @@ import { parse } from "../_validate.js"
 import { makeCommsRuntime } from "../../services/host/comms-wiring.js"
 import type { CommsRuntime } from "../../services/host/comms-wiring.js"
 
-export const PAGE_VIEW_RATE_LIMIT = perHost({ max: 120, timeWindow: "1 minute" })
+const ONE_MINUTE = "1 minute"
+
+export const PAGE_VIEW_RATE_LIMIT = perHost({ max: 120, timeWindow: ONE_MINUTE })
 
 function headerOf(request: FastifyRequest, name: string): string | undefined {
   const value = request.headers[name]
@@ -46,9 +48,10 @@ export async function registerPageViewRoutes(
           ...(userAgent !== undefined ? { userAgent } : {}),
         })
       } catch (err) {
+        // A view counter is analytics, not state the visitor depends on: the beacon never fails.
         request.log.warn({ err }, "page view: counter write failed (view not counted)")
       }
-      reply.status(204).send()
+      reply.status(200).send({ ok: true })
     },
   )
 }

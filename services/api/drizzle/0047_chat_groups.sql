@@ -2,13 +2,13 @@
 -- 0047_chat_groups.sql
 -- -----------------------------------------------------------------------------
 -- P4 (Groups): user-created standalone chat rooms. chat_groups is the room row;
--- a CHANNEL is just a group with kind='channel' — same table, same messages,
+-- a CHANNEL is just a group with kind='channel': same table, same messages,
 -- same membership. Nothing here enforces the channel posting rules (only
 -- owner/admins post in a channel); that gate is app-level and lands in P5.
 --
--- chat_group_members mirrors report_chat_members (0041) — composite
+-- chat_group_members mirrors report_chat_members (0041): composite
 -- PK(group_id, user_id), joined_at, and the same last_read_at read watermark
--- (NULL = never read; unread baseline falls back to joined_at) — with a
+-- (NULL = never read; unread baseline falls back to joined_at), with a
 -- three-tier role ladder (owner|admin|member) instead of 0041's two.
 --
 -- chat_messages grows a THIRD scope: group_id. The 0036 two-way XOR
@@ -17,7 +17,7 @@
 -- group_id, so the swapped constraint validates cleanly across all partitions.
 --
 -- group_id gets a REAL foreign key: FKs FROM the partitioned chat_messages
--- parent TO a normal table are supported (PG 11+; the box is PG 16) — the same
+-- parent TO a normal table are supported (PG 11+; the box is PG 16), the same
 -- stance as cleanup_id (0002, inline) and report_id (0036, guarded ADD). Only
 -- FKs pointing AT chat_messages are impossible (why reply_to_id / pinned_by are
 -- FK-less); chat_groups is NOT partitioned, so referencing it is fine. No
@@ -74,7 +74,7 @@ END $$;
 
 -- Constraint swap: the 0036 XOR becomes exactly-one-of-three. DROP + ADD on the
 -- partitioned parent both recurse to every partition; the ADD re-validates
--- existing rows (all satisfy it — see header). num_nonnulls counts the set
+-- existing rows (all satisfy it; see header). num_nonnulls counts the set
 -- scopes directly, so this reads as "exactly one scope" instead of chained XORs.
 ALTER TABLE chat_messages DROP CONSTRAINT IF EXISTS chat_messages_scope_chk;
 ALTER TABLE chat_messages ADD CONSTRAINT chat_messages_scope_chk
@@ -86,7 +86,7 @@ ALTER TABLE chat_messages ADD CONSTRAINT chat_messages_scope_chk
 CREATE INDEX IF NOT EXISTS chat_messages_group_created_idx
   ON chat_messages (group_id, created_at DESC);
 
--- Partial pin-list index for group rooms — the third twin of the 0046 pair
+-- Partial pin-list index for group rooms: the third twin of the 0046 pair
 -- (only pinned rows are indexed; see 0046 for the rationale).
 CREATE INDEX IF NOT EXISTS chat_messages_group_pinned_idx
   ON chat_messages (group_id, pinned_at DESC)

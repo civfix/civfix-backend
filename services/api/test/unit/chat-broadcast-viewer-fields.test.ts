@@ -1,9 +1,5 @@
 import { describe, it, expect, beforeEach } from "vitest"
-import {
-  handleClientFrame,
-  type GatewayDeps,
-  type GatewaySession,
-} from "../../src/ws/gateway.js"
+import { handleClientFrame, type GatewayDeps, type GatewaySession } from "../../src/ws/gateway.js"
 import { WsChatService } from "../../src/adapters/chat-service.ws.js"
 import { InMemoryChatPubSub } from "../../src/adapters/chat-pubsub.js"
 import { InMemoryChatPresence } from "../../src/adapters/chat-presence.js"
@@ -13,10 +9,7 @@ import {
   InMemoryDmRepository,
 } from "../../src/services/dm-repository.memory.js"
 import { deleteMessageWithPowers } from "../../src/routes/chat-route-helpers.js"
-import {
-  makeChatEditService,
-  type ChatEditServiceDeps,
-} from "../../src/services/chat-edit-service.js"
+import { makeChatEditService } from "../../src/services/chat-edit-service.js"
 import {
   makeChatPollService,
   type ChatPollServiceDeps,
@@ -41,7 +34,8 @@ function gatewayDeps(): GatewayDeps {
   return {
     chat,
     presence,
-    isMember: (_roomId: string, userId: string) => Promise.resolve(userId === ALICE || userId === BOB),
+    isMember: (_roomId: string, userId: string) =>
+      Promise.resolve(userId === ALICE || userId === BOB),
     reportVisible: () => Promise.resolve(true),
     reportChat: {
       isMember: () => Promise.resolve(true),
@@ -50,7 +44,8 @@ function gatewayDeps(): GatewayDeps {
       access: () => Promise.resolve({ isMember: true, canPost: true, visibility: "private" }),
     } as unknown as GatewayDeps["groupChat"],
     dm: {
-      peerOf: (threadId: string, userId: string) => Promise.resolve(dmRepo.peerOf(threadId, userId)),
+      peerOf: (threadId: string, userId: string) =>
+        Promise.resolve(dmRepo.peerOf(threadId, userId)),
       persist: (input: Parameters<InMemoryDmRepository["persist"]>[0]) => dmRepo.persist(input),
       markRead: () => Promise.resolve(),
     },
@@ -199,7 +194,8 @@ describe("F043 delete tombstones fan out without the deleter's viewer fields", (
         senderPath: true,
         softDelete: () => Promise.resolve(tombstoneDto()),
         findMessageMeta: () => Promise.resolve(null),
-        resolveChatPowers: () => Promise.resolve({ canDeleteOthers: true, canPin: true, isModerator: true }),
+        resolveChatPowers: () =>
+          Promise.resolve({ canDeleteOthers: true, canPin: true, isModerator: true }),
         chat: stub,
         legacyBroadcast: true,
       })
@@ -225,7 +221,7 @@ describe("F043 edits fan out without the editor's viewer fields", () => {
       MESSAGE,
     )
     const edits = makeChatEditService({
-      chat: repo as unknown as ChatEditServiceDeps["chat"],
+      chat: repo,
       isCleanupMember: () => Promise.resolve(true),
       broadcastEvent: (roomKey, frame) => {
         events.push({ roomKey, frame })

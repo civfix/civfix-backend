@@ -2,23 +2,22 @@ import { describe, it, expect, afterEach } from "vitest"
 import type { FastifyInstance } from "fastify"
 import type { FakeMailer, FakeAbuseChecks } from "@civfix/shared/fakes"
 import type { OutboundEmail } from "@civfix/shared/interfaces"
-import { buildServer } from "../../src/server.js"
-import { buildContainer } from "../../src/di.js"
+import { makeServer } from "../../src/server.js"
+import { makeContainer } from "../../src/di.js"
 import { loadEnv } from "../../src/env.js"
 import { InMemoryCounterStore } from "../../src/abuse/counter-store.js"
 import {
   enforceHomeTurfIpCap,
-  enforceHomeTurfRecipientCap,
+  claimHomeTurfConfirmation,
   HOME_TURF_EMAIL_LIMIT_PER_DAY,
   HOME_TURF_IP_LIMIT_PER_HOUR,
   HOME_TURF_RATE_LIMIT,
 } from "../../src/routes/forms.routes.js"
 
-
 interface Harness {
   app: FastifyInstance
   mailer: FakeMailer
-  container: ReturnType<typeof buildContainer>
+  container: ReturnType<typeof makeContainer>
 }
 
 let current: Harness | undefined
@@ -34,8 +33,8 @@ const NOTIFY_TO = "home-turf@civfix.test"
 
 async function makeHarness(over: Record<string, string> = {}): Promise<Harness> {
   const env = loadEnv({ NODE_ENV: "test", HOME_TURF_NOTIFY_TO: NOTIFY_TO, ...over })
-  const container = buildContainer(env)
-  const app = await buildServer({
+  const container = makeContainer(env)
+  const app = await makeServer({
     env,
     container,
     homeTurfOverrides: { counters: new InMemoryCounterStore(() => 0) },
@@ -68,7 +67,11 @@ function outbounds(mailer: FakeMailer): OutboundEmail[] {
 describe("POST /forms/home-turf", () => {
   it("accepts a valid submit (200 {ok:true}) and sends notification + confirmation", async () => {
     const { app, mailer } = await makeHarness()
-    const res = await app.inject({ method: "POST", url: "/forms/home-turf", payload: formPayload() })
+    const res = await app.inject({
+      method: "POST",
+      url: "/forms/home-turf",
+      payload: formPayload(),
+    })
     expect(res.statusCode).toBe(200)
     expect(res.json()).toEqual({ ok: true })
 
@@ -182,7 +185,11 @@ describe("POST /forms/home-turf", () => {
 
   it("is DISABLED when HOME_TURF_NOTIFY_TO is unset: 409, no mail, and NOT a captured 5xx", async () => {
     const { app, mailer } = await makeHarness({ HOME_TURF_NOTIFY_TO: "" })
-    const res = await app.inject({ method: "POST", url: "/forms/home-turf", payload: formPayload() })
+    const res = await app.inject({
+      method: "POST",
+      url: "/forms/home-turf",
+      payload: formPayload(),
+    })
     expect(res.statusCode).toBe(409)
     expect(res.statusCode).toBeLessThan(500)
     expect(res.json().code).toBe("CONFLICT")
@@ -196,7 +203,11 @@ describe("POST /forms/home-turf", () => {
       calls += 1
       return Promise.reject(new Error("smtp down"))
     }
-    const res = await app.inject({ method: "POST", url: "/forms/home-turf", payload: formPayload() })
+    const res = await app.inject({
+      method: "POST",
+      url: "/forms/home-turf",
+      payload: formPayload(),
+    })
     expect(res.statusCode).toBe(500)
     expect(calls).toBe(1)
   })
@@ -210,7 +221,11 @@ describe("POST /forms/home-turf", () => {
       if (calls === 2) return Promise.reject(new Error("smtp down"))
       return original(email)
     }
-    const res = await app.inject({ method: "POST", url: "/forms/home-turf", payload: formPayload() })
+    const res = await app.inject({
+      method: "POST",
+      url: "/forms/home-turf",
+      payload: formPayload(),
+    })
     expect(res.statusCode).toBe(200)
     expect(res.json()).toEqual({ ok: true })
     expect(outbounds(mailer)).toHaveLength(1)
@@ -249,22 +264,26 @@ describe("POST /forms/home-turf", () => {
     expect(sent[1]!.to).toBe("coach@example.org")
   })
 
-  it(`still charges the budget on SUCCESS: a same-address resubmit 429s (limit ${HOME_TURF_EMAIL_LIMIT_PER_DAY}/day)`, async () => {
+  it(`still charges the budget on SUCCESS: a same-address resubmit reaches staff but gets no second confirmation (limit ${HOME_TURF_EMAIL_LIMIT_PER_DAY}/day)`, async () => {
     const { app, mailer } = await makeHarness()
-    const first = await app.inject({ method: "POST", url: "/forms/home-turf", payload: formPayload() })
+    const first = await app.inject({
+      method: "POST",
+      url: "/forms/home-turf",
+      payload: formPayload(),
+    })
     expect(first.statusCode).toBe(200)
 
-    const second = await app.inject({ method: "POST", url: "/forms/home-turf", payload: formPayload() })
-    expect(second.statusCode).toBe(429)
-    expect(second.json().code).toBe("RATE_LIMITED")
+    const second = await app.inject({
+      method: "POST",
+      url: "/forms/home-turf",
+      payload: formPayload(),
+    })
+    expect(second.statusCode).toBe(200)
+    expect(second.json()).toEqual({ ok: true })
 
     const sent = outbounds(mailer)
     expect(sent).toHaveLength(3)
-    expect(sent.map((e) => e.to)).toEqual([
-      NOTIFY_TO,
-      "coach@example.org",
-      NOTIFY_TO,
-    ])
+    expect(sent.map((e) => e.to)).toEqual([NOTIFY_TO, "coach@example.org", NOTIFY_TO])
 
     const other = await app.inject({
       method: "POST",
@@ -309,61 +328,63 @@ describe("enforceHomeTurfIpCap", () => {
 describe("Turnstile action (F128)", () => {
   it("verifies the token with the 'home-turf' widget action", async () => {
     const { app, container } = await makeHarness()
-    const res = await app.inject({ method: "POST", url: "/forms/home-turf", payload: formPayload() })
+    const res = await app.inject({
+      method: "POST",
+      url: "/forms/home-turf",
+      payload: formPayload(),
+    })
     expect(res.statusCode).toBe(200)
     expect((container.abuseChecks as FakeAbuseChecks).lastVerifyExpect?.action).toBe("home-turf")
   })
 })
 
-describe("enforceHomeTurfRecipientCap (M8)", () => {
-  it(`allows ${HOME_TURF_EMAIL_LIMIT_PER_DAY} confirmation per address per day and 429s the next`, async () => {
+describe("claimHomeTurfConfirmation (M8)", () => {
+  it(`allows ${HOME_TURF_EMAIL_LIMIT_PER_DAY} confirmation per address per day and refuses the next`, async () => {
     const counters = new InMemoryCounterStore(() => 0)
     for (let i = 0; i < HOME_TURF_EMAIL_LIMIT_PER_DAY; i++) {
-      await expect(enforceHomeTurfRecipientCap("victim@example.org", counters)).resolves.toBeUndefined()
+      await expect(claimHomeTurfConfirmation("victim@example.org", counters)).resolves.toBe(true)
     }
-    await expect(enforceHomeTurfRecipientCap("victim@example.org", counters)).rejects.toMatchObject({
-      code: "RATE_LIMITED",
-    })
-    await expect(enforceHomeTurfRecipientCap("someone-else@example.org", counters)).resolves.toBeUndefined()
+    await expect(claimHomeTurfConfirmation("victim@example.org", counters)).resolves.toBe(false)
+    await expect(claimHomeTurfConfirmation("someone-else@example.org", counters)).resolves.toBe(
+      true,
+    )
   })
 
   it("normalizes case and surrounding whitespace so the bucket cannot be trivially varied", async () => {
     const counters = new InMemoryCounterStore(() => 0)
-    await enforceHomeTurfRecipientCap("Victim@Example.org", counters)
-    await expect(enforceHomeTurfRecipientCap("  victim@example.ORG ", counters)).rejects.toMatchObject({
-      code: "RATE_LIMITED",
-    })
+    await claimHomeTurfConfirmation("Victim@Example.org", counters)
+    await expect(claimHomeTurfConfirmation("  victim@example.ORG ", counters)).resolves.toBe(false)
   })
 
   it("folds gmail +tags, dots and googlemail into one recipient bucket (F138)", async () => {
     const counters = new InMemoryCounterStore(() => 0)
-    await enforceHomeTurfRecipientCap("victim@gmail.com", counters)
-    await expect(enforceHomeTurfRecipientCap("victim+abc@gmail.com", counters)).rejects.toMatchObject({
-      code: "RATE_LIMITED",
-    })
-    await expect(
-      enforceHomeTurfRecipientCap("v.i.c.t.i.m@googlemail.com", counters),
-    ).rejects.toMatchObject({ code: "RATE_LIMITED" })
+    await claimHomeTurfConfirmation("victim@gmail.com", counters)
+    await expect(claimHomeTurfConfirmation("victim+abc@gmail.com", counters)).resolves.toBe(false)
+    await expect(claimHomeTurfConfirmation("v.i.c.t.i.m@googlemail.com", counters)).resolves.toBe(
+      false,
+    )
   })
 
   it("strips +tags for non-gmail providers, but keeps dots significant (F138)", async () => {
     const counters = new InMemoryCounterStore(() => 0)
-    await enforceHomeTurfRecipientCap("victim@example.org", counters)
-    await expect(enforceHomeTurfRecipientCap("victim+1@example.org", counters)).rejects.toMatchObject({
-      code: "RATE_LIMITED",
-    })
-    await expect(enforceHomeTurfRecipientCap("v.ictim@example.org", counters)).resolves.toBeUndefined()
+    await claimHomeTurfConfirmation("victim@example.org", counters)
+    await expect(claimHomeTurfConfirmation("victim+1@example.org", counters)).resolves.toBe(false)
+    await expect(claimHomeTurfConfirmation("v.ictim@example.org", counters)).resolves.toBe(true)
   })
 })
 
 describe("home-turf abuse caps FAIL CLOSED (M8)", () => {
   it("refuses to send when no counter store is available (empty REDIS_URL, no override)", async () => {
     const env = loadEnv({ NODE_ENV: "test", HOME_TURF_NOTIFY_TO: NOTIFY_TO })
-    const container = buildContainer(env)
-    const app = await buildServer({ env, container })
+    const container = makeContainer(env)
+    const app = await makeServer({ env, container })
     current = { app, mailer: container.mailer as FakeMailer, container }
 
-    const res = await app.inject({ method: "POST", url: "/forms/home-turf", payload: formPayload() })
+    const res = await app.inject({
+      method: "POST",
+      url: "/forms/home-turf",
+      payload: formPayload(),
+    })
 
     expect(res.statusCode).toBeGreaterThanOrEqual(500)
     expect(outbounds(container.mailer as FakeMailer)).toHaveLength(0)
@@ -373,7 +394,7 @@ describe("home-turf abuse caps FAIL CLOSED (M8)", () => {
     const env = loadEnv({ NODE_ENV: "test", HOME_TURF_NOTIFY_TO: NOTIFY_TO })
     const counted: string[] = []
     const container = {
-      ...buildContainer(env),
+      ...makeContainer(env),
       env: { ...env, REDIS_URL: "redis://cache:6379" },
       getCounterStore: () => ({
         incr: (key: string) => {
@@ -381,11 +402,15 @@ describe("home-turf abuse caps FAIL CLOSED (M8)", () => {
           return Promise.resolve(1)
         },
       }),
-    } as unknown as ReturnType<typeof buildContainer>
-    const app = await buildServer({ env, container })
+    } as unknown as ReturnType<typeof makeContainer>
+    const app = await makeServer({ env, container })
     current = { app, mailer: container.mailer as FakeMailer, container }
 
-    const res = await app.inject({ method: "POST", url: "/forms/home-turf", payload: formPayload() })
+    const res = await app.inject({
+      method: "POST",
+      url: "/forms/home-turf",
+      payload: formPayload(),
+    })
     expect(res.statusCode).toBe(200)
     expect(counted.some((k) => k.startsWith("abuse:home-turf:ip:"))).toBe(true)
     expect(counted.some((k) => k.startsWith("abuse:home-turf:email:"))).toBe(true)

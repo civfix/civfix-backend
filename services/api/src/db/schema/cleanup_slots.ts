@@ -1,30 +1,24 @@
 /**
- * cleanup_slots + cleanup_slot_claims: P9 signup slots. A host defines named roles/shifts on an event
- * ("Registration table", "Grill", "8-10am sweep"), each with an optional capacity, and an attendee
- * claims exactly ONE of them.
+ * Signup slots: a host defines named roles or shifts on an event, each with an optional capacity, and an
+ * attendee claims exactly one of them.
  *
- * Identity is the surrogate uuid, NOT (cleanup_id, sort_order): slots are EDITABLE — a host renames and
- * reorders them while claims already exist, and an ordinal key would silently re-point every claim at a
- * different role. sort_order is presentational only.
+ * Identity is the surrogate uuid, not (cleanup_id, sort_order): hosts rename and reorder slots while
+ * claims exist, and an ordinal key would silently re-point every claim at a different role.
  *
- * cleanup_slot_claims is keyed (cleanup_id, user_id) — the same PK shape as cleanup_members. That
- * composite PK IS the "one slot per person per event" product rule, enforced by the schema rather than
- * by application code, so a concurrent double-claim is a constraint conflict and not a race. Re-claiming
- * is an ON CONFLICT DO UPDATE (a MOVE), never a second row. The composite FK (slot_id, cleanup_id) makes
- * claiming a slot that belongs to a DIFFERENT event structurally impossible (same stance as
- * chat_poll_votes' composite FK, schema/chat-polls.ts).
+ * cleanup_slot_claims is keyed (cleanup_id, user_id), so "one slot per person per event" is enforced by
+ * the schema: a concurrent double-claim is a constraint conflict, not a race, and re-claiming is an
+ * ON CONFLICT DO UPDATE (a move). The composite FK (slot_id, cleanup_id) makes claiming a slot of a
+ * different event structurally impossible.
  *
- * Cleanups cascade; the users FK does not (accounts soft-delete everywhere, so a cascade would never
- * fire, and a claim is roster data that must survive a tombstone exactly like its cleanup_members row).
+ * The users FK does not cascade: accounts soft-delete, and a claim is roster data that must survive a
+ * tombstone like its cleanup_members row.
  *
  * LOCK ORDER (binding on every writer): cleanups -> cleanup_members -> cleanup_slots ->
- * cleanup_slot_claims. joinCleanupTx already takes FOR SHARE on cleanups first, so a claim transaction
- * that starts anywhere else can deadlock ABBA against it.
+ * cleanup_slot_claims. joinCleanupTx takes FOR SHARE on cleanups first, so a claim transaction that
+ * starts anywhere else can deadlock ABBA against it.
  *
- * CANONICAL DDL: drizzle/0063_cleanup_slots.sql, extended by drizzle/0167_cleanup_slot_windows.sql.
- * The expression unique index cleanup_slots_cleanup_title_window_uidx
- * (cleanup_id, lower(title), COALESCE(starts_at, '-infinity'), COALESCE(ends_at, 'infinity')) is
- * deliberately NOT mirrored here — functional indexes stay SQL-only in this repo.
+ * The expression unique index cleanup_slots_cleanup_title_window_uidx (0167_cleanup_slot_windows.sql) is
+ * SQL-only, like every functional index in this repo.
  */
 
 import { sql } from "drizzle-orm"
@@ -55,8 +49,8 @@ export const cleanupSlots = pgTable(
       .references(() => cleanups.id, { onDelete: "cascade" }),
     title: text("title").notNull(),
     description: text("description"),
-    // NULL = unlimited. Lowering it below the current claim count does NOT evict anyone: the slot
-    // simply refuses new claims until it drains.
+    // NULL = unlimited. Lowering it below the current claim count evicts nobody: the slot just refuses
+    // new claims until it drains.
     capacity: integer("capacity"),
     startsAt: timestamp("starts_at", { withTimezone: true }),
     endsAt: timestamp("ends_at", { withTimezone: true }),
@@ -69,10 +63,9 @@ export const cleanupSlots = pgTable(
       "cleanup_slots_window_chk",
       sql`(${t.startsAt} IS NULL) = (${t.endsAt} IS NULL) AND (${t.endsAt} IS NULL OR ${t.endsAt} > ${t.startsAt})`,
     ),
-    // The ordered read for one event's slot list (also the batched multi-event load).
     index("cleanup_slots_cleanup_idx").on(t.cleanupId, t.sortOrder, t.id),
-    // Redundant-looking, but load-bearing: the FK target for cleanup_slot_claims' composite reference.
-    // A FK target must be a unique constraint and the PK alone is only (id).
+    // Redundant-looking but load-bearing: the FK target of cleanup_slot_claims' composite reference must
+    // be a unique constraint, and the PK alone is only (id).
     uniqueIndex("cleanup_slots_id_cleanup_uidx").on(t.id, t.cleanupId),
   ],
 )
@@ -92,16 +85,12 @@ export const cleanupSlotClaims = pgTable(
     claimedAt: timestamp("claimed_at", { withTimezone: true }).notNull().defaultNow(),
   },
   (t) => [
-    // The one-slot-per-person-per-event rule, in the schema.
     primaryKey({ columns: [t.cleanupId, t.userId] }),
-    // "This slot belongs to THIS event" — structural, not an app-layer check that a new call path can
-    // forget. Canonical in 0063_cleanup_slots.sql.
     foreignKey({
       columns: [t.slotId, t.cleanupId],
       foreignColumns: [cleanupSlots.id, cleanupSlots.cleanupId],
     }).onDelete("cascade"),
-    // "Who is on this slot" (the host's per-slot roster) + the capacity count the claim transaction
-    // runs under the slot row lock.
+    // Also serves the capacity count the claim transaction runs under the slot row lock.
     index("cleanup_slot_claims_slot_idx").on(t.slotId),
   ],
 )

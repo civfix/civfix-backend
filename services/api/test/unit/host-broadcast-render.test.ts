@@ -59,10 +59,7 @@ describe("broadcast rendering", () => {
   })
 
   it("degrades an unsafe markdown link to plain text", () => {
-    const out = renderBroadcast(
-      { subject: "x", bodyMd: "[click](javascript:alert(1))" },
-      ctx,
-    )
+    const out = renderBroadcast({ subject: "x", bodyMd: "[click](javascript:alert(1))" }, ctx)
     expect(out.html).not.toContain("javascript:")
     expect(out.html).not.toContain(">click</a>")
   })

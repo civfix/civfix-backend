@@ -50,10 +50,7 @@ export const cleanupTicketTypes = pgTable(
       "cleanup_ticket_types_reserved_bounds",
       sql`${t.reservedSeats} >= 0 AND (${t.capacity} IS NULL OR ${t.reservedSeats} <= ${t.capacity})`,
     ),
-    check(
-      "cleanup_ticket_types_party_bounds",
-      sql`${t.maxPartySize} BETWEEN 1 AND 10`,
-    ),
+    check("cleanup_ticket_types_party_bounds", sql`${t.maxPartySize} BETWEEN 1 AND 10`),
     check(
       "cleanup_ticket_types_access_code_present",
       sql`${t.visibility} <> 'access_code' OR ${t.accessCodeHash} IS NOT NULL`,

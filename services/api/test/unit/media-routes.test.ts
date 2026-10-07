@@ -1,13 +1,12 @@
 import { describe, it, expect, afterEach } from "vitest"
 import type { FastifyInstance } from "fastify"
 import { MAX_IMAGE_BYTES } from "@civfix/shared"
-import { buildServer } from "../../src/server.js"
-import { buildContainer } from "../../src/di.js"
+import { makeServer } from "../../src/server.js"
+import { makeContainer } from "../../src/di.js"
 import { loadEnv } from "../../src/env.js"
 import { InMemoryMediaRepository } from "../helpers/media.js"
-import { MEDIA_CHECKS_JOB } from "../../src/services/media-intake-service.js"
+import { MEDIA_CHECKS_JOB } from "../../src/lib/queue-names.js"
 import type { FakeStorage, FakeJobs } from "@civfix/shared/fakes"
-
 
 const SHA = "b".repeat(64)
 
@@ -22,9 +21,9 @@ let current: Harness | undefined
 
 async function makeHarness(): Promise<Harness> {
   const env = loadEnv({ NODE_ENV: "test" })
-  const container = buildContainer(env)
+  const container = makeContainer(env)
   const repo = new InMemoryMediaRepository()
-  const app = await buildServer({ env, container, mediaRepo: repo })
+  const app = await makeServer({ env, container, mediaRepo: repo })
   const h: Harness = {
     app,
     repo,
@@ -64,7 +63,12 @@ describe("POST /media/upload", () => {
     const res = await app.inject({
       method: "POST",
       url: "/v1/media/upload",
-      payload: { kind: "image", contentType: "image/jpeg", byteSize: MAX_IMAGE_BYTES + 1, sha256: SHA },
+      payload: {
+        kind: "image",
+        contentType: "image/jpeg",
+        byteSize: MAX_IMAGE_BYTES + 1,
+        sha256: SHA,
+      },
     })
     expect(res.statusCode).toBe(422)
     expect(res.json().code).toBe("VALIDATION")
@@ -100,7 +104,7 @@ describe("media byte quota wiring", () => {
     const env = loadEnv({ NODE_ENV: "test" })
     const charges: { subject: string; bytes: number }[] = []
     const container = {
-      ...buildContainer(env),
+      ...makeContainer(env),
       env: { ...env, REDIS_URL: "redis://cache:6379" },
       getByteMeter: () => ({
         add: (subject: string, bytes: number) => {
@@ -108,9 +112,9 @@ describe("media byte quota wiring", () => {
           return Promise.resolve(bytes)
         },
       }),
-    } as unknown as ReturnType<typeof buildContainer>
+    } as unknown as ReturnType<typeof makeContainer>
     const repo = new InMemoryMediaRepository()
-    const app = await buildServer({ env, container, mediaRepo: repo })
+    const app = await makeServer({ env, container, mediaRepo: repo })
     current = {
       app,
       repo,
@@ -132,7 +136,7 @@ describe("media byte quota wiring", () => {
     const env = loadEnv({ NODE_ENV: "test" })
     const charges: { subject: string; bytes: number }[] = []
     const container = {
-      ...buildContainer(env),
+      ...makeContainer(env),
       env: { ...env, REDIS_URL: "redis://cache:6379" },
       getByteMeter: () => ({
         add: (subject: string, bytes: number) => {
@@ -140,9 +144,9 @@ describe("media byte quota wiring", () => {
           return Promise.resolve(bytes)
         },
       }),
-    } as unknown as ReturnType<typeof buildContainer>
+    } as unknown as ReturnType<typeof makeContainer>
     const repo = new InMemoryMediaRepository()
-    const app = await buildServer({ env, container, mediaRepo: repo })
+    const app = await makeServer({ env, container, mediaRepo: repo })
     current = {
       app,
       repo,
@@ -150,7 +154,10 @@ describe("media byte quota wiring", () => {
       jobs: container.jobs as unknown as FakeJobs,
     }
 
-    for (const anon of ["11111111-1111-4111-8111-111111111111", "22222222-2222-4222-8222-222222222222"]) {
+    for (const anon of [
+      "11111111-1111-4111-8111-111111111111",
+      "22222222-2222-4222-8222-222222222222",
+    ]) {
       const res = await app.inject({
         method: "POST",
         url: "/v1/media/upload",
@@ -163,7 +170,7 @@ describe("media byte quota wiring", () => {
     const ipSubjects = charges.filter((c) => c.subject.startsWith("ip:"))
     expect(ipSubjects).toHaveLength(2)
     expect(new Set(ipSubjects.map((c) => c.subject)).size).toBe(1)
-    expect(charges.filter((c) => c.subject.startsWith("a:"))).toHaveLength(2)
+    expect(charges.filter((c) => c.subject.startsWith("a:"))).toHaveLength(0)
   })
 })
 

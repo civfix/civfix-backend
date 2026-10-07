@@ -1,31 +1,27 @@
-
 import type { Storage } from "@civfix/shared/interfaces"
-import type { LeakedObjectRow, MediaWorkerRepo, OrphanRow } from "@civfix/api/media-repo"
+import type {
+  LeakedObjectRow,
+  MediaWorkerRepository,
+  OrphanRow,
+} from "@civfix/api/media-worker-repository"
 import type { WorkerLimits } from "../config.js"
 import { drainPages } from "./drain.js"
 import { resolveJobObs, type JobObsDeps, type JobLogFn, type JobReportFn } from "./obs.js"
 import { R2_PUT_TTL_SEC } from "@civfix/api/adapters/storage"
 import { servedKey, thumbnailKey } from "./media-keys.js"
-
-async function mapWithLimit<T>(items: T[], limit: number, fn: (item: T) => Promise<void>): Promise<void> {
-  let cursor = 0
-  const runners = Array.from({ length: Math.min(limit, items.length) }, async () => {
-    while (cursor < items.length) {
-      const item = items[cursor++]
-      if (item !== undefined) await fn(item)
-    }
-  })
-  await Promise.all(runners)
-}
+import { mapWithLimit } from "@civfix/api/concurrency"
+import { MS_PER_SECOND } from "@civfix/api/time"
+import { ORPHAN_SWEEP_JOB } from "@civfix/api/queue-names"
 
 const ORPHAN_CONCURRENCY = 8
+const LEGACY_PROCESSED_SUFFIXES = [".img", ".mp4"]
 
 export const LEAK_RETRY_MAX_ATTEMPTS = 5
 
 const LEAK_RETRY_LIMIT = 200
 
 export interface OrphanSweepDeps extends JobObsDeps {
-  repo: MediaWorkerRepo
+  repo: MediaWorkerRepository
   storage: Storage
   limits: WorkerLimits
 }
@@ -42,11 +38,11 @@ export interface OrphanSweepResult {
 }
 
 function derivedKeys(o: OrphanRow): string[] {
+  const served = servedKey(o.r2Key)
   const keys = [
     o.r2Key,
-    servedKey(o.r2Key),
-    `processed/${o.r2Key}.img`,
-    `processed/${o.r2Key}.mp4`,
+    served,
+    ...LEGACY_PROCESSED_SUFFIXES.map((suffix) => `${served}${suffix}`),
     thumbnailKey(o.r2Key),
   ]
   if (o.servedKey && !keys.includes(o.servedKey)) keys.push(o.servedKey)
@@ -79,7 +75,7 @@ export async function runOrphanSweep(deps: OrphanSweepDeps): Promise<OrphanSweep
           onBoundMeanwhile: () => boundMeanwhile++,
           onError: (err, id) => {
             errors++
-            report(err, { job: "orphan.sweep", phase: "delete", mediaId: id })
+            report(err, { job: ORPHAN_SWEEP_JOB, phase: "delete", mediaId: id })
             log("orphan.sweep: row failed", { mediaId: id, err: String(err) })
           },
           onLeak: (keys, id) => {
@@ -89,7 +85,7 @@ export async function runOrphanSweep(deps: OrphanSweepDeps): Promise<OrphanSweep
               new Error(
                 `orphan.sweep leaked ${keys.length} R2 object(s) (row already deleted, tombstoned for retry)`,
               ),
-              { job: "orphan.sweep", phase: "object-delete", mediaId: id, keys },
+              { job: ORPHAN_SWEEP_JOB, phase: "object-delete", mediaId: id, keys },
             )
           },
         })
@@ -97,7 +93,7 @@ export async function runOrphanSweep(deps: OrphanSweepDeps): Promise<OrphanSweep
       { pageSize: deps.limits.orphanSweepBatch, maxPages: deps.limits.orphanSweepMaxPages },
     )
   } catch (err) {
-    report(err, { job: "orphan.sweep", phase: "find" })
+    report(err, { job: ORPHAN_SWEEP_JOB, phase: "find" })
     log("orphan.sweep: find failed", { err: String(err) })
     errors++
   }
@@ -131,14 +127,12 @@ async function retryTombstonedLeaks(
   report: JobReportFn,
 ): Promise<{ retried: number; reclaimed: number; errors: number }> {
   const { repo } = deps
-  const clear = repo.clearLeakedObject?.bind(repo)
-  if (!repo.listLeakedObjects || !clear) return { retried: 0, reclaimed: 0, errors: 0 }
 
   let rows: LeakedObjectRow[]
   try {
     rows = await repo.listLeakedObjects(LEAK_RETRY_LIMIT, LEAK_RETRY_MAX_ATTEMPTS)
   } catch (err) {
-    report(err, { job: "orphan.sweep", phase: "leak-list" })
+    report(err, { job: ORPHAN_SWEEP_JOB, phase: "leak-list" })
     log("orphan.sweep: tombstone list failed", { err: String(err) })
     return { retried: 0, reclaimed: 0, errors: 1 }
   }
@@ -151,32 +145,42 @@ async function retryTombstonedLeaks(
     retried++
     try {
       await deps.storage.delete(row.r2Key)
-      await clear(row.r2Key)
+      await repo.clearLeakedObject(row.r2Key)
       reclaimed++
     } catch (err) {
       errors++
-      const attempts = row.attempts + 1
-      await repo
-        .recordLeakedObjects?.({ mediaId: row.mediaId, keys: [row.r2Key], error: String(err) })
-        .catch((bumpErr: unknown) =>
-          log("orphan.sweep: tombstone bump failed", { key: row.r2Key, err: String(bumpErr) }),
-        )
-      log("orphan.sweep: tombstoned object delete failed again", {
-        key: row.r2Key,
-        attempts,
-        err: String(err),
-      })
-      if (attempts >= LEAK_RETRY_MAX_ATTEMPTS) {
-        report(new Error(`orphan.sweep gave up on a leaked R2 object after ${attempts} attempts`), {
-          job: "orphan.sweep",
-          phase: "leak-retry",
-          key: row.r2Key,
-          mediaId: row.mediaId,
-        })
-      }
+      await recordLeakRetryFailure(row, err, repo, log, report)
     }
   })
   return { retried, reclaimed, errors }
+}
+
+async function recordLeakRetryFailure(
+  row: LeakedObjectRow,
+  err: unknown,
+  repo: MediaWorkerRepository,
+  log: JobLogFn,
+  report: JobReportFn,
+): Promise<void> {
+  const attempts = row.attempts + 1
+  await repo
+    .recordLeakedObjects({ mediaId: row.mediaId, keys: [row.r2Key], error: String(err) })
+    .catch((bumpErr: unknown) =>
+      log("orphan.sweep: tombstone bump failed", { key: row.r2Key, err: String(bumpErr) }),
+    )
+  log("orphan.sweep: tombstoned object delete failed again", {
+    key: row.r2Key,
+    attempts,
+    err: String(err),
+  })
+  if (attempts >= LEAK_RETRY_MAX_ATTEMPTS) {
+    report(new Error(`orphan.sweep gave up on a leaked R2 object after ${attempts} attempts`), {
+      job: ORPHAN_SWEEP_JOB,
+      phase: "leak-retry",
+      key: row.r2Key,
+      mediaId: row.mediaId,
+    })
+  }
 }
 
 let legacyServedKeyAdoptionDrained = false
@@ -192,7 +196,7 @@ async function adoptLegacyServedKeys(
 ): Promise<number> {
   if (legacyServedKeyAdoptionDrained) return 0
   const { now: clock } = resolveJobObs(deps)
-  const cutoff = new Date(clock().getTime() - R2_PUT_TTL_SEC * 1000)
+  const cutoff = new Date(clock().getTime() - R2_PUT_TTL_SEC * MS_PER_SECOND)
   try {
     const { adopted, remaining } = await deps.repo.adoptLegacyServedKeys(
       cutoff,
@@ -207,7 +211,7 @@ async function adoptLegacyServedKeys(
     }
     return adopted
   } catch (err) {
-    report(err, { job: "orphan.sweep", phase: "adopt-legacy-served-keys" })
+    report(err, { job: ORPHAN_SWEEP_JOB, phase: "adopt-legacy-served-keys" })
     log("orphan.sweep: legacy served-key adoption failed", { err: String(err) })
     return 0
   }
@@ -240,7 +244,7 @@ async function sweepPage(
       hooks.onDeleted()
       if (leaked.length > 0) {
         await deps.repo
-          .recordLeakedObjects?.({ mediaId: o.id, keys: leaked, error: "storage delete failed" })
+          .recordLeakedObjects({ mediaId: o.id, keys: leaked, error: "storage delete failed" })
           .catch((err: unknown) =>
             log("orphan.sweep: tombstone write failed (leak is now unrecoverable)", {
               mediaId: o.id,
@@ -256,7 +260,11 @@ async function sweepPage(
   })
 }
 
-async function deleteObjects(o: OrphanRow, deps: OrphanSweepDeps, log: JobLogFn): Promise<string[]> {
+async function deleteObjects(
+  o: OrphanRow,
+  deps: OrphanSweepDeps,
+  log: JobLogFn,
+): Promise<string[]> {
   const outcomes = await Promise.all(
     derivedKeys(o).map(async (key) => {
       try {

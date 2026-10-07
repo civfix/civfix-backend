@@ -1,4 +1,3 @@
-
 import {
   AdminReportListQuerySchema,
   FlagReportRequestSchema,
@@ -27,22 +26,38 @@ import {
 import { requireOperator } from "../../auth/admin-guard.js"
 import {
   makeAdminReportService,
-  type AdminReportRepository,
   type ReporterNotifier,
 } from "../../services/admin/admin-report-service.js"
+import type { AdminReportRepository } from "../../services/admin/admin-report-repository.js"
 import { makeDrizzleAdminReportRepository } from "../../services/admin/admin-report-repository.drizzle.js"
 import { makeDrizzleForwardTemplateRepository } from "../../services/admin/forward-template-repository.drizzle.js"
-import type { ForwardTemplateRepository } from "../../services/admin/forward-template-types.js"
+import type { ForwardTemplateRepository } from "../../services/admin/forward-template-repository.js"
 import {
   makeContainerOutboundMailService,
   type OutboundMailService,
 } from "../../services/admin/outbound-mail-service.js"
 import { makeDrizzleCleanupRepository } from "../../services/cleanup-repository.drizzle.js"
-import { makePacketMediaPresigner, makePrivateMediaPresigner } from "../../services/media-presign.js"
+import type { LinkedEventView } from "../../services/cleanup-service.js"
+import {
+  makePacketMediaPresigner,
+  makePrivateMediaPresigner,
+} from "../../services/media-presign.js"
 import { ADMIN_OUTBOUND_MAIL_RATE_LIMIT } from "./mail.routes.js"
 import { makeContainerReportChatEmitter } from "../../services/report-chat-emitter.js"
 import { makeRouteNotificationService } from "../../services/route-notifier.js"
 import type { ReportChatSystemEmitter } from "../../services/report-timeline-event.js"
+
+export const ROUTE_REPORT_RATE_LIMIT = perIdentity({
+  max: 10,
+  timeWindow: "1 minute",
+  skipOnError: false,
+})
+
+export const ADMIN_REPORT_MUTATION_RATE_LIMIT = perIdentity({
+  max: 60,
+  timeWindow: "1 minute",
+  skipOnError: false,
+})
 
 export interface AdminReportRouteOverrides {
   repo: AdminReportRepository
@@ -51,9 +66,7 @@ export interface AdminReportRouteOverrides {
     r2Key: string,
     thumbKey: string | null,
   ) => Promise<{ url: string; thumbUrl?: string }>
-  loadLinkedEventsForReports?: (
-    reportIds: string[],
-  ) => Promise<Map<string, import("../../services/cleanup-service.js").LinkedEventView[]>>
+  loadLinkedEventsForReports?: (reportIds: string[]) => Promise<Map<string, LinkedEventView[]>>
   now?: () => Date
   reportChatEmitter?: ReportChatSystemEmitter
   forwardTemplates?: ForwardTemplateRepository
@@ -96,7 +109,9 @@ export async function registerAdminReportsRoutes(
       }),
     () => {
       const sql = container.getDb().sql
-      const repo: AdminReportRepository = makeDrizzleAdminReportRepository(sql)
+      const repo: AdminReportRepository = makeDrizzleAdminReportRepository(sql, {
+        logger: app.log,
+      })
       const outboundMail = makeContainerOutboundMailService(container, { logger: app.log })
       const cleanupRepo = makeDrizzleCleanupRepository(sql)
       return makeAdminReportService({
@@ -203,16 +218,3 @@ export async function registerAdminReportsRoutes(
     },
   )
 }
-
-export const ROUTE_REPORT_RATE_LIMIT = perIdentity({
-  max: 10,
-  timeWindow: "1 minute",
-  skipOnError: false,
-})
-
-export const ADMIN_REPORT_MUTATION_RATE_LIMIT = perIdentity({
-  max: 60,
-  timeWindow: "1 minute",
-  skipOnError: false,
-})
-

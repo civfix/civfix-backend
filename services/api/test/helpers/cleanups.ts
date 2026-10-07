@@ -1,10 +1,11 @@
-
 import { randomUUID } from "node:crypto"
 import { AppError } from "@civfix/shared"
 import type { Sql } from "../../src/db/client.js"
 import type {
   AttendeeView,
   CancelCleanupOutcome,
+  CleanupEditOutcome,
+  CleanupEdits,
   CleanupOrganizationView,
   CreateCleanupOutcome,
   ClaimSlotOutcome,
@@ -266,15 +267,14 @@ interface StoredSlotClaim {
   slotId: string
 }
 
-export function haversineMeters(a: NearPoint, b: NearPoint): number {
+function haversineMeters(a: NearPoint, b: NearPoint): number {
   const R = 6371008.8
   const toRad = (d: number): number => (d * Math.PI) / 180
   const dLat = toRad(b.lat - a.lat)
   const dLng = toRad(b.lng - a.lng)
   const lat1 = toRad(a.lat)
   const lat2 = toRad(b.lat)
-  const h =
-    Math.sin(dLat / 2) ** 2 + Math.cos(lat1) * Math.cos(lat2) * Math.sin(dLng / 2) ** 2
+  const h = Math.sin(dLat / 2) ** 2 + Math.cos(lat1) * Math.cos(lat2) * Math.sin(dLng / 2) ** 2
   return 2 * R * Math.asin(Math.min(1, Math.sqrt(h)))
 }
 
@@ -290,6 +290,9 @@ export interface SignupRegistrationSink {
     now: Date
   }): unknown
   cancelSignupRegistration(args: { cleanupId: string; userId: string; now: Date }): unknown
+  applyBan(args: { cleanupId: string; userId: string; actorId: string; now: Date }): {
+    releasedTicketTypeIds: string[]
+  }
 }
 
 export function signupSeat(): SignupSeat {
@@ -389,7 +392,7 @@ export class InMemoryCleanupRepository implements CleanupRepository {
     )
   }
 
-  /** `withDefaultSlot: false` reproduces a LEGACY slot-less event — the shape 0169 backfilled away. */
+  /** `withDefaultSlot: false` reproduces a LEGACY slot-less event (the shape 0169 backfilled away). */
   seedCleanup(
     over: Partial<StoredCleanup> & { id?: string; withDefaultSlot?: boolean },
   ): StoredCleanup {
@@ -433,8 +436,14 @@ export class InMemoryCleanupRepository implements CleanupRepository {
     if (!this.users.has(cleanup.organizerUserId)) {
       this.seedUser({ id: cleanup.organizerUserId })
     }
-    if (!this.members.some((m) => m.cleanupId === cleanup.id && m.userId === cleanup.organizerUserId)) {
-      this.members.push({ cleanupId: cleanup.id, userId: cleanup.organizerUserId, role: "organizer" })
+    if (
+      !this.members.some((m) => m.cleanupId === cleanup.id && m.userId === cleanup.organizerUserId)
+    ) {
+      this.members.push({
+        cleanupId: cleanup.id,
+        userId: cleanup.organizerUserId,
+        role: "organizer",
+      })
     }
     if (over.withDefaultSlot !== false) {
       this.seedSlot({
@@ -725,9 +734,7 @@ export class InMemoryCleanupRepository implements CleanupRepository {
     if (cleanup === undefined) return NO_HOST_STANDING
     const eventRole = await this.roleOf(cleanupId, userId)
     const orgRole =
-      cleanup.organizationId === null
-        ? null
-        : await this.orgRoleOf(cleanup.organizationId, userId)
+      cleanup.organizationId === null ? null : await this.orgRoleOf(cleanup.organizationId, userId)
     if (eventRole === null && orgRole === null) return NO_HOST_STANDING
     return { eventRole, orgRole }
   }
@@ -863,6 +870,52 @@ export class InMemoryCleanupRepository implements CleanupRepository {
     return Promise.resolve(true)
   }
 
+  async updateCleanupWithEdits(
+    id: string,
+    patch: UpdateCleanupPatch,
+    edits: CleanupEdits,
+  ): Promise<CleanupEditOutcome> {
+    const cleanup = this.cleanups.get(id)
+    if (!cleanup) return { kind: "not_found" }
+    if (cleanup.status === "cancelled") return { kind: "cancelled" }
+    if (
+      edits.refusalOnceEnded !== null &&
+      hasEventEnded(eventWindowOf(cleanup), this.now().getTime())
+    ) {
+      throw edits.refusalOnceEnded
+    }
+    const rollBack = this.snapshotEditState(cleanup)
+    try {
+      await this.updateCleanup(id, patch)
+      if (edits.links !== null) {
+        await this.reconcileLinkedReports(id, edits.links, edits.actorUserId)
+      }
+      const slotDiff =
+        edits.slots === null ? null : await this.reconcileSlots(id, edits.slots, edits.actorUserId)
+      return { kind: "updated", slotDiff }
+    } catch (err) {
+      rollBack()
+      throw err
+    }
+  }
+
+  /** Stands in for the Postgres transaction: every store one edit can touch goes back as it was. */
+  private snapshotEditState(cleanup: StoredCleanup): () => void {
+    const cleanupFields = { ...cleanup }
+    const links = [...this.links]
+    const timeline = [...this.timeline]
+    const slots = this.slots.map((slot) => [slot, { ...slot }] as const)
+    const slotClaims = [...this.slotClaims]
+    return () => {
+      Object.assign(cleanup, cleanupFields)
+      this.links.splice(0, this.links.length, ...links)
+      this.timeline.splice(0, this.timeline.length, ...timeline)
+      for (const [slot, fields] of slots) Object.assign(slot, fields)
+      this.slots.splice(0, this.slots.length, ...slots.map(([slot]) => slot))
+      this.slotClaims.splice(0, this.slotClaims.length, ...slotClaims)
+    }
+  }
+
   linkReports(cleanupId: string, reportIds: string[], actorId: string | null): Promise<string[]> {
     return Promise.resolve(this.linkInner(cleanupId, reportIds, actorId))
   }
@@ -883,9 +936,7 @@ export class InMemoryCleanupRepository implements CleanupRepository {
     const have = this.links.filter((l) => l.cleanupId === cleanupId).map((l) => l.reportId)
     const want = new Set(desiredIds)
     const toAdd = desiredIds.filter((id) => !have.includes(id))
-    const toRemove = have.filter(
-      (id) => !want.has(id) && this.reportVisible(this.reports.get(id)),
-    )
+    const toRemove = have.filter((id) => !want.has(id) && this.reportVisible(this.reports.get(id)))
     const added = this.linkInner(cleanupId, toAdd, actorId)
     for (const reportId of toRemove) {
       const idx = this.links.findIndex((l) => l.cleanupId === cleanupId && l.reportId === reportId)
@@ -960,9 +1011,7 @@ export class InMemoryCleanupRepository implements CleanupRepository {
   }
 
   filterVisibleReportIds(reportIds: string[]): Promise<Set<string>> {
-    const visible = new Set(
-      reportIds.filter((id) => this.reportVisible(this.reports.get(id))),
-    )
+    const visible = new Set(reportIds.filter((id) => this.reportVisible(this.reports.get(id))))
     return Promise.resolve(visible)
   }
 
@@ -1000,7 +1049,10 @@ export class InMemoryCleanupRepository implements CleanupRepository {
       }
       if (filters.when === "attending") {
         const viewerId = filters.viewerId ?? null
-        if (viewerId === null || !this.members.some((m) => m.cleanupId === c.id && m.userId === viewerId))
+        if (
+          viewerId === null ||
+          !this.members.some((m) => m.cleanupId === c.id && m.userId === viewerId)
+        )
           return false
       }
       if (filters.bbox !== undefined && !inBox(c, filters.bbox)) return false
@@ -1121,16 +1173,22 @@ export class InMemoryCleanupRepository implements CleanupRepository {
     const idx = this.members.findIndex(
       (m) => m.cleanupId === cleanupId && m.userId === userId && m.role !== "organizer",
     )
+    let releasedWaitlistTicketTypeIds: string[] = []
     if (idx >= 0) {
       this.members.splice(idx, 1)
-      this.cancelSignupRegistration(cleanupId, userId)
+      const ban = this.registrationSink?.applyBan({ cleanupId, userId, actorId, now: this.now() })
+      releasedWaitlistTicketTypeIds = ban?.releasedTicketTypeIds ?? []
       if (!this.bans.some((b) => b.cleanupId === cleanupId && b.userId === userId)) {
         this.bans.push({ cleanupId, userId, bannedByUserId: actorId })
       }
       this.deleteClaim(cleanupId, userId)
     }
     const going = this.goingOf(cleanupId)
-    return Promise.resolve(idx >= 0 ? { kind: "removed", going } : { kind: "not_member", going })
+    return Promise.resolve(
+      idx >= 0
+        ? { kind: "removed", going, releasedWaitlistTicketTypeIds }
+        : { kind: "not_member", going },
+    )
   }
 
   isBanned(cleanupId: string, userId: string): Promise<boolean> {
@@ -1203,9 +1261,7 @@ export class InMemoryCleanupRepository implements CleanupRepository {
   }
 
   private deleteClaim(cleanupId: string, userId: string): string | null {
-    const idx = this.slotClaims.findIndex(
-      (c) => c.cleanupId === cleanupId && c.userId === userId,
-    )
+    const idx = this.slotClaims.findIndex((c) => c.cleanupId === cleanupId && c.userId === userId)
     if (idx < 0) return null
     const [claim] = this.slotClaims.splice(idx, 1)
     return claim?.slotId ?? null
@@ -1220,7 +1276,13 @@ export class InMemoryCleanupRepository implements CleanupRepository {
     if (c.status === "cancelled") return Promise.resolve("already_cancelled")
     if (c.endsAt.getTime() <= this.now().getTime()) return Promise.resolve("already_ended")
     c.status = "cancelled"
-    this.timeline.push({ cleanupId: id, kind: "cancel", reportId: "", note: input.note, actorId: input.actorId })
+    this.timeline.push({
+      cleanupId: id,
+      kind: "cancel",
+      reportId: "",
+      note: input.note,
+      actorId: input.actorId,
+    })
     return Promise.resolve("cancelled")
   }
 
@@ -1257,11 +1319,12 @@ export class InMemoryCleanupRepository implements CleanupRepository {
     return Promise.resolve(views.slice(0, limit))
   }
 
-
   private slotViews(cleanupId: string, viewerId: string | null): EventSlotView[] {
     return this.slots
       .filter((s) => s.cleanupId === cleanupId)
-      .sort((a, b) => (a.sortOrder !== b.sortOrder ? a.sortOrder - b.sortOrder : a.id < b.id ? -1 : 1))
+      .sort((a, b) =>
+        a.sortOrder !== b.sortOrder ? a.sortOrder - b.sortOrder : a.id < b.id ? -1 : 1,
+      )
       .map((s) => ({
         cleanupId: s.cleanupId,
         id: s.id,
@@ -1272,8 +1335,9 @@ export class InMemoryCleanupRepository implements CleanupRepository {
         endsAt: s.endsAt,
         sortOrder: s.sortOrder,
         claimed: this.slotClaims.filter((c) => c.slotId === s.id).length,
-        mine: viewerId !== null
-          && this.slotClaims.some((c) => c.slotId === s.id && c.userId === viewerId),
+        mine:
+          viewerId !== null &&
+          this.slotClaims.some((c) => c.slotId === s.id && c.userId === viewerId),
       }))
   }
 
@@ -1443,4 +1507,3 @@ export class InMemoryCleanupRepository implements CleanupRepository {
     return Promise.resolve()
   }
 }
-

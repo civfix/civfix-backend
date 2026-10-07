@@ -1,4 +1,3 @@
-
 import {
   AppError,
   DEFAULT_FEED_RANKING,
@@ -18,17 +17,16 @@ import type { UserChannel } from "@civfix/shared/interfaces"
 import { randomInt } from "node:crypto"
 import type { Sql } from "../db/client.js"
 import { assertNoSlur } from "../abuse/slur-filter.js"
-import { resolveMentionTargets } from "./mention-resolver.drizzle.js"
+import { resolveMentionTargets } from "./mention-targets-repository.drizzle.js"
 import { parseTimeCursor } from "../db/cursor-helpers.js"
-import {
-  NIL_VIEWER_ID,
-  POSTS_DEFAULT_LIMIT,
-  type FeedCandidateRow,
-  type FeedPage,
-  type PostBrief,
-  type PostRepository,
-  type RepliesPage,
-} from "./post-repository.drizzle.js"
+import { NIL_VIEWER_ID, POSTS_DEFAULT_LIMIT } from "./post-repository.drizzle.js"
+import type {
+  FeedCandidateRow,
+  FeedPage,
+  PostBrief,
+  PostRepository,
+  RepliesPage,
+} from "./post-repository.js"
 import {
   applyCutoff,
   bucketSeed,
@@ -37,12 +35,35 @@ import {
   type FeedCandidate,
   type RankedCandidate,
 } from "./feed-ranking.js"
-import { mapWithLimit } from "./media-presign.js"
+import { mapWithLimit } from "../lib/concurrency.js"
+import { hiddenIdentity } from "./hidden-identity.js"
 import type { FeedPresence, FeedSnapshotEntry } from "./feed-presence.js"
 import type { PostNotifier } from "./notification-service.js"
 
 function isVisible(brief: PostBrief): boolean {
   return brief.deletedAt === null && brief.visibility === "public"
+}
+
+// The success answer for taking back a repost of a post the caller can no longer read: it clears the
+// caller's repost state without carrying the original's author, text or counts.
+function withdrawnPostDTO(brief: PostBrief, atMs: number): PostDTO {
+  return {
+    id: brief.id,
+    author: {
+      id: brief.authorId,
+      ...hiddenIdentity(brief.authorId),
+      followers: 0,
+      following: 0,
+      isFollowing: false,
+    },
+    kind: brief.kind,
+    body: null,
+    createdAt: new Date(atMs).toISOString(),
+    counts: { likes: 0, reposts: 0, replies: 0, saves: 0 },
+    viewer: { liked: false, reposted: false, saved: false },
+    media: [],
+    mentions: [],
+  }
 }
 
 interface FeedScoreCursor {
@@ -66,13 +87,28 @@ function isLegacyTimeCursor(cursor: string | null | undefined): boolean {
   return parseTimeCursor(cursor) !== null
 }
 
-export const FEED_FANOUT_CONCURRENCY = 16
+const FEED_FANOUT_CONCURRENCY = 16
 
-export const FEED_DISTANCE_RESOLUTION_KM = 1
+// Each mention bell is a locale read plus an insert on the create-post response path; 4 keeps a
+// 20-mention post from taking 20 pool connections at once.
+const MENTION_NOTIFY_CONCURRENCY = 4
 
-export const FEED_SEED_SPAN = 2 ** 31
+const FEED_DISTANCE_RESOLUTION_KM = 1
 
-export const PUBLIC_FEED_SEED_KEY = "public"
+const FEED_SEED_SPAN = 2 ** 31
+
+const PUBLIC_FEED_SEED_KEY = "public"
+
+const POST_NOT_FOUND_MESSAGE = "Post not found"
+
+type ComposeKind = "post" | "reply" | "quote"
+
+interface ComposeTargets {
+  kind: ComposeKind
+  replyParentId: string | null
+  replyParentAuthor: string | null
+  quoteTargetAuthor: string | null
+}
 
 function coarseDistanceKm(distanceKm: number | null): number | null {
   if (distanceKm === null || !Number.isFinite(distanceKm)) return null
@@ -89,6 +125,7 @@ export interface PostServiceDeps {
   sql: Sql
   notifier?: PostNotifier
   isBlockedEitherWay?: (a: string, b: string) => Promise<boolean>
+  blockedIdsAmong?: (actorId: string, candidateIds: string[]) => Promise<Set<string>>
   logger?: { warn(obj: unknown, msg: string): void }
   feedRanking?: FeedRankingConfig
   feedPresence?: FeedPresence
@@ -98,7 +135,11 @@ export interface PostServiceDeps {
 }
 
 export interface PostService {
-  createPost(input: PostComposeInput, authorId: string): Promise<PostDTO>
+  createPost(
+    input: PostComposeInput,
+    authorId: string,
+    guestAnonSessionId?: string,
+  ): Promise<PostDTO>
   getPost(id: string, viewerId: string): Promise<PostDTO>
   deletePost(id: string, viewerId: string): Promise<{ ok: true }>
   listReplies(postId: string, viewerId: string, pagination: PaginationQuery): Promise<RepliesPage>
@@ -108,11 +149,7 @@ export interface PostService {
   unsavePost(id: string, viewerId: string): Promise<PostDTO>
   repostPost(id: string, viewerId: string): Promise<PostDTO>
   unrepostPost(id: string, viewerId: string): Promise<PostDTO>
-  homeFeed(
-    viewerId: string,
-    query: HomeFeedQuery,
-    location?: FeedViewerLocation,
-  ): Promise<FeedPage>
+  homeFeed(viewerId: string, query: HomeFeedQuery, location?: FeedViewerLocation): Promise<FeedPage>
   publicFeed(query: HomeFeedQuery, location?: FeedViewerLocation): Promise<FeedPage>
   getFeedCounts(postIds: readonly string[], viewerId: string): Promise<FeedCountsResponse>
   listUserPosts(authorId: string, viewerId: string, pagination: PaginationQuery): Promise<FeedPage>
@@ -120,7 +157,21 @@ export interface PostService {
 }
 
 export function makePostService(deps: PostServiceDeps): PostService {
-  const isBlocked = deps.isBlockedEitherWay ?? (() => Promise.resolve(false))
+  const isBlockedEitherWay = deps.isBlockedEitherWay ?? (() => Promise.resolve(false))
+  // Without the batch lookup, fall back to the per-pair check: an empty-set default would bell every
+  // mentioned user who blocked the author.
+  const blockedIdsAmong =
+    deps.blockedIdsAmong ??
+    (async (actorId: string, candidateIds: string[]): Promise<Set<string>> => {
+      const blocked = new Set<string>()
+      for (const id of candidateIds) {
+        if (await isBlockedEitherWay(actorId, id)) blocked.add(id)
+      }
+      return blocked
+    })
+  // The nil viewer is the anonymous caller: user_blocks references users.id, so no edge can name it.
+  const isBlocked = (a: string, b: string): Promise<boolean> =>
+    a === NIL_VIEWER_ID || b === NIL_VIEWER_ID ? Promise.resolve(false) : isBlockedEitherWay(a, b)
   const feedConfig = deps.feedRanking ?? DEFAULT_FEED_RANKING
   const nowMs = deps.now ?? (() => Date.now())
   const mintSeed = deps.feedSeed ?? (() => randomInt(0, FEED_SEED_SPAN))
@@ -216,10 +267,15 @@ export function makePostService(deps: PostServiceDeps): PostService {
 
     const presence = presenceFor(viewerId)
     if (presence !== undefined) {
+      // A repost card shows the original's counts, and count changes are announced under the
+      // original's id, so the viewer index needs it too or the card never hears about them.
       void presence
         .recordServed(
           viewerId,
-          items.map((item) => item.id),
+          items.flatMap((item) => {
+            const originalId = item.kind === "repost" ? item.repostOf?.id : undefined
+            return originalId === undefined ? [item.id] : [item.id, originalId]
+          }),
         )
         .catch((err: unknown) => {
           deps.logger?.warn({ err }, "post: feed served-set write failed (suppressed)")
@@ -308,6 +364,8 @@ export function makePostService(deps: PostServiceDeps): PostService {
     try {
       return await presence.writeSnapshot(viewerId, filter, ranked)
     } catch {
+      // An unstored snapshot means the page-1 cursor cannot resolve, so the caller serves the
+      // reproducible bucket order instead and logs that fallback.
       return false
     }
   }
@@ -374,68 +432,114 @@ export function makePostService(deps: PostServiceDeps): PostService {
 
   async function hydrateOrThrow(id: string, viewerId: string): Promise<PostDTO> {
     const dto = await deps.repo.getPostDTO(id, viewerId)
-    if (!dto) throw AppError.notFound("Post not found")
+    if (!dto) throw AppError.notFound(POST_NOT_FOUND_MESSAGE)
     return dto
   }
 
-  async function requireReadable(id: string, viewerId: string) {
+  async function readableSubject(id: string, viewerId: string): Promise<PostBrief | null> {
     const brief = await deps.repo.getPostBrief(id)
-    if (!brief || !isVisible(brief) || (await isBlocked(viewerId, brief.authorId))) {
-      throw AppError.notFound("Post not found")
-    }
+    if (!brief || !isVisible(brief) || (await isBlocked(viewerId, brief.authorId))) return null
     if (brief.repostOfId) {
       const target = await deps.repo.getPostBrief(brief.repostOfId)
       if (!target || !isVisible(target) || (await isBlocked(viewerId, target.authorId))) {
-        throw AppError.notFound("Post not found")
+        return null
       }
       if (brief.kind === "repost") return target
     }
     return brief
   }
 
+  async function requireReadable(id: string, viewerId: string): Promise<PostBrief> {
+    const subject = await readableSubject(id, viewerId)
+    if (subject === null) throw AppError.notFound(POST_NOT_FOUND_MESSAGE)
+    return subject
+  }
+
+  async function resolveComposeTargets(
+    input: PostComposeInput,
+    authorId: string,
+  ): Promise<ComposeTargets> {
+    assertNoSlur(input.body ?? null, "body")
+
+    if (input.kind === "repost") {
+      throw AppError.validation({ kind: "Use POST /posts/:id/repost to repost." })
+    }
+    if (input.organizationId !== undefined) {
+      if (!(await deps.repo.canPostAsOrganization(input.organizationId, authorId))) {
+        throw AppError.forbidden("You can only post as an organization you belong to.")
+      }
+    }
+    if (input.replyToId !== undefined && input.repostOfId !== undefined) {
+      throw AppError.validation({
+        replyToId: "A post is either a reply or a quote, not both.",
+      })
+    }
+    const kind: ComposeKind =
+      input.replyToId !== undefined ? "reply" : input.repostOfId !== undefined ? "quote" : "post"
+
+    let replyParentId: string | null = null
+    let replyParentAuthor: string | null = null
+    if (input.replyToId !== undefined) {
+      const parent = await requireReadable(input.replyToId, authorId)
+      replyParentId = parent.id
+      replyParentAuthor = parent.authorId
+    }
+    let quoteTargetAuthor: string | null = null
+    if (input.repostOfId !== undefined) {
+      const target = await requireReadable(input.repostOfId, authorId)
+      quoteTargetAuthor = target.authorId
+    }
+    return { kind, replyParentId, replyParentAuthor, quoteTargetAuthor }
+  }
+
+  async function assertAttachable(input: PostComposeInput, authorId: string): Promise<void> {
+    if (input.eventId !== undefined) {
+      if (!(await deps.repo.isEventMember(input.eventId, authorId))) {
+        throw AppError.forbidden("You can only attach an event you host or attend.")
+      }
+    }
+    if (input.reportId !== undefined) {
+      if (!(await deps.repo.isReportAttachable(input.reportId))) {
+        throw AppError.notFound("Report not found")
+      }
+    }
+  }
+
+  async function notifyCreated(
+    authorId: string,
+    postId: string,
+    targets: ComposeTargets,
+    mentions: readonly { id: string }[],
+  ): Promise<void> {
+    const actorName = await deps.repo.actorNameOf(authorId)
+    const { replyParentAuthor, quoteTargetAuthor } = targets
+    if (replyParentAuthor !== null && (await shouldNotify(authorId, replyParentAuthor))) {
+      await safeNotify(() =>
+        deps.notifier!.onPostReply({ recipientId: replyParentAuthor, actorName, postId }),
+      )
+    }
+    if (quoteTargetAuthor !== null && (await shouldNotify(authorId, quoteTargetAuthor))) {
+      await safeNotify(() =>
+        deps.notifier!.onPostQuote({ recipientId: quoteTargetAuthor, actorName, postId }),
+      )
+    }
+    const recipients = mentions.map((m) => m.id).filter((id) => id !== authorId)
+    if (recipients.length === 0) return
+    const blocked = await blockedIdsAmong(authorId, recipients)
+    const unblocked = recipients.filter((id) => !blocked.has(id))
+    await mapWithLimit(unblocked, MENTION_NOTIFY_CONCURRENCY, (recipientId) =>
+      safeNotify(() => deps.notifier!.onPostMention({ recipientId, actorName, postId })),
+    )
+  }
+
   return {
-    async createPost(input: PostComposeInput, authorId: string): Promise<PostDTO> {
-      assertNoSlur(input.body ?? null, "body")
-
-      if (input.kind === "repost") {
-        throw AppError.validation({ kind: "Use POST /posts/:id/repost to repost." })
-      }
-      if (input.organizationId !== undefined) {
-        if (!(await deps.repo.canPostAsOrganization(input.organizationId, authorId))) {
-          throw AppError.forbidden("You can only post as an organization you belong to.")
-        }
-      }
-      if (input.replyToId !== undefined && input.repostOfId !== undefined) {
-        throw AppError.validation({
-          replyToId: "A post is either a reply or a quote, not both.",
-        })
-      }
-      const kind =
-        input.replyToId !== undefined ? "reply" : input.repostOfId !== undefined ? "quote" : "post"
-
-      let replyParentId: string | null = null
-      let replyParentAuthor: string | null = null
-      if (input.replyToId !== undefined) {
-        const parent = await requireReadable(input.replyToId, authorId)
-        replyParentId = parent.id
-        replyParentAuthor = parent.authorId
-      }
-      let quoteTargetAuthor: string | null = null
-      if (input.repostOfId !== undefined) {
-        const target = await requireReadable(input.repostOfId, authorId)
-        quoteTargetAuthor = target.authorId
-      }
-
-      if (input.eventId !== undefined) {
-        if (!(await deps.repo.isEventMember(input.eventId, authorId))) {
-          throw AppError.forbidden("You can only attach an event you host or attend.")
-        }
-      }
-      if (input.reportId !== undefined) {
-        if (!(await deps.repo.isReportAttachable(input.reportId))) {
-          throw AppError.notFound("Report not found")
-        }
-      }
+    async createPost(
+      input: PostComposeInput,
+      authorId: string,
+      guestAnonSessionId?: string,
+    ): Promise<PostDTO> {
+      const targets = await resolveComposeTargets(input, authorId)
+      await assertAttachable(input, authorId)
 
       const mentions = await resolveMentionTargets(deps.sql, {
         handles: [],
@@ -445,7 +549,8 @@ export function makePostService(deps: PostServiceDeps): PostService {
 
       const postId = await deps.repo.createPost({
         authorId,
-        kind,
+        guestAnonSessionId,
+        kind: targets.kind,
         body: input.body ?? null,
         replyToId: input.replyToId ?? null,
         repostOfId: input.repostOfId ?? null,
@@ -456,28 +561,13 @@ export function makePostService(deps: PostServiceDeps): PostService {
         organizationId: input.organizationId ?? null,
       })
 
-      const actorName = await deps.repo.actorNameOf(authorId)
-      if (replyParentAuthor !== null && (await shouldNotify(authorId, replyParentAuthor))) {
-        await safeNotify(() =>
-          deps.notifier!.onPostReply({ recipientId: replyParentAuthor!, actorName, postId }),
-        )
-      }
-      if (quoteTargetAuthor !== null && (await shouldNotify(authorId, quoteTargetAuthor))) {
-        await safeNotify(() =>
-          deps.notifier!.onPostQuote({ recipientId: quoteTargetAuthor!, actorName, postId }),
-        )
-      }
-      for (const m of mentions) {
-        if (await shouldNotify(authorId, m.id)) {
-          await safeNotify(() => deps.notifier!.onPostMention({ recipientId: m.id, actorName, postId }))
-        }
-      }
+      await notifyCreated(authorId, postId, targets, mentions)
 
-      if (kind === "post" || kind === "quote") {
+      if (targets.kind === "post" || targets.kind === "quote") {
         await announceNewPost(postId, authorId)
       }
-      if (replyParentId !== null) {
-        await announceCountChange(replyParentId, authorId)
+      if (targets.replyParentId !== null) {
+        await announceCountChange(targets.replyParentId, authorId)
       }
 
       return hydrateOrThrow(postId, authorId)
@@ -490,8 +580,14 @@ export function makePostService(deps: PostServiceDeps): PostService {
 
     async deletePost(id: string, viewerId: string): Promise<{ ok: true }> {
       const brief = await deps.repo.getPostBrief(id)
-      if (!brief || brief.deletedAt !== null) throw AppError.notFound("Post not found")
-      if (brief.authorId !== viewerId) throw AppError.forbidden("You can only delete your own post.")
+      if (!brief || brief.deletedAt !== null) throw AppError.notFound(POST_NOT_FOUND_MESSAGE)
+      if (brief.authorId !== viewerId) {
+        // A post the caller cannot read must answer like a missing one, or 403 confirms it exists.
+        if (!isVisible(brief) || (await isBlocked(viewerId, brief.authorId))) {
+          throw AppError.notFound(POST_NOT_FOUND_MESSAGE)
+        }
+        throw AppError.forbidden("You can only delete your own post.")
+      }
       await deps.repo.softDeletePost(id)
       return { ok: true }
     },
@@ -517,7 +613,11 @@ export function makePostService(deps: PostServiceDeps): PostService {
       if (created && (await shouldNotify(viewerId, subject.authorId))) {
         const actorName = await deps.repo.actorNameOf(viewerId)
         await safeNotify(() =>
-          deps.notifier!.onPostLike({ recipientId: subject.authorId, actorName, postId: subject.id }),
+          deps.notifier!.onPostLike({
+            recipientId: subject.authorId,
+            actorName,
+            postId: subject.id,
+          }),
         )
       }
       return hydrateOrThrow(id, viewerId)
@@ -566,10 +666,17 @@ export function makePostService(deps: PostServiceDeps): PostService {
     },
 
     async unrepostPost(id: string, viewerId: string): Promise<PostDTO> {
-      await requireReadable(id, viewerId)
+      // No readability gate on the removal: the repository only ever removes the caller's own repost,
+      // and a reposter must be able to take one back after the original went hidden or its author
+      // blocked them. The original's content is still answered only to a caller who can read it.
       const { targetId, removed } = await deps.repo.unrepost(id, viewerId)
       if (removed) await announceCountChange(targetId, viewerId)
-      return hydrateOrThrow(targetId, viewerId)
+      if ((await readableSubject(targetId, viewerId)) !== null) {
+        return hydrateOrThrow(targetId, viewerId)
+      }
+      const target = removed ? await deps.repo.getPostBrief(targetId) : null
+      if (target === null) throw AppError.notFound(POST_NOT_FOUND_MESSAGE)
+      return withdrawnPostDTO(target, nowMs())
     },
 
     async homeFeed(
@@ -599,10 +706,7 @@ export function makePostService(deps: PostServiceDeps): PostService {
       return rankedFeed(NIL_VIEWER_ID, query, location)
     },
 
-    async getFeedCounts(
-      postIds: readonly string[],
-      viewerId: string,
-    ): Promise<FeedCountsResponse> {
+    async getFeedCounts(postIds: readonly string[], viewerId: string): Promise<FeedCountsResponse> {
       const unique = [...new Set(postIds)]
       if (unique.length === 0) return { items: [] }
       const rows = await deps.repo.readableCounts(unique, viewerId)

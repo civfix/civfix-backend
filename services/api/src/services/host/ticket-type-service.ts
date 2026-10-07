@@ -11,19 +11,23 @@ import type {
 } from "@civfix/shared"
 import { sha256Hex } from "../../auth/crypto.js"
 import { assertNoSlur } from "../../abuse/slur-filter.js"
+import type { Jobs } from "@civfix/shared/interfaces"
 import type { CounterStore } from "../../abuse/counter-store.js"
 import { toTicketTypeDTO } from "./registration-dto.js"
 import type { InsightsInvalidator } from "./host-analytics-cache.js"
-import type { HostRegistrationRepository } from "./registration-repository.types.js"
+import type { HostRegistrationRepository } from "./registration-repository.js"
+import { enqueueWaitlistPromotion } from "./waitlist-promotion.js"
+import { reserveCounterBudget } from "./counter-budget.js"
 
-export const HOST_TICKET_TYPE_COUNTER_KEY = "host:ticketTypes"
+const HOST_TICKET_TYPE_COUNTER_KEY = "host:ticketTypes"
 
-export const HOST_TICKET_TYPE_MAX_PER_HOUR = 60
+const HOST_TICKET_TYPE_MAX_PER_HOUR = 60
 
-export const HOST_TICKET_TYPE_WINDOW_SECONDS = 60 * 60
+const HOST_TICKET_TYPE_WINDOW_SECONDS = 60 * 60
 
 export interface TicketTypeServiceDeps {
   repo: HostRegistrationRepository
+  jobs?: Jobs
   counters?: CounterStore
   insightsInvalidator?: InsightsInvalidator
   now?: () => Date
@@ -45,8 +49,13 @@ function capacityExceededError(eventCapacity: number, used: number): AppError {
   return AppError.validation({
     capacity:
       `the ticket types on this event may hold at most ${eventCapacity} seats in total ` +
-      `(${used} already allocated) — raise the event capacity first`,
+      `(${used} already allocated), so raise the event capacity first`,
   })
+}
+
+function capacityRaised(before: number | null, after: number | null): boolean {
+  if (before === null) return false
+  return after === null || after > before
 }
 
 function salesWindowError(): AppError {
@@ -61,23 +70,18 @@ export function makeTicketTypeService(deps: TicketTypeServiceDeps): TicketTypeSe
   const now = deps.now ?? (() => new Date())
 
   async function reserveWriteBudget(actorId: string): Promise<void> {
-    if (deps.counters === undefined) return
-    let used: number
-    try {
-      used = await deps.counters.incr(
-        `${HOST_TICKET_TYPE_COUNTER_KEY}:${actorId}`,
-        HOST_TICKET_TYPE_WINDOW_SECONDS,
-      )
-    } catch (err) {
-      deps.logger?.warn(
-        { err },
-        "ticket types: abuse counter unavailable; refusing the write (fail closed)",
-      )
-      throw AppError.rateLimited("Ticket type changes are temporarily unavailable.")
-    }
-    if (used > HOST_TICKET_TYPE_MAX_PER_HOUR) {
-      throw AppError.rateLimited("Too many ticket type changes. Try again later.")
-    }
+    await reserveCounterBudget(
+      deps.counters,
+      {
+        key: `${HOST_TICKET_TYPE_COUNTER_KEY}:${actorId}`,
+        windowSeconds: HOST_TICKET_TYPE_WINDOW_SECONDS,
+        cap: HOST_TICKET_TYPE_MAX_PER_HOUR,
+        unavailableLog: "ticket types: abuse counter unavailable; refusing the write (fail closed)",
+        unavailableMessage: "Ticket type changes are temporarily unavailable.",
+        exceededMessage: "Too many ticket type changes. Try again later.",
+      },
+      deps.logger,
+    )
   }
 
   async function eventChanged(cleanupId: string): Promise<void> {
@@ -122,11 +126,16 @@ export function makeTicketTypeService(deps: TicketTypeServiceDeps): TicketTypeSe
         name: input.name,
         description: input.description ?? null,
         capacity: input.capacity ?? null,
-        salesOpensAt: input.salesOpensAt === undefined || input.salesOpensAt === null ? null : new Date(input.salesOpensAt),
-        salesClosesAt: input.salesClosesAt === undefined || input.salesClosesAt === null ? null : new Date(input.salesClosesAt),
+        salesOpensAt:
+          input.salesOpensAt === undefined || input.salesOpensAt === null
+            ? null
+            : new Date(input.salesOpensAt),
+        salesClosesAt:
+          input.salesClosesAt === undefined || input.salesClosesAt === null
+            ? null
+            : new Date(input.salesClosesAt),
         visibility: input.visibility,
-        accessCodeHash:
-          input.accessCode == null ? null : await sha256Hex(input.accessCode.trim()),
+        accessCodeHash: input.accessCode == null ? null : await sha256Hex(input.accessCode.trim()),
         clearAccessCode: false,
         maxPartySize: input.maxPartySize,
         sortOrder: input.sortOrder ?? null,
@@ -194,13 +203,16 @@ export function makeTicketTypeService(deps: TicketTypeServiceDeps): TicketTypeSe
 
       switch (outcome.kind) {
         case "updated":
+          if (capacityRaised(current.capacity, outcome.record.capacity)) {
+            await enqueueWaitlistPromotion(deps.jobs, [input.ticketTypeId], deps.logger)
+          }
           await eventChanged(input.id)
           return toTicketTypeDTO(outcome.record, now())
         case "name_taken":
           throw nameTakenError()
         case "capacity_below_reserved":
           throw AppError.validation({
-            capacity: `already holding ${outcome.reservedSeats} seats — cancel registrations before lowering it`,
+            capacity: `already holding ${outcome.reservedSeats} seats, so cancel registrations before lowering it`,
           })
         case "capacity_exceeded":
           throw capacityExceededError(outcome.eventCapacity, outcome.used)

@@ -1,8 +1,6 @@
 import { defineConfig } from "vitest/config"
 
 /**
- * Worker test config.
- *
  * The unit suite runs REAL sharp + REAL ffmpeg/ffprobe (vendored static binaries) against crafted
  * fixtures to prove safe-failure, plus the offline fakes (FakeStorage / in-memory repo / FakeAbuse).
  * Spawning ffmpeg per test makes individual cases slower than a pure unit test, so the timeout is

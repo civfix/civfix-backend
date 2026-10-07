@@ -4,6 +4,10 @@ export const CIVFIX_OFFICIAL_HANDLE = "civfix"
 
 export const CIVFIX_OFFICIAL_DISPLAY_NAME = "CivFix"
 
+const COMBINING_MARK_RE = /\p{M}/gu
+
+const NAME_KEY_CHAR_RE = /^[a-z0-9]$/
+
 export function isOfficialAccount(userId: string | null | undefined): boolean {
   return typeof userId === "string" && userId.toLowerCase() === CIVFIX_OFFICIAL_USER_ID
 }
@@ -40,10 +44,10 @@ function nameKey(name: string): string {
   let key = ""
   for (const raw of name.toLowerCase()) {
     const folded =
-      NAME_LOOKALIKES[raw] ?? raw.normalize("NFKD").replace(/\p{M}/gu, "").toLowerCase()
+      NAME_LOOKALIKES[raw] ?? raw.normalize("NFKD").replace(COMBINING_MARK_RE, "").toLowerCase()
     for (const ch of folded) {
       const mapped = NAME_LOOKALIKES[ch] ?? ch
-      if (/^[a-z0-9]$/.test(mapped)) key += mapped
+      if (NAME_KEY_CHAR_RE.test(mapped)) key += mapped
     }
   }
   return key

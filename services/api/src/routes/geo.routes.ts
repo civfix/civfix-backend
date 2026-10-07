@@ -10,6 +10,7 @@ import { route } from "../versioning/route.js"
 import { parse } from "./_validate.js"
 
 const APPROXIMATE_LOCATION_RATE_LIMIT = { max: 60, timeWindow: "1 minute" } as const
+const APPROXIMATE_LOCATION_CACHE_CONTROL = "private, max-age=300"
 
 const ApproximateLocationResponseJsonSchema = {
   type: "object",
@@ -43,7 +44,7 @@ export async function registerGeoRoutes(app: FastifyInstance, container: Contain
         },
       )
 
-      reply.header("Cache-Control", "private, max-age=300")
+      reply.header("Cache-Control", APPROXIMATE_LOCATION_CACHE_CONTROL)
       reply.status(200).send(payload)
     },
   )

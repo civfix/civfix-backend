@@ -1,4 +1,3 @@
-
 import { randomUUID } from "node:crypto"
 import { AppError, DELETED_USER_LABEL } from "@civfix/shared"
 import type { Role, SocialLinks } from "@civfix/shared"
@@ -6,22 +5,30 @@ import { decideHandleWrite, handleChanged } from "./handle-policy.js"
 
 export const HANDLE_RENAME_COOLDOWN_MS = 30 * 24 * 60 * 60 * 1000
 
+const PLACEHOLDER_HANDLE_PREFIX = "user"
+
+const TOMBSTONE_HANDLE_PREFIX = "deleted_"
+
+const GENERATED_HANDLE_HEX_LENGTH = 12
+
 export function handleChangeableAtFrom(handleChangedAt: Date | null, now: Date): string | null {
   if (handleChangedAt === null) return null
   const next = new Date(handleChangedAt.getTime() + HANDLE_RENAME_COOLDOWN_MS)
   return next.getTime() > now.getTime() ? next.toISOString() : null
 }
 
+function uuidHexPrefix(uuid: string): string {
+  return uuid.replace(/-/g, "").slice(0, GENERATED_HANDLE_HEX_LENGTH).toLowerCase()
+}
+
 export function generatePlaceholderHandle(id?: string): string {
-  const hex = (id ?? randomUUID()).replace(/-/g, "").slice(0, 12).toLowerCase()
-  return `user${hex}`
+  return PLACEHOLDER_HANDLE_PREFIX + uuidHexPrefix(id ?? randomUUID())
 }
 
 export const TOMBSTONE_HANDLE_RE = /^deleted_[0-9a-f]{12}$/
 
 export function generateTombstoneHandle(): string {
-  const hex = randomUUID().replace(/-/g, "").slice(0, 12).toLowerCase()
-  return `deleted_${hex}`
+  return TOMBSTONE_HANDLE_PREFIX + uuidHexPrefix(randomUUID())
 }
 
 export type AccountStatus = "active" | "suspended" | "review" | "banned"
@@ -134,6 +141,13 @@ export interface UserRecord {
   deletedAt: Date | null
 }
 
+/**
+ * "return-existing" answers an email conflict with the account that already holds the address, which is
+ * only safe for a caller that has proved control of that inbox (email code, operator allowlist). A caller
+ * holding no such proof must pass "reject" so a conflict can never hand it someone else's account.
+ */
+export type EmailConflictPolicy = "return-existing" | "reject"
+
 export interface CreateUserInput {
   displayName: string
   role?: Role
@@ -141,6 +155,14 @@ export interface CreateUserInput {
   avatarUrl?: string | null
   handle?: string
   profileComplete?: boolean
+  onEmailConflict?: EmailConflictPolicy
+}
+
+export class EmailTakenError extends Error {
+  constructor() {
+    super("email address already belongs to another account")
+    this.name = "EmailTakenError"
+  }
 }
 
 export interface UpdateProfileInput {
@@ -175,11 +197,13 @@ export interface UpdateSettingsInput {
 export const PRIMARY_ORGANIZATION_NOT_A_MEMBER =
   "Pick an organization you belong to, or clear the selection."
 
+export type ErasureCascade = (userId: string) => Promise<unknown>
 
 export class InMemoryUserStore implements UserStore {
   private readonly byId = new Map<string, UserRecord>()
   private readonly statuses = new Map<string, AccountStatus>()
   private readonly memberships = new Map<string, Set<string>>()
+  private readonly erasureCascades: ErasureCascade[] = []
   private readonly now: () => Date
 
   constructor(opts: { now?: () => Date } = {}) {
@@ -199,24 +223,24 @@ export class InMemoryUserStore implements UserStore {
     return Promise.resolve(row ? { ...row } : null)
   }
 
-  findByEmail(email: string): Promise<UserRecord | null> {
+  private rowByEmail(email: string): UserRecord | undefined {
     const normalized = email.toLowerCase()
     for (const row of this.byId.values()) {
-      if (row.email !== null && row.email.toLowerCase() === normalized) {
-        return Promise.resolve({ ...row })
-      }
+      if (row.email !== null && row.email.toLowerCase() === normalized) return row
     }
-    return Promise.resolve(null)
+    return undefined
+  }
+
+  findByEmail(email: string): Promise<UserRecord | null> {
+    const row = this.rowByEmail(email)
+    return Promise.resolve(row ? { ...row } : null)
   }
 
   create(email: string | null, input: CreateUserInput): Promise<UserRecord> {
-    if (email !== null) {
-      const normalized = email.toLowerCase()
-      for (const existing of this.byId.values()) {
-        if (existing.email !== null && existing.email.toLowerCase() === normalized) {
-          return Promise.resolve({ ...existing })
-        }
-      }
+    const existing = email === null ? undefined : this.rowByEmail(email)
+    if (existing) {
+      if (input.onEmailConflict === "reject") return Promise.reject(new EmailTakenError())
+      return Promise.resolve({ ...existing })
     }
     const id = randomUUID()
     const row: UserRecord = {
@@ -325,9 +349,16 @@ export class InMemoryUserStore implements UserStore {
     this.memberships.set(userId, set)
   }
 
-  softDeleteAndAnonymize(id: string): Promise<UserRecord> {
+  // The Postgres erasure transaction also deletes the user's sessions, push tokens and notifications.
+  // Here those rows live in other in-memory stores, so each one registers how to drop them.
+  cascadeErasureTo(cascade: ErasureCascade): void {
+    this.erasureCascades.push(cascade)
+  }
+
+  async softDeleteAndAnonymize(id: string): Promise<UserRecord> {
     const row = this.byId.get(id)
     if (!row) throw new Error("InMemoryUserStore.softDeleteAndAnonymize: user not found")
+    for (const cascade of this.erasureCascades) await cascade(id)
     const next: UserRecord = {
       ...row,
       deletedAt: row.deletedAt ?? new Date(),
@@ -340,7 +371,7 @@ export class InMemoryUserStore implements UserStore {
       primaryOrganizationId: null,
     }
     this.byId.set(id, next)
-    return Promise.resolve({ ...next })
+    return { ...next }
   }
 
   seed(_email: string | null, row: UserRecord): void {
@@ -359,6 +390,7 @@ export interface OAuthIdentityStore {
   findByProvider(provider: string, providerUserId: string): Promise<OAuthIdentityRecord | null>
   linkIdentity(userId: string, provider: string, providerUserId: string): Promise<void>
   deleteAllForUser(userId: string): Promise<void>
+  hasIdentityForUser(userId: string): Promise<boolean>
 }
 
 export class InMemoryOAuthIdentityStore implements OAuthIdentityStore {
@@ -384,6 +416,13 @@ export class InMemoryOAuthIdentityStore implements OAuthIdentityStore {
       if (row.userId === userId) this.identities.delete(k)
     }
     return Promise.resolve()
+  }
+
+  hasIdentityForUser(userId: string): Promise<boolean> {
+    for (const row of this.identities.values()) {
+      if (row.userId === userId) return Promise.resolve(true)
+    }
+    return Promise.resolve(false)
   }
 }
 
@@ -481,9 +520,12 @@ export function makeInMemoryStores(): AuthStores & {
   oauth: InMemoryOAuthIdentityStore
   otps: InMemoryOtpStore
 } {
+  const users = new InMemoryUserStore()
+  const sessions = new InMemorySessionStore()
+  users.cascadeErasureTo((userId) => sessions.deleteAllForUser(userId))
   return {
-    users: new InMemoryUserStore(),
-    sessions: new InMemorySessionStore(),
+    users,
+    sessions,
     oauth: new InMemoryOAuthIdentityStore(),
     otps: new InMemoryOtpStore(),
   }

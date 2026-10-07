@@ -137,7 +137,10 @@ describe("createCleanup: a NEW client's confirmed address", () => {
 describe("createCleanup: the OLD-client compat shim", () => {
   it("treats an old client's text as the host's own, so it is 'manual'", async () => {
     const resolve = resolver(STREET)
-    const dto = await serviceWith(resolve).createCleanup(baseInput({ address: "Boathouse dock" }), HOST)
+    const dto = await serviceWith(resolve).createCleanup(
+      baseInput({ address: "Boathouse dock" }),
+      HOST,
+    )
 
     expect(dto.address).toBe("Boathouse dock")
     expect(dto.addressSource).toBe("manual")

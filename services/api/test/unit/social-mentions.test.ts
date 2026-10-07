@@ -1,11 +1,10 @@
-
 import { describe, expect, it } from "vitest"
 import type { Sql } from "../../src/db/client.js"
 import {
   resolveHandles,
   resolveUserIdsToMentions,
   resolveMentionTargets,
-} from "../../src/services/social-repository.drizzle.js"
+} from "../../src/services/mention-targets-repository.drizzle.js"
 
 const AUTHOR = "22222222-2222-2222-2222-222222222222"
 const ALICE = "44444444-4444-4444-4444-444444444444"
@@ -18,7 +17,7 @@ function fakeSql(rows: unknown[]): Sql {
       if (Array.isArray(args[0]) && "raw" in (args[0] as object)) return Promise.resolve(rows)
       return { __fragment: true }
     },
-  }) as Sql
+  })
 }
 
 describe("resolveHandles", () => {

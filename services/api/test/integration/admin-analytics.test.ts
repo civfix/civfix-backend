@@ -1,9 +1,8 @@
-
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest"
 import { withPg, type PgHarness } from "../helpers/pg.js"
 import { seedCleanup } from "../helpers/cleanups.js"
 import { makeDrizzleAnalyticsRepository } from "../../src/services/admin/analytics-repository.drizzle.js"
-import type { AnalyticsRepository } from "../../src/services/admin/analytics-service.js"
+import type { AnalyticsRepository } from "../../src/services/admin/analytics-repository.js"
 import { LA_CITY } from "../../src/db/seed-fixtures.js"
 import type { CleanupStatus } from "@civfix/shared"
 
@@ -110,6 +109,22 @@ describe.skipIf(!pg)("admin analytics repository (integration: real schema)", ()
     const agg = await repo.kpis()
     expect(agg.pins.current).toBe(2)
     expect(agg.resolvedRatio.current).toBeCloseTo(0.5, 5)
+  })
+
+  it("kpis: last month counts toward the previous value and older reports count nowhere", async () => {
+    const now = new Date()
+    const monthsAgo = (n: number): Date =>
+      new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() - n, 15, 12))
+    await insertReport(h, { status: "resolved" })
+    await insertReport(h, { status: "resolved", createdAt: monthsAgo(1) })
+    await insertReport(h, { status: "submitted", createdAt: monthsAgo(1) })
+    await insertReport(h, { status: "resolved", createdAt: monthsAgo(3) })
+
+    const agg = await repo.kpis()
+    expect(agg.pins.current).toBe(1)
+    expect(agg.pins.previous).toBe(2)
+    expect(agg.resolvedRatio.current).toBeCloseTo(1, 5)
+    expect(agg.resolvedRatio.previous).toBeCloseTo(0.5, 5)
   })
 
   it("byCategory: grouped counts for public reports only", async () => {

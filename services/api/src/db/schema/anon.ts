@@ -1,13 +1,7 @@
 /**
- * anon_tokens: server records for anonymous reporting sessions. `id` is the token id (string).
- * `report_count` and `flagged` support per-token abuse throttling. `expires_at` bounds the token
- * lifetime and is indexed for cleanup sweeps.
- *
- * DEPRECATED COLUMN: `claim_code` is dead. The claim secret moved to the report row (0005) and now
- * rests only as its SHA-256 on reports.claim_code_hash (0091); 0092 NULLed every value here and no
- * code path reads it. The DROP is deferred to the release that also drops reports.claim_code.
- *
- * NOTE: per-IP and per-H3 hourly rate-limit counters do NOT live here; they live in Redis.
+ * `claim_code` is dead: the claim secret rests only as its SHA-256 on reports.claim_code_hash, 0092
+ * NULLed every value here and no code path reads it. The DROP is deferred to the release that also drops
+ * reports.claim_code.
  */
 
 import { boolean, index, integer, pgTable, text, timestamp } from "drizzle-orm/pg-core"

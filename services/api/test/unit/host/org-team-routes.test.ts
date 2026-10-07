@@ -4,19 +4,19 @@ import type { FastifyInstance } from "fastify"
 import { FakeMailer } from "@civfix/shared/fakes"
 import { AppError } from "@civfix/shared"
 import { NO_HOST_STANDING, can } from "@civfix/shared/host"
-import { buildServer } from "../../../src/server.js"
-import { buildContainer } from "../../../src/di.js"
+import { makeServer } from "../../../src/server.js"
+import { makeContainer } from "../../../src/di.js"
 import { loadEnv } from "../../../src/env.js"
 import { InMemoryCounterStore } from "../../../src/abuse/counter-store.js"
 import { InMemoryCacheClient } from "../../../src/auth/cache.js"
 import { makeInMemoryStores } from "../../../src/auth/stores.js"
-import { buildAuthServices } from "../../../src/auth/auth-services.js"
+import { makeAuthServices } from "../../../src/auth/auth-services.js"
 import { StubJwksVerifier } from "../../helpers/auth.js"
-import { InMemoryOrganizationRepository } from "../../../src/services/host/organization-repository.memory.js"
+import { InMemoryOrganizationRepository } from "../../helpers/host/organization-repository.memory.js"
 import { fakeCleanupReader } from "../../helpers/host-team.js"
-import { InMemoryHostTeamRepository } from "../../../src/services/host/host-team-repository.memory.js"
+import { InMemoryHostTeamRepository } from "../../helpers/host/host-team-repository.memory.js"
 import { hostForbiddenCopy } from "../../../src/services/host/authz.js"
-import type { HostStandingResolution } from "../../../src/services/host/host-standing.js"
+import type { HostStandingResolution } from "../../../src/services/host/host-standing-repository.js"
 
 const EVENT = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
 const OTHER_EVENT = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"
@@ -43,7 +43,7 @@ async function makeHarness(): Promise<Harness> {
   const stores = makeInMemoryStores()
   const cache = new InMemoryCacheClient(() => Date.now())
   const mailer = new FakeMailer()
-  const authServices = buildAuthServices({
+  const authServices = makeAuthServices({
     stores,
     cache,
     mailer,
@@ -55,8 +55,8 @@ async function makeHarness(): Promise<Harness> {
   const orgs = new InMemoryOrganizationRepository()
   const team = new InMemoryHostTeamRepository()
 
-  const container = buildContainer(env)
-  const app = await buildServer({
+  const container = makeContainer(env)
+  const app = await makeServer({
     env,
     container,
     authServices,
@@ -119,10 +119,14 @@ async function makeHarness(): Promise<Harness> {
   const setCookies = web.headers["set-cookie"]
   const cookieList = Array.isArray(setCookies) ? setCookies : [String(setCookies ?? "")]
   const cookie = cookieList.map((c) => c.split(";")[0]).join("; ")
-  const csrf = (web.json() as { csrfToken?: string }).csrfToken ?? ""
+  const csrf = web.json<{ csrfToken?: string }>().csrfToken ?? ""
 
   async function signIn(otherEmail: string): Promise<string> {
-    await app.inject({ method: "POST", url: "/v1/auth/otp/request", payload: { email: otherEmail } })
+    await app.inject({
+      method: "POST",
+      url: "/v1/auth/otp/request",
+      payload: { email: otherEmail },
+    })
     const otherCode = mailer.lastOtpFor(otherEmail) as string
     const res = await app.inject({
       method: "POST",
@@ -130,7 +134,7 @@ async function makeHarness(): Promise<Harness> {
       headers: { "x-client": "mobile" },
       payload: { email: otherEmail, code: otherCode },
     })
-    const body = res.json() as { token: string; user: { id: string } }
+    const body = res.json<{ token: string; user: { id: string } }>()
     // The org repo's user table is separate from the auth stores: mirror the account so the invite's
     // email-match rule can see it.
     orgs.seedUser({ id: body.user.id, displayName: otherEmail, email: otherEmail })
@@ -209,7 +213,10 @@ describe("organization routes", () => {
       url: "/v1/orgs/by-slug/ballona-creek-trust",
     })
     expect(bySlug.statusCode).toBe(200)
-    expect(bySlug.json()).toMatchObject({ slug: "ballona-creek-trust", verifiedStatus: "unverified" })
+    expect(bySlug.json()).toMatchObject({
+      slug: "ballona-creek-trust",
+      verifiedStatus: "unverified",
+    })
 
     const mine = await app.inject({
       method: "GET",
@@ -376,14 +383,19 @@ describe("portfolio route", () => {
 
 describe("organization invites + suspension routes (0.41.0)", () => {
   async function ownedOrg(h: Harness): Promise<string> {
-    h.orgs.seedUser({ id: h.userId, displayName: "Host", handle: "host", email: "host@example.com" })
+    h.orgs.seedUser({
+      id: h.userId,
+      displayName: "Host",
+      handle: "host",
+      email: "host@example.com",
+    })
     const created = await h.app.inject({
       method: "POST",
       url: "/v1/orgs",
       headers: auth(h.token),
       payload: { name: "Ballona Creek Trust", slug: "ballona-creek-trust" },
     })
-    return (created.json() as { id: string }).id
+    return created.json<{ id: string }>().id
   }
 
   it("emails an invite to an address with no account, lists it, and revokes it", async () => {
@@ -396,10 +408,18 @@ describe("organization invites + suspension routes (0.41.0)", () => {
       payload: { identifierKind: "email", identifier: "newcomer@example.org", role: "member" },
     })
     expect(invited.statusCode).toBe(200)
-    const body = invited.json() as { member: null; invited: boolean; invite: { id: string; status: string } }
+    const body = invited.json<{
+      member: null
+      invited: boolean
+      invite: { id: string; status: string }
+    }>()
     expect(body.member).toBeNull()
     expect(body.invited).toBe(true)
-    expect(body.invite).toMatchObject({ status: "pending", role: "member", email: "newcomer@example.org" })
+    expect(body.invite).toMatchObject({
+      status: "pending",
+      role: "member",
+      email: "newcomer@example.org",
+    })
     const mail = h.mailer.sent.find((m) => m.to === "newcomer@example.org")
     expect(mail).toBeDefined()
     expect(JSON.stringify(mail)).toContain(`/manage/org-invites/accept#token=${INVITE_TOKEN}`)
@@ -411,7 +431,9 @@ describe("organization invites + suspension routes (0.41.0)", () => {
       headers: auth(h.token),
     })
     expect(listed.statusCode).toBe(200)
-    expect((listed.json() as { items: { id: string }[] }).items.map((i) => i.id)).toEqual([body.invite.id])
+    expect(listed.json<{ items: { id: string }[] }>().items.map((i) => i.id)).toEqual([
+      body.invite.id,
+    ])
 
     const revoked = await h.app.inject({
       method: "DELETE",
@@ -419,11 +441,15 @@ describe("organization invites + suspension routes (0.41.0)", () => {
       headers: auth(h.token),
     })
     expect(revoked.statusCode).toBe(200)
-    expect((await h.app.inject({
-      method: "GET",
-      url: `/v1/orgs/${id}/invites`,
-      headers: auth(h.token),
-    })).json().items[0].status).toBe("revoked")
+    expect(
+      (
+        await h.app.inject({
+          method: "GET",
+          url: `/v1/orgs/${id}/invites`,
+          headers: auth(h.token),
+        })
+      ).json().items[0].status,
+    ).toBe("revoked")
     const again = await h.app.inject({
       method: "DELETE",
       url: `/v1/orgs/${id}/invites/${body.invite.id}`,
@@ -451,8 +477,8 @@ describe("organization invites + suspension routes (0.41.0)", () => {
     })
     expect(known.statusCode).toBe(200)
     expect(unknown.statusCode).toBe(200)
-    const a = known.json() as { invite: Record<string, unknown> }
-    const b = unknown.json() as { invite: Record<string, unknown> }
+    const a = known.json<{ invite: Record<string, unknown> }>()
+    const b = unknown.json<{ invite: Record<string, unknown> }>()
     expect(Object.keys(a).sort()).toEqual(Object.keys(b).sort())
     expect(Object.keys(a.invite).sort()).toEqual(Object.keys(b.invite).sort())
     expect(a.invite).toMatchObject({ user: null, status: "pending" })
@@ -468,7 +494,7 @@ describe("organization invites + suspension routes (0.41.0)", () => {
         payload: { identifierKind: "email", identifier, role: "member" },
       })
       expect(again.statusCode, identifier).toBe(200)
-      expect((again.json() as { invite: { status: string } }).invite.status).toBe("pending")
+      expect(again.json<{ invite: { status: string } }>().invite.status).toBe("pending")
     }
   })
 
@@ -481,14 +507,14 @@ describe("organization invites + suspension routes (0.41.0)", () => {
       headers: auth(h.token),
       payload: { name: "Second Org", slug: "second-org" },
     })
-    const second = (other.json() as { id: string }).id
+    const second = other.json<{ id: string }>().id
     const invited = await h.app.inject({
       method: "POST",
       url: `/v1/orgs/${first}/members`,
       headers: auth(h.token),
       payload: { identifierKind: "email", identifier: "newcomer@example.org", role: "member" },
     })
-    const inviteId = (invited.json() as { invite: { id: string } }).invite.id
+    const inviteId = invited.json<{ invite: { id: string } }>().invite.id
     const mismatched = await h.app.inject({
       method: "DELETE",
       url: `/v1/orgs/${second}/invites/${inviteId}`,
@@ -583,11 +609,19 @@ describe("organization invites + suspension routes (0.41.0)", () => {
       ["DELETE", `/v1/orgs/${id}/invites/${randomUUID()}`],
       ["POST", "/v1/org-invites/accept"],
     ] as const) {
-      const res = await h.app.inject({ method, url, ...(method === "GET" ? {} : { payload: { token: INVITE_TOKEN } }) })
+      const res = await h.app.inject({
+        method,
+        url,
+        ...(method === "GET" ? {} : { payload: { token: INVITE_TOKEN } }),
+      })
       expect(res.statusCode, `${method} ${url}`).toBe(401)
     }
     const stranger = await h.signIn("stranger@example.org")
-    const res = await h.app.inject({ method: "GET", url: `/v1/orgs/${id}/invites`, headers: auth(stranger) })
+    const res = await h.app.inject({
+      method: "GET",
+      url: `/v1/orgs/${id}/invites`,
+      headers: auth(stranger),
+    })
     expect(res.statusCode).toBe(404)
   })
 
@@ -637,7 +671,11 @@ describe("organization invites + suspension routes (0.41.0)", () => {
       payload: { kind: "community", documents: [] },
     })
     expect(apply.statusCode).toBe(403)
-    const mine = await h.app.inject({ method: "GET", url: "/v1/me/organizations", headers: auth(h.token) })
+    const mine = await h.app.inject({
+      method: "GET",
+      url: "/v1/me/organizations",
+      headers: auth(h.token),
+    })
     expect(mine.json().items[0]).toMatchObject({ suspended: true })
   })
 })

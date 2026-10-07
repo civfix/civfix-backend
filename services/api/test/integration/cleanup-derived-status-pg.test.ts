@@ -2,14 +2,14 @@
  * Derived event status against a live PostGIS container (Docker-gated).
  *
  * The unit suite runs the TS twin (`deriveCleanupStatus`) through the in-memory repository; this file
- * runs the SQL half — `cleanupStatusExpr` and the `ends_at`-based filters — against a real database,
+ * runs the SQL half (`cleanupStatusExpr` and the `ends_at`-based filters) against a real database,
  * because a divergence between the two is invisible to CI otherwise. The four things only a real
  * database can show:
  *
  *   - 0168's NOT NULL: an insert without `ends_at` is rejected outright, so no row can ever reach the
  *     derivation without a right edge;
  *   - a row whose stored status is still the legacy 'upcoming' but whose `ends_at` has passed reads back
- *     as 'done' — the projection, not the column, is what a DTO carries;
+ *     as 'done': the projection, not the column, is what a DTO carries;
  *   - `cancelCleanupTx` refuses a past event with "already_ended" and writes NOTHING (the guard
  *     `status <> 'cancelled' AND ends_at > now()` is what keeps cancel from rewriting history);
  *   - the `when=upcoming` list filter keeps an UNDERWAY event and drops an ended one.
@@ -21,7 +21,7 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest"
 import { randomUUID } from "node:crypto"
 import { withPg, type PgHarness } from "../helpers/pg.js"
 import { makeDrizzleCleanupRepository } from "../../src/services/cleanup-repository.drizzle.js"
-import type { CleanupRepository } from "../../src/services/cleanup-repository.types.js"
+import type { CleanupRepository } from "../../src/services/cleanup-repository.js"
 
 const pg = await withPg()
 

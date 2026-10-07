@@ -5,7 +5,7 @@ import type { Mailer, OutboundEmail, SentMail } from "@civfix/shared/interfaces"
 import { InMemoryCacheClient } from "../../src/auth/cache.js"
 import { insightsGenerationKey } from "../../src/services/host/host-analytics-cache.js"
 import { InMemoryCounterStore } from "../../src/abuse/counter-store.js"
-import { InMemoryBroadcastRepository } from "../../src/services/host/broadcast-repository.memory.js"
+import { InMemoryBroadcastRepository } from "../helpers/host/broadcast-repository.memory.js"
 import {
   emailHashOf,
   makeBroadcastService,
@@ -60,15 +60,22 @@ const EVENT_CONTEXT: EventBroadcastContext = {
 
 function notificationsStub(
   fail: boolean | ((userIds: string[]) => boolean) = false,
+  failedRecipients: (userIds: string[]) => string[] = () => [],
 ): NotificationService & { calls: unknown[] } {
   const calls: unknown[] = []
   const fails = typeof fail === "function" ? fail : () => fail
+  const fanOut = (userIds: string[], input: unknown): Promise<{ failed: string[] }> => {
+    calls.push({ userIds, input })
+    return fails(userIds)
+      ? Promise.reject(new Error("fan-out down"))
+      : Promise.resolve({ failed: failedRecipients(userIds) })
+  }
   return {
     calls,
-    createNotifications: (userIds: string[], input: unknown) => {
-      calls.push({ userIds, input })
-      return fails(userIds) ? Promise.reject(new Error("fan-out down")) : Promise.resolve()
+    createNotifications: async (userIds: string[], input: unknown) => {
+      await fanOut(userIds, input)
     },
+    createNotificationsReportingFailures: fanOut,
   } as unknown as NotificationService & { calls: unknown[] }
 }
 
@@ -90,6 +97,7 @@ function harness(
     mailer?: Mailer
     members?: number
     notificationsFail?: boolean | ((userIds: string[]) => boolean)
+    notificationsFailedRecipients?: (userIds: string[]) => string[]
     clock?: () => number
   } = {},
 ): Harness {
@@ -105,7 +113,10 @@ function harness(
   const clock = overrides.clock ?? (() => Date.now())
   const cache = new InMemoryCacheClient(clock)
   const counters = new InMemoryCounterStore(clock)
-  const notifications = notificationsStub(overrides.notificationsFail ?? false)
+  const notifications = notificationsStub(
+    overrides.notificationsFail ?? false,
+    overrides.notificationsFailedRecipients,
+  )
   const chunks: Array<{ broadcastId: string; chunkNo: number; startAfterSec?: number }> = []
   const audits: Array<{ action: string; meta: Record<string, unknown> }> = []
   const config = { ...CONFIG, ...overrides.config }
@@ -179,13 +190,13 @@ describe("broadcast plan", () => {
 
     const markPlanned = h.repo.markPlanned.bind(h.repo)
     let crashed = false
-    h.repo.markPlanned = ((broadcastId: string, args: Parameters<typeof markPlanned>[1]) => {
+    h.repo.markPlanned = (broadcastId: string, args: Parameters<typeof markPlanned>[1]) => {
       if (!crashed) {
         crashed = true
         return Promise.reject(new Error("crashed between the last insert and markPlanned"))
       }
       return markPlanned(broadcastId, args)
-    }) as typeof h.repo.markPlanned
+    }
 
     await expect(h.pipeline.plan(id)).rejects.toThrow(/crashed/)
     expect(h.repo.allDeliveries().filter((d) => d.chunkNo === 2)).toHaveLength(1)
@@ -322,6 +333,7 @@ describe("broadcast chunk", () => {
       sendOutbound: (email: OutboundEmail): Promise<SentMail> => {
         if (failNext) {
           failNext = false
+          // eslint-disable-next-line @typescript-eslint/prefer-promise-reject-errors -- the classifier under test must handle nodemailer's SMTP-shaped rejection as given
           return Promise.reject({ responseCode: 451, response: "451 try later" })
         }
         return Promise.resolve({ messageId: email.messageId ?? "<x@civfix.org>" })
@@ -341,6 +353,7 @@ describe("broadcast chunk", () => {
     const alwaysFails: Mailer = {
       sendOtp: () => Promise.resolve(),
       sendTransactional: () => Promise.resolve(),
+      // eslint-disable-next-line @typescript-eslint/prefer-promise-reject-errors -- the classifier under test must handle nodemailer's SMTP-shaped rejection as given
       sendOutbound: () => Promise.reject({ responseCode: 451 }),
     }
     const h = harness({ members: 1, mailer: alwaysFails as unknown as FakeMailer })
@@ -356,6 +369,7 @@ describe("broadcast chunk", () => {
     const bounces: Mailer = {
       sendOtp: () => Promise.resolve(),
       sendTransactional: () => Promise.resolve(),
+      // eslint-disable-next-line @typescript-eslint/prefer-promise-reject-errors -- the classifier under test must handle nodemailer's SMTP-shaped rejection as given
       sendOutbound: () => Promise.reject({ responseCode: 550, response: "550 no such user" }),
     }
     const h = harness({ members: 1, mailer: bounces as unknown as FakeMailer })
@@ -377,6 +391,7 @@ describe("broadcast chunk", () => {
     const badAuth: Mailer = {
       sendOtp: () => Promise.resolve(),
       sendTransactional: () => Promise.resolve(),
+      // eslint-disable-next-line @typescript-eslint/prefer-promise-reject-errors -- the classifier under test must handle nodemailer's SMTP-shaped rejection as given
       sendOutbound: () => Promise.reject({ code: "EAUTH" }),
     }
     const h = harness({ members: 2, mailer: badAuth as unknown as FakeMailer })
@@ -392,6 +407,7 @@ describe("broadcast chunk", () => {
     const badAuth: Mailer = {
       sendOtp: () => Promise.resolve(),
       sendTransactional: () => Promise.resolve(),
+      // eslint-disable-next-line @typescript-eslint/prefer-promise-reject-errors -- the classifier under test must handle nodemailer's SMTP-shaped rejection as given
       sendOutbound: () => Promise.reject({ code: "EAUTH", response: "535 bad creds" }),
     }
     const h = harness({ members: 2, mailer: badAuth as unknown as FakeMailer })
@@ -415,14 +431,13 @@ describe("broadcast chunk", () => {
     const badAuth: Mailer = {
       sendOtp: () => Promise.resolve(),
       sendTransactional: () => Promise.resolve(),
+      // eslint-disable-next-line @typescript-eslint/prefer-promise-reject-errors -- the classifier under test must handle nodemailer's SMTP-shaped rejection as given
       sendOutbound: () => Promise.reject({ code: "EAUTH" }),
     }
     const h = harness({ members: 1, mailer: badAuth as unknown as FakeMailer })
     const id = await draftSending(h)
     await h.pipeline.plan(id)
-    await expect(
-      h.pipeline.runChunk(id, 0, AUTH_ABORT_BACKOFF_SEC.length),
-    ).rejects.toBeDefined()
+    await expect(h.pipeline.runChunk(id, 0, AUTH_ABORT_BACKOFF_SEC.length)).rejects.toBeDefined()
   })
 
   it("suppresses the remainder when the kill switch trips mid-send", async () => {
@@ -756,6 +771,32 @@ describe("broadcast in-app partial failure", () => {
     )
     expect(titles.filter((t) => t === "Hi Alex")).toHaveLength(1)
     expect(titles.filter((t) => t === "Hi Bo")).toHaveLength(2)
+  })
+})
+
+describe("broadcast in-app per-recipient failure", () => {
+  it("re-pends a recipient whose row the fan-out reported unwritten, and only that one", async () => {
+    const h = harness({
+      members: 0,
+      notificationsFailedRecipients: (userIds) => userIds.filter((id) => id === u(2)),
+    })
+    h.repo.seedMembers(EVENT, [
+      { userId: u(1), contact: { firstName: "Alex" } },
+      { userId: u(2), contact: { firstName: "Bo" } },
+    ])
+    const id = await draftSending(h, ["inapp"])
+    await h.pipeline.plan(id)
+    await h.pipeline.runChunk(id, 0)
+
+    const byUser = new Map(
+      h.repo
+        .allDeliveries()
+        .filter((d) => d.broadcastId === id)
+        .map((d) => [d.userId, d]),
+    )
+    expect(byUser.get(u(1))?.status).toBe("sent")
+    expect(byUser.get(u(2))?.status).toBe("pending")
+    expect((await h.repo.findById(id))?.status).toBe("sending")
   })
 })
 

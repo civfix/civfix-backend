@@ -1,7 +1,7 @@
 import type postgres from "postgres"
 import type { TransactionSql } from "../db/client.js"
 import { DEFAULT_EVENT_TIME_ZONE } from "./host/event-fields.js"
-import type { EventCreditChange, EventCreditWrite } from "./volunteer-hours-service.js"
+import type { EventCreditChange, EventCreditWrite } from "./volunteer-hours-repository.js"
 
 // Lock order is the 0065 rule shared by every volunteer_hours writer: the event lock, then the
 // user locks in sorted order, before any row is read or written.

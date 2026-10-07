@@ -1,15 +1,14 @@
-
 import { describe, it, expect, afterEach } from "vitest"
 import type { FastifyInstance } from "fastify"
 import { FakeMailer } from "@civfix/shared/fakes"
-import { buildServer } from "../../src/server.js"
+import { makeServer } from "../../src/server.js"
 import { loadEnv } from "../../src/env.js"
 import { InMemoryCacheClient, type CacheClient } from "../../src/auth/cache.js"
 import { makeInMemoryStores } from "../../src/auth/stores.js"
 import type { UserRecord, UserStore } from "../../src/auth/stores.js"
-import { buildAuthServices, type AuthServices } from "../../src/auth/auth-services.js"
+import { makeAuthServices, type AuthServices } from "../../src/auth/auth-services.js"
 import { OPERATOR_ALLOWLIST_TTL_SECONDS } from "../../src/auth/admin-guard.js"
-import { InMemoryModerationRepository } from "../../src/services/admin/moderation-repository.memory.js"
+import { InMemoryModerationRepository } from "../helpers/admin/moderation-repository.memory.js"
 
 const ALLOWED = "ops@civfix.org"
 const NOT_ALLOWED = "stranger@example.com"
@@ -45,7 +44,10 @@ class SpyUserStore implements UserStore {
   setRole(id: string, role: Parameters<UserStore["setRole"]>[1]): Promise<UserRecord> {
     return this.inner.setRole(id, role)
   }
-  updateSettings(id: string, input: Parameters<UserStore["updateSettings"]>[1]): Promise<UserRecord> {
+  updateSettings(
+    id: string,
+    input: Parameters<UserStore["updateSettings"]>[1],
+  ): Promise<UserRecord> {
     return this.inner.updateSettings(id, input)
   }
   softDeleteAndAnonymize(id: string): Promise<UserRecord> {
@@ -140,7 +142,7 @@ async function makeHarness(): Promise<Harness> {
   const inner = makeInMemoryStores()
   const users = new SpyUserStore(inner.users)
   const cache = new SpyCache(new InMemoryCacheClient(() => clock.ms))
-  const services = buildAuthServices({
+  const services = makeAuthServices({
     stores: { ...inner, users },
     cache,
     mailer: new FakeMailer(),
@@ -148,7 +150,7 @@ async function makeHarness(): Promise<Harness> {
     now: () => clock.ms,
   })
   const env = loadEnv({ NODE_ENV: "test", ADMIN_EMAILS: ALLOWED })
-  const app = await buildServer({
+  const app = await makeServer({
     env,
     authServices: services,
     moderationOverrides: { repo: new InMemoryModerationRepository() },
@@ -200,7 +202,11 @@ describe("operator allowlist verdict caching", () => {
     }
     expect(h.users.lookups).toBe(1)
     expect(h.cache.sets).toEqual([
-      { key: ALLOWLIST_KEY_PREFIX + userId, value: "1", ttlSeconds: OPERATOR_ALLOWLIST_TTL_SECONDS },
+      {
+        key: ALLOWLIST_KEY_PREFIX + userId,
+        value: "1",
+        ttlSeconds: OPERATOR_ALLOWLIST_TTL_SECONDS,
+      },
     ])
   })
 
@@ -215,7 +221,11 @@ describe("operator allowlist verdict caching", () => {
     }
     expect(h.users.lookups).toBe(1)
     expect(h.cache.sets).toEqual([
-      { key: ALLOWLIST_KEY_PREFIX + userId, value: "0", ttlSeconds: OPERATOR_ALLOWLIST_TTL_SECONDS },
+      {
+        key: ALLOWLIST_KEY_PREFIX + userId,
+        value: "0",
+        ttlSeconds: OPERATOR_ALLOWLIST_TTL_SECONDS,
+      },
     ])
   })
 
@@ -316,7 +326,11 @@ describe("fail-closed", () => {
     const { userId, token } = await h.operator(null)
     expect((await get(h, token)).statusCode).toBe(403)
     expect(h.cache.sets).toEqual([
-      { key: ALLOWLIST_KEY_PREFIX + userId, value: "0", ttlSeconds: OPERATOR_ALLOWLIST_TTL_SECONDS },
+      {
+        key: ALLOWLIST_KEY_PREFIX + userId,
+        value: "0",
+        ttlSeconds: OPERATOR_ALLOWLIST_TTL_SECONDS,
+      },
     ])
   })
 
@@ -329,9 +343,9 @@ describe("fail-closed", () => {
 
   it("never consults the allowlist cache for an anonymous or citizen caller", async () => {
     const h = await makeHarness()
-    expect(
-      (await h.app.inject({ method: "GET", url: "/v1/admin/moderation" })).statusCode,
-    ).toBe(401)
+    expect((await h.app.inject({ method: "GET", url: "/v1/admin/moderation" })).statusCode).toBe(
+      401,
+    )
 
     const inner = await h.services.sessions.createSession(
       (await h.services.users.create("citizen@example.com", { displayName: "C" })).id,

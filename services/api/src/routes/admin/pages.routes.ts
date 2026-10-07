@@ -8,38 +8,36 @@ import {
   type AdminEventPageListResponse,
   type AdminGetEventPageResponse,
 } from "@civfix/shared"
-import type { FastifyInstance, FastifyRequest } from "fastify"
+import type { FastifyInstance } from "fastify"
 import type { Container } from "../../di.js"
 import { requireAuth } from "../../auth/context.js"
 import { route } from "../../versioning/route.js"
-import { parse } from "../_validate.js"
-import { writeAudit } from "../../services/admin/audit.js"
-import { encodeTimeCursor, parseTimeCursor } from "../../db/cursor-helpers.js"
-import {
-  makeDrizzleAdminEventPageRepository,
-  type AdminEventPageRepository,
-  type AdminEventPageRow,
-} from "../../services/host/admin-pages-repository.drizzle.js"
+import { parse, paramsOverBody } from "../_validate.js"
+import type { WriteAuditInput } from "../../services/admin/audit.js"
+import { insertAuditRow } from "../../services/admin/audit-repository.drizzle.js"
+import { paginateKeyset, parseKeysetCursor } from "../../db/cursor-helpers.js"
+import { makeDrizzleAdminEventPageRepository } from "../../services/host/admin-pages-repository.drizzle.js"
+import type {
+  AdminEventPageRepository,
+  AdminEventPageRow,
+} from "../../services/host/admin-pages-repository.js"
 import { makeDrizzleHostRegistrationRepository } from "../../services/host/registration-repository.drizzle.js"
 import { toEventPageDTO } from "../../services/host/registration-dto.js"
 import { makeEventMediaPresigner } from "../../services/host/event-media.js"
 
-export const ADMIN_EVENT_PAGE_DEFAULT_LIMIT = 50
+const ADMIN_EVENT_PAGE_DEFAULT_LIMIT = 50
+
+type RecordAudit = (entry: WriteAuditInput) => Promise<unknown>
 
 export interface AdminEventPageOverrides {
   repo: AdminEventPageRepository
+  audit?: RecordAudit
 }
 
 declare module "fastify" {
   interface FastifyInstance {
     adminEventPageOverrides?: AdminEventPageOverrides
   }
-}
-
-function mergeParams(request: FastifyRequest): Record<string, unknown> {
-  const params = (request.params ?? {}) as Record<string, unknown>
-  const body = (request.body ?? {}) as Record<string, unknown>
-  return { ...body, ...params }
 }
 
 function toDTO(row: AdminEventPageRow): AdminEventPageListItemDTO {
@@ -83,27 +81,38 @@ export async function registerAdminEventPageRoutes(
   const repo = (): AdminEventPageRepository =>
     app.adminEventPageOverrides?.repo ?? makeDrizzleAdminEventPageRepository(container.getDb().sql)
 
+  /**
+   * A moderation effect and its audit row commit together: a failed audit rolls the flag or unpublish
+   * back instead of leaving an operator action applied with no record of who took it.
+   */
+  function moderate<T>(
+    fn: (pages: AdminEventPageRepository, recordAudit: RecordAudit) => Promise<T>,
+  ): Promise<T> {
+    const overrides = app.adminEventPageOverrides
+    if (overrides) return fn(overrides.repo, overrides.audit ?? (() => Promise.resolve()))
+    return container
+      .getDb()
+      .sql.begin((tx) =>
+        fn(makeDrizzleAdminEventPageRepository(tx), (entry) => insertAuditRow(tx, entry)),
+      ) as Promise<T>
+  }
+
   route(app, "adminListEventPages", async (request, reply) => {
     requireAuth(request)
     const query = parse(AdminEventPageListQuerySchema, request.query)
     const limit = query.limit ?? ADMIN_EVENT_PAGE_DEFAULT_LIMIT
-    const cursor = parseTimeCursor(query.cursor, { direction: "desc" })
     const rows = await repo().list({
       ...(query.q !== undefined ? { q: query.q } : {}),
       ...(query.status !== undefined ? { status: query.status } : {}),
       ...(query.flagged !== undefined ? { flagged: query.flagged } : {}),
-      cursor: cursor === null ? null : { at: cursor.at, id: cursor.id },
+      cursor: parseKeysetCursor(query.cursor, { direction: "desc" }),
       limit: limit + 1,
     })
-    const page = rows.slice(0, limit)
-    const last = page.at(-1)
-    const payload: AdminEventPageListResponse = {
-      items: page.map(toDTO),
-      nextCursor:
-        rows.length > limit && last !== undefined
-          ? encodeTimeCursor({ at: last.sortAt, id: last.pageId })
-          : null,
-    }
+    const { items, nextCursor } = paginateKeyset(rows, limit, (row) => ({
+      atText: row.cursorAt,
+      id: row.pageId,
+    }))
+    const payload: AdminEventPageListResponse = { items: items.map(toDTO), nextCursor }
     reply.status(200).send(payload)
   })
 
@@ -122,33 +131,41 @@ export async function registerAdminEventPageRoutes(
 
   route(app, "adminFlagEventPage", { preHandler: csrfProtect }, async (request, reply) => {
     const operatorId = requireAuth(request)
-    const body = parse(FlagEventPageRequestSchema, mergeParams(request))
-    const row = await repo().setFlagged(body.id, {
-      flagged: body.flagged,
-      reason: body.reason ?? null,
-      operatorId,
+    const body = parse(FlagEventPageRequestSchema, paramsOverBody(request))
+    const row = await moderate(async (pages, recordAudit) => {
+      const flagged = await pages.setFlagged(body.id, {
+        flagged: body.flagged,
+        reason: body.reason ?? null,
+        operatorId,
+      })
+      if (flagged === null) return null
+      await recordAudit({
+        action: body.flagged ? "event_page.flagged" : "event_page.unflagged",
+        actorId: operatorId,
+        target: `cleanup:${body.id}`,
+        meta: { reason: body.reason ?? null },
+      })
+      return flagged
     })
     if (row === null) throw AppError.notFound("Signup page not found.")
-    await writeAudit(container.getDb().sql, {
-      action: body.flagged ? "event_page.flagged" : "event_page.unflagged",
-      actorId: operatorId,
-      target: `cleanup:${body.id}`,
-      meta: { reason: body.reason ?? null },
-    })
     reply.status(200).send(toDTO(row))
   })
 
   route(app, "adminUnpublishEventPage", { preHandler: csrfProtect }, async (request, reply) => {
     const operatorId = requireAuth(request)
-    const body = parse(UnpublishEventPageRequestSchema, mergeParams(request))
-    const row = await repo().unpublish(body.id)
-    if (row === null) throw AppError.notFound("Signup page not found.")
-    await writeAudit(container.getDb().sql, {
-      action: "event_page.unpublished",
-      actorId: operatorId,
-      target: `cleanup:${body.id}`,
-      meta: { reason: body.reason },
+    const body = parse(UnpublishEventPageRequestSchema, paramsOverBody(request))
+    const row = await moderate(async (pages, recordAudit) => {
+      const unpublished = await pages.unpublish(body.id)
+      if (unpublished === null) return null
+      await recordAudit({
+        action: "event_page.unpublished",
+        actorId: operatorId,
+        target: `cleanup:${body.id}`,
+        meta: { reason: body.reason },
+      })
+      return unpublished
     })
+    if (row === null) throw AppError.notFound("Signup page not found.")
     reply.status(200).send(toDTO(row))
   })
 }

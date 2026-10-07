@@ -5,7 +5,7 @@ import type {
   CleanupPersonView,
   CleanupRecord,
   NearPoint,
-} from "./cleanup-repository.types.js"
+} from "./cleanup-repository.js"
 import type {
   CleanupMemberRole,
   CleanupStatus,
@@ -16,7 +16,7 @@ import type {
   OrgVerificationKind,
   OrgVerificationStatus,
 } from "@civfix/shared"
-import { servedKeyExpr } from "./media-served-key.js"
+import { publicServedKeyExpr } from "./media-served-key.js"
 
 export function cleanupStatusExpr(sql: Queryable) {
   return sql`CASE
@@ -186,7 +186,7 @@ export function cleanupColumns(sql: Queryable, near: NearPoint | null) {
     c.timezone,
     c.visibility,
     c.cover_media_id,
-    ${servedKeyExpr(sql, "ma")} AS cover_key,
+    ${publicServedKeyExpr(sql, "ma")} AS cover_key,
     c.gallery_media_ids,
     c.donation_url,
     c.page_slug,
@@ -198,7 +198,7 @@ export function cleanupColumns(sql: Queryable, near: NearPoint | null) {
     c.host_reply_to_verified_at,
     o.slug AS organization_slug,
     o.name AS organization_name,
-    ${servedKeyExpr(sql, "am")} AS organization_logo_key,
+    ${publicServedKeyExpr(sql, "am")} AS organization_logo_key,
     o.donation_url AS organization_donation_url,
     o.verified_status AS organization_verified_status,
     o.verified_kind AS organization_verified_kind,
@@ -214,11 +214,11 @@ export function cleanupColumns(sql: Queryable, near: NearPoint | null) {
   `
 }
 
-export function memberCountScalar(sql: Queryable) {
+function memberCountScalar(sql: Queryable) {
   return sql`(SELECT count(*)::int FROM cleanup_members m WHERE m.cleanup_id = c.id)`
 }
 
-export function activeGuestCountScalar(sql: Queryable) {
+function activeGuestCountScalar(sql: Queryable) {
   return sql`(
     SELECT count(*)::int FROM cleanup_guests cg
     WHERE cg.cleanup_id = c.id AND cg.cancelled_at IS NULL
@@ -247,8 +247,7 @@ export function goingJoin(sql: Queryable) {
 export function buildWhenFilter(sql: Sql, when: "upcoming" | "past" | "attending" | undefined) {
   if (when === "upcoming" || when === "attending")
     return sql`AND c.status <> 'cancelled' AND c.ends_at > now()`
-  if (when === "past")
-    return sql`AND c.status <> 'cancelled' AND c.ends_at <= now()`
+  if (when === "past") return sql`AND c.status <> 'cancelled' AND c.ends_at <= now()`
   return sql`AND c.status <> 'cancelled'`
 }
 

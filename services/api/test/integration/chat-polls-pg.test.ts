@@ -1,9 +1,9 @@
 /**
- * P6 Tasks 6.3/6.4 integration test (Docker-gated): poll CREATE / VOTE / CLOSE + hydration, against a
+ * Integration test (Docker-gated): poll CREATE / VOTE / CLOSE + hydration, against a
  * live PostGIS container (via withPg).
  *
  *   A poll is a chat_messages row (kind='poll', body=question) plus the chat_polls trio. The three REST
- *   routes ride the unified /messages plugin (buildServer + chatOverrides on real repos; the container's
+ *   routes ride the unified /messages plugin (makeServer + chatOverrides on real repos; the container's
  *   FakeChatService captures broadcasts via joinRoom'd MockConnections):
  *
  *   CREATE (POST /messages/poll):
@@ -32,12 +32,12 @@ import { WsServerMessageSchema } from "@civfix/shared"
 import { FakeMailer, FakePushSender } from "@civfix/shared/fakes"
 import { withPg, type PgHarness, testHandle } from "../helpers/pg.js"
 import { seedCleanup } from "../helpers/cleanups.js"
-import { buildServer } from "../../src/server.js"
-import { buildContainer, type Container } from "../../src/di.js"
+import { makeServer } from "../../src/server.js"
+import { makeContainer, type Container } from "../../src/di.js"
 import { loadEnv } from "../../src/env.js"
 import { InMemoryCacheClient } from "../../src/auth/cache.js"
 import { makeInMemoryStores } from "../../src/auth/stores.js"
-import { buildAuthServices, type AuthServices } from "../../src/auth/auth-services.js"
+import { makeAuthServices, type AuthServices } from "../../src/auth/auth-services.js"
 import { StubJwksVerifier } from "../helpers/auth.js"
 import { InMemoryThreadsRepository, MockConnection } from "../helpers/chat.js"
 import type { ChatGatewayOverrides } from "../../src/routes/chat.routes.js"
@@ -50,7 +50,7 @@ import { makeReportChatRepository } from "../../src/services/report-chat-reposit
 import { makeChatGroupRepository } from "../../src/services/chat-group-repository.drizzle.js"
 import { makeChatPollRepository } from "../../src/services/chat-poll-repository.drizzle.js"
 import { makeChatPowersResolver } from "../../src/services/chat-room-roles.js"
-import { globalRoleOf } from "../../src/routes/chat-powers-wiring.js"
+import { chatAuthorityRoleOf } from "../../src/routes/chat-powers-wiring.js"
 import { makeConversationMutesRepository } from "../../src/services/conversation-mutes-repository.drizzle.js"
 import { makeContainerPollNotifier } from "../../src/services/chat-poll-notifier.js"
 import { makeChatPollService } from "../../src/services/chat-poll-service.js"
@@ -66,7 +66,7 @@ describe.skipIf(!pg)("chat polls: create / vote / close + hydration (integration
   beforeAll(async () => {
     h = pg as PgHarness
     const env = loadEnv({ NODE_ENV: "test" })
-    authServices = buildAuthServices({
+    authServices = makeAuthServices({
       stores: makeInMemoryStores(),
       cache: new InMemoryCacheClient(() => Date.now()),
       mailer: new FakeMailer(),
@@ -79,12 +79,12 @@ describe.skipIf(!pg)("chat polls: create / vote / close + hydration (integration
     const reportChat = makeReportChatRepository(h.sql)
     const groups = makeChatGroupRepository(h.sql)
     // Real chat-powers resolver over the DB (the offline override branch fails cleanup/global roles
-    // closed, which would 403 the cleanup-organizer close test — inject the real one instead).
+    // closed, which would 403 the cleanup-organizer close test, so inject the real one instead).
     const chatPowers = makeChatPowersResolver({
       isDmParticipant: (t, u) => dmRepo.isParticipant(t, u),
       cleanupRoleOf: (c, u) => cleanups.roleOf(c, u),
       reportChatRoleOf: (r, u) => reportChat.roleOf(r, u),
-      globalRoleOf: (u) => globalRoleOf(h.sql, u),
+      globalRoleOf: (u) => chatAuthorityRoleOf(h.sql, env, u),
       groupRoleOf: (g, u) => groups.roleOf(g, u),
     })
     const overrides: ChatGatewayOverrides = {
@@ -98,8 +98,8 @@ describe.skipIf(!pg)("chat polls: create / vote / close + hydration (integration
       chatPolls: makeChatPollRepository(h.sql),
       chatPowers,
     }
-    container = buildContainer(env)
-    app = await buildServer({ env, container, authServices, chatOverrides: overrides })
+    container = makeContainer(env)
+    app = await makeServer({ env, container, authServices, chatOverrides: overrides })
   })
 
   afterAll(async () => {
@@ -183,15 +183,17 @@ describe.skipIf(!pg)("chat polls: create / vote / close + hydration (integration
     })
   }
 
-  const createPollBody = (roomKind: string, roomId: string, extra: Record<string, unknown> = {}) => ({
+  const createPollBody = (
+    roomKind: string,
+    roomId: string,
+    extra: Record<string, unknown> = {},
+  ) => ({
     roomKind,
     roomId,
     question: "Best day?",
     options: ["Sat", "Sun"],
     ...extra,
   })
-
-  // -- CREATE -----------------------------------------------------------------
 
   it("create in a group by a member 200; the poll rides the response + the broadcast message frame", async () => {
     const ownerId = await newUser("Poll Owner")
@@ -247,11 +249,21 @@ describe.skipIf(!pg)("chat polls: create / vote / close + hydration (integration
       ],
     })
 
-    const denied = await inject(await token(memberId), "POST", "/v1/messages/poll", createPollBody("group", channelId))
+    const denied = await inject(
+      await token(memberId),
+      "POST",
+      "/v1/messages/poll",
+      createPollBody("group", channelId),
+    )
     expect(denied.statusCode).toBe(403)
     expect(denied.json().fields).toMatchObject({ code: "poll_forbidden" })
 
-    const ok = await inject(await token(adminId), "POST", "/v1/messages/poll", createPollBody("group", channelId))
+    const ok = await inject(
+      await token(adminId),
+      "POST",
+      "/v1/messages/poll",
+      createPollBody("group", channelId),
+    )
     expect(ok.statusCode).toBe(200)
     expect(ok.json().kind).toBe("poll")
   })
@@ -261,7 +273,12 @@ describe.skipIf(!pg)("chat polls: create / vote / close + hydration (integration
     const memberId = await newUser("Cl Poll Member")
     const cleanupId = await newCleanup(organizerId, [memberId])
 
-    const res = await inject(await token(memberId), "POST", "/v1/messages/poll", createPollBody("cleanup", cleanupId))
+    const res = await inject(
+      await token(memberId),
+      "POST",
+      "/v1/messages/poll",
+      createPollBody("cleanup", cleanupId),
+    )
     expect(res.statusCode).toBe(200)
     expect(res.json().poll.options).toHaveLength(2)
   })
@@ -313,24 +330,38 @@ describe.skipIf(!pg)("chat polls: create / vote / close + hydration (integration
     const strangerId = await newUser("Rep Poll Stranger")
     const reportId = await newReport()
 
-    const res = await inject(await token(strangerId), "POST", "/v1/messages/poll", createPollBody("report", reportId))
+    const res = await inject(
+      await token(strangerId),
+      "POST",
+      "/v1/messages/poll",
+      createPollBody("report", reportId),
+    )
     expect(res.statusCode).toBe(403)
     expect(res.json().fields).toMatchObject({ code: "poll_forbidden" })
   })
-
-  // -- HYDRATION --------------------------------------------------------------
 
   it("history hydrates counts + myVote + totalVoters", async () => {
     const ownerId = await newUser("Hydr Owner")
     const bId = await newUser("Hydr B")
     const groupId = await newGroup(ownerId, { members: [{ id: bId }] })
 
-    const created = await inject(await token(ownerId), "POST", "/v1/messages/poll", createPollBody("group", groupId))
+    const created = await inject(
+      await token(ownerId),
+      "POST",
+      "/v1/messages/poll",
+      createPollBody("group", groupId),
+    )
     const pollId = created.json().id
 
     // Owner votes idx 0, B votes idx 1.
-    await inject(await token(ownerId), "PUT", "/v1/messages/poll/vote", { messageId: pollId, optionIdxs: [0] })
-    await inject(await token(bId), "PUT", "/v1/messages/poll/vote", { messageId: pollId, optionIdxs: [1] })
+    await inject(await token(ownerId), "PUT", "/v1/messages/poll/vote", {
+      messageId: pollId,
+      optionIdxs: [0],
+    })
+    await inject(await token(bId), "PUT", "/v1/messages/poll/vote", {
+      messageId: pollId,
+      optionIdxs: [1],
+    })
 
     // History as the owner: counts reflect both votes, myVote is the owner's, totalVoters distinct = 2.
     const hist = await inject(await token(ownerId), "GET", `/v1/groups/${groupId}/messages`)
@@ -344,8 +375,6 @@ describe.skipIf(!pg)("chat polls: create / vote / close + hydration (integration
     ])
   })
 
-  // -- VOTE -------------------------------------------------------------------
-
   it("vote -> switch -> retract adjusts counts; totalVoters stays distinct on a multi-ballot", async () => {
     const ownerId = await newUser("Vote Owner")
     const groupId = await newGroup(ownerId, {})
@@ -357,14 +386,19 @@ describe.skipIf(!pg)("chat polls: create / vote / close + hydration (integration
     )
     const pollId = created.json().id
 
-    // Vote A(0).
-    const a = await inject(await token(ownerId), "PUT", "/v1/messages/poll/vote", { messageId: pollId, optionIdxs: [0] })
+    const a = await inject(await token(ownerId), "PUT", "/v1/messages/poll/vote", {
+      messageId: pollId,
+      optionIdxs: [0],
+    })
     expect(a.statusCode).toBe(200)
     expect(a.json().poll.options.map((o: { count: number }) => o.count)).toEqual([1, 0])
     expect(a.json().poll.myVote).toEqual([0])
 
     // Switch A->B: A decrements, B increments.
-    const b = await inject(await token(ownerId), "PUT", "/v1/messages/poll/vote", { messageId: pollId, optionIdxs: [1] })
+    const b = await inject(await token(ownerId), "PUT", "/v1/messages/poll/vote", {
+      messageId: pollId,
+      optionIdxs: [1],
+    })
     expect(b.json().poll.options.map((o: { count: number }) => o.count)).toEqual([0, 1])
     expect(b.json().poll.myVote).toEqual([1])
 
@@ -406,22 +440,24 @@ describe.skipIf(!pg)("chat polls: create / vote / close + hydration (integration
       optionIdxs: [0],
     })
     expect(voted.statusCode).toBe(200)
-    // The voter's OWN response stays viewer-aware — that half must not regress either.
+    // The voter's OWN response stays viewer-aware; that half must not regress either.
     expect(voted.json().poll.myVote).toEqual([0])
     expect(voted.json().poll.options[0].mine).toBe(true)
 
     await flush()
-    type Framed = { message: { poll: { myVote: number[]; options: Array<{ count: number; mine: boolean }> } } }
+    type Framed = {
+      message: { poll: { myVote: number[]; options: Array<{ count: number; mine: boolean }> } }
+    }
     const voteFrame = watcher.framesOfType("message_update")[0]!
     const afterVote = (voteFrame as Framed).message.poll
-    // Tallies still ride the frame (the room needs them); the BALLOT does not — for an anonymous poll the
+    // Tallies still ride the frame (the room needs them); the BALLOT does not: for an anonymous poll the
     // voter's exact choices would otherwise be broadcast to every member, and clients reconciling the frame
     // in place would overwrite their own myVote with the voter's.
     expect(afterVote.options.map((o) => o.count)).toEqual([1, 0])
     expect(afterVote.myVote).toEqual([])
     expect(afterVote.options.every((o) => o.mine === false)).toBe(true)
     // WHY THE NEUTRAL VALUES ARE ASSERTED RATHER THAN OMITTED. A reviewer's instinct here is "don't send
-    // myVote/mine at all, then a merging client keeps its own" — and that is indeed the real fix, but it
+    // myVote/mine at all, then a merging client keeps its own", and that is indeed the real fix, but it
     // CANNOT be done from the server alone: PollDTOSchema requires both fields, and the clients parse every
     // inbound frame with WsServerMessageSchema and discard the whole frame on a miss (ui
     // chatSocketCore.handleRawFrame), so an omitted field would silently kill live vote counts and the
@@ -457,7 +493,7 @@ describe.skipIf(!pg)("chat polls: create / vote / close + hydration (integration
     )
     const pollId = created.json().id
 
-    // Schema-valid repeat idx: must NOT 500 on the votes PK — dedupe to a single ballot row.
+    // Schema-valid repeat idx: must NOT 500 on the votes PK; dedupe to a single ballot row.
     const res = await inject(await token(ownerId), "PUT", "/v1/messages/poll/vote", {
       messageId: pollId,
       optionIdxs: [0, 0],
@@ -474,7 +510,12 @@ describe.skipIf(!pg)("chat polls: create / vote / close + hydration (integration
   it("a multi-idx ballot on a single-choice poll 422s; an unknown idx 422s", async () => {
     const ownerId = await newUser("Val Owner")
     const groupId = await newGroup(ownerId, {})
-    const created = await inject(await token(ownerId), "POST", "/v1/messages/poll", createPollBody("group", groupId))
+    const created = await inject(
+      await token(ownerId),
+      "POST",
+      "/v1/messages/poll",
+      createPollBody("group", groupId),
+    )
     const pollId = created.json().id
 
     const multi = await inject(await token(ownerId), "PUT", "/v1/messages/poll/vote", {
@@ -494,12 +535,22 @@ describe.skipIf(!pg)("chat polls: create / vote / close + hydration (integration
   it("voting on a CLOSED poll 409s (poll_closed)", async () => {
     const ownerId = await newUser("Closed Owner")
     const groupId = await newGroup(ownerId, {})
-    const created = await inject(await token(ownerId), "POST", "/v1/messages/poll", createPollBody("group", groupId))
+    const created = await inject(
+      await token(ownerId),
+      "POST",
+      "/v1/messages/poll",
+      createPollBody("group", groupId),
+    )
     const pollId = created.json().id
-    const closed = await inject(await token(ownerId), "POST", "/v1/messages/poll/close", { messageId: pollId })
+    const closed = await inject(await token(ownerId), "POST", "/v1/messages/poll/close", {
+      messageId: pollId,
+    })
     expect(closed.statusCode).toBe(200)
 
-    const vote = await inject(await token(ownerId), "PUT", "/v1/messages/poll/vote", { messageId: pollId, optionIdxs: [0] })
+    const vote = await inject(await token(ownerId), "PUT", "/v1/messages/poll/vote", {
+      messageId: pollId,
+      optionIdxs: [0],
+    })
     expect(vote.statusCode).toBe(409)
     expect(vote.json().fields).toMatchObject({ code: "poll_closed" })
   })
@@ -513,38 +564,56 @@ describe.skipIf(!pg)("chat polls: create / vote / close + hydration (integration
       visibility: "public",
       members: [{ id: readerId, role: "member" }],
     })
-    const created = await inject(await token(ownerId), "POST", "/v1/messages/poll", createPollBody("group", channelId))
+    const created = await inject(
+      await token(ownerId),
+      "POST",
+      "/v1/messages/poll",
+      createPollBody("group", channelId),
+    )
     const pollId = created.json().id
 
     // A read-only channel member can't POST but CAN vote (membership suffices).
-    const reader = await inject(await token(readerId), "PUT", "/v1/messages/poll/vote", { messageId: pollId, optionIdxs: [0] })
+    const reader = await inject(await token(readerId), "PUT", "/v1/messages/poll/vote", {
+      messageId: pollId,
+      optionIdxs: [0],
+    })
     expect(reader.statusCode).toBe(200)
     expect(reader.json().poll.options[0].count).toBe(1)
 
     // A public non-member reader is NOT a member -> can't vote.
-    const stranger = await inject(await token(strangerId), "PUT", "/v1/messages/poll/vote", { messageId: pollId, optionIdxs: [1] })
+    const stranger = await inject(await token(strangerId), "PUT", "/v1/messages/poll/vote", {
+      messageId: pollId,
+      optionIdxs: [1],
+    })
     expect(stranger.statusCode).toBe(403)
     expect(stranger.json().fields).toMatchObject({ code: "poll_not_member" })
   })
-
-  // -- CLOSE ------------------------------------------------------------------
 
   it("close by the author 200s + broadcasts message_update; a plain member 403s", async () => {
     const ownerId = await newUser("Close Owner")
     const memberId = await newUser("Close Member")
     const groupId = await newGroup(ownerId, { members: [{ id: memberId }] })
-    const created = await inject(await token(ownerId), "POST", "/v1/messages/poll", createPollBody("group", groupId))
+    const created = await inject(
+      await token(ownerId),
+      "POST",
+      "/v1/messages/poll",
+      createPollBody("group", groupId),
+    )
     const pollId = created.json().id
 
     // A plain member (not author, not moderator) can't close.
-    const denied = await inject(await token(memberId), "POST", "/v1/messages/poll/close", { messageId: pollId })
+    const denied = await inject(await token(memberId), "POST", "/v1/messages/poll/close", {
+      messageId: pollId,
+    })
     expect(denied.statusCode).toBe(403)
     expect(denied.json().fields).toMatchObject({ code: "poll_close_forbidden" })
 
     const watcher = new MockConnection("close-watcher")
     await container.chatService.joinRoom(roomKeyFor("group", groupId), watcher, ownerId)
 
-    const closed = await inject(await token(ownerId), "POST", "/v1/messages/poll/close", { messageId: pollId })
+    const closed = await inject(await token(ownerId), "POST", "/v1/messages/poll/close", {
+      messageId: pollId,
+    })
     expect(closed.statusCode).toBe(200)
     expect(closed.json().poll.closed).toBe(true)
 
@@ -564,10 +633,17 @@ describe.skipIf(!pg)("chat polls: create / vote / close + hydration (integration
     const memberId = await newUser("Cl Close Member")
     const cleanupId = await newCleanup(organizerId, [memberId])
     // Poll authored by the plain member; the organizer closes it as a moderator.
-    const created = await inject(await token(memberId), "POST", "/v1/messages/poll", createPollBody("cleanup", cleanupId))
+    const created = await inject(
+      await token(memberId),
+      "POST",
+      "/v1/messages/poll",
+      createPollBody("cleanup", cleanupId),
+    )
     const pollId = created.json().id
 
-    const closed = await inject(await token(organizerId), "POST", "/v1/messages/poll/close", { messageId: pollId })
+    const closed = await inject(await token(organizerId), "POST", "/v1/messages/poll/close", {
+      messageId: pollId,
+    })
     expect(closed.statusCode).toBe(200)
     expect(closed.json().poll.closed).toBe(true)
 
@@ -575,7 +651,9 @@ describe.skipIf(!pg)("chat polls: create / vote / close + hydration (integration
       SELECT closed_at FROM chat_polls WHERE message_id = ${pollId}
     `
     // Re-close is idempotent: still 200, closed_at unchanged.
-    const again = await inject(await token(organizerId), "POST", "/v1/messages/poll/close", { messageId: pollId })
+    const again = await inject(await token(organizerId), "POST", "/v1/messages/poll/close", {
+      messageId: pollId,
+    })
     expect(again.statusCode).toBe(200)
     const [secondClose] = await h.sql<{ closed_at: Date }[]>`
       SELECT closed_at FROM chat_polls WHERE message_id = ${pollId}
@@ -591,23 +669,33 @@ describe.skipIf(!pg)("chat polls: create / vote / close + hydration (integration
     await reportChat.join(reportId, reportOwnerId, "owner")
     await reportChat.join(reportId, memberId, "member")
 
-    // Poll authored by the plain member; the report chat OWNER closes it — isModerator is true for a
+    // Poll authored by the plain member; the report chat OWNER closes it: isModerator is true for a
     // report owner (canPin), so close succeeds even though they hold no canDeleteOthers power.
-    const created = await inject(await token(memberId), "POST", "/v1/messages/poll", createPollBody("report", reportId))
+    const created = await inject(
+      await token(memberId),
+      "POST",
+      "/v1/messages/poll",
+      createPollBody("report", reportId),
+    )
     expect(created.statusCode).toBe(200)
     const pollId = created.json().id
 
-    const closed = await inject(await token(reportOwnerId), "POST", "/v1/messages/poll/close", { messageId: pollId })
+    const closed = await inject(await token(reportOwnerId), "POST", "/v1/messages/poll/close", {
+      messageId: pollId,
+    })
     expect(closed.statusCode).toBe(200)
     expect(closed.json().poll.closed).toBe(true)
   })
 
-  // -- TOMBSTONE --------------------------------------------------------------
-
   it("a deleted poll hydrates as a plain tombstone with NO poll field", async () => {
     const ownerId = await newUser("Tomb Owner")
     const groupId = await newGroup(ownerId, {})
-    const created = await inject(await token(ownerId), "POST", "/v1/messages/poll", createPollBody("group", groupId))
+    const created = await inject(
+      await token(ownerId),
+      "POST",
+      "/v1/messages/poll",
+      createPollBody("group", groupId),
+    )
     const pollId = created.json().id
 
     // Tombstone the poll message (sender-only soft delete).
@@ -626,12 +714,10 @@ describe.skipIf(!pg)("chat polls: create / vote / close + hydration (integration
     expect(tombstone!.poll).toBeUndefined()
   })
 
-  // -- FAN-OUT (createPoll -> member bells) -----------------------------------
-  //
   // The bells the poll route raises come from makeContainerPollNotifier, which builds its report/group
   // lane notifiers out of container primitives and is a NO-OP under USE_FAKE_CHAT (true in the test env,
   // hence a no-op for the app above). Here it is constructed for real over the HARNESS pool, so createPoll
-  // writes actual `notifications` rows through the actual Drizzle notification repo — and, crucially, the
+  // writes actual `notifications` rows through the actual Drizzle notification repo and, crucially, the
   // mute and block gates run as their REAL SQL (conversation_mutes.mutedUserIdsFor and user_blocks), which
   // no unit test can reach.
   describe("createPoll member fan-out (real notifier over pg)", () => {
@@ -667,7 +753,7 @@ describe.skipIf(!pg)("chat polls: create / vote / close + hydration (integration
     /**
      * The fan-out is fire-and-forget behind createPoll's return AND every gate in it is a real round trip,
      * so there is no promise to await. Wait for the EXPECTED bell to land (proof the whole recipient batch
-     * ran — they are dispatched together, after the block/mute verdicts for the full set are resolved),
+     * ran, since they are dispatched together, after the block/mute verdicts for the full set are resolved),
      * then give the losers of the same batch a real-time grace window before asserting they got nothing.
      */
     const waitForBell = async (userId: string): Promise<void> => {

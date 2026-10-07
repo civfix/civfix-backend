@@ -12,7 +12,7 @@
 -- different role. sort_order is presentational ONLY; identity is the uuid.
 --
 -- WHY cleanup_slot_claims IS KEYED (cleanup_id, user_id): that composite PK IS
--- the v1 product rule "one slot per person per event" — enforced by the schema,
+-- the v1 product rule "one slot per person per event", enforced by the schema,
 -- not by application code, so a concurrent double-claim is a constraint conflict
 -- rather than a race. Re-claiming is an ON CONFLICT DO UPDATE (a MOVE), never a
 -- duplicate row. Same PK shape as cleanup_members, deliberately.
@@ -58,7 +58,7 @@
 --
 -- Conventions: timestamptz, additive IF NOT EXISTS so a partial or repeat apply
 -- is safe; src/db/migrate.ts wraps each file in ONE transaction (so no
--- CREATE INDEX CONCURRENTLY here). Forward-only — no down migration.
+-- CREATE INDEX CONCURRENTLY here). Forward-only, no down migration.
 --
 -- Ordering rules: requires 0001_core.sql (users, cleanups, cleanup_members).
 -- =============================================================================

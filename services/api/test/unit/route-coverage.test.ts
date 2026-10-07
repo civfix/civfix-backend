@@ -1,15 +1,14 @@
-
 import { describe, it, expect, beforeAll, afterAll } from "vitest"
 import { randomUUID } from "node:crypto"
 import type { FastifyInstance, InjectOptions } from "fastify"
 import { FakeAbuseChecks, FakeMailer } from "@civfix/shared/fakes"
 import { endpoints, versionedPath, type EndpointDef } from "@civfix/shared/client"
-import { buildServer } from "../../src/server.js"
-import { buildContainer } from "../../src/di.js"
+import { makeServer } from "../../src/server.js"
+import { makeContainer } from "../../src/di.js"
 import { loadEnv } from "../../src/env.js"
 import { InMemoryCacheClient } from "../../src/auth/cache.js"
 import { makeInMemoryStores } from "../../src/auth/stores.js"
-import { buildAuthServices } from "../../src/auth/auth-services.js"
+import { makeAuthServices } from "../../src/auth/auth-services.js"
 import { StubJwksVerifier } from "../helpers/auth.js"
 import { InMemoryCounterStore } from "../../src/abuse/counter-store.js"
 import { makeAnonService } from "../../src/services/anon-service.js"
@@ -19,16 +18,16 @@ import { InMemoryAnonStore } from "../helpers/anon.js"
 import { InMemoryCleanupRepository } from "../helpers/cleanups.js"
 import { InMemoryGuestRsvpRepository } from "../helpers/guest-rsvp.js"
 import { InMemorySocialRepository } from "../helpers/social.js"
-import { InMemoryVolunteerHoursRepository } from "../../src/services/volunteer-hours-repository.memory.js"
+import { InMemoryVolunteerHoursRepository } from "../helpers/volunteer-hours-repository.memory.js"
 import { InMemoryNotificationRepository } from "../helpers/notifications.js"
 import { InMemoryMediaRepository } from "../helpers/media.js"
 import { InMemoryThreadsRepository } from "../helpers/chat.js"
 import type { ReportServiceOverrides } from "../../src/routes/reports.routes.js"
 import type { ChatGatewayOverrides } from "../../src/routes/chat.routes.js"
 import type { ReportOwner } from "../../src/services/report-service.js"
-import { InMemoryOrganizationRepository } from "../../src/services/host/organization-repository.memory.js"
-import { InMemoryHostTeamRepository } from "../../src/services/host/host-team-repository.memory.js"
-import { InMemoryHostRegistrationRepository } from "../../src/services/host/registration-repository.memory.js"
+import { InMemoryOrganizationRepository } from "../helpers/host/organization-repository.memory.js"
+import { InMemoryHostTeamRepository } from "../helpers/host/host-team-repository.memory.js"
+import { InMemoryHostRegistrationRepository } from "../helpers/host/registration-repository.memory.js"
 import {
   OPEN_HOST_GUARDS,
   ORGANIZER_STANDING,
@@ -41,19 +40,13 @@ const SIGNING_KEY = "test-anon-signing-key"
 
 const PARAM_VALUE = "11111111-1111-1111-1111-111111111111"
 
-const NOT_YET_ROUTED = new Set<string>([
-  "getForwardTemplateDefault",
-  "setForwardTemplateDefault",
-  "previewForwardTemplate",
-])
-
 async function buildFullFakeServer(): Promise<FastifyInstance> {
   const env = loadEnv({ NODE_ENV: "test" })
 
   const stores = makeInMemoryStores()
   const cache = new InMemoryCacheClient(() => Date.now())
   const mailer = new FakeMailer()
-  const authServices = buildAuthServices({
+  const authServices = makeAuthServices({
     stores,
     cache,
     mailer,
@@ -129,9 +122,9 @@ async function buildFullFakeServer(): Promise<FastifyInstance> {
   hostRepo.seedEvent({ cleanupId: PARAM_VALUE })
   hostRepo.seedTicketType({ cleanupId: PARAM_VALUE, capacity: 10, maxPartySize: 4 })
 
-  const container = buildContainer(env)
+  const container = makeContainer(env)
 
-  return buildServer({
+  return makeServer({
     env,
     container,
     authServices,
@@ -218,11 +211,11 @@ describe("route-coverage: every shared endpoint is registered (offline boot smok
   })
 
   for (const [name, ep] of Object.entries(endpoints)) {
-    it.skipIf(NOT_YET_ROUTED.has(name))(`registers ${name}: ${ep.method} ${ep.path}`, async () => {
+    it(`registers ${name}: ${ep.method} ${ep.path}`, async () => {
       const res = await app.inject(injectArgs(ep))
 
       if (res.statusCode === 404) {
-        const body = res.json() as { message?: string }
+        const body = res.json<{ message?: string }>()
         const isRouteMissing =
           typeof body.message === "string" && body.message.startsWith(`Route ${ep.method} `)
         expect(isRouteMissing, `endpoint ${name} (${ep.method} ${ep.path}) is NOT registered`).toBe(
@@ -240,7 +233,7 @@ describe("route-coverage: every shared endpoint is registered (offline boot smok
   it("the discriminator is not vacuous: a bogus path IS detected as route-missing", async () => {
     const res = await app.inject({ method: "GET", url: "/this/route/does/not/exist" })
     expect(res.statusCode).toBe(404)
-    const body = res.json() as { message?: string; code?: string }
+    const body = res.json<{ message?: string; code?: string }>()
     expect(body.message?.startsWith("Route GET ")).toBe(true)
     expect(body.code).toBe("NOT_FOUND")
   })

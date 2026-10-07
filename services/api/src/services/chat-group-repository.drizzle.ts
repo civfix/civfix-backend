@@ -1,90 +1,32 @@
-
 import type { Sql } from "../db/client.js"
-import type { MediaDTO, MediaKind, MediaStatus, PersonDTO } from "@civfix/shared"
-import type { ChatGroupKind, ChatGroupVisibility } from "../db/schema/chat-groups.js"
-import type { GROUP_MEMBER_ROLE_VALUES } from "../db/schema/types.js"
+import type { MediaDTO, MediaKind, MediaStatus } from "@civfix/shared"
+import type { ChatGroupKind, ChatGroupVisibility } from "../db/schema/chat_groups.js"
 import type { PresignMedia } from "./media-presign.js"
-import { publicAuthorIdentity } from "./public-author.js"
-import { officialPersonFlag } from "../auth/official-account.js"
-import { blockedPairExpr, hiddenIdentity } from "./hidden-identity.js"
+import { blockedPairExpr } from "./blocks-sql.js"
+import { toRoomMemberPerson, type RoomMemberIdentityRow } from "./room-member-person.js"
 import { resolveAvatarMediaOrThrow } from "./avatar-media.js"
-import { monotonicReadWatermarkUpdate } from "./chat-read-state.drizzle.js"
+import { userUploader } from "./media-uploader.js"
+import { monotonicReadWatermarkUpdate } from "./read-watermark-repository.drizzle.js"
 import { isUuid } from "../db/cursor-helpers.js"
-import { servedKeyExpr } from "./media-served-key.js"
-
-export type GroupMemberRole = (typeof GROUP_MEMBER_ROLE_VALUES)[number]
+import { publicServedKeyExpr } from "./media-served-key.js"
+import type {
+  ChatGroupRepository,
+  ChatGroupView,
+  CreateChatGroupInput,
+  GroupMemberRole,
+  GroupMemberView,
+  GroupRoomAccess,
+  UpdateChatGroupPatch,
+} from "./chat-group-repository.js"
 
 export const GROUP_MEMBER_SCAN_CAP = 2000
 
-export interface GroupRoomAccess {
+export function canPostToGroup(access: {
   kind: ChatGroupKind
-  visibility: ChatGroupVisibility
   role: GroupMemberRole | null
-}
-
-export function canPostToGroup(access: { kind: ChatGroupKind; role: GroupMemberRole | null }): boolean {
+}): boolean {
   if (access.role === null) return false
   return access.kind === "group" || access.role === "owner" || access.role === "admin"
-}
-
-export interface ChatGroupView {
-  id: string
-  kind: ChatGroupKind
-  name: string
-  description: string | null
-  visibility: ChatGroupVisibility
-  ownerId: string
-  createdAt: Date
-  avatar: MediaDTO | null
-  memberCount: number
-}
-
-export interface GroupMemberView {
-  user: PersonDTO
-  role: GroupMemberRole
-  joinedAt: Date
-}
-
-export interface CreateChatGroupInput {
-  kind: ChatGroupKind
-  name: string
-  description: string | null
-  avatarMediaId: string | null
-  ownerId: string
-  visibility: ChatGroupVisibility
-}
-
-export interface UpdateChatGroupPatch {
-  name?: string
-  description?: string | null
-  avatarMediaId?: string
-  visibility?: ChatGroupVisibility
-}
-
-export interface ChatGroupRepository {
-  create(input: CreateChatGroupInput, memberIds: string[]): Promise<string>
-  findById(id: string): Promise<ChatGroupView | null>
-  update(id: string, patch: UpdateChatGroupPatch): Promise<void>
-  roleOf(groupId: string, userId: string): Promise<GroupMemberRole | null>
-  accessOf(groupId: string, userId: string): Promise<GroupRoomAccess | null>
-  addMembers(groupId: string, userIds: string[]): Promise<void>
-  removeMember(groupId: string, userId: string): Promise<boolean>
-  banMember(groupId: string, userId: string, bannedBy: string): Promise<void>
-  isBanned(groupId: string, userId: string): Promise<boolean>
-  setRole(groupId: string, userId: string, role: "admin" | "member"): Promise<boolean>
-  findMember(groupId: string, userId: string, viewerId: string | null): Promise<GroupMemberView | null>
-  listMembers(
-    groupId: string,
-    viewerId: string | null,
-    cursor: string | null,
-    limit: number,
-  ): Promise<{ members: GroupMemberView[]; nextCursor: string | null }>
-  findMediaIdByUploadId(uploadId: string, groupId?: string): Promise<string>
-  invitableIdsOf(actorId: string, candidateIds: string[]): Promise<string[]>
-  blockedPairsAmong(userIds: string[]): Promise<Set<string>>
-  listMemberIds(groupId: string, limit?: number): Promise<string[]>
-  advanceReadWatermark(groupId: string, userId: string, upToMessageId: string): Promise<void>
-  markRead(groupId: string, userId: string, at: Date): Promise<void>
 }
 
 interface GroupRowSelect {
@@ -106,60 +48,35 @@ interface GroupRowSelect {
   avatar_height: number | null
 }
 
-export interface MemberRowSelect {
-  user_id: string
+export interface MemberRowSelect extends RoomMemberIdentityRow {
   role: GroupMemberRole
   joined_at: Date
-  display_name: string | null
-  handle: string | null
-  bio: string | null
-  avatar_url: string | null
-  user_deleted_at: Date | null
-  is_following: boolean
-  blocked_pair: boolean
 }
 
 export function toMemberView(r: MemberRowSelect): GroupMemberView {
-  const author = publicAuthorIdentity({
-    id: r.user_id,
-    displayName: r.display_name ?? "",
-    handle: r.handle,
-    avatarUrl: r.avatar_url,
-    deletedAt: r.user_deleted_at,
-  })
-  const hidden = r.blocked_pair && !author.deleted ? hiddenIdentity(r.user_id) : null
-  const user: PersonDTO = {
-    id: r.user_id,
-    name: hidden?.name ?? author.name,
-    handle: hidden !== null ? null : author.handle,
-    bio: author.deleted || hidden !== null ? null : r.bio,
-    avatar: author.avatar,
-    ...(hidden === null && author.avatarUrl !== undefined ? { avatarUrl: author.avatarUrl } : {}),
-    followers: 0,
-    following: 0,
-    isFollowing: r.is_following,
-    ...(author.deleted ? { deleted: true } : {}),
-    ...(author.deleted || hidden !== null ? {} : officialPersonFlag(r.user_id)),
+  return { user: toRoomMemberPerson(r), role: r.role, joinedAt: r.joined_at }
+}
+
+async function toGroupAvatar(r: GroupRowSelect, presign?: PresignMedia): Promise<MediaDTO | null> {
+  if (!presign || r.avatar_id === null || r.avatar_status !== "ready" || r.avatar_r2_key === null) {
+    return null
   }
-  return { user, role: r.role, joinedAt: r.joined_at }
+  const { url, thumbUrl } = await presign(r.avatar_r2_key, r.avatar_thumb_key)
+  return {
+    id: r.avatar_id,
+    kind: r.avatar_kind ?? "image",
+    codec: r.avatar_codec,
+    url,
+    ...(thumbUrl !== undefined ? { thumbUrl } : {}),
+    width: r.avatar_width,
+    height: r.avatar_height,
+    status: r.avatar_status,
+  }
 }
 
 export function makeChatGroupRepository(sql: Sql, presign?: PresignMedia): ChatGroupRepository {
   async function toGroupView(r: GroupRowSelect): Promise<ChatGroupView> {
-    let avatar: MediaDTO | null = null
-    if (presign && r.avatar_id !== null && r.avatar_status === "ready" && r.avatar_r2_key !== null) {
-      const { url, thumbUrl } = await presign(r.avatar_r2_key, r.avatar_thumb_key)
-      avatar = {
-        id: r.avatar_id,
-        kind: r.avatar_kind ?? "image",
-        codec: r.avatar_codec,
-        url,
-        ...(thumbUrl !== undefined ? { thumbUrl } : {}),
-        width: r.avatar_width,
-        height: r.avatar_height,
-        status: r.avatar_status,
-      }
-    }
+    const avatar = await toGroupAvatar(r, presign)
     return {
       id: r.id,
       kind: r.kind,
@@ -196,9 +113,17 @@ export function makeChatGroupRepository(sql: Sql, presign?: PresignMedia): ChatG
   return {
     async create(input: CreateChatGroupInput, memberIds: string[]): Promise<string> {
       return sql.begin(async (tx) => {
+        const avatarMediaId =
+          input.avatarUploadId === null
+            ? null
+            : (
+                await resolveAvatarMediaOrThrow(tx, input.avatarUploadId, {
+                  uploader: userUploader(input.ownerId),
+                })
+              ).id
         const [g] = await tx<{ id: string }[]>`
           INSERT INTO chat_groups (kind, name, description, avatar_media_id, owner_id, visibility)
-          VALUES (${input.kind}, ${input.name}, ${input.description}, ${input.avatarMediaId},
+          VALUES (${input.kind}, ${input.name}, ${input.description}, ${avatarMediaId},
                   ${input.ownerId}, ${input.visibility})
           RETURNING id
         `
@@ -208,7 +133,11 @@ export function makeChatGroupRepository(sql: Sql, presign?: PresignMedia): ChatG
           VALUES (${groupId}, ${input.ownerId}, 'owner')
         `
         if (memberIds.length > 0) {
-          const rows = memberIds.map((userId) => ({ group_id: groupId, user_id: userId, role: "member" }))
+          const rows = memberIds.map((userId) => ({
+            group_id: groupId,
+            user_id: userId,
+            role: "member",
+          }))
           await tx`
             INSERT INTO chat_group_members ${tx(rows, "group_id", "user_id", "role")}
             ON CONFLICT (group_id, user_id) DO NOTHING
@@ -227,7 +156,7 @@ export function makeChatGroupRepository(sql: Sql, presign?: PresignMedia): ChatG
           a.id AS avatar_id,
           a.kind AS avatar_kind,
           a.codec AS avatar_codec,
-          ${servedKeyExpr(sql, "a")} AS avatar_r2_key,
+          ${publicServedKeyExpr(sql, "a")} AS avatar_r2_key,
           a.thumb_key AS avatar_thumb_key,
           a.status AS avatar_status,
           a.width AS avatar_width,
@@ -241,15 +170,25 @@ export function makeChatGroupRepository(sql: Sql, presign?: PresignMedia): ChatG
       return row ? toGroupView(row) : null
     },
 
-    async update(id: string, patch: UpdateChatGroupPatch): Promise<void> {
+    async update(id: string, patch: UpdateChatGroupPatch, actorId: string): Promise<void> {
       const set: Record<string, unknown> = {}
       if (patch.name !== undefined) set["name"] = patch.name
       if (patch.description !== undefined) set["description"] = patch.description
-      if (patch.avatarMediaId !== undefined) set["avatar_media_id"] = patch.avatarMediaId
       if (patch.visibility !== undefined) set["visibility"] = patch.visibility
-      const cols = Object.keys(set)
-      if (cols.length === 0) return
-      await sql`UPDATE chat_groups SET ${sql(set, ...cols)} WHERE id = ${id}`
+      const avatarUploadId = patch.avatarUploadId
+      if (Object.keys(set).length === 0 && avatarUploadId === undefined) return
+      // The claim's FOR UPDATE must still hold the media row when avatar_media_id is written, or a
+      // report, post or chat claim can bind the same upload between the check and the write.
+      await sql.begin(async (tx) => {
+        if (avatarUploadId !== undefined) {
+          const media = await resolveAvatarMediaOrThrow(tx, avatarUploadId, {
+            uploader: userUploader(actorId),
+            groupId: id,
+          })
+          set["avatar_media_id"] = media.id
+        }
+        await tx`UPDATE chat_groups SET ${tx(set, ...Object.keys(set))} WHERE id = ${id}`
+      })
     },
 
     async roleOf(groupId: string, userId: string): Promise<GroupMemberRole | null> {
@@ -263,7 +202,9 @@ export function makeChatGroupRepository(sql: Sql, presign?: PresignMedia): ChatG
 
     async accessOf(groupId: string, userId: string): Promise<GroupRoomAccess | null> {
       if (!isUuid(groupId)) return null
-      const rows = await sql<{ kind: ChatGroupKind; visibility: ChatGroupVisibility; role: GroupMemberRole | null }[]>`
+      const rows = await sql<
+        { kind: ChatGroupKind; visibility: ChatGroupVisibility; role: GroupMemberRole | null }[]
+      >`
         SELECT g.kind, g.visibility, m.role
         FROM chat_groups g
         LEFT JOIN chat_group_members m ON m.group_id = g.id AND m.user_id = ${userId}
@@ -298,22 +239,35 @@ export function makeChatGroupRepository(sql: Sql, presign?: PresignMedia): ChatG
       return rows.length > 0
     },
 
-    async banMember(groupId: string, userId: string, bannedBy: string): Promise<void> {
-      await sql`
-        INSERT INTO chat_group_bans (group_id, user_id, banned_by)
-        VALUES (${groupId}, ${userId}, ${bannedBy})
-        ON CONFLICT (group_id, user_id)
-          DO UPDATE SET banned_by = ${bannedBy}, banned_at = now()
-      `
-    },
-
-    async isBanned(groupId: string, userId: string): Promise<boolean> {
-      const rows = await sql<{ one: number }[]>`
-        SELECT 1 AS one FROM chat_group_bans
-        WHERE group_id = ${groupId} AND user_id = ${userId}
-        LIMIT 1
+    async joinUnlessBanned(groupId: string, userId: string): Promise<boolean> {
+      // The ban check and the insert are one statement, so a kick that commits after the caller's own
+      // checks still keeps the user out, and a self-join never clears a ban the way an invite does.
+      const rows = await sql<{ user_id: string }[]>`
+        INSERT INTO chat_group_members (group_id, user_id, role)
+        SELECT ${groupId}::uuid, ${userId}::uuid, 'member'
+        WHERE NOT EXISTS (
+          SELECT 1 FROM chat_group_bans
+          WHERE group_id = ${groupId} AND user_id = ${userId}
+        )
+        ON CONFLICT (group_id, user_id) DO NOTHING
+        RETURNING user_id
       `
       return rows.length > 0
+    },
+
+    async banMember(groupId: string, userId: string, bannedBy: string): Promise<void> {
+      await sql.begin(async (tx) => {
+        await tx`
+          DELETE FROM chat_group_members
+          WHERE group_id = ${groupId} AND user_id = ${userId}
+        `
+        await tx`
+          INSERT INTO chat_group_bans (group_id, user_id, banned_by)
+          VALUES (${groupId}, ${userId}, ${bannedBy})
+          ON CONFLICT (group_id, user_id)
+            DO UPDATE SET banned_by = ${bannedBy}, banned_at = now()
+        `
+      })
     },
 
     async setRole(groupId: string, userId: string, role: "admin" | "member"): Promise<boolean> {
@@ -385,11 +339,6 @@ export function makeChatGroupRepository(sql: Sql, presign?: PresignMedia): ChatG
       }
     },
 
-    async findMediaIdByUploadId(uploadId: string, groupId?: string): Promise<string> {
-      const media = await resolveAvatarMediaOrThrow(sql, uploadId, { groupId })
-      return media.id
-    },
-
     async invitableIdsOf(actorId: string, candidateIds: string[]): Promise<string[]> {
       if (candidateIds.length === 0) return []
       const rows = await sql<{ id: string }[]>`
@@ -432,7 +381,11 @@ export function makeChatGroupRepository(sql: Sql, presign?: PresignMedia): ChatG
       return rows.map((r) => r.user_id)
     },
 
-    async advanceReadWatermark(groupId: string, userId: string, upToMessageId: string): Promise<void> {
+    async advanceReadWatermark(
+      groupId: string,
+      userId: string,
+      upToMessageId: string,
+    ): Promise<void> {
       await monotonicReadWatermarkUpdate(
         sql,
         "chat_group_members",

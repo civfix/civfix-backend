@@ -1,3 +1,4 @@
+import { concatChunks, readCappedChunks, type CappedChunks } from "../lib/capped-body.js"
 
 export type FetchJsonResult<T> =
   | { ok: true; status: number; json: T }
@@ -5,7 +6,7 @@ export type FetchJsonResult<T> =
   | { ok: false; kind: "transport"; error: unknown }
   | { ok: false; kind: "body"; status: number; error: unknown }
 
-export const DEFAULT_MAX_JSON_BYTES = 1024 * 1024
+const DEFAULT_MAX_JSON_BYTES = 1024 * 1024
 
 export class JsonBodyTooLargeError extends Error {
   constructor(public readonly maxBytes: number) {
@@ -46,7 +47,9 @@ export async function fetchJsonWithTimeout<T>(
     }
     const maxBytes = opts.maxBytes ?? DEFAULT_MAX_JSON_BYTES
     const declared =
-      typeof res.headers?.get === "function" ? Number(res.headers.get("content-length") ?? "") : Number.NaN
+      typeof res.headers?.get === "function"
+        ? Number(res.headers.get("content-length") ?? "")
+        : Number.NaN
     if (Number.isFinite(declared) && declared > maxBytes) {
       await res.body?.cancel().catch(() => {})
       return { ok: false, kind: "body", status, error: new JsonBodyTooLargeError(maxBytes) }
@@ -60,33 +63,19 @@ export async function fetchJsonWithTimeout<T>(
       }
     }
     const reader = body.getReader()
-    const chunks: Uint8Array[] = []
-    let total = 0
+    let read: CappedChunks | null
     try {
-      for (;;) {
-        const { done, value } = await reader.read()
-        if (done) break
-        if (value) {
-          total += value.byteLength
-          if (total > maxBytes) {
-            controller.abort()
-            return { ok: false, kind: "body", status, error: new JsonBodyTooLargeError(maxBytes) }
-          }
-          chunks.push(value)
-        }
-      }
+      read = await readCappedChunks(reader, maxBytes, () => controller.abort())
     } catch (error) {
       return { ok: false, kind: "body", status, error }
     } finally {
       reader.releaseLock?.()
     }
+    if (read === null) {
+      return { ok: false, kind: "body", status, error: new JsonBodyTooLargeError(maxBytes) }
+    }
     try {
-      const buf = new Uint8Array(total)
-      let offset = 0
-      for (const c of chunks) {
-        buf.set(c, offset)
-        offset += c.byteLength
-      }
+      const buf = concatChunks(read.chunks, read.total)
       return { ok: true, status, json: JSON.parse(new TextDecoder().decode(buf)) as T }
     } catch (error) {
       return { ok: false, kind: "body", status, error }

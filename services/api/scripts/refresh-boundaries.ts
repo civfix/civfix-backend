@@ -12,7 +12,10 @@ import {
   type BoundaryJob,
 } from "../src/db/boundaries/manifest.js"
 import { ingestGeoJsonFile, ingestGeoJsonSeqFile } from "../src/db/ingest-jurisdictions-core.js"
-import { backfillReports } from "../src/db/backfill-jurisdictions-core.js"
+import {
+  backfillReports,
+  pruneNonAuthoritativeJurisdictions,
+} from "../src/db/backfill-jurisdictions-core.js"
 import { backfillPopulation } from "../src/db/backfill-population-core.js"
 
 const PREFIX = "refresh-boundaries"
@@ -24,15 +27,20 @@ const PG_CONTAINER = process.env.BOUNDARIES_PG_CONTAINER ?? "compose-postgres-1"
 const PG_USER = process.env.BOUNDARIES_PG_USER ?? "civfix"
 const PG_DB = process.env.BOUNDARIES_PG_DB ?? "civfix"
 const LOCAL_PORT = Number(process.env.BOUNDARIES_LOCAL_PORT ?? "15433")
+const PRUNE_CONFIRMED = process.argv.slice(2).includes("--yes")
 
 function isFederal(job: BoundaryJob): boolean {
   return job.layer === "federal"
 }
 
 function ssh(remoteCmd: string): string {
-  return execFileSync("ssh", ["-o", "BatchMode=yes", "-o", "ConnectTimeout=20", SSH_HOST, remoteCmd], {
-    encoding: "utf8",
-  }).trim()
+  return execFileSync(
+    "ssh",
+    ["-o", "BatchMode=yes", "-o", "ConnectTimeout=20", SSH_HOST, remoteCmd],
+    {
+      encoding: "utf8",
+    },
+  ).trim()
 }
 
 async function waitForPort(port: number, tries = 30): Promise<void> {
@@ -66,9 +74,13 @@ function resolvePostgresIp(): string {
     .map((line) => line.trim().split(/\s+/))
     .filter((parts): parts is [string, string] => parts.length === 2 && IPV4.test(parts[1]!))
     .map(([network, ip]) => ({ network, ip }))
-  const picked = attached.find((a) => a.network.endsWith("_default")) ?? (attached.length === 1 ? attached[0] : undefined)
+  const picked =
+    attached.find((a) => a.network.endsWith("_default")) ??
+    (attached.length === 1 ? attached[0] : undefined)
   if (!picked) {
-    throw new Error(`could not pick the postgres bridge IP for ${PG_CONTAINER}; networks reported: ${raw || "(none)"}`)
+    throw new Error(
+      `could not pick the postgres bridge IP for ${PG_CONTAINER}; networks reported: ${raw || "(none)"}`,
+    )
   }
   log(`postgres bridge IP ${picked.ip} on network ${picked.network}`)
   return picked.ip
@@ -83,7 +95,16 @@ async function openTunnel(): Promise<{ databaseUrl: string; close: () => void }>
   log(`opening ssh -L ${LOCAL_PORT}:${pgIp}:5432 ${SSH_HOST}`)
   const child: ChildProcess = spawn(
     "ssh",
-    ["-N", "-o", "BatchMode=yes", "-o", "ExitOnForwardFailure=yes", "-L", `${LOCAL_PORT}:${pgIp}:5432`, SSH_HOST],
+    [
+      "-N",
+      "-o",
+      "BatchMode=yes",
+      "-o",
+      "ExitOnForwardFailure=yes",
+      "-L",
+      `${LOCAL_PORT}:${pgIp}:5432`,
+      SSH_HOST,
+    ],
     { stdio: ["ignore", "inherit", "inherit"] },
   )
   child.on("exit", (code) => {
@@ -111,19 +132,30 @@ function looksLikeZip(path: string): boolean {
 }
 
 function responseSummary(path: string): string {
-  return readFileSync(path, "utf8").replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim().slice(0, 160)
+  return readFileSync(path, "utf8")
+    .replace(/<[^>]+>/g, " ")
+    .replace(/\s+/g, " ")
+    .trim()
+    .slice(0, 160)
 }
 
 function downloadZip(url: string, zip: string): void {
   let lastResponse = ""
   for (let attempt = 1; attempt <= DOWNLOAD_ATTEMPTS; attempt++) {
-    const attemptUrl = attempt === 1 ? url : `${url}${url.includes("?") ? "&" : "?"}attempt=${attempt}`
-    execFileSync("curl", ["-fsSL", attemptUrl, "-o", zip], { stdio: ["ignore", "inherit", "inherit"] })
+    const attemptUrl =
+      attempt === 1 ? url : `${url}${url.includes("?") ? "&" : "?"}attempt=${attempt}`
+    execFileSync("curl", ["-fsSL", attemptUrl, "-o", zip], {
+      stdio: ["ignore", "inherit", "inherit"],
+    })
     if (looksLikeZip(zip)) return
     lastResponse = responseSummary(zip)
-    warn(`${url}: response is not a zip archive (attempt ${attempt}/${DOWNLOAD_ATTEMPTS}): ${lastResponse}`)
+    warn(
+      `${url}: response is not a zip archive (attempt ${attempt}/${DOWNLOAD_ATTEMPTS}): ${lastResponse}`,
+    )
   }
-  throw new Error(`${url}: never returned a zip archive after ${DOWNLOAD_ATTEMPTS} attempts; last response: ${lastResponse}`)
+  throw new Error(
+    `${url}: never returned a zip archive after ${DOWNLOAD_ATTEMPTS} attempts; last response: ${lastResponse}`,
+  )
 }
 
 function fetchSource(job: BoundaryJob, outDir: string): boolean {
@@ -143,7 +175,7 @@ function fetchSource(job: BoundaryJob, outDir: string): boolean {
     return true
   } catch (err) {
     if (!isFederal(job)) throw err
-    warn(`PAD-US source fetch failed (${job.sourceUrl}) — federal layer will be skipped`)
+    warn(`PAD-US source fetch failed (${job.sourceUrl}); federal layer will be skipped`)
     return false
   } finally {
     rmSync(zip, { force: true })
@@ -162,7 +194,7 @@ function convert(job: BoundaryJob, outDir: string): string | null {
     execFileSync("ogr2ogr", [...job.ogr2ogrArgs, outPath, src], { stdio: "inherit" })
   } catch (err) {
     if (isFederal(job)) {
-      warn(`PAD-US convert failed — federal layer will be skipped`)
+      warn(`PAD-US convert failed; federal layer will be skipped`)
       return null
     }
     throw err
@@ -172,7 +204,9 @@ function convert(job: BoundaryJob, outDir: string): string | null {
 
 type Sql = Parameters<typeof backfillReports>[0]
 
-async function countLoadedLayers(sql: Sql): Promise<{ rowCounts: Record<string, number>; federalLoaded: boolean }> {
+async function countLoadedLayers(
+  sql: Sql,
+): Promise<{ rowCounts: Record<string, number>; federalLoaded: boolean }> {
   const rows = await sql<{ layer: string; n: number }[]>`
     SELECT layer, count(*)::int AS n FROM jurisdictions GROUP BY layer
   `
@@ -181,38 +215,34 @@ async function countLoadedLayers(sql: Sql): Promise<{ rowCounts: Record<string, 
   return { rowCounts, federalLoaded: (rowCounts.federal ?? 0) > 0 }
 }
 
-async function pruneNonAuthoritative(sql: Sql): Promise<number> {
-  return await sql.begin(async (tx) => {
-    const stale = await tx<{ geoid: string }[]>`
-      SELECT geoid FROM jurisdictions
-      WHERE (layer = 'federal' AND geoid NOT LIKE 'PADUS-%')
-         OR (layer = 'tribal'  AND geoid NOT LIKE 'AIANNH-%')
-    `
-    if (stale.length === 0) return 0
-    const ids = stale.map((s) => s.geoid)
-    await tx`UPDATE reports         SET jurisdiction_geoid = NULL WHERE jurisdiction_geoid IN ${tx(ids)}`
-    await tx`UPDATE cleanups        SET jurisdiction_geoid = NULL WHERE jurisdiction_geoid IN ${tx(ids)}`
-    await tx`UPDATE volunteer_hours SET jurisdiction_geoid = NULL WHERE jurisdiction_geoid IN ${tx(ids)}`
-    await tx`UPDATE gov_claims      SET jurisdiction_geoid = NULL WHERE jurisdiction_geoid IN ${tx(ids)}`
-    await tx`UPDATE mail_threads    SET jurisdiction_geoid = NULL WHERE jurisdiction_geoid IN ${tx(ids)}`
-    await tx`DELETE FROM user_jurisdiction_hours     WHERE jurisdiction_geoid IN ${tx(ids)}`
-    await tx`DELETE FROM jurisdiction_contacts       WHERE geoid IN ${tx(ids)}`
-    await tx`DELETE FROM outreach_state              WHERE geoid IN ${tx(ids)}`
-    await tx`DELETE FROM jurisdiction_discovery_tasks WHERE geoid IN ${tx(ids)}`
-    await tx`DELETE FROM jurisdictions               WHERE geoid IN ${tx(ids)}`
-    return stale.length
-  })
-}
-
 async function prune(sql: Sql): Promise<void> {
-  const pruned = await pruneNonAuthoritative(sql)
-  if (pruned > 0) log(`pruned ${pruned} non-authoritative (dev-seed) federal/tribal row(s)`)
+  const result = await pruneNonAuthoritativeJurisdictions(sql, { apply: PRUNE_CONFIRMED })
+  if (result.staleGeoids.length === 0) return
+  log(
+    `${result.staleGeoids.length} non-authoritative (dev-seed) federal/tribal jurisdiction(s); ` +
+      `rows pointing at them: ${JSON.stringify(result.affected)}`,
+  )
+  if (!result.applied) {
+    throw new Error("re-run with --yes to prune the rows counted above (nothing was changed)")
+  }
+  log(`pruned; re-resolved in the same transaction: ${JSON.stringify(result.reresolved)}`)
+  if (result.affected.gov_claims > 0 || result.affected.mail_threads > 0) {
+    warn(
+      `left without a jurisdiction (no geometry to re-derive from): ` +
+        `${result.affected.gov_claims} gov_claims, ${result.affected.mail_threads} mail_threads`,
+    )
+  }
 }
 
-async function stampVintage(sql: Sql, tag: string, year: number, rowCounts: Record<string, number>): Promise<void> {
+async function stampVintage(
+  sql: Sql,
+  tag: string,
+  year: number,
+  rowCounts: Record<string, number>,
+): Promise<void> {
   await sql`
     INSERT INTO boundary_vintage (id, vintage_tag, tiger_vintage, padus_version, row_counts, loaded_at)
-    VALUES (true, ${tag}, ${year}, ${PADUS_VERSION}, ${sql.json(rowCounts as Parameters<typeof sql.json>[0])}, now())
+    VALUES (true, ${tag}, ${year}, ${PADUS_VERSION}, ${sql.json(rowCounts)}, now())
     ON CONFLICT (id) DO UPDATE SET
       vintage_tag = EXCLUDED.vintage_tag,
       tiger_vintage = EXCLUDED.tiger_vintage,
@@ -239,7 +269,9 @@ async function main(): Promise<void> {
     try {
       execFileSync("ogr2ogr", ["--version"], { stdio: "ignore" })
     } catch {
-      console.error(`${PREFIX}: ogr2ogr (GDAL) not found on PATH — install it (e.g. \`brew install gdal\`) and re-run.`)
+      console.error(
+        `${PREFIX}: ogr2ogr (GDAL) not found on PATH; install it (e.g. \`brew install gdal\`) and re-run.`,
+      )
       process.exit(2)
     }
   }
@@ -267,7 +299,10 @@ async function main(): Promise<void> {
       log("--backfill-only: skipping download/convert/ingest; reading layers already in the DB")
       ;({ rowCounts, federalLoaded } = await countLoadedLayers(handle.sql))
       const total = Object.values(rowCounts).reduce((a, b) => a + b, 0)
-      if (total === 0) warn("no jurisdictions in the DB — run a full load first (this backfill will resolve nothing)")
+      if (total === 0)
+        warn(
+          "no jurisdictions in the DB; run a full load first (this backfill will resolve nothing)",
+        )
     } else {
       log(`vintage ${year}: ${boundaryManifest(year).length} layer job(s); work dir ${outDir}`)
       mkdirSync(join(outDir, "sources"), { recursive: true })
@@ -280,7 +315,7 @@ async function main(): Promise<void> {
         if (out) converted.push({ job, path: out })
       }
       if (!converted.some((c) => !isFederal(c.job))) {
-        throw new Error("no census layers converted — refusing to load a partial-coverage dataset")
+        throw new Error("no census layers converted; refusing to load a partial-coverage dataset")
       }
 
       rowCounts = {}
@@ -288,15 +323,25 @@ async function main(): Promise<void> {
       for (const { job, path } of converted) {
         try {
           const { upserted, skipped, features } = path.endsWith(".geojsonl")
-            ? await ingestGeoJsonSeqFile(handle.sql, path, job.layer, job.ingestGeoidPrefix ?? undefined)
-            : await ingestGeoJsonFile(handle.sql, readFileSync(path, "utf8"), job.layer, job.ingestGeoidPrefix ?? undefined)
+            ? await ingestGeoJsonSeqFile(
+                handle.sql,
+                path,
+                job.layer,
+                job.ingestGeoidPrefix ?? undefined,
+              )
+            : await ingestGeoJsonFile(
+                handle.sql,
+                readFileSync(path, "utf8"),
+                job.layer,
+                job.ingestGeoidPrefix ?? undefined,
+              )
           rowCounts[job.layer] = (rowCounts[job.layer] ?? 0) + upserted
           log(`[${job.layer}] upserted ${upserted} (skipped ${skipped} of ${features})`)
-          if (upserted === 0) warn(`[${job.layer}] upserted 0 rows — check the source/conversion`)
+          if (upserted === 0) warn(`[${job.layer}] upserted 0 rows; check the source/conversion`)
           if (isFederal(job)) federalLoaded = true
         } catch (err) {
           if (!isFederal(job)) throw err
-          warn(`[federal] ingest failed — skipping federal layer (${(err as Error).message})`)
+          warn(`[federal] ingest failed; skipping federal layer (${(err as Error).message})`)
         }
       }
 
@@ -317,7 +362,7 @@ async function main(): Promise<void> {
 
     const tag = federalLoaded ? vintageTag(year) : `${vintageTag(year)}-nofed`
     await stampVintage(handle.sql, tag, year, rowCounts)
-    log(`done — vintage ${tag}; row counts: ${JSON.stringify(rowCounts)}`)
+    log(`done: vintage ${tag}; row counts: ${JSON.stringify(rowCounts)}`)
     completed = true
   } finally {
     if (handle) await handle.close()
@@ -325,7 +370,7 @@ async function main(): Promise<void> {
     if (!keep && !backfillOnly && completed) {
       rmSync(outDir, { recursive: true, force: true })
     } else if (!keep && !backfillOnly && !completed) {
-      warn(`run did not complete — keeping the work dir for retry/inspection: ${outDir}`)
+      warn(`run did not complete; keeping the work dir for retry/inspection: ${outDir}`)
     }
   }
 }

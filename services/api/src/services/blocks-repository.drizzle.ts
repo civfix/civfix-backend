@@ -1,34 +1,27 @@
-
 import type { Sql } from "../db/client.js"
 import { avatarGradient } from "@civfix/shared"
-import type { PersonDTO } from "@civfix/shared"
-import { paginate, parseTimeCursor } from "../db/cursor-helpers.js"
+import {
+  keysetInstant,
+  keysetPredicate,
+  paginateKeyset,
+  parseKeysetCursor,
+} from "../db/cursor-helpers.js"
 import { officialPersonFlag } from "../auth/official-account.js"
+import type {
+  BlockState,
+  BlocksRepository,
+  ListBlockedArgs,
+  ListBlockedPage,
+} from "./blocks-repository.js"
 
 export const LIST_BLOCKS_DEFAULT_LIMIT = 50
 
-export interface ListBlockedArgs {
-  cursor?: string | null
-  limit?: number
-}
-
-export interface ListBlockedPage {
-  blocked: PersonDTO[]
-  nextCursor: string | null
-}
-
-export interface BlockState {
-  blockedByViewer: boolean
-  blockedByTarget: boolean
-}
-
-export interface BlocksRepository {
-  block(blockerId: string, blockedId: string): Promise<void>
-  unblock(blockerId: string, blockedId: string): Promise<void>
-  isBlockedEitherWay(a: string, b: string): Promise<boolean>
-  blockState(viewerId: string, targetId: string): Promise<BlockState>
-  blockedIdsAmong?(actorId: string, candidateIds: string[]): Promise<Set<string>>
-  listBlocked(blockerId: string, args?: ListBlockedArgs): Promise<ListBlockedPage>
+export function bindBlockedIdsAmong(
+  repo: BlocksRepository,
+): ((actorId: string, candidateIds: string[]) => Promise<Set<string>>) | undefined {
+  const batch = repo.blockedIdsAmong
+  if (!batch) return undefined
+  return (actorId, candidateIds) => batch.call(repo, actorId, candidateIds)
 }
 
 export function makeDrizzleBlocksRepository(sql: Sql): BlocksRepository {
@@ -74,18 +67,18 @@ export function makeDrizzleBlocksRepository(sql: Sql): BlocksRepository {
       const rows = await sql<{ other_id: string }[]>`
         SELECT CASE WHEN b.blocker_id = ${actorId} THEN b.blocked_id ELSE b.blocker_id END AS other_id
         FROM user_blocks b
-        WHERE (b.blocker_id = ${actorId} AND b.blocked_id IN ${sql(candidateIds)})
-           OR (b.blocked_id = ${actorId} AND b.blocker_id IN ${sql(candidateIds)})
+        WHERE (b.blocker_id = ${actorId} AND b.blocked_id = ANY(${candidateIds}::uuid[]))
+           OR (b.blocked_id = ${actorId} AND b.blocker_id = ANY(${candidateIds}::uuid[]))
       `
       return new Set(rows.map((r) => r.other_id))
     },
 
     async listBlocked(blockerId: string, args?: ListBlockedArgs): Promise<ListBlockedPage> {
       const limit = args?.limit ?? LIST_BLOCKS_DEFAULT_LIMIT
-      const cursor = parseTimeCursor(args?.cursor ?? null)
+      const cursor = parseKeysetCursor(args?.cursor ?? null)
       const cursorFilter =
         cursor !== null
-          ? sql`AND (b.created_at, b.blocked_id) < (${cursor.at}, ${cursor.id}::uuid)`
+          ? sql`AND ${keysetPredicate(sql, sql`b.created_at`, sql`b.blocked_id`, cursor)}`
           : sql``
       const rows = await sql<
         {
@@ -94,10 +87,11 @@ export function makeDrizzleBlocksRepository(sql: Sql): BlocksRepository {
           handle: string | null
           bio: string | null
           avatar_url: string | null
-          created_at: Date
+          cursor_at: string
         }[]
       >`
-        SELECT u.id, u.display_name, u.handle, u.bio, u.avatar_url, b.created_at
+        SELECT u.id, u.display_name, u.handle, u.bio, u.avatar_url,
+               ${keysetInstant(sql, sql`b.created_at`)} AS cursor_at
         FROM user_blocks b
         JOIN users u ON u.id = b.blocked_id
         WHERE b.blocker_id = ${blockerId} AND u.deleted_at IS NULL
@@ -105,7 +99,10 @@ export function makeDrizzleBlocksRepository(sql: Sql): BlocksRepository {
         ORDER BY b.created_at DESC, b.blocked_id DESC
         LIMIT ${limit + 1}
       `
-      const { items, nextCursor } = paginate(rows, limit, (r) => ({ at: r.created_at, id: r.id }))
+      const { items, nextCursor } = paginateKeyset(rows, limit, (r) => ({
+        atText: r.cursor_at,
+        id: r.id,
+      }))
       return {
         blocked: items.map((r) => ({
           id: r.id,

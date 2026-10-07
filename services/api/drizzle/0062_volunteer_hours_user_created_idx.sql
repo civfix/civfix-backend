@@ -2,7 +2,7 @@
 -- 0062_volunteer_hours_user_created_idx.sql
 -- -----------------------------------------------------------------------------
 -- P4 (per-entry service-hours ledger read): until now nothing ever READ
--- volunteer_hours row-by-row — the profile total and the leaderboard both go
+-- volunteer_hours row-by-row; the profile total and the leaderboard both go
 -- through the user_jurisdiction_hours rollup, and the ledger was write-only. The
 -- new transcript endpoints (GET /me/volunteer-hours/entries and
 -- GET /people/:id/volunteer-hours) page the ledger newest-first with the house
@@ -18,7 +18,7 @@
 -- a SHARE lock and blocks WRITES to volunteer_hours for its duration. That table is
 -- small today (one row per credited attendee per event plus 0.1h per report). If it
 -- has grown by the time this ships, build the index out of band with
--- CREATE INDEX CONCURRENTLY first — the IF NOT EXISTS below then no-ops. The
+-- CREATE INDEX CONCURRENTLY first; the IF NOT EXISTS below then no-ops. The
 -- migrate runner (src/db/migrate.ts) documents this exact escape hatch.
 --
 -- CANONICAL DDL: this hand-authored SQL is the source of truth. The Drizzle mirror
@@ -26,7 +26,7 @@
 --
 -- Conventions (match the rest of the suite): additive IF NOT EXISTS so a partial
 -- or repeat apply is safe; the migrate runner wraps each file in ONE transaction
--- (so no CREATE INDEX CONCURRENTLY here). Forward-only — no down migration.
+-- (so no CREATE INDEX CONCURRENTLY here). Forward-only, no down migration.
 --
 -- Ordering rules: requires 0035_volunteer_hours.sql.
 -- =============================================================================

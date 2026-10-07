@@ -1,5 +1,5 @@
 import type { Jobs } from "@civfix/shared/interfaces"
-import { WAITLIST_PROMOTE_JOB } from "./registration-queues.js"
+import { WAITLIST_PROMOTE_JOB } from "../../lib/queue-names.js"
 
 export interface WaitlistPromotionLogger {
   warn(obj: unknown, msg?: string): void

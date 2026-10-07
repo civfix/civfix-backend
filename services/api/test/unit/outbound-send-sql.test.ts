@@ -70,6 +70,14 @@ describe("outbound send predicates are index-served", () => {
     }
   })
 
+  it("counts a young attempt with no sent or failed event yet as in flight", async () => {
+    const normalise = (s: string): string => s.replace(/\s+/g, " ")
+    const sql = normalise(await inFlightStatement())
+    expect(sql).toMatch(
+      /OR \( NOT EXISTS \( SELECT 1 FROM mail_events e .*? AND latest\.created_at > now\(\) - make_interval\(secs => \?\) \)/,
+    )
+  })
+
   it("both repositories emit the SAME in-flight expression (one shared fragment)", async () => {
     const normalise = (s: string): string => s.replace(/\s+/g, " ").trim()
     const inFlight = normalise(await inFlightStatement())

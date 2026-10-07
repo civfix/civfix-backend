@@ -2,9 +2,9 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest"
 import { withPg, type PgHarness } from "../helpers/pg.js"
 import { seedCleanup } from "../helpers/cleanups.js"
 import { makeDrizzleMetricsRepository } from "../../src/services/host/metrics-repository.drizzle.js"
-import type { MetricsRepository } from "../../src/services/host/metrics-repository.drizzle.js"
+import type { MetricsRepository } from "../../src/services/host/metrics-repository.js"
+import type { HostExportRepository } from "../../src/services/host/export-repository.js"
 import { makeDrizzleHostExportRepository } from "../../src/services/host/export-repository.drizzle.js"
-import type { HostExportRepository } from "../../src/services/host/export-repository.drizzle.js"
 import { makeHostExportService } from "../../src/services/host/export-service.js"
 import {
   registerHostExportBuilder,

@@ -29,7 +29,11 @@ beforeEach(() => {
   presigned = []
   repo.seedUser({ id: MEMBER, displayName: "Olive Organizer", handle: "olive" })
   repo.seedUser({ id: STRANGER, displayName: "Sam Stranger", handle: "sam" })
-  const org = repo.seedOrganization({ slug: "bct", name: "Ballona Creek Trust", logoKey: "logos/bct" })
+  const org = repo.seedOrganization({
+    slug: "bct",
+    name: "Ballona Creek Trust",
+    logoKey: "logos/bct",
+  })
   organizationId = org.id
   repo.seedOrgMember(org.id, MEMBER, "owner")
   service = makeCleanupService({

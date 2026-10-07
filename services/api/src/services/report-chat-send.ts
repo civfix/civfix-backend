@@ -1,12 +1,15 @@
 import type { ChatMessageDTO, UserMentionDTO } from "@civfix/shared"
 import type { PersistChatInput } from "@civfix/shared/interfaces"
-import { resolveAndRecordChatMentions, type ChatMentionRecordSeam } from "./chat-mention-resolver.js"
+import {
+  resolveAndRecordChatMentions,
+  type ChatMentionRecordSeam,
+} from "./chat-mention-resolver.js"
 import { neutralizeChatViewerFields } from "./chat-viewer-fields.js"
-import { mapWithLimit } from "./media-presign.js"
+import { mapWithLimit } from "../lib/concurrency.js"
 import { roomKeyFor } from "../ws/gateway.js"
 import type { GatewayChatMentions } from "../ws/types.js"
 
-export const REPORT_MENTION_BELL_CONCURRENCY = 4
+const REPORT_MENTION_BELL_CONCURRENCY = 4
 
 export type ReportChatMentionSeam = ChatMentionRecordSeam &
   Partial<Pick<GatewayChatMentions, "notifyChatMention">>

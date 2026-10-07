@@ -3,7 +3,7 @@ import Fastify from "fastify"
 import type { FastifyInstance } from "fastify"
 import { parseTrustProxy, DEFAULT_TRUSTED_PROXY_CIDRS } from "../../src/plugins/trust-proxy.js"
 import { loadEnv } from "../../src/env.js"
-import { buildServer } from "../../src/server.js"
+import { makeServer } from "../../src/server.js"
 import { normalizeIp } from "../../src/abuse/ip-rate-limit.js"
 import type { AnonReportRequest } from "@civfix/shared"
 import type {
@@ -11,8 +11,6 @@ import type {
   AnonSubmitContext,
   AnonSubmitResult,
 } from "../../src/services/anon-service.js"
-
-
 
 describe("parseTrustProxy", () => {
   it("defaults to the internal loopback+private CIDR set (NOT trust-all) when unset or blank", () => {
@@ -60,7 +58,6 @@ describe("parseTrustProxy", () => {
   })
 })
 
-
 describe("Fastify request.ip under TRUST_PROXY default", () => {
   let app: FastifyInstance | undefined
 
@@ -102,7 +99,6 @@ describe("Fastify request.ip under TRUST_PROXY default", () => {
   })
 })
 
-
 describe("anon submit abuse key is the real client IP (not a spoofed XFF)", () => {
   let app: FastifyInstance | undefined
 
@@ -130,7 +126,7 @@ describe("anon submit abuse key is the real client IP (not a spoofed XFF)", () =
       },
     }
 
-    app = await buildServer({
+    app = await makeServer({
       env: loadEnv({ NODE_ENV: "test" }),
       anonOverride: { service: captureService },
     })

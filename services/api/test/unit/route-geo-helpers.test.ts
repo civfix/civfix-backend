@@ -12,11 +12,9 @@ import {
 } from "../../src/services/route-geo-helpers.js"
 
 /**
- * Route-level jurisdiction wiring (services/route-geo-helpers.ts).
- *
- * The one behavior worth pinning offline is WHICH surfaces memoize the external Census lookup: the anon-ok
- * map resolve opts in (`cacheLookup: true`), the submit-path resolver does NOT, and the memo is held per
- * CONTAINER — the service is rebuilt on every request, so a per-service cache would never see a hit, and a
+ * The one behavior of services/route-geo-helpers.ts worth pinning offline is WHICH surfaces memoize the
+ * external Census lookup: the anon-ok map resolve opts in (`cacheLookup: true`), the submit-path resolver
+ * does NOT, and the memo is held per CONTAINER: the service is rebuilt on every request, so a per-service cache would never see a hit, and a
  * bare module singleton would leak one container's coverage answers into another's tests.
  */
 
@@ -64,9 +62,18 @@ describe("makeRouteJurisdictionService", () => {
     const container = fakeContainer(lookup)
 
     // Each call rebuilds the service exactly as a request handler does.
-    await makeRouteJurisdictionService(container, { cacheLookup: true }).resolveForPoint(34.05, -118.25)
-    await makeRouteJurisdictionService(container, { cacheLookup: true }).resolveForPoint(34.05, -118.25)
-    await makeRouteJurisdictionService(container, { cacheLookup: true }).resolveForPoint(34.05, -118.25)
+    await makeRouteJurisdictionService(container, { cacheLookup: true }).resolveForPoint(
+      34.05,
+      -118.25,
+    )
+    await makeRouteJurisdictionService(container, { cacheLookup: true }).resolveForPoint(
+      34.05,
+      -118.25,
+    )
+    await makeRouteJurisdictionService(container, { cacheLookup: true }).resolveForPoint(
+      34.05,
+      -118.25,
+    )
 
     expect(lookup.calls).toHaveLength(1)
   })
@@ -95,14 +102,12 @@ describe("makeRouteJurisdictionService", () => {
     const lookupA = countingLookup()
     const lookupB = countingLookup()
 
-    await makeRouteJurisdictionService(fakeContainer(lookupA), { cacheLookup: true }).resolveForPoint(
-      34.05,
-      -118.25,
-    )
-    await makeRouteJurisdictionService(fakeContainer(lookupB), { cacheLookup: true }).resolveForPoint(
-      34.05,
-      -118.25,
-    )
+    await makeRouteJurisdictionService(fakeContainer(lookupA), {
+      cacheLookup: true,
+    }).resolveForPoint(34.05, -118.25)
+    await makeRouteJurisdictionService(fakeContainer(lookupB), {
+      cacheLookup: true,
+    }).resolveForPoint(34.05, -118.25)
 
     // The second container asked its OWN lookup rather than reading the first one's answer.
     expect(lookupA.calls).toHaveLength(1)
@@ -113,8 +118,14 @@ describe("makeRouteJurisdictionService", () => {
     const statements: string[] = []
     const container = fakeContainer(countingLookup(), statements)
 
-    await makeRouteJurisdictionService(container, { cacheLookup: true }).resolveForPoint(34.05, -118.25)
-    await makeRouteJurisdictionService(container, { cacheLookup: true }).resolveForPoint(34.05, -118.25)
+    await makeRouteJurisdictionService(container, { cacheLookup: true }).resolveForPoint(
+      34.05,
+      -118.25,
+    )
+    await makeRouteJurisdictionService(container, { cacheLookup: true }).resolveForPoint(
+      34.05,
+      -118.25,
+    )
 
     expect(statements).not.toHaveLength(0)
     for (const text of statements) {

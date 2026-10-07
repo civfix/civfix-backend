@@ -1,11 +1,11 @@
 import { describe, it, expect, afterEach } from "vitest"
 import type { FastifyInstance } from "fastify"
 import { FakeMailer } from "@civfix/shared/fakes"
-import { buildServer } from "../../src/server.js"
+import { makeServer } from "../../src/server.js"
 import { loadEnv } from "../../src/env.js"
 import { InMemoryCacheClient } from "../../src/auth/cache.js"
 import { makeInMemoryStores } from "../../src/auth/stores.js"
-import { buildAuthServices } from "../../src/auth/auth-services.js"
+import { makeAuthServices } from "../../src/auth/auth-services.js"
 import { StubJwksVerifier } from "../helpers/auth.js"
 import {
   InMemoryBlocksRepository,
@@ -15,9 +15,8 @@ import { InMemoryChatRepository, InMemoryThreadsRepository } from "../helpers/ch
 import type { ChatGatewayOverrides } from "../../src/routes/chat.routes.js"
 
 /**
- * Offline HTTP test for the hate-slur content gate on the DM edit route (App Store 1.2a, Feature F1):
- *   PATCH /dm/:threadId/messages/:messageId  -> assertNoSlur(body.body) -> 422 on a slur, 200 otherwise.
- * Mirrors the delete-message-routes harness (in-memory repos via chatOverrides, mobile bearer = CSRF-exempt).
+ * The hate-slur content gate on the DM edit route (App Store guideline 1.2a): a slur in the edited body
+ * is a 422. Mobile bearer transport is CSRF-exempt, so no token is needed.
  */
 
 const PEER = "44444444-4444-4444-4444-444444444444"
@@ -40,7 +39,7 @@ async function harness(): Promise<{
   const stores = makeInMemoryStores()
   const cache = new InMemoryCacheClient(() => Date.now())
   const mailer = new FakeMailer()
-  const authServices = buildAuthServices({
+  const authServices = makeAuthServices({
     stores,
     cache,
     mailer,
@@ -58,7 +57,7 @@ async function harness(): Promise<{
     chatRepo: new InMemoryChatRepository(),
     blocksRepo: blocks,
   }
-  const app = await buildServer({ env, authServices, chatOverrides: overrides })
+  const app = await makeServer({ env, authServices, chatOverrides: overrides })
   current = app
   return { app, mailer, dmRepo }
 }

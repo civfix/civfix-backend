@@ -1,10 +1,7 @@
 /**
- * Task D-C4 (follow-up): surfacing forwardedToCity + cityMention on a REPORT chat message DTO.
- *
  * cityForwardFields is the PURE, DB-free helper the report message mapper (chat-repository.drizzle.ts
- * toMessageDTO) uses to derive the "@city" surfacing from (a) the per-row forwarded_to_city EXISTS column
- * and (b) the report's resolved jurisdiction. It is the genuinely new bit, so it is unit-tested here with
- * no database. The SQL join (report_message_forwards -> forwarded_to_city) + the jurisdiction lookup are
+ * toMessageDTO) uses to derive the "@city" surfacing on a REPORT chat message DTO from (a) the per-row
+ * forwarded_to_city EXISTS column and (b) the report's resolved jurisdiction. The SQL join (report_message_forwards -> forwarded_to_city) + the jurisdiction lookup are
  * exercised by the Docker-gated pg suite.
  *
  *   - forwardedToCity mirrors the forwarded_to_city column (the "Forwarded to city" pill);
@@ -21,7 +18,11 @@ import {
 
 const SF: ReportCityContext = { geoid: "0600001", name: "City of San Francisco", handle: "sf" }
 // No stored handle: the effective handle derives from the name ("City of San Francisco" -> "san_francisco").
-const SF_DERIVED: ReportCityContext = { geoid: "0600001", name: "City of San Francisco", handle: null }
+const SF_DERIVED: ReportCityContext = {
+  geoid: "0600001",
+  name: "City of San Francisco",
+  handle: null,
+}
 // Neither a stored nor a derivable handle (all-punctuation name): there is nothing to @mention, so the tint
 // degrades to plain text (cityMention null).
 const NO_HANDLE: ReportCityContext = { geoid: "0600001", name: "!!!", handle: null }
@@ -65,16 +66,23 @@ describe("cityForwardFields (report @city surfacing)", () => {
 
   it("matches the DERIVED handle when the jurisdiction has no stored handle", () => {
     // "City of San Francisco" -> effective handle "san_francisco"; the body must @mention that.
-    const out = cityForwardFields({ body: "hey @san_francisco fix this", forwarded_to_city: false }, SF_DERIVED)
+    const out = cityForwardFields(
+      { body: "hey @san_francisco fix this", forwarded_to_city: false },
+      SF_DERIVED,
+    )
     expect(out.cityMention).not.toBeNull()
     expect(out.cityMention?.handle).toBe("san_francisco")
     // "@sf" would NOT match the derived handle.
-    expect(cityForwardFields({ body: "@sf", forwarded_to_city: false }, SF_DERIVED).cityMention).toBeNull()
+    expect(
+      cityForwardFields({ body: "@sf", forwarded_to_city: false }, SF_DERIVED).cityMention,
+    ).toBeNull()
   })
 
   it("omits cityMention when no handle is stored or derivable (nothing to @mention)", () => {
     // With no usable handle, there is nothing for the body to @mention, so cityMention is null.
-    expect(cityForwardFields({ body: "@0600001", forwarded_to_city: false }, NO_HANDLE).cityMention).toBeNull()
+    expect(
+      cityForwardFields({ body: "@0600001", forwarded_to_city: false }, NO_HANDLE).cityMention,
+    ).toBeNull()
   })
 
   it("does not @city-tint a system/empty body (null body coalesces to empty, no mention)", () => {

@@ -47,6 +47,11 @@ export const broadcastDeliveries = pgTable(
       .where(sql`status IN ('pending','in_flight')`),
     index("broadcast_deliveries_rollup_idx").on(t.broadcastId, t.channel, t.status),
     index("broadcast_deliveries_created_idx").on(t.createdAt),
+    index("broadcast_deliveries_broadcast_created_idx").on(
+      t.broadcastId,
+      t.createdAt.desc(),
+      t.id.desc(),
+    ),
   ],
 )
 

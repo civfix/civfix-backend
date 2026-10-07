@@ -2,7 +2,6 @@ import { describe, it, expect, vi } from "vitest"
 import { makeMarkRoomRead } from "../../src/services/room-read-service.js"
 import type { ConversationBellKind } from "../../src/services/conversation-bell.js"
 
-
 const ROOM = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
 const USER = "11111111-1111-1111-1111-111111111111"
 const AT = new Date("2026-06-01T12:00:00.000Z")

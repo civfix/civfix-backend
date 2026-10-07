@@ -27,7 +27,7 @@ const base: ChatMessageDTO = {
   },
 }
 
-describe("F043 neutralizeChatViewerFields — no viewer-scoped state leaks in a room broadcast", () => {
+describe("F043 neutralizeChatViewerFields: no viewer-scoped state leaks in a room broadcast", () => {
   it("blanks message.mine, reaction.mine, poll.myVote and poll option.mine", () => {
     const out = neutralizeChatViewerFields(base)
     expect(out.mine).toBe(false)

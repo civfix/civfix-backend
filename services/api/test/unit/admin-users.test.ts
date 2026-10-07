@@ -1,12 +1,11 @@
 import { describe, it, expect } from "vitest"
-import { InMemoryAdminUserRepository } from "../../src/services/admin/admin-user-repository.memory.js"
+import { InMemoryAdminUserRepository } from "../helpers/admin/admin-user-repository.memory.js"
 import {
   makeAdminUserService,
   resolveUserFilter,
   type AdminUserService,
 } from "../../src/services/admin/admin-user-service.js"
 import { avatarGradient, type UserStatus } from "@civfix/shared"
-
 
 const NOW = new Date("2026-06-06T00:00:00.000Z")
 
@@ -438,7 +437,6 @@ describe("admin users mutations", () => {
     })
     expect(revoked).toHaveLength(0)
   })
-
 
   it("H3: REFUSES to grant `operator` (no console-minted operator backdoor)", async () => {
     const { repo, svc, revoked } = harness()

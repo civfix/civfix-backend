@@ -1,13 +1,12 @@
-
 import { afterAll, beforeAll, describe, expect, it } from "vitest"
 import { randomUUID } from "node:crypto"
 import type { CleanupStatus } from "@civfix/shared"
 import { withPg, type PgHarness } from "../helpers/pg.js"
 import { seedCleanup } from "../helpers/cleanups.js"
-import { parseTimeCursor, type TimeCursor } from "../../src/db/cursor-helpers.js"
+import { parseKeysetCursor, type KeysetCursor } from "../../src/db/cursor-helpers.js"
 import { makeDrizzleGuestRsvpRepository } from "../../src/services/guest-rsvp-repository.drizzle.js"
 import { makeDrizzleSocialRepository } from "../../src/services/social-repository.drizzle.js"
-import type { GuestRsvpRepository } from "../../src/services/guest-rsvp-service.js"
+import type { GuestRsvpRepository } from "../../src/services/guest-rsvp-repository.js"
 
 const pg = await withPg()
 
@@ -188,7 +187,10 @@ describe.skipIf(!pg)("guest rsvp storage (integration)", () => {
     expect(strip!.going).toBe(3)
 
     await repo.cancelGuest(guestId, new Date())
-    const afterCancel = await social.upcomingEventsFor(hostId, { limit: 10, includeAttending: true })
+    const afterCancel = await social.upcomingEventsFor(hostId, {
+      limit: 10,
+      includeAttending: true,
+    })
     expect(afterCancel.find((r) => r.id === cleanupId)!.going).toBe(2)
 
     await h.sql`UPDATE cleanups SET scheduled_at = now() - interval '2 days' WHERE id = ${cleanupId}`
@@ -210,7 +212,7 @@ describe.skipIf(!pg)("guest rsvp storage (integration)", () => {
     }
 
     const seen: string[] = []
-    let cursor: TimeCursor | null = null
+    let cursor: KeysetCursor | null = null
     for (let page = 0; page < 5; page++) {
       const result: { rows: { id: string }[]; nextCursor: string | null } = await repo.listGuests({
         cleanupId,
@@ -218,7 +220,7 @@ describe.skipIf(!pg)("guest rsvp storage (integration)", () => {
         limit: 2,
       })
       seen.push(...result.rows.map((r) => r.id))
-      cursor = parseTimeCursor(result.nextCursor, { direction: "desc" })
+      cursor = parseKeysetCursor(result.nextCursor, { direction: "desc" })
       if (cursor === null) break
     }
 
@@ -266,7 +268,11 @@ describe.skipIf(!pg)("guest rsvp storage (integration)", () => {
     await verifyGuest(upcoming, "fresh@example.org", "s3")
 
     const cutoff = new Date(Date.now() - 30 * 86_400_000)
-    const firstBatch = await repo.scrubExpiredGuestContacts({ cutoff, now: new Date(), batchSize: 1 })
+    const firstBatch = await repo.scrubExpiredGuestContacts({
+      cutoff,
+      now: new Date(),
+      batchSize: 1,
+    })
     expect(firstBatch).toBe(1)
 
     const rest = await repo.scrubExpiredGuestContacts({ cutoff, now: new Date(), batchSize: 50 })

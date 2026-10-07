@@ -1,4 +1,3 @@
-
 import sharp from "sharp"
 import ffmpegPath from "ffmpeg-static"
 import { execa } from "execa"
@@ -6,7 +5,7 @@ import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 
-export function buildExifGpsApp1(lat: number, lng: number): Buffer {
+function buildExifGpsApp1(lat: number, lng: number): Buffer {
   const toRat = (deg: number): [number, number][] => {
     const d = Math.floor(deg)
     const mf = (deg - d) * 60

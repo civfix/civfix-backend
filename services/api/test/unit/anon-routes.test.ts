@@ -2,14 +2,14 @@ import { describe, it, expect, afterEach } from "vitest"
 import { randomUUID } from "node:crypto"
 import type { FastifyInstance } from "fastify"
 import { FakeAbuseChecks, FakeMailer } from "@civfix/shared/fakes"
-import { buildServer } from "../../src/server.js"
+import { makeServer } from "../../src/server.js"
 import { loadEnv } from "../../src/env.js"
 import { InMemoryCacheClient } from "../../src/auth/cache.js"
 import { makeInMemoryStores } from "../../src/auth/stores.js"
-import { buildAuthServices } from "../../src/auth/auth-services.js"
+import { makeAuthServices } from "../../src/auth/auth-services.js"
 import { StubJwksVerifier } from "../helpers/auth.js"
 import { InMemoryCounterStore } from "../../src/abuse/counter-store.js"
-import { buildContainer, type Container } from "../../src/di.js"
+import { makeContainer, type Container } from "../../src/di.js"
 import { signAnonToken } from "../../src/abuse/anon-token.js"
 import { makeFakeSql, type FakeSqlControl } from "../helpers/fake-sql.js"
 import { makeAnonService } from "../../src/services/anon-service.js"
@@ -19,7 +19,6 @@ import { InMemoryAnonStore } from "../helpers/anon.js"
 import { clientQuery } from "../helpers/query.js"
 import type { ReportServiceOverrides } from "../../src/routes/reports.routes.js"
 import type { ReportOwner } from "../../src/services/report-service.js"
-
 
 const SIGNING_KEY = "test-anon-signing-key"
 const KEY_A = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
@@ -49,7 +48,7 @@ async function makeHarness(): Promise<Harness> {
   const cache = new InMemoryCacheClient(() => Date.now())
   const mailer = new FakeMailer()
   const verifier = new StubJwksVerifier()
-  const authServices = buildAuthServices({
+  const authServices = makeAuthServices({
     stores,
     cache,
     mailer,
@@ -108,7 +107,7 @@ async function makeHarness(): Promise<Harness> {
     presignMedia: (r2Key) => Promise.resolve({ url: `memory://${r2Key}` }),
   }
 
-  const app = await buildServer({
+  const app = await makeServer({
     env,
     authServices,
     reportOverrides,
@@ -170,7 +169,11 @@ function mirrorHeldIntoReportRepo(h: Harness, reportId: string): void {
 describe("POST /anon/reports", () => {
   it("creates a HELD report (202) with a claim code and issues an anon token", async () => {
     const { app } = await makeHarness()
-    const res = await app.inject({ method: "POST", url: "/v1/anon/reports", payload: anonPayload() })
+    const res = await app.inject({
+      method: "POST",
+      url: "/v1/anon/reports",
+      payload: anonPayload(),
+    })
     expect(res.statusCode).toBe(202)
     const body = res.json()
     expect(body.status).toBe("held")
@@ -209,10 +212,13 @@ describe("POST /anon/reports", () => {
 
   it("replays the original response for a duplicate idempotency key (still 202, same report)", async () => {
     const { app, anonStore } = await makeHarness()
-    const first = await app.inject({ method: "POST", url: "/v1/anon/reports", payload: anonPayload() })
+    const first = await app.inject({
+      method: "POST",
+      url: "/v1/anon/reports",
+      payload: anonPayload(),
+    })
     const firstBody = first.json()
-    // The replay is the SAME anon session retrying: it carries the token the first submit issued,
-    // which is what the snapshot is keyed by (F028).
+    // The snapshot is keyed by the anon token, so the replay carries the token the first submit issued.
     const anonToken = first.headers["x-anon-token"] as string
     const second = await app.inject({
       method: "POST",
@@ -227,7 +233,11 @@ describe("POST /anon/reports", () => {
 
   it("F028: a DIFFERENT anon session reusing the key gets 409, never the first submitter's snapshot", async () => {
     const { app, anonStore } = await makeHarness()
-    const first = await app.inject({ method: "POST", url: "/v1/anon/reports", payload: anonPayload() })
+    const first = await app.inject({
+      method: "POST",
+      url: "/v1/anon/reports",
+      payload: anonPayload(),
+    })
     const firstBody = first.json()
 
     const other = await app.inject({
@@ -352,7 +362,11 @@ describe("held anon report stays hidden", () => {
 
   it("GET /anon/reports/:id/status 404s a wrong claim code (no enumeration)", async () => {
     const h = await makeHarness()
-    const submit = await h.app.inject({ method: "POST", url: "/v1/anon/reports", payload: anonPayload() })
+    const submit = await h.app.inject({
+      method: "POST",
+      url: "/v1/anon/reports",
+      payload: anonPayload(),
+    })
     const { reportId } = submit.json()
     const status = await h.app.inject({
       method: "GET",
@@ -363,7 +377,11 @@ describe("held anon report stays hidden", () => {
 
   it("GET /anon/reports/:id/status 422s a missing claim code", async () => {
     const h = await makeHarness()
-    const submit = await h.app.inject({ method: "POST", url: "/v1/anon/reports", payload: anonPayload() })
+    const submit = await h.app.inject({
+      method: "POST",
+      url: "/v1/anon/reports",
+      payload: anonPayload(),
+    })
     const { reportId } = submit.json()
     const status = await h.app.inject({ method: "GET", url: `/v1/anon/reports/${reportId}/status` })
     expect(status.statusCode).toBe(422)
@@ -371,7 +389,11 @@ describe("held anon report stays hidden", () => {
 
   it("P2-7: the status endpoint has a dedicated tighter per-IP limit (429 past 30/min)", async () => {
     const h = await makeHarness()
-    const submit = await h.app.inject({ method: "POST", url: "/v1/anon/reports", payload: anonPayload() })
+    const submit = await h.app.inject({
+      method: "POST",
+      url: "/v1/anon/reports",
+      payload: anonPayload(),
+    })
     const { reportId } = submit.json()
     let saw429 = false
     for (let i = 0; i < 40; i++) {
@@ -392,7 +414,11 @@ describe("held anon report stays hidden", () => {
 describe("claim flow", () => {
   it("nudge -> sign-in -> claim links the report to the user (mine=true), single-use", async () => {
     const h = await makeHarness()
-    const submit = await h.app.inject({ method: "POST", url: "/v1/anon/reports", payload: anonPayload() })
+    const submit = await h.app.inject({
+      method: "POST",
+      url: "/v1/anon/reports",
+      payload: anonPayload(),
+    })
     const { reportId } = submit.json()
     const anonToken = submit.headers["x-anon-token"] as string
     mirrorHeldIntoReportRepo(h, reportId)
@@ -445,7 +471,11 @@ describe("claim flow", () => {
 
   it("POST /claim/nudge falls back to the civfix_anon cookie when the body omits anonToken", async () => {
     const h = await makeHarness()
-    const submit = await h.app.inject({ method: "POST", url: "/v1/anon/reports", payload: anonPayload() })
+    const submit = await h.app.inject({
+      method: "POST",
+      url: "/v1/anon/reports",
+      payload: anonPayload(),
+    })
     const { reportId } = submit.json()
     const anonToken = submit.headers["x-anon-token"] as string
     mirrorHeldIntoReportRepo(h, reportId)
@@ -471,14 +501,9 @@ describe("claim flow", () => {
   })
 })
 
-/**
- * F131: every other test in this file injects `anonOverride`, so the PRODUCTION wiring in
- * anon.routes.ts `service()` — the branch that supplies `raiseAbuseFlag` and `log` — was never
- * executed. Both default to no-ops inside the service, so before the fix a honeypot hit in production
- * wrote nothing (anon_tokens/abuse_flags never learned about the bot) and every observability line was
- * discarded, while CI proved behavior production did not have. These tests boot the route with NO
- * override and a scripted `sql` so the real closure runs.
- */
+// Every other test here injects `anonOverride`, so the production wiring that supplies `raiseAbuseFlag`
+// and `log` (both no-ops by default) never ran: a honeypot hit once wrote nothing while CI stayed green.
+// These boot the route with no override and a scripted `sql` so the real closure runs.
 describe("F131: the PRODUCTION anon service raises abuse flags and logs", () => {
   interface ProdHarness {
     app: FastifyInstance
@@ -492,10 +517,10 @@ describe("F131: the PRODUCTION anon service raises abuse flags and logs", () => 
     const env = loadEnv({ NODE_ENV: "test" })
     const db = makeFakeSql()
     const container = {
-      ...buildContainer(env),
+      ...makeContainer(env),
       getDb: () => ({ sql: db.sql }),
     } as unknown as Container
-    const app = await buildServer({ env, container })
+    const app = await makeServer({ env, container })
     const logs: { line: string; extra: Record<string, unknown> }[] = []
     app.log.info = ((extra: Record<string, unknown>, line: string) => {
       logs.push({ line, extra })

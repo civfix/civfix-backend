@@ -1,25 +1,9 @@
-
 import { AppError } from "@civfix/shared"
 import type { ClaimNudgeResponse, ClaimReportResponse, ReportDTO } from "@civfix/shared"
-import {
-  resolveAnonToken,
-  type AnonTokenDeps,
-  type AnonTokenStore,
-} from "../abuse/anon-token.js"
+import { resolveAnonToken, type AnonTokenDeps } from "../abuse/anon-token.js"
 import type { ReportOwner } from "./report-service.js"
 import { generateToken, sha256Hex } from "../auth/crypto.js"
-
-export interface PendingAnonReport {
-  reportId: string
-}
-
-export interface ClaimRepository extends AnonTokenStore {
-  rotatePendingClaimCode(
-    tokenId: string,
-    claimCodeHash: string,
-  ): Promise<PendingAnonReport | null>
-  claimByCode(claimCodeHash: string, userId: string): Promise<{ reportId: string } | null>
-}
+import type { ClaimRepository } from "./anon-repository.js"
 
 export interface ClaimServiceDeps {
   repo: ClaimRepository
@@ -28,6 +12,7 @@ export interface ClaimServiceDeps {
   enqueueHoldRelease?: (reportId: string) => Promise<void>
   newClaimCode?: () => string
   now?: () => Date
+  logger?: { warn(obj: unknown, msg?: string): void }
 }
 
 export interface ClaimService {
@@ -63,7 +48,13 @@ export function makeClaimService(deps: ClaimServiceDeps): ClaimService {
         throw AppError.notFound("Claim code not found")
       }
       if (deps.enqueueHoldRelease !== undefined) {
-        await deps.enqueueHoldRelease(claimed.reportId).catch(() => {})
+        // The claim already committed; the media-worker hold-release sweep is the backstop.
+        await deps.enqueueHoldRelease(claimed.reportId).catch((err: unknown) => {
+          deps.logger?.warn(
+            { err, reportId: claimed.reportId },
+            "claim: hold-release enqueue failed (suppressed; the sweep releases it)",
+          )
+        })
       }
       const report = await deps.getReportForOwner(claimed.reportId, { userId })
       return { report }

@@ -1,4 +1,3 @@
-
 import { describe, expect, it } from "vitest"
 import { assertNoSlur, containsSlur } from "../../src/abuse/slur-filter.js"
 
@@ -125,6 +124,31 @@ describe("assertNoSlur", () => {
       throw new Error("expected to throw")
     } catch (err) {
       expect((err as { fields?: Record<string, string> }).fields).toHaveProperty("description")
+    }
+  })
+})
+
+describe("containsSlur - doubled letters", () => {
+  it("still matches stretched doubled letters and still needs both of them", () => {
+    for (const text of ["niiiggggerrr", "fagggggot", "cooooon", "trannnnny"]) {
+      expect(containsSlur(text), text).toBe(true)
+    }
+    expect(containsSlur("niger")).toBe(false)
+  })
+
+  // Old `g+g+` style patterns backtracked over every split of the run: 358-716 ms per call here.
+  it("scans a long run of a doubled letter in linear time", () => {
+    for (const [prefix, letter] of [
+      ["ni", "g"],
+      ["fa", "g"],
+      ["c", "o"],
+      ["tra", "n"],
+      ["g", "o"],
+    ] as const) {
+      const text = prefix + letter.repeat(7990) + "x"
+      const started = performance.now()
+      expect(containsSlur(text)).toBe(false)
+      expect(performance.now() - started, `${prefix}+${letter}*7990`).toBeLessThan(50)
     }
   })
 })

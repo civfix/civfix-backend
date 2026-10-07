@@ -1,5 +1,5 @@
 /**
- * P4 Task 4.5 integration test (Docker-gated): groups in the threads inbox + group_chat bells +
+ * Integration test (Docker-gated): groups in the threads inbox + group_chat bells +
  * the read-watermark / keyset carry-ins, against a live PostGIS container (via withPg).
  *
  *   Threads inbox (service-level, the threads-report-pg pattern):
@@ -11,7 +11,7 @@
  *       back (GREATEST semantics);
  *     - a conversation_mutes ('group') row flips the thread's muted to true.
  *
- *   Bells (WS seam: handleClientFrame over the SAME pieces chat-gateway-wiring composes —
+ *   Bells (WS seam: handleClientFrame over the SAME pieces chat-gateway-wiring composes:
  *   makeGroupChatNotifier fan-out via onGroupMessage, chat-bells mention/reply notifiers, presence,
  *   and the wiring-shaped markReadOnOpen):
  *     - a member send bells the UNMUTED absent member exactly once (group_chat,
@@ -23,7 +23,7 @@
  *     - markReadOnOpen (join) clears the room's group_chat bells and leaves other rooms' bells.
  *
  *   Keyset carry-in: five messages sharing ONE transaction timestamp (identical created_at to the
- *   microsecond) page with limit 2 into 3 pages with no dupes and no skips — group history AND dm
+ *   microsecond) page with limit 2 into 3 pages with no dupes and no skips, group history AND dm
  *   history (the anchor tuple now stays in SQL; a ms-truncated JS-Date anchor would return an empty
  *   second page).
  *
@@ -46,7 +46,10 @@ import { InMemoryChatPresence } from "../../src/adapters/chat-presence.js"
 import { makeDrizzleChatRepository } from "../../src/services/chat-repository.drizzle.js"
 import { makeDrizzleDmRepository } from "../../src/services/dm-repository.drizzle.js"
 import { makeDrizzleBlocksRepository } from "../../src/services/blocks-repository.drizzle.js"
-import { canPostToGroup, makeChatGroupRepository } from "../../src/services/chat-group-repository.drizzle.js"
+import {
+  canPostToGroup,
+  makeChatGroupRepository,
+} from "../../src/services/chat-group-repository.drizzle.js"
 import { makeConversationMutesRepository } from "../../src/services/conversation-mutes-repository.drizzle.js"
 import { makeDrizzleNotificationRepository } from "../../src/services/notification-repository.drizzle.js"
 import { makeNotificationService } from "../../src/services/notification-service.js"
@@ -57,16 +60,13 @@ import {
   type ChatBellDeps,
 } from "../../src/services/chat-bells.js"
 import { makeChatMentionResolver } from "../../src/services/chat-mention-resolver.js"
-import { recordChatMentions } from "../../src/services/chat-mentions.drizzle.js"
-import { resolveMentionTargets } from "../../src/services/mention-resolver.drizzle.js"
+import { recordChatMentions } from "../../src/services/chat-mentions-repository.drizzle.js"
+import { resolveMentionTargets } from "../../src/services/mention-targets-repository.drizzle.js"
 import {
   makeDrizzleGroupThreadsSource,
   makeDrizzleThreadsRepository,
 } from "../../src/services/threads-repository.drizzle.js"
-import {
-  makeThreadsService,
-  InMemoryChatReadState,
-} from "../../src/services/threads-service.js"
+import { makeThreadsService, InMemoryChatReadState } from "../../src/services/threads-service.js"
 
 const pg = await withPg()
 
@@ -132,7 +132,9 @@ describe.skipIf(!pg)("chat groups: threads inbox + group_chat bells (integration
   async function bellsFor(
     userId: string,
   ): Promise<Array<{ type: string; title: string; body: string | null; link: string | null }>> {
-    return await h.sql<Array<{ type: string; title: string; body: string | null; link: string | null }>>`
+    return await h.sql<
+      Array<{ type: string; title: string; body: string | null; link: string | null }>
+    >`
       SELECT type, title, body, link FROM notifications WHERE user_id = ${userId} ORDER BY created_at ASC
     `
   }
@@ -196,7 +198,9 @@ describe.skipIf(!pg)("chat groups: threads inbox + group_chat bells (integration
     it("unread rides the last_read_at watermark: acking the FIRST of two messages leaves unread 1", async () => {
       const me = await newUser("Watermark Member")
       const other = await newUser("Watermark Other")
-      const groupId = await newGroup(other, [me], { joinedAt: new Date("2026-06-01T09:00:00.000Z") })
+      const groupId = await newGroup(other, [me], {
+        joinedAt: new Date("2026-06-01T09:00:00.000Z"),
+      })
 
       const m1 = await addGroupMessage(groupId, other, "one", new Date("2026-06-01T10:00:00.000Z"))
       await addGroupMessage(groupId, other, "two", new Date("2026-06-01T11:00:00.000Z"))
@@ -215,10 +219,22 @@ describe.skipIf(!pg)("chat groups: threads inbox + group_chat bells (integration
     it("watermark regression: acking an OLDER message after a newer one never moves last_read_at back", async () => {
       const me = await newUser("Regress Member")
       const other = await newUser("Regress Other")
-      const groupId = await newGroup(other, [me], { joinedAt: new Date("2026-06-01T09:00:00.000Z") })
+      const groupId = await newGroup(other, [me], {
+        joinedAt: new Date("2026-06-01T09:00:00.000Z"),
+      })
 
-      const older = await addGroupMessage(groupId, other, "older", new Date("2026-06-01T10:00:00.000Z"))
-      const newer = await addGroupMessage(groupId, other, "newer", new Date("2026-06-01T11:00:00.000Z"))
+      const older = await addGroupMessage(
+        groupId,
+        other,
+        "older",
+        new Date("2026-06-01T10:00:00.000Z"),
+      )
+      const newer = await addGroupMessage(
+        groupId,
+        other,
+        "newer",
+        new Date("2026-06-01T11:00:00.000Z"),
+      )
 
       const readAt = async (): Promise<Date | null> => {
         const rows = await h.sql<{ last_read_at: Date | null }[]>`
@@ -243,7 +259,9 @@ describe.skipIf(!pg)("chat groups: threads inbox + group_chat bells (integration
     it("a conversation_mutes ('group') row flips the thread's muted to true", async () => {
       const me = await newUser("Mute Member")
       const other = await newUser("Mute Owner")
-      const groupId = await newGroup(other, [me], { joinedAt: new Date("2026-06-01T09:00:00.000Z") })
+      const groupId = await newGroup(other, [me], {
+        joinedAt: new Date("2026-06-01T09:00:00.000Z"),
+      })
       await addGroupMessage(groupId, other, "hello", new Date("2026-06-01T10:00:00.000Z"))
 
       const before = (await threadsService().listThreads(me)).items.find((x) => x.id === groupId)
@@ -277,7 +295,8 @@ describe.skipIf(!pg)("chat groups: threads inbox + group_chat bells (integration
         isMutedFor: (userId, kind, roomId) => mutes.isMuted(userId, kind, roomId),
         isCleanupMember: () => Promise.resolve(false),
         isReportChatMember: () => Promise.resolve(false),
-        isChatGroupMember: async (groupId, userId) => (await groupRepo.roleOf(groupId, userId)) !== null,
+        isChatGroupMember: async (groupId, userId) =>
+          (await groupRepo.roleOf(groupId, userId)) !== null,
         isBlockedEitherWay: (a, b) => blocks.isBlockedEitherWay(a, b),
         presence,
         roomKeyFor,
@@ -309,7 +328,11 @@ describe.skipIf(!pg)("chat groups: threads inbox + group_chat bells (integration
         markReadOnOpen: async (kind, id, userId) => {
           if (kind !== "group") return
           await groupRepo.markRead(id, userId, new Date())
-          await notificationService.clearByTypeAndLink(userId, "group_chat", `/messages/group/${id}`)
+          await notificationService.clearByTypeAndLink(
+            userId,
+            "group_chat",
+            `/messages/group/${id}`,
+          )
         },
         chatMentions: {
           resolveChatMentions: makeChatMentionResolver({
@@ -331,13 +354,22 @@ describe.skipIf(!pg)("chat groups: threads inbox + group_chat bells (integration
     }
 
     function sessionFor(userId: string, conn: MockConnection, deps: GatewayDeps): GatewaySession {
-      return { userId, conn, joined: new Set<string>(), typingThrottle: new Map<string, number>(), deps }
+      return {
+        userId,
+        conn,
+        joined: new Set<string>(),
+        typingThrottle: new Map<string, number>(),
+        deps,
+      }
     }
 
     const frame = (f: Record<string, unknown>) => JSON.stringify(f)
 
     async function join(session: GatewaySession, groupId: string): Promise<void> {
-      await handleClientFrame(session, frame({ type: "join", cleanupId: groupId, roomKind: "group" }))
+      await handleClientFrame(
+        session,
+        frame({ type: "join", cleanupId: groupId, roomKind: "group" }),
+      )
     }
 
     it("a send bells the UNMUTED absent member exactly once; sender, PRESENT, and MUTED members get nothing", async () => {
@@ -356,7 +388,13 @@ describe.skipIf(!pg)("chat groups: threads inbox + group_chat bells (integration
 
       await handleClientFrame(
         senderSession,
-        frame({ type: "send", cleanupId: groupId, roomKind: "group", clientId: "c1", body: "hello bells" }),
+        frame({
+          type: "send",
+          cleanupId: groupId,
+          roomKind: "group",
+          clientId: "c1",
+          body: "hello bells",
+        }),
       )
 
       const bells = await waitFor(async () => {
@@ -377,7 +415,7 @@ describe.skipIf(!pg)("chat groups: threads inbox + group_chat bells (integration
       expect(await bellsFor(mutedU)).toHaveLength(0)
     })
 
-    it("a reply in a MUTED group still bells the reply target — exactly ONE, reply-flavored", async () => {
+    it("a reply in a MUTED group still bells the reply target: exactly ONE, reply-flavored", async () => {
       const target = await newUser("Muted Reply Target")
       const actor = await newUser("Group Reply Actor")
       const groupId = await newGroup(target, [actor])
@@ -447,7 +485,7 @@ describe.skipIf(!pg)("chat groups: threads inbox + group_chat bells (integration
       })
       await settle()
 
-      // Mentioned member: exactly ONE bell — the mention-flavored one, never the fan-out copy.
+      // Mentioned member: exactly ONE bell, the mention-flavored one, never the fan-out copy.
       const mentionedFinal = await bellsFor(mentioned)
       expect(mentionedFinal).toHaveLength(1)
       expect(mentionedFinal[0]).toMatchObject({
@@ -456,7 +494,7 @@ describe.skipIf(!pg)("chat groups: threads inbox + group_chat bells (integration
         link: `/messages/group/${groupId}`,
       })
       expect(mentionedBells[0]!.title).toBe("Group Mention Author mentioned you")
-      // Other member: exactly ONE bell — the plain fan-out copy.
+      // Other member: exactly ONE bell, the plain fan-out copy.
       const otherFinal = await bellsFor(other)
       expect(otherFinal).toHaveLength(1)
       expect(otherFinal[0]).toMatchObject({ type: "group_chat", title: "Group Mention Author" })
@@ -508,7 +546,7 @@ describe.skipIf(!pg)("chat groups: threads inbox + group_chat bells (integration
       })
       const remaining = await unreadLinks()
       expect(remaining).toEqual([`/messages/group/${otherGroupId}`])
-      // ...and the join also stamped the read watermark (the 4.4 behavior, unchanged).
+      // ...and the join also stamped the read watermark.
       const rows = await h.sql<{ last_read_at: Date | null }[]>`
         SELECT last_read_at FROM chat_group_members WHERE group_id = ${groupId} AND user_id = ${member}
       `

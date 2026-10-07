@@ -1,4 +1,3 @@
-
 import { describe, it, expect, vi } from "vitest"
 import {
   makeWebPushDispatcher,
@@ -14,7 +13,10 @@ const PUBLIC_ENDPOINT = "https://93.184.216.34/push/abc"
 function subscriptionToken(endpoint = PUBLIC_ENDPOINT): string {
   return JSON.stringify({
     endpoint,
-    keys: { p256dh: Buffer.alloc(65, 7).toString("base64url"), auth: Buffer.alloc(16, 3).toString("base64url") },
+    keys: {
+      p256dh: Buffer.alloc(65, 7).toString("base64url"),
+      auth: Buffer.alloc(16, 3).toString("base64url"),
+    },
   })
 }
 
@@ -137,7 +139,9 @@ describe("web push request deadline (H15)", () => {
       await vi.advanceTimersByTimeAsync(60_000)
       await run
 
-      expect(logger.warns.some(([, msg]) => String(msg).includes("batch budget exhausted"))).toBe(true)
+      expect(logger.warns.some(([, msg]) => String(msg).includes("batch budget exhausted"))).toBe(
+        true,
+      )
     } finally {
       vi.useRealTimers()
     }

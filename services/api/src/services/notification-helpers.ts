@@ -1,10 +1,6 @@
-
-import type {
-  NotificationDTO,
-  NotificationPrefsDTO,
-  NotificationType,
-} from "@civfix/shared"
-import type { NotificationPrefsRecord, NotificationRecord } from "./notification-service.js"
+import type { NotificationDTO, NotificationPrefsDTO, NotificationType } from "@civfix/shared"
+import type { NotificationPrefsRecord, NotificationRecord } from "./notification-repository.js"
+import { MINUTES_PER_HOUR } from "../lib/time.js"
 
 export const DEFAULT_PREFS: NotificationPrefsRecord = {
   push: true,
@@ -30,13 +26,17 @@ export function isFeedVisibleType(type: NotificationType): boolean {
   return !FEED_HIDDEN_NOTIFICATION_TYPES.includes(type)
 }
 
+const TIME_OF_DAY_RE = /^(\d{1,2}):(\d{2})(?::(\d{2}))?$/
+const MAX_HOUR = 23
+const MAX_MINUTE = 59
+
 export function parseTimeOfDayMinutes(value: string): number | null {
-  const m = /^(\d{1,2}):(\d{2})(?::(\d{2}))?$/.exec(value.trim())
+  const m = TIME_OF_DAY_RE.exec(value.trim())
   if (!m) return null
   const hours = Number(m[1])
   const mins = Number(m[2])
-  if (hours > 23 || mins > 59) return null
-  return hours * 60 + mins
+  if (hours > MAX_HOUR || mins > MAX_MINUTE) return null
+  return hours * MINUTES_PER_HOUR + mins
 }
 
 function minutesInZone(now: Date, tz: string): number | null {
@@ -51,11 +51,14 @@ function minutesInZone(now: Date, tz: string): number | null {
     const mm = parts.find((p) => p.type === "minute")?.value
     if (hh === undefined || mm === undefined) return null
     let h = Number(hh)
+    // Some Intl implementations render midnight as hour 24 under hour12: false.
     if (h === 24) h = 0
     const m = Number(mm)
     if (!Number.isInteger(h) || !Number.isInteger(m)) return null
-    return h * 60 + m
+    return h * MINUTES_PER_HOUR + m
   } catch {
+    // An unknown zone cannot place "now" in the user's day; failing open delivers the push rather
+    // than silencing the user around the clock.
     return null
   }
 }
@@ -78,7 +81,10 @@ export function isWithinQuietHours(
   return t >= s || t < e
 }
 
-export function typeAllowedByPrefs(type: NotificationType, prefs: NotificationPrefsRecord): boolean {
+export function typeAllowedByPrefs(
+  type: NotificationType,
+  prefs: NotificationPrefsRecord,
+): boolean {
   if (!prefs.push) return false
   switch (type) {
     case "report_update":

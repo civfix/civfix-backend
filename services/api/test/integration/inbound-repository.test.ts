@@ -1,12 +1,11 @@
-
 import { randomUUID } from "node:crypto"
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest"
 import { withPg, type PgHarness } from "../helpers/pg.js"
-import {
-  makeDrizzleInboundRepository,
-  type InboundEmailInsert,
-  type InboundRepository,
-} from "../../src/services/admin/inbound-repository.drizzle.js"
+import { makeDrizzleInboundRepository } from "../../src/services/admin/inbound-repository.drizzle.js"
+import type {
+  InboundEmailInsert,
+  InboundRepository,
+} from "../../src/services/admin/inbound-repository.js"
 
 const pg = await withPg()
 
@@ -50,7 +49,10 @@ describe.skipIf(!pg)("inbound repository (integration: real schema)", () => {
   })
 
   it("insertIdempotent dedups on the UNIQUE message_id", async () => {
-    const input = insert({ messageId: "<dup@x>", attachments: [{ key: "k", filename: "f.pdf", size: 3 }] })
+    const input = insert({
+      messageId: "<dup@x>",
+      attachments: [{ key: "k", filename: "f.pdf", size: 3 }],
+    })
     const first = await repo.insertIdempotent(input)
     expect(first.inserted).toBe(true)
     const second = await repo.insertIdempotent(input)
@@ -62,9 +64,15 @@ describe.skipIf(!pg)("inbound repository (integration: real schema)", () => {
   })
 
   it("lists newest-first, paginates by cursor, and filters by status + localPart", async () => {
-    await repo.insertIdempotent(insert({ messageId: "<a@x>", recipient: "support@civfix.org", receivedAt: new Date(1000) }))
-    await repo.insertIdempotent(insert({ messageId: "<b@x>", recipient: "hello@civfix.org", receivedAt: new Date(2000) }))
-    const third = await repo.insertIdempotent(insert({ messageId: "<c@x>", recipient: "support@civfix.org", receivedAt: new Date(3000) }))
+    await repo.insertIdempotent(
+      insert({ messageId: "<a@x>", recipient: "support@civfix.org", receivedAt: new Date(1000) }),
+    )
+    await repo.insertIdempotent(
+      insert({ messageId: "<b@x>", recipient: "hello@civfix.org", receivedAt: new Date(2000) }),
+    )
+    const third = await repo.insertIdempotent(
+      insert({ messageId: "<c@x>", recipient: "support@civfix.org", receivedAt: new Date(3000) }),
+    )
 
     const page1 = await repo.list({ limit: 2 })
     expect(page1.items).toHaveLength(2)
@@ -126,7 +134,9 @@ describe.skipIf(!pg)("inbound repository (integration: real schema)", () => {
     `
     const actorId = actor[0]!.id
     expect(await repo.setStatus(r.id, "archived", actorId)).toBe(true)
-    const audit = await h.sql<{ actor_id: string; target: string; meta: Record<string, unknown> }[]>`
+    const audit = await h.sql<
+      { actor_id: string; target: string; meta: Record<string, unknown> }[]
+    >`
       SELECT actor_id, target, meta FROM audit_log
       WHERE action = 'inbox.status_changed' AND target = ${`inbound_email:${r.id}`}
     `
@@ -144,7 +154,9 @@ describe.skipIf(!pg)("inbound repository (integration: real schema)", () => {
     expect(again).toHaveLength(2)
     expect(again[1]?.meta).toMatchObject({ status: "archived", priorStatus: "archived" })
 
-    expect(await repo.setStatus("00000000-0000-0000-0000-000000000000", "read", actorId)).toBe(false)
+    expect(await repo.setStatus("00000000-0000-0000-0000-000000000000", "read", actorId)).toBe(
+      false,
+    )
     const missing = await h.sql<{ n: number }[]>`
       SELECT count(*)::int AS n FROM audit_log
       WHERE action = 'inbox.status_changed'
@@ -212,5 +224,14 @@ describe.skipIf(!pg)("inbound repository (integration: real schema)", () => {
     expect(due[0]?.attachments?.[0]?.key).toBe("inbound-emails/stale/1-a.pdf")
     expect(due.map((r) => r.id)).not.toContain(fresh.id)
     expect(due.map((r) => r.id)).not.toContain(unread.id)
+  })
+
+  it("counts failed bounce runs per pending object and forgets them on clear", async () => {
+    const key = `inbound/pending/${randomUUID()}.eml`
+    expect(await repo.recordBounceFailure(key)).toBe(1)
+    expect(await repo.recordBounceFailure(key)).toBe(2)
+    await repo.clearBounceFailures(key)
+    expect(await repo.recordBounceFailure(key)).toBe(1)
+    await repo.clearBounceFailures(key)
   })
 })

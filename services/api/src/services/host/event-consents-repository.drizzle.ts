@@ -29,18 +29,15 @@ export interface InsertConsentInput {
 export function assertCurrentConsentVersions(consent: EventConsentInput): void {
   const fields: Record<string, string> = {}
   if (!isCurrent("terms", consent.termsVersion)) {
-    fields.termsVersion = "is out of date — reload and accept the current terms"
+    fields.termsVersion = "is out of date, so reload and accept the current terms"
   }
   if (!isCurrent("privacy", consent.disclosureVersion)) {
-    fields.disclosureVersion = "is out of date — reload and accept the current privacy notice"
+    fields.disclosureVersion = "is out of date, so reload and accept the current privacy notice"
   }
   if (Object.keys(fields).length > 0) throw AppError.validation(fields)
 }
 
-export async function insertConsent(
-  tx: Queryable,
-  input: InsertConsentInput,
-): Promise<string> {
+export async function insertConsent(tx: Queryable, input: InsertConsentInput): Promise<string> {
   assertCurrentConsentVersions(input.consent)
   if (input.subjectType === "user" && input.userId === null) {
     throw AppError.internal("event consent for a member needs a user id")

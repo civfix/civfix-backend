@@ -1,4 +1,3 @@
-
 import { describe, expect, it } from "vitest"
 import { FakeStorage } from "@civfix/shared/fakes"
 import { loadLimits } from "../../src/config.js"
@@ -9,16 +8,16 @@ import {
 } from "../../src/jobs/orphan-sweep.js"
 import { runPartitionMaintenance } from "../../src/jobs/partition-maintenance.js"
 import { runStuckSweep } from "../../src/jobs/stuck-sweep.js"
-import { MEDIA_CHECKS_JOB } from "@civfix/api/media-repo"
-import { InMemoryWorkerRepo } from "../helpers/in-memory-repo.js"
-import { MEDIA_UPLOAD_REAP_JOB, uploadReapDelaySec } from "../../src/jobs/upload-reap.js"
+import { MEDIA_CHECKS_JOB, MEDIA_UPLOAD_REAP_JOB } from "@civfix/api/queue-names"
+import { InMemoryMediaWorkerRepository } from "../helpers/in-memory-media-worker-repository.js"
+import { uploadReapDelaySec } from "../../src/jobs/upload-reap.js"
 
 const limits = loadLimits({})
 
 describe("orphan.sweep", () => {
   it("deletes only never-attached rows older than the TTL, removing their objects", async () => {
     const storage = new FakeStorage()
-    const repo = new InMemoryWorkerRepo()
+    const repo = new InMemoryMediaWorkerRepository()
     const now = new Date("2026-06-01T12:00:00Z")
     const old = new Date(now.getTime() - limits.orphanTtlMs - 60_000)
     const fresh = new Date(now.getTime() - 60_000)
@@ -68,7 +67,7 @@ describe("orphan.sweep", () => {
 
   it("never reaps a BOUND row: chat/DM, post, avatar and verification lanes all survive", async () => {
     const storage = new FakeStorage()
-    const repo = new InMemoryWorkerRepo()
+    const repo = new InMemoryMediaWorkerRepository()
     const now = new Date("2026-06-01T12:00:00Z")
     const old = new Date(now.getTime() - limits.orphanTtlMs - 60_000)
 
@@ -109,7 +108,7 @@ describe("orphan.sweep", () => {
 
   it("M10: DRAINS the backlog across pages instead of reaping one bounded batch per run", async () => {
     const storage = new FakeStorage()
-    const repo = new InMemoryWorkerRepo()
+    const repo = new InMemoryMediaWorkerRepository()
     const now = new Date("2026-06-01T12:00:00Z")
     const old = new Date(now.getTime() - limits.orphanTtlMs - 60_000)
 
@@ -127,7 +126,13 @@ describe("orphan.sweep", () => {
     }
 
     const paged = { ...limits, orphanSweepBatch: 10, orphanSweepMaxPages: 50 }
-    const res = await runOrphanSweep({ repo, storage, limits: paged, now: () => now, log: () => {} })
+    const res = await runOrphanSweep({
+      repo,
+      storage,
+      limits: paged,
+      now: () => now,
+      log: () => {},
+    })
 
     expect(res.deleted).toBe(total)
     expect(res.scanned).toBe(total)
@@ -136,7 +141,7 @@ describe("orphan.sweep", () => {
 
   it("M10: stops at orphanSweepMaxPages so one run cannot monopolize the worker", async () => {
     const storage = new FakeStorage()
-    const repo = new InMemoryWorkerRepo()
+    const repo = new InMemoryMediaWorkerRepository()
     const now = new Date("2026-06-01T12:00:00Z")
     const old = new Date(now.getTime() - limits.orphanTtlMs - 60_000)
 
@@ -153,7 +158,13 @@ describe("orphan.sweep", () => {
     }
 
     const capped = { ...limits, orphanSweepBatch: 10, orphanSweepMaxPages: 2 }
-    const res = await runOrphanSweep({ repo, storage, limits: capped, now: () => now, log: () => {} })
+    const res = await runOrphanSweep({
+      repo,
+      storage,
+      limits: capped,
+      now: () => now,
+      log: () => {},
+    })
 
     expect(res.deleted).toBe(20)
     expect(repo.byId.size).toBe(10)
@@ -161,7 +172,7 @@ describe("orphan.sweep", () => {
 
   it("never throws: a per-row delete failure is counted, not propagated", async () => {
     const storage = new FakeStorage()
-    const repo = new InMemoryWorkerRepo()
+    const repo = new InMemoryMediaWorkerRepository()
     const now = new Date("2026-06-01T12:00:00Z")
     repo.seed({
       id: "boom",
@@ -189,7 +200,7 @@ describe("orphan.sweep", () => {
 
   it("tombstones objects whose delete failed, then reclaims them on the next run", async () => {
     const storage = new FakeStorage()
-    const repo = new InMemoryWorkerRepo()
+    const repo = new InMemoryMediaWorkerRepository()
     const now = new Date("2026-06-01T12:00:00Z")
     const realDelete = storage.delete.bind(storage)
     let r2Down = true
@@ -222,7 +233,7 @@ describe("orphan.sweep", () => {
   })
 
   it("counts a key repeated inside ONE call as a single attempt (mirrors the real upsert)", async () => {
-    const repo = new InMemoryWorkerRepo()
+    const repo = new InMemoryMediaWorkerRepository()
 
     await repo.recordLeakedObjects({
       mediaId: "dup-1",
@@ -237,7 +248,7 @@ describe("orphan.sweep", () => {
 
   it("stops retrying a tombstone at the attempt cap and reports it as permanent", async () => {
     const storage = new FakeStorage()
-    const repo = new InMemoryWorkerRepo()
+    const repo = new InMemoryMediaWorkerRepository()
     const now = new Date("2026-06-01T12:00:00Z")
     storage.delete = () => Promise.reject(new Error("R2 unavailable"))
     await repo.recordLeakedObjects({ mediaId: "gone-1", keys: ["uploads/stuck"], error: "first" })
@@ -265,7 +276,7 @@ describe("orphan.sweep: legacy served-key adoption stops once drained", () => {
   it("adopts pre-0097 rows, then never scans again in this process", async () => {
     resetLegacyServedKeyAdoption()
     const storage = new FakeStorage()
-    const repo = new InMemoryWorkerRepo()
+    const repo = new InMemoryMediaWorkerRepository()
     const now = new Date("2026-06-01T12:00:00Z")
     const old = new Date(now.getTime() - limits.orphanTtlMs - 60_000)
 
@@ -286,7 +297,7 @@ describe("orphan.sweep: legacy served-key adoption stops once drained", () => {
         scans += 1
         return repo.adoptLegacyServedKeys(olderThan, limit)
       },
-    }) as InMemoryWorkerRepo
+    }) as InMemoryMediaWorkerRepository
 
     await runOrphanSweep({ repo: counting, storage, limits, now: () => now, log: () => {} })
     expect(scans).toBe(1)
@@ -302,7 +313,7 @@ describe("orphan.sweep: legacy served-key adoption stops once drained", () => {
   it("keeps scanning while a row still needs adoption", async () => {
     resetLegacyServedKeyAdoption()
     const storage = new FakeStorage()
-    const repo = new InMemoryWorkerRepo()
+    const repo = new InMemoryMediaWorkerRepository()
     const now = new Date("2026-06-01T12:00:00Z")
 
     const pending = repo.seed({
@@ -409,8 +420,8 @@ describe("media.stuck.sweep", () => {
     return { jobs, enqueued }
   }
 
-  function makeRepo(): InMemoryWorkerRepo {
-    const repo = new InMemoryWorkerRepo()
+  function makeRepo(): InMemoryMediaWorkerRepository {
+    const repo = new InMemoryMediaWorkerRepository()
     repo.now = () => now
     return repo
   }
@@ -418,7 +429,7 @@ describe("media.stuck.sweep", () => {
   let storage: FakeStorage
 
   function run(
-    repo: InMemoryWorkerRepo,
+    repo: InMemoryMediaWorkerRepository,
     jobs: { enqueue: (n: string, d: unknown, o?: unknown) => Promise<string> },
     overrides: Partial<typeof limits> = {},
     report?: (e: unknown) => void,
@@ -438,9 +449,33 @@ describe("media.stuck.sweep", () => {
   it("re-enqueues media.checks for FINALIZED rows stuck at validating past the TTL (singletonKey = uploadId)", async () => {
     const repo = makeRepo()
     const fresh = new Date(now.getTime() - 60_000)
-    repo.seed({ id: "stuck-1", uploadId: "u1", kind: "image", r2Key: "uploads/s1", status: "validating", createdAt: old, finalizedAt: old })
-    repo.seed({ id: "fresh-1", uploadId: "u2", kind: "image", r2Key: "uploads/s2", status: "validating", createdAt: fresh, finalizedAt: fresh })
-    repo.seed({ id: "ready-1", uploadId: "u3", kind: "image", r2Key: "uploads/s3", status: "ready", createdAt: old, finalizedAt: old })
+    repo.seed({
+      id: "stuck-1",
+      uploadId: "u1",
+      kind: "image",
+      r2Key: "uploads/s1",
+      status: "validating",
+      createdAt: old,
+      finalizedAt: old,
+    })
+    repo.seed({
+      id: "fresh-1",
+      uploadId: "u2",
+      kind: "image",
+      r2Key: "uploads/s2",
+      status: "validating",
+      createdAt: fresh,
+      finalizedAt: fresh,
+    })
+    repo.seed({
+      id: "ready-1",
+      uploadId: "u3",
+      kind: "image",
+      r2Key: "uploads/s3",
+      status: "ready",
+      createdAt: old,
+      finalizedAt: old,
+    })
 
     const { jobs, enqueued } = makeJobsSpy()
     const res = await run(repo, jobs)
@@ -453,13 +488,22 @@ describe("media.stuck.sweep", () => {
       uploadId: "u1",
       r2Key: "uploads/s1",
       kind: "image",
+      uploadEtag: null,
     })
     expect(enqueued[0]!.opts).toEqual({ singletonKey: "u1" })
   })
 
   it("never throws: an enqueue failure is counted + reported, the sweep continues", async () => {
     const repo = makeRepo()
-    repo.seed({ id: "stuck-1", uploadId: "u1", kind: "image", r2Key: "uploads/s1", status: "validating", createdAt: old, finalizedAt: old })
+    repo.seed({
+      id: "stuck-1",
+      uploadId: "u1",
+      kind: "image",
+      r2Key: "uploads/s1",
+      status: "validating",
+      createdAt: old,
+      finalizedAt: old,
+    })
 
     const reports: unknown[] = []
     const { jobs } = makeJobsSpy(true)
@@ -473,8 +517,24 @@ describe("media.stuck.sweep", () => {
 
   it("F087b: NEVER-FINALIZED rows are out of scope - a presigned upload whose bytes never arrived is the orphan sweep's job", async () => {
     const repo = makeRepo()
-    repo.seed({ id: "intent-1", uploadId: "u1", kind: "image", r2Key: "uploads/i1", status: "validating", createdAt: old, finalizedAt: null })
-    repo.seed({ id: "stuck-1", uploadId: "u2", kind: "image", r2Key: "uploads/s1", status: "validating", createdAt: old, finalizedAt: old })
+    repo.seed({
+      id: "intent-1",
+      uploadId: "u1",
+      kind: "image",
+      r2Key: "uploads/i1",
+      status: "validating",
+      createdAt: old,
+      finalizedAt: null,
+    })
+    repo.seed({
+      id: "stuck-1",
+      uploadId: "u2",
+      kind: "image",
+      r2Key: "uploads/s1",
+      status: "validating",
+      createdAt: old,
+      finalizedAt: old,
+    })
 
     const { jobs, enqueued } = makeJobsSpy()
     const res = await run(repo, jobs)
@@ -486,8 +546,24 @@ describe("media.stuck.sweep", () => {
 
   it("F087d: staleness is measured from FINALIZE, not presign - a late-finalized asset gets a full TTL", async () => {
     const repo = makeRepo()
-    repo.seed({ id: "late-1", uploadId: "u1", kind: "image", r2Key: "uploads/l1", status: "validating", createdAt: old, finalizedAt: new Date(now.getTime() - 60_000) })
-    repo.seed({ id: "stuck-1", uploadId: "u2", kind: "image", r2Key: "uploads/s1", status: "validating", createdAt: old, finalizedAt: old })
+    repo.seed({
+      id: "late-1",
+      uploadId: "u1",
+      kind: "image",
+      r2Key: "uploads/l1",
+      status: "validating",
+      createdAt: old,
+      finalizedAt: new Date(now.getTime() - 60_000),
+    })
+    repo.seed({
+      id: "stuck-1",
+      uploadId: "u2",
+      kind: "image",
+      r2Key: "uploads/s1",
+      status: "validating",
+      createdAt: old,
+      finalizedAt: old,
+    })
 
     const { jobs, enqueued } = makeJobsSpy()
     const res = await run(repo, jobs)
@@ -500,7 +576,16 @@ describe("media.stuck.sweep", () => {
 
   it("F087d: the give-up budget starts at finalize too - a late-finalized asset is never terminalized early", async () => {
     const repo = makeRepo()
-    repo.seed({ id: "late-1", uploadId: "u1", kind: "image", r2Key: "uploads/l1", status: "validating", createdAt: old, finalizedAt: new Date(now.getTime() - 60_000), stuckCheckCount: 9 })
+    repo.seed({
+      id: "late-1",
+      uploadId: "u1",
+      kind: "image",
+      r2Key: "uploads/l1",
+      status: "validating",
+      createdAt: old,
+      finalizedAt: new Date(now.getTime() - 60_000),
+      stuckCheckCount: 9,
+    })
 
     const { jobs } = makeJobsSpy()
     const res = await run(repo, jobs, { stuckSweepMaxAttempts: 3 })
@@ -512,7 +597,15 @@ describe("media.stuck.sweep", () => {
   it("F087b: rotates - every pick is stamped, so an over-full batch serves never-checked rows first and cannot starve", async () => {
     const repo = makeRepo()
     for (const id of ["a", "b", "c"]) {
-      repo.seed({ id, uploadId: `up-${id}`, kind: "image", r2Key: `uploads/${id}`, status: "validating", createdAt: old, finalizedAt: old })
+      repo.seed({
+        id,
+        uploadId: `up-${id}`,
+        kind: "image",
+        r2Key: `uploads/${id}`,
+        status: "validating",
+        createdAt: old,
+        finalizedAt: old,
+      })
     }
     repo.get("a")!.stuckCheckedAt = new Date(now.getTime() - 60_000)
     repo.get("b")!.stuckCheckedAt = new Date(now.getTime() - 120_000)
@@ -529,7 +622,15 @@ describe("media.stuck.sweep", () => {
 
   it("F087b: terminalizes a hopeless row after the attempt cap - status 'rejected', no further enqueue, ever", async () => {
     const repo = makeRepo()
-    repo.seed({ id: "hopeless", uploadId: "u1", kind: "image", r2Key: "uploads/h1", status: "validating", createdAt: old, finalizedAt: old })
+    repo.seed({
+      id: "hopeless",
+      uploadId: "u1",
+      kind: "image",
+      r2Key: "uploads/h1",
+      status: "validating",
+      createdAt: old,
+      finalizedAt: old,
+    })
 
     const { jobs, enqueued } = makeJobsSpy()
     for (let i = 0; i < 3; i++) {
@@ -555,7 +656,16 @@ describe("media.stuck.sweep", () => {
 
   it("F087b: a terminalize failure is counted + reported, never thrown", async () => {
     const repo = makeRepo()
-    repo.seed({ id: "hopeless", uploadId: "u1", kind: "image", r2Key: "uploads/h1", status: "validating", createdAt: old, finalizedAt: old, stuckCheckCount: 9 })
+    repo.seed({
+      id: "hopeless",
+      uploadId: "u1",
+      kind: "image",
+      r2Key: "uploads/h1",
+      status: "validating",
+      createdAt: old,
+      finalizedAt: old,
+      stuckCheckCount: 9,
+    })
     repo.failApplyResult = new Error("db down")
 
     const reports: unknown[] = []
@@ -565,9 +675,18 @@ describe("media.stuck.sweep", () => {
     expect(res).toEqual({ scanned: 1, requeued: 0, terminalized: 0, errors: 1 })
     expect(reports.length).toBe(1)
   })
-  it("F087b: NEVER clobbers a terminal status — a row the worker finished mid-sweep is left alone", async () => {
+  it("F087b: NEVER clobbers a terminal status; a row the worker finished mid-sweep is left alone", async () => {
     const repo = makeRepo()
-    repo.seed({ id: "raced", uploadId: "u1", kind: "image", r2Key: "uploads/r1", status: "validating", createdAt: old, finalizedAt: old, stuckCheckCount: 9 })
+    repo.seed({
+      id: "raced",
+      uploadId: "u1",
+      kind: "image",
+      r2Key: "uploads/r1",
+      status: "validating",
+      createdAt: old,
+      finalizedAt: old,
+      stuckCheckCount: 9,
+    })
     const { jobs } = makeJobsSpy()
     await repo.applyResult("raced", { status: "ready" })
 
@@ -583,8 +702,16 @@ describe("media.stuck.sweep", () => {
   it("F087b: a terminalized row's bytes are reclaimed, exactly like an in-band rejection", async () => {
     const repo = makeRepo()
     repo.seed({
-      id: "hopeless", uploadId: "u1", kind: "image", r2Key: "uploads/h1", thumbKey: "uploads/h1.thumb",
-      reportId: "report-1", status: "validating", createdAt: old, finalizedAt: old, stuckCheckCount: 9,
+      id: "hopeless",
+      uploadId: "u1",
+      kind: "image",
+      r2Key: "uploads/h1",
+      thumbKey: "uploads/h1.thumb",
+      reportId: "report-1",
+      status: "validating",
+      createdAt: old,
+      finalizedAt: old,
+      stuckCheckCount: 9,
     })
     storage = new FakeStorage()
     await storage.put("uploads/h1", Buffer.from([1, 2, 3]))

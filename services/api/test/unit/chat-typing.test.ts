@@ -1,9 +1,5 @@
 import { describe, it, expect, beforeEach } from "vitest"
-import {
-  handleClientFrame,
-  type GatewaySession,
-  type GatewayDeps,
-} from "../../src/ws/gateway.js"
+import { handleClientFrame, type GatewaySession, type GatewayDeps } from "../../src/ws/gateway.js"
 import { WsChatService } from "../../src/adapters/chat-service.ws.js"
 import { InMemoryChatPubSub } from "../../src/adapters/chat-pubsub.js"
 import { InMemoryChatPresence } from "../../src/adapters/chat-presence.js"
@@ -30,7 +26,13 @@ let presence: InMemoryChatPresence
 
 function sessionFor(userId: string, conn: MockConnection): GatewaySession {
   const deps: GatewayDeps = { chat, isMember: memberOf, presence }
-  return { userId, conn, joined: new Set<string>(), typingThrottle: new Map<string, number>(), deps }
+  return {
+    userId,
+    conn,
+    joined: new Set<string>(),
+    typingThrottle: new Map<string, number>(),
+    deps,
+  }
 }
 
 beforeEach(() => {
@@ -55,7 +57,6 @@ describe("typing fan-out", () => {
     expect(bTyping[0]).toMatchObject({ type: "typing", cleanupId: ROOM, userId: ALICE })
     expect(aConn.framesOfType("typing")).toHaveLength(0)
 
-    // The emitted frame is a valid server frame.
     expect(WsServerMessageSchema.safeParse(bTyping[0]).success).toBe(true)
   })
 
@@ -70,7 +71,6 @@ describe("typing fan-out", () => {
 
     expect(mConn.framesOfType("error")).toHaveLength(1)
     expect((mConn.framesOfType("error")[0] as { code: string }).code).toBe("FORBIDDEN")
-    // The member in the room saw no typing from the non-member.
     expect(aConn.framesOfType("typing")).toHaveLength(0)
   })
 

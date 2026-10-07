@@ -22,13 +22,13 @@
 -- render nothing the second time. Revoking frees the slot so the holder can
 -- re-issue over the same ledger.
 --
--- v1 ISSUES OVER THE WHOLE LEDGER — there are deliberately no issue-time filter
+-- v1 ISSUES OVER THE WHOLE LEDGER: there are deliberately no issue-time filter
 -- columns (no jurisdiction_geoid FK, no caller-supplied from/to). period_start
 -- and period_end are the DERIVED min/max of the included rows. Filters multiply
 -- documents and complicate the fingerprint for a v1 nobody asked for. There is
 -- also no `recipient` ("Issued for: Lincoln High School"): it would have to enter
 -- the fingerprint, turning every recipient into a separate document, and it adds
--- a slur-gate for no verification value — the code is what a registrar checks.
+-- a slur-gate for no verification value; the code is what a registrar checks.
 -- Both are recorded follow-ups, not omissions.
 --
 -- revoked_at, not a DELETE: a revoked certificate must keep answering "this code
@@ -36,7 +36,7 @@
 -- materially different answer for the person holding the paper. The R2 object IS
 -- deleted on revoke, so the download link dies with it.
 --
--- Erasure: NO `ON DELETE CASCADE` to users — account deletion is a soft tombstone
+-- Erasure: NO `ON DELETE CASCADE` to users; account deletion is a soft tombstone
 -- (docs/erasure-behavior.md, and see 0063's banner) and the verify projection
 -- filters on users.deleted_at instead.
 --
@@ -58,7 +58,7 @@
 -- documented in src/db/migrate.ts does not apply here.
 --
 -- Conventions (match the rest of the suite): timestamptz, additive
--- IF NOT EXISTS so a partial or repeat apply is safe. Forward-only — no down
+-- IF NOT EXISTS so a partial or repeat apply is safe. Forward-only, no down
 -- migration.
 --
 -- Ordering rules: requires 0001_core.sql (users) and 0035_volunteer_hours.sql

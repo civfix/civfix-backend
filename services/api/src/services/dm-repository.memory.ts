@@ -1,33 +1,28 @@
-
 import { randomUUID } from "node:crypto"
 import { avatarGradient, AppError } from "@civfix/shared"
 import type { ChatMessageDTO, ReactionEmoji, ReactionSummaryDTO, ReplyToDTO } from "@civfix/shared"
 import type { ChatHistoryPage } from "@civfix/shared/interfaces"
-import {
-  REPLY_EXCERPT_MAX,
-  replyDeletedTarget,
-  replyWrongRoom,
-} from "./chat-reply-hydration.js"
-import { PIN_LIST_CAP } from "./chat-repository.drizzle.js"
+import { REPLY_EXCERPT_MAX, replyDeletedTarget, replyWrongRoom } from "./chat-reply-hydration.js"
+import { PIN_LIST_CAP } from "./room-messages-repository.drizzle.js"
 import { publicAuthorIdentity } from "./public-author.js"
 import { officialPersonFlag } from "../auth/official-account.js"
 import { aroundLimits } from "./chat-history-window.js"
 import { toTombstoneDTO } from "./chat-tombstone.js"
-import type { ConversationHidesRepository } from "./conversation-hides-repository.drizzle.js"
-import { visibleAfterHides } from "./conversation-hides-repository.memory.js"
+import type { ConversationHidesRepository } from "./conversation-hides-repository.js"
 import type {
   DmMessageMeta,
   DmPersistInput,
   DmRepository,
   DmThread,
   DmThreadAggregate,
-} from "./dm-repository.drizzle.js"
+} from "./dm-repository.js"
 import type {
   BlockState,
   BlocksRepository,
   ListBlockedArgs,
   ListBlockedPage,
-} from "./blocks-repository.drizzle.js"
+} from "./blocks-repository.js"
+import { visibleAfterHides } from "./conversation-hides-repository.memory.js"
 import { LIST_BLOCKS_DEFAULT_LIMIT } from "./blocks-repository.drizzle.js"
 import type { TimeCursor } from "../db/cursor-helpers.js"
 import type { PersonDTO } from "@civfix/shared"
@@ -48,8 +43,27 @@ interface StoredDmMessage {
   insertedAtMs: number
 }
 
+// Writes are stamped at fixed one-millisecond steps so ordering is deterministic.
+const SYNTHETIC_EPOCH_MS = Date.UTC(2026, 0, 1)
+
+const PLACEHOLDER_NAME_ID_CHARS = 4
+
 function orderPair(a: string, b: string): [string, string] {
   return a < b ? [a, b] : [b, a]
+}
+
+function placeholderDisplayName(id: string): string {
+  return `User ${id.slice(0, PLACEHOLDER_NAME_ID_CHARS)}`
+}
+
+function readKey(threadId: string, userId: string): string {
+  return `${threadId}:${userId}`
+}
+
+function peerIn(thread: DmThread, userId: string): string | null {
+  if (thread.userLo === userId) return thread.userHi
+  if (thread.userHi === userId) return thread.userLo
+  return null
 }
 
 function lastSenderId(message: ChatMessageDTO): string {
@@ -76,12 +90,14 @@ export class InMemoryDmRepository implements DmRepository {
   }
 
   private userOf(id: string): DmUser {
-    return this.users.get(id) ?? { id, displayName: `User ${id.slice(0, 4)}`, handle: null, bio: null }
+    return (
+      this.users.get(id) ?? { id, displayName: placeholderDisplayName(id), handle: null, bio: null }
+    )
   }
 
   private nextDate(): Date {
     this.tick += 1
-    return new Date(Date.UTC(2026, 0, 1, 0, 0, 0, this.tick))
+    return new Date(SYNTHETIC_EPOCH_MS + this.tick)
   }
 
   private replyToFor(threadId: string, replyToId: string): ReplyToDTO | null {
@@ -106,7 +122,12 @@ export class InMemoryDmRepository implements DmRepository {
     const key = `${lo}:${hi}`
     const existingId = this.byPair.get(key)
     if (existingId) return Promise.resolve(this.threads.get(existingId)!)
-    const thread: DmThread = { id: randomUUID(), userLo: lo, userHi: hi, createdAt: this.nextDate() }
+    const thread: DmThread = {
+      id: randomUUID(),
+      userLo: lo,
+      userHi: hi,
+      createdAt: this.nextDate(),
+    }
     this.threads.set(thread.id, thread)
     this.byPair.set(key, thread.id)
     return Promise.resolve(thread)
@@ -129,10 +150,7 @@ export class InMemoryDmRepository implements DmRepository {
 
   peerOf(threadId: string, userId: string): string | null {
     const t = this.threads.get(threadId)
-    if (!t) return null
-    if (t.userLo === userId) return t.userHi
-    if (t.userHi === userId) return t.userLo
-    return null
+    return t ? peerIn(t, userId) : null
   }
 
   persist(input: DmPersistInput): Promise<ChatMessageDTO> {
@@ -253,7 +271,10 @@ export class InMemoryDmRepository implements DmRepository {
       })
       .slice(0, PIN_LIST_CAP)
       .map((m) =>
-        this.withReply(threadId, { ...m.dto, reactions: this.reactionsFor(m.dto.id, viewerUserId) }),
+        this.withReply(threadId, {
+          ...m.dto,
+          reactions: this.reactionsFor(m.dto.id, viewerUserId),
+        }),
       )
     return Promise.resolve(pins)
   }
@@ -275,7 +296,10 @@ export class InMemoryDmRepository implements DmRepository {
     const ordered = afterAnchor
       .filter((m) => !m.deleted)
       .map((m) =>
-        this.withReply(threadId, { ...m.dto, reactions: this.reactionsFor(m.dto.id, viewerUserId) }),
+        this.withReply(threadId, {
+          ...m.dto,
+          reactions: this.reactionsFor(m.dto.id, viewerUserId),
+        }),
       )
     const page = ordered.slice(0, limit)
     const nextCursor = ordered.length > limit ? (page[page.length - 1]?.id ?? null) : null
@@ -338,7 +362,10 @@ export class InMemoryDmRepository implements DmRepository {
     const stored = (this.log.get(threadId) ?? []).find((m) => m.dto.id === messageId && !m.deleted)
     if (!stored) return Promise.resolve(null)
     return Promise.resolve(
-      this.withReply(threadId, { ...stored.dto, reactions: this.reactionsFor(messageId, viewerUserId) }),
+      this.withReply(threadId, {
+        ...stored.dto,
+        reactions: this.reactionsFor(messageId, viewerUserId),
+      }),
     )
   }
 
@@ -362,14 +389,14 @@ export class InMemoryDmRepository implements DmRepository {
   }
 
   markRead(threadId: string, userId: string, at: Date): Promise<void> {
-    const key = `${threadId}:${userId}`
+    const key = readKey(threadId, userId)
     const prev = this.reads.get(key) ?? 0
     if (at.getTime() > prev) this.reads.set(key, at.getTime())
     return Promise.resolve()
   }
 
   lastReadAt(threadId: string, userId: string): Promise<Date | null> {
-    const ms = this.reads.get(`${threadId}:${userId}`)
+    const ms = this.reads.get(readKey(threadId, userId))
     return Promise.resolve(ms !== undefined ? new Date(ms) : null)
   }
 
@@ -378,13 +405,11 @@ export class InMemoryDmRepository implements DmRepository {
     if (!thread) return Promise.resolve(0)
     const baseline = Math.max(
       thread.createdAt.getTime(),
-      this.reads.get(`${threadId}:${userId}`) ?? 0,
+      this.reads.get(readKey(threadId, userId)) ?? 0,
     )
     const unread = (this.log.get(threadId) ?? []).filter(
       (m) =>
-        !m.deleted &&
-        m.dto.from?.id !== userId &&
-        new Date(m.dto.createdAt).getTime() > baseline,
+        !m.deleted && m.dto.from?.id !== userId && new Date(m.dto.createdAt).getTime() > baseline,
     ).length
     return Promise.resolve(unread)
   }
@@ -401,7 +426,7 @@ export class InMemoryDmRepository implements DmRepository {
   ): Promise<DmThreadAggregate[]> {
     const out: DmThreadAggregate[] = []
     for (const t of this.threads.values()) {
-      const peerId = t.userLo === userId ? t.userHi : t.userHi === userId ? t.userLo : null
+      const peerId = peerIn(t, userId)
       if (peerId === null) continue
       if (this.isBlockedEitherWay && (await this.isBlockedEitherWay(userId, peerId))) continue
 
@@ -415,7 +440,7 @@ export class InMemoryDmRepository implements DmRepository {
       })
       const live = (this.log.get(t.id) ?? []).filter((m) => !m.deleted).map((m) => m.dto)
       const last = live.length > 0 ? live[live.length - 1]! : null
-      const lastReadMs = this.reads.get(`${t.id}:${userId}`) ?? 0
+      const lastReadMs = this.reads.get(readKey(t.id, userId)) ?? 0
       const baseline = Math.max(t.createdAt.getTime(), lastReadMs)
       const unread = live.filter(
         (m) => m.from?.id === peerId && new Date(m.createdAt).getTime() > baseline,
@@ -434,7 +459,11 @@ export class InMemoryDmRepository implements DmRepository {
         },
         last:
           last !== null
-            ? { body: last.body ?? null, createdAt: new Date(last.createdAt), senderId: lastSenderId(last) }
+            ? {
+                body: last.body ?? null,
+                createdAt: new Date(last.createdAt),
+                senderId: lastSenderId(last),
+              }
             : null,
         unread,
       })
@@ -499,11 +528,24 @@ export class InMemoryBlocksRepository implements BlocksRepository {
     })
   }
 
+  blockedIdsAmong(actorId: string, candidateIds: string[]): Promise<Set<string>> {
+    const blocked = new Set<string>()
+    for (const id of candidateIds) {
+      if (
+        (this.edges.get(actorId)?.has(id) ?? false) ||
+        (this.edges.get(id)?.has(actorId) ?? false)
+      ) {
+        blocked.add(id)
+      }
+    }
+    return Promise.resolve(blocked)
+  }
+
   listBlocked(blockerId: string, args?: ListBlockedArgs): Promise<ListBlockedPage> {
     const limit = args?.limit ?? LIST_BLOCKS_DEFAULT_LIMIT
     const ids = [...(this.edges.get(blockerId) ?? [])].slice(0, limit)
     const blocked: PersonDTO[] = ids.map((id) => {
-      const u = this.users.get(id) ?? { id, displayName: `User ${id.slice(0, 4)}` }
+      const u = this.users.get(id) ?? { id, displayName: placeholderDisplayName(id) }
       return {
         id: u.id,
         name: u.displayName,

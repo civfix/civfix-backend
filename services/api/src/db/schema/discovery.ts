@@ -1,12 +1,7 @@
 /**
- * jurisdiction_discovery_tasks: work items for onboarding a new government jurisdiction (finding
- * contact info / report form). Created when a report lands in an area civfix does not yet route.
- *
- * `place_geojson` holds the candidate boundary; `sample_report_id` links the report that triggered
- * discovery. `status` defaults to 'open'; an operator may be assigned. Indexed by (status,
- * population DESC) so the highest-impact open tasks surface first. A PARTIAL UNIQUE on geoid WHERE
- * status <> 'done' (created in 0001_core.sql) prevents two concurrent open tasks for the same geoid
- * while still allowing historical done rows.
+ * Onboarding work items, created when a report lands in an area civfix does not yet route. A partial
+ * UNIQUE(geoid) WHERE status <> 'done' (0001_core.sql, SQL-only) prevents two concurrent open tasks for
+ * one geoid while keeping historical done rows.
  */
 
 import { sql } from "drizzle-orm"
@@ -31,7 +26,6 @@ export const jurisdictionDiscoveryTasks = pgTable(
     assignedOperatorId: uuid("assigned_operator_id").references(() => users.id),
     createdAt: timestamp("created_at", { withTimezone: true }).defaultNow(),
   },
-  // NOTE: the partial UNIQUE(geoid) WHERE status <> 'done' lives in 0001_core.sql.
   (t) => [index("jurisdiction_discovery_status_pop_idx").on(t.status, t.population.desc())],
 )
 

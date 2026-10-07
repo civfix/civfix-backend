@@ -1,4 +1,3 @@
-
 import {
   MarkThreadReadRequestSchema,
   ToggleMuteRequestSchema,
@@ -15,37 +14,31 @@ import { requireAuth } from "../auth/context.js"
 import { parse } from "./_validate.js"
 import { route } from "../versioning/route.js"
 import type { ConversationMuteRoomKind } from "../db/schema/conversation_mutes.js"
-import {
-  makeConversationMutesRepository,
-  type ConversationMutesRepository,
-} from "../services/conversation-mutes-repository.drizzle.js"
-import {
-  makeConversationHidesRepository,
-  type ConversationHidesRepository,
-} from "../services/conversation-hides-repository.drizzle.js"
+import { makeConversationMutesRepository } from "../services/conversation-mutes-repository.drizzle.js"
+import type { ConversationMutesRepository } from "../services/conversation-mutes-repository.js"
+import type { ConversationHidesRepository } from "../services/conversation-hides-repository.js"
+import type { ReportChatRepository } from "../services/report-chat-repository.js"
+import type { ChatGroupRepository } from "../services/chat-group-repository.js"
+import { makeConversationHidesRepository } from "../services/conversation-hides-repository.drizzle.js"
 import { makeDrizzleCleanupRepository } from "../services/cleanup-repository.drizzle.js"
-import {
-  makeReportChatRepository,
-  type ReportChatRepository,
-} from "../services/report-chat-repository.drizzle.js"
-import {
-  makeChatGroupRepository,
-  type ChatGroupRepository,
-} from "../services/chat-group-repository.drizzle.js"
+import { makeReportChatRepository } from "../services/report-chat-repository.drizzle.js"
+import { makeChatGroupRepository } from "../services/chat-group-repository.drizzle.js"
 import { makeDrizzleDiscussionRepository } from "../services/discussion-repository.drizzle.js"
-import type { DiscussionRepository } from "../services/discussion-types.js"
+import type { DiscussionRepository } from "../services/discussion-repository.js"
 import { isReportVisibleTo } from "../services/report-visibility.js"
 import { conversationReadSeam } from "./chat-gateway-wiring.js"
 import type { MarkRoomRead } from "../services/room-read-service.js"
 
+type ParticipatesFn = (
+  roomKind: ConversationMuteRoomKind,
+  roomId: string,
+  userId: string,
+) => Promise<boolean>
+
 export interface ConversationRoutesOverrides {
   repo: ConversationMutesRepository
   hides?: ConversationHidesRepository
-  participates?: (
-    roomKind: ConversationMuteRoomKind,
-    roomId: string,
-    userId: string,
-  ) => Promise<boolean>
+  participates: ParticipatesFn
   markRoomRead?: MarkRoomRead
 }
 
@@ -67,7 +60,10 @@ function isMutableRoomKind(roomKind: string): roomKind is ConversationMuteRoomKi
   return MUTABLE_ROOM_KINDS.has(roomKind as ConversationMuteRoomKind)
 }
 
-export async function registerConversationRoutes(app: FastifyInstance, container: Container): Promise<void> {
+export async function registerConversationRoutes(
+  app: FastifyInstance,
+  container: Container,
+): Promise<void> {
   const csrfProtect = container.csrf.protect
 
   const overrides = app.conversationRoutesOverrides
@@ -85,11 +81,7 @@ export async function registerConversationRoutes(app: FastifyInstance, container
   let reports: DiscussionRepository | undefined
   let dmParticipant: ReturnType<Container["getDmRepo"]> | undefined
 
-  const participatesReal = async (
-    roomKind: ConversationMuteRoomKind,
-    roomId: string,
-    userId: string,
-  ): Promise<boolean> => {
+  const participatesReal: ParticipatesFn = async (roomKind, roomId, userId) => {
     const sql = container.getDb().sql
     if (roomKind === "dm") {
       return (dmParticipant ??= container.getDmRepo()).isParticipant(roomId, userId)
@@ -99,18 +91,26 @@ export async function registerConversationRoutes(app: FastifyInstance, container
     }
     if (roomKind === "report") {
       if (await (reportChat ??= makeReportChatRepository(sql)).isMember(roomId, userId)) return true
-      const report = await (reports ??= makeDrizzleDiscussionRepository(sql)).findReportForDiscussion(roomId)
+      const report = await (reports ??=
+        makeDrizzleDiscussionRepository(sql)).findReportForDiscussion(roomId)
       return isReportVisibleTo(report, userId)
     }
     const access = await (groups ??= makeChatGroupRepository(sql)).accessOf(roomId, userId)
     return access !== null && (access.role !== null || access.visibility === "public")
   }
 
-  const participates = overrides ? overrides.participates : participatesReal
+  // An override built without a gate (an untyped or partial test object) must never open these routes.
+  const participates: ParticipatesFn = overrides?.participates ?? participatesReal
 
   let markRoomRead: MarkRoomRead | undefined
   const getMarkRoomRead = (): MarkRoomRead =>
     overrides?.markRoomRead ?? (markRoomRead ??= conversationReadSeam(app, container).markRoomRead)
+
+  const nudgeThread = (userId: string, roomId: string): void => {
+    void Promise.resolve(
+      container.userChannel?.publishToUser(userId, { topic: "threads", id: roomId }),
+    ).catch(() => {})
+  }
 
   route(
     app,
@@ -122,7 +122,7 @@ export async function registerConversationRoutes(app: FastifyInstance, container
       if (!isMutableRoomKind(body.roomKind)) {
         throw AppError.validation({ roomKind: "This conversation kind cannot be muted." })
       }
-      if (participates && !(await participates(body.roomKind, body.roomId, userId))) {
+      if (!(await participates(body.roomKind, body.roomId, userId))) {
         throw AppError.forbidden("You can't change notifications for this conversation.")
       }
       await getRepo().setMuted(userId, body.roomKind, body.roomId, body.muted)
@@ -141,13 +141,11 @@ export async function registerConversationRoutes(app: FastifyInstance, container
       if (!isMutableRoomKind(body.roomKind)) {
         throw AppError.validation({ roomKind: "This conversation kind cannot be hidden." })
       }
-      if (participates && !(await participates(body.roomKind, body.roomId, userId))) {
+      if (!(await participates(body.roomKind, body.roomId, userId))) {
         throw AppError.forbidden("You can't change this conversation.")
       }
       await getHidesRepo().setHidden(userId, body.roomKind, body.roomId, body.hidden)
-      void Promise.resolve(
-        container.userChannel?.publishToUser(userId, { topic: "threads", id: body.roomId }),
-      ).catch(() => {})
+      nudgeThread(userId, body.roomId)
       const payload: ToggleHiddenResponse = { hidden: body.hidden }
       reply.status(200).send(payload)
     },
@@ -160,13 +158,11 @@ export async function registerConversationRoutes(app: FastifyInstance, container
     async (request, reply) => {
       const userId = requireAuth(request)
       const body = parse(MarkThreadReadRequestSchema, request.body)
-      if (participates && !(await participates(body.roomKind, body.roomId, userId))) {
+      if (!(await participates(body.roomKind, body.roomId, userId))) {
         throw AppError.forbidden("You can't open this conversation.")
       }
       await getMarkRoomRead()(body.roomKind, body.roomId, userId)
-      void Promise.resolve(
-        container.userChannel?.publishToUser(userId, { topic: "threads", id: body.roomId }),
-      ).catch(() => {})
+      nudgeThread(userId, body.roomId)
       const payload: MarkThreadReadResponse = { ok: true }
       reply.status(200).send(payload)
     },

@@ -10,7 +10,7 @@ import { GEOCODE_CACHE_TTL_MS } from "@civfix/api/geocode-cache"
 import type {
   InboundRetentionRepository,
   ReapedInboundEmail,
-} from "@civfix/api/inbound-retention-repo"
+} from "@civfix/api/inbound-retention-repository"
 import type { Sql } from "@civfix/api/db"
 
 function makeSqlSpy(results: Array<unknown[] | Error>): {
@@ -170,7 +170,10 @@ describe("inbound_emails retention lane (H10)", () => {
   it("deletes the archived page and every attachment object on it", async () => {
     const storage = fakeInboundStorage()
     const { repo, calls } = fakeRepo([
-      [reaped("e1", "inbound-emails/a/1-x.pdf"), reaped("e2", "inbound-emails/b/1-y.pdf", "inbound-emails/b/2-z.pdf")],
+      [
+        reaped("e1", "inbound-emails/a/1-x.pdf"),
+        reaped("e2", "inbound-emails/b/1-y.pdf", "inbound-emails/b/2-z.pdf"),
+      ],
     ])
     const result = laneResult()
 

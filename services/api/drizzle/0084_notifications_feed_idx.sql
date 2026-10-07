@@ -12,7 +12,7 @@
 --
 -- PREDICATE PINNING: the literal list below MUST equal
 -- FEED_HIDDEN_NOTIFICATION_TYPES (src/services/notification-helpers.ts). notif
--- pins the pair with an enums test (WIRING REQUEST to integration — see the
+-- pins the pair with an enums test (WIRING REQUEST to integration; see the
 -- manifest). If a hidden type is added/removed, this index must be re-issued.
 --
 -- CANONICAL DDL: hand-authored source of truth. Mirror: schema/notifications.ts

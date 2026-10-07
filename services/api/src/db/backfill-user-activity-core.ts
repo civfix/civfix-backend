@@ -1,10 +1,6 @@
+import type { Sql, SqlFragment } from "./client.js"
 
-import type postgres from "postgres"
-import type { Sql } from "./client.js"
-
-type SqlFragment = postgres.Fragment
-
-export const USER_ACTIVITY_BACKFILL_BATCH = 500
+const USER_ACTIVITY_BACKFILL_BATCH = 500
 
 export async function backfillUserActivity(
   sql: Sql,
@@ -59,7 +55,9 @@ export async function backfillUserActivity(
     scanned += page.length
     filled += updated.length
     cursor = page[page.length - 1]!.id
-    log(`page of ${page.length} (filled ${updated.length}); running scanned=${scanned}, filled=${filled}`)
+    log(
+      `page of ${page.length} (filled ${updated.length}); running scanned=${scanned}, filled=${filled}`,
+    )
   }
 
   return { scanned, filled }

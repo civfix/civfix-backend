@@ -6,19 +6,25 @@ import type {
   BroadcastStatus,
   DeliveryStatus,
 } from "@civfix/shared"
-import type { Queryable, Sql } from "../../db/client.js"
-import { listGuestAudiencePage, listMemberAudiencePage } from "./broadcast-audience-sql.js"
+import type { Queryable, Sql, SqlFragment } from "../../db/client.js"
+import { keysetInstant, keysetPredicate } from "../../db/cursor-helpers.js"
+import type { WriteAuditInput } from "../admin/audit.js"
+import { insertAuditRow } from "../admin/audit-repository.drizzle.js"
+import { likeContains } from "../../db/like.js"
+import { makeDrizzleBroadcastAudienceRepository } from "./broadcast-audience-repository.drizzle.js"
 import type {
   AdminBroadcastListQuery,
   AnnouncementCap,
   AnnouncementListQuery,
+  AudienceCountQuery,
   AudiencePageQuery,
   BroadcastListQuery,
   BroadcastRepository,
   DeliveryListQuery,
   DeliveryListRow,
+  KeysetRow,
 } from "./broadcast-repository.js"
-import type { NotificationPrefsRecord } from "../notification-service.js"
+import type { NotificationPrefsRecord } from "../notification-repository.js"
 import type {
   AdminBroadcastRow,
   AdminHostListParams,
@@ -37,7 +43,7 @@ import type {
   HostMessagingState,
   MemberContact,
 } from "./broadcast-types.js"
-import { ANNOUNCEMENT_VISIBLE_STATUSES } from "./broadcast-types.js"
+import { ANNOUNCEMENT_VISIBLE_STATUSES, DEFAULT_BROADCAST_CHUNK_SIZE } from "./broadcast-types.js"
 
 interface BroadcastRowSelect {
   id: string
@@ -99,8 +105,23 @@ function toRecord(row: BroadcastRowSelect): BroadcastRecord {
   }
 }
 
-function joinSet(sql: Sql, fragments: Array<ReturnType<Sql>>): ReturnType<Sql> {
-  return fragments.reduce((acc, frag, i) => (i === 0 ? frag : sql`${acc}, ${frag}`))
+type CursorRowSelect = BroadcastRowSelect & { cursor_at: string }
+
+function toKeysetRecord(row: CursorRowSelect): KeysetRow<BroadcastRecord> {
+  return { ...toRecord(row), cursorAt: row.cursor_at }
+}
+
+function broadcastColumns(tag: Queryable) {
+  return tag`id, cleanup_id, created_by, kind, reminder_offset_min, status, subject, body_md,
+               cta_label, cta_url, segment, channels, reply_to, scheduled_at, planned_at, started_at,
+               finished_at, chunk_size, chunk_count, recipient_count, sent_count, failed_count,
+               suppressed_count, content_scrubbed_at, created_at, updated_at`
+}
+
+function joinSet(sql: Sql, fragments: SqlFragment[]): SqlFragment {
+  const [first, ...rest] = fragments
+  if (first === undefined) throw new Error("broadcast UPDATE needs at least one column to set")
+  return rest.reduce((acc, frag) => sql`${acc}, ${frag}`, first)
 }
 
 function jsonParam(sql: Sql, value: unknown): ReturnType<Sql["json"]> | null {
@@ -116,13 +137,52 @@ function firstName(displayName: string): string {
   return space === -1 ? trimmed : trimmed.slice(0, space)
 }
 
+interface EventContextRow {
+  id: string
+  title: string
+  page_slug: string | null
+  scheduled_at: Date
+  ends_at: Date | null
+  timezone: string | null
+  address: string | null
+  status: string
+  organizer_user_id: string
+  organization_suspended: boolean
+  host_reply_to: string | null
+  host_reply_to_verified_at: Date | null
+}
+
+function selectEventContext(sql: Queryable): SqlFragment {
+  return sql`
+        SELECT c.id, c.title, c.page_slug, c.scheduled_at, c.ends_at, c.timezone, c.address, c.status,
+               c.organizer_user_id, c.host_reply_to, c.host_reply_to_verified_at,
+               (o.suspended_at IS NOT NULL) AS organization_suspended
+          FROM cleanups c
+          LEFT JOIN organizations o ON o.id = c.organization_id AND o.deleted_at IS NULL`
+}
+
+function toEventContext(row: EventContextRow): EventBroadcastContext {
+  return {
+    cleanupId: row.id,
+    title: row.title,
+    pageSlug: row.page_slug,
+    scheduledAt: row.scheduled_at,
+    endsAt: row.ends_at,
+    timezone: row.timezone,
+    address: row.address,
+    status: row.status,
+    organizerUserId: row.organizer_user_id,
+    organizationSuspended: row.organization_suspended,
+    replyTo: row.host_reply_to,
+    replyToVerified: row.host_reply_to_verified_at !== null,
+  }
+}
+
 export function makeDrizzleBroadcastRepository(sql: Sql): BroadcastRepository {
+  const audience = makeDrizzleBroadcastAudienceRepository(sql)
   async function selectById(broadcastId: string): Promise<BroadcastRecord | null> {
     const rows = await sql<BroadcastRowSelect[]>`
-      SELECT id, cleanup_id, created_by, kind, reminder_offset_min, status, subject, body_md,
-               cta_label, cta_url, segment, channels, reply_to, scheduled_at, planned_at, started_at,
-               finished_at, chunk_size, chunk_count, recipient_count, sent_count, failed_count,
-               suppressed_count, content_scrubbed_at, created_at, updated_at FROM broadcasts WHERE id = ${broadcastId} LIMIT 1`
+      SELECT ${broadcastColumns(sql)} FROM broadcasts WHERE id = ${broadcastId} LIMIT 1`
     return rows[0] ? toRecord(rows[0]) : null
   }
 
@@ -133,18 +193,15 @@ export function makeDrizzleBroadcastRepository(sql: Sql): BroadcastRepository {
     const rows = await db<BroadcastRowSelect[]>`
         INSERT INTO broadcasts (
           cleanup_id, created_by, kind, reminder_offset_min, status, subject, body_md,
-          cta_label, cta_url, segment, channels, reply_to, scheduled_at, chunk_size
+          cta_label, cta_url, segment, channels, reply_to, scheduled_at, started_at, chunk_size
         ) VALUES (
           ${input.cleanupId}, ${input.createdBy}, ${input.kind}, ${input.reminderOffsetMin ?? null},
           ${input.status ?? "draft"}, ${input.subject}, ${input.bodyMd}, ${input.ctaLabel ?? null},
           ${input.ctaUrl ?? null}, ${jsonParam(sql, input.segment)},
           ${input.channels}::text[], ${input.replyTo ?? null}, ${input.scheduledAt ?? null},
-          ${input.chunkSize ?? 200}
+          ${input.startedAt ?? null}, ${input.chunkSize ?? DEFAULT_BROADCAST_CHUNK_SIZE}
         )
-        RETURNING id, cleanup_id, created_by, kind, reminder_offset_min, status, subject, body_md,
-               cta_label, cta_url, segment, channels, reply_to, scheduled_at, planned_at, started_at,
-               finished_at, chunk_size, chunk_count, recipient_count, sent_count, failed_count,
-               suppressed_count, content_scrubbed_at, created_at, updated_at`
+        RETURNING ${broadcastColumns(sql)}`
     return toRecord(rows[0]!)
   }
 
@@ -166,25 +223,22 @@ export function makeDrizzleBroadcastRepository(sql: Sql): BroadcastRepository {
              AND created_at >= ${cap.since}`
         if ((rows[0]?.n ?? 0) >= cap.max) return null
         return insertBroadcast(tx, input)
-      }) as Promise<BroadcastRecord | null>
+      })
     },
 
     async createIfAbsent(input: BroadcastCreateInput): Promise<BroadcastRecord | null> {
       const rows = await sql<BroadcastRowSelect[]>`
         INSERT INTO broadcasts (
           cleanup_id, created_by, kind, reminder_offset_min, status, subject, body_md,
-          segment, channels, reply_to
+          segment, channels, reply_to, started_at
         ) VALUES (
           ${input.cleanupId}, ${input.createdBy}, ${input.kind}, ${input.reminderOffsetMin ?? null},
           ${input.status ?? "sending"}, ${input.subject}, ${input.bodyMd},
           ${jsonParam(sql, input.segment)}, ${input.channels}::text[],
-          ${input.replyTo ?? null}
+          ${input.replyTo ?? null}, ${input.startedAt ?? null}
         )
         ON CONFLICT DO NOTHING
-        RETURNING id, cleanup_id, created_by, kind, reminder_offset_min, status, subject, body_md,
-               cta_label, cta_url, segment, channels, reply_to, scheduled_at, planned_at, started_at,
-               finished_at, chunk_size, chunk_count, recipient_count, sent_count, failed_count,
-               suppressed_count, content_scrubbed_at, created_at, updated_at`
+        RETURNING ${broadcastColumns(sql)}`
       return rows[0] ? toRecord(rows[0]) : null
     },
 
@@ -192,52 +246,54 @@ export function makeDrizzleBroadcastRepository(sql: Sql): BroadcastRepository {
 
     async findForEvent(cleanupId: string, broadcastId: string): Promise<BroadcastRecord | null> {
       const rows = await sql<BroadcastRowSelect[]>`
-        SELECT id, cleanup_id, created_by, kind, reminder_offset_min, status, subject, body_md,
-               cta_label, cta_url, segment, channels, reply_to, scheduled_at, planned_at, started_at,
-               finished_at, chunk_size, chunk_count, recipient_count, sent_count, failed_count,
-               suppressed_count, content_scrubbed_at, created_at, updated_at FROM broadcasts
+        SELECT ${broadcastColumns(sql)} FROM broadcasts
          WHERE id = ${broadcastId} AND cleanup_id = ${cleanupId}
          LIMIT 1`
       return rows[0] ? toRecord(rows[0]) : null
     },
 
-    async list(query: BroadcastListQuery): Promise<BroadcastRecord[]> {
-      const statusFilter =
-        query.status !== undefined ? sql`AND status = ${query.status}` : sql``
+    async findEventCancellation(cleanupId: string): Promise<BroadcastRecord | null> {
+      const rows = await sql<BroadcastRowSelect[]>`
+        SELECT ${broadcastColumns(sql)} FROM broadcasts
+         WHERE cleanup_id = ${cleanupId} AND kind = 'event_cancelled'
+         LIMIT 1`
+      return rows[0] ? toRecord(rows[0]) : null
+    },
+
+    async list(query: BroadcastListQuery): Promise<KeysetRow<BroadcastRecord>[]> {
+      const statusFilter = query.status !== undefined ? sql`AND status = ${query.status}` : sql``
       const cursorFilter =
         query.cursor !== null
-          ? sql`AND (created_at, id) < (${query.cursor.createdAt}, ${query.cursor.id})`
+          ? sql`AND ${keysetPredicate(sql, sql`created_at`, sql`id`, query.cursor)}`
           : sql``
-      const rows = await sql<BroadcastRowSelect[]>`
-        SELECT id, cleanup_id, created_by, kind, reminder_offset_min, status, subject, body_md,
-               cta_label, cta_url, segment, channels, reply_to, scheduled_at, planned_at, started_at,
-               finished_at, chunk_size, chunk_count, recipient_count, sent_count, failed_count,
-               suppressed_count, content_scrubbed_at, created_at, updated_at FROM broadcasts
+      const rows = await sql<CursorRowSelect[]>`
+        SELECT ${broadcastColumns(sql)},
+               ${keysetInstant(sql, sql`created_at`)} AS cursor_at
+          FROM broadcasts
          WHERE cleanup_id = ${query.cleanupId}
            ${statusFilter}
            ${cursorFilter}
          ORDER BY created_at DESC, id DESC
          LIMIT ${query.limit}`
-      return rows.map(toRecord)
+      return rows.map(toKeysetRecord)
     },
 
-    async listAnnouncements(query: AnnouncementListQuery): Promise<BroadcastRecord[]> {
+    async listAnnouncements(query: AnnouncementListQuery): Promise<KeysetRow<BroadcastRecord>[]> {
       const cursorFilter =
         query.cursor !== null
-          ? sql`AND (created_at, id) < (${query.cursor.createdAt}, ${query.cursor.id})`
+          ? sql`AND ${keysetPredicate(sql, sql`created_at`, sql`id`, query.cursor)}`
           : sql``
-      const rows = await sql<BroadcastRowSelect[]>`
-        SELECT id, cleanup_id, created_by, kind, reminder_offset_min, status, subject, body_md,
-               cta_label, cta_url, segment, channels, reply_to, scheduled_at, planned_at, started_at,
-               finished_at, chunk_size, chunk_count, recipient_count, sent_count, failed_count,
-               suppressed_count, content_scrubbed_at, created_at, updated_at FROM broadcasts
+      const rows = await sql<CursorRowSelect[]>`
+        SELECT ${broadcastColumns(sql)},
+               ${keysetInstant(sql, sql`created_at`)} AS cursor_at
+          FROM broadcasts
          WHERE cleanup_id = ${query.cleanupId}
            AND kind = ${ANNOUNCEMENT_BROADCAST_KIND}
            AND status = ANY(${[...ANNOUNCEMENT_VISIBLE_STATUSES]}::text[])
            ${cursorFilter}
          ORDER BY created_at DESC, id DESC
          LIMIT ${query.limit}`
-      return rows.map(toRecord)
+      return rows.map(toKeysetRecord)
     },
 
     async countAnnouncementsSince(cleanupId: string, since: Date): Promise<number> {
@@ -250,7 +306,7 @@ export function makeDrizzleBroadcastRepository(sql: Sql): BroadcastRepository {
       return rows[0]?.n ?? 0
     },
 
-    async listAdmin(query: AdminBroadcastListQuery): Promise<AdminBroadcastRow[]> {
+    async listAdmin(query: AdminBroadcastListQuery): Promise<KeysetRow<AdminBroadcastRow>[]> {
       const statusFilter = query.status !== undefined ? sql`AND b.status = ${query.status}` : sql``
       const kindFilter = query.kind !== undefined ? sql`AND b.kind = ${query.kind}` : sql``
       const eventFilter =
@@ -261,10 +317,10 @@ export function makeDrizzleBroadcastRepository(sql: Sql): BroadcastRepository {
       const toFilter = query.to !== undefined ? sql`AND b.created_at <= ${query.to}` : sql``
       const cursorFilter =
         query.cursor !== null
-          ? sql`AND (b.created_at, b.id) < (${query.cursor.createdAt}, ${query.cursor.id})`
+          ? sql`AND ${keysetPredicate(sql, sql`b.created_at`, sql`b.id`, query.cursor)}`
           : sql``
       const rows = await sql<
-        (BroadcastRowSelect & {
+        (CursorRowSelect & {
           event_title: string | null
           created_by_name: string | null
           created_by_handle: string | null
@@ -276,6 +332,7 @@ export function makeDrizzleBroadcastRepository(sql: Sql): BroadcastRepository {
                b.planned_at, b.started_at, b.finished_at, b.chunk_size, b.chunk_count,
                b.recipient_count, b.sent_count, b.failed_count, b.suppressed_count,
                b.content_scrubbed_at, b.created_at, b.updated_at,
+               ${keysetInstant(sql, sql`b.created_at`)} AS cursor_at,
                c.title AS event_title,
                u.display_name AS created_by_name,
                u.handle AS created_by_handle,
@@ -294,7 +351,7 @@ export function makeDrizzleBroadcastRepository(sql: Sql): BroadcastRepository {
          ORDER BY b.created_at DESC, b.id DESC
          LIMIT ${query.limit}`
       return rows.map((row) => ({
-        ...toRecord(row),
+        ...toKeysetRecord(row),
         eventTitle: row.event_title,
         createdByName: row.created_by_name,
         createdByHandle: row.created_by_handle,
@@ -302,7 +359,8 @@ export function makeDrizzleBroadcastRepository(sql: Sql): BroadcastRepository {
       }))
     },
 
-    async listAdminHosts(params: AdminHostListParams): Promise<AdminHostRow[]> {
+    async listAdminHosts(params: AdminHostListParams): Promise<KeysetRow<AdminHostRow>[]> {
+      const sortAt = sql`COALESCE(agg.last_broadcast_at, 'epoch'::timestamptz)`
       const suspendedFilter =
         params.suspended === undefined
           ? sql``
@@ -311,11 +369,11 @@ export function makeDrizzleBroadcastRepository(sql: Sql): BroadcastRepository {
             : sql`AND NOT COALESCE(m.host_messaging_suspended, false)`
       const search =
         params.q !== undefined && params.q.length > 0
-          ? sql`AND (u.display_name ILIKE ${`%${params.q}%`} OR u.handle ILIKE ${`%${params.q}%`})`
+          ? sql`AND (u.display_name ILIKE ${likeContains(params.q)} ESCAPE '\\' OR u.handle ILIKE ${likeContains(params.q)} ESCAPE '\\')`
           : sql``
       const cursorFilter =
         params.cursor !== null
-          ? sql`AND (COALESCE(agg.last_broadcast_at, 'epoch'::timestamptz), u.id) < (${params.cursor.at}, ${params.cursor.id}::uuid)`
+          ? sql`AND ${keysetPredicate(sql, sortAt, sql`u.id`, params.cursor)}`
           : sql``
       const rows = await sql<
         {
@@ -336,7 +394,7 @@ export function makeDrizzleBroadcastRepository(sql: Sql): BroadcastRepository {
           suppressed_count: string | number
           events_messaged: string | number
           last_broadcast_at: Date | null
-          sort_at: Date
+          cursor_at: string
         }[]
       >`
         WITH agg AS (
@@ -368,7 +426,8 @@ export function makeDrizzleBroadcastRepository(sql: Sql): BroadcastRepository {
                COALESCE(agg.suppressed_count, 0) AS suppressed_count,
                COALESCE(agg.events_messaged, 0) AS events_messaged,
                agg.last_broadcast_at,
-               COALESCE(agg.last_broadcast_at, 'epoch'::timestamptz) AS sort_at
+               ${sortAt} AS sort_at,
+               ${keysetInstant(sql, sortAt)} AS cursor_at
           FROM candidates c
           JOIN users u ON u.id = c.user_id AND u.deleted_at IS NULL
           LEFT JOIN agg ON agg.user_id = c.user_id
@@ -406,7 +465,7 @@ export function makeDrizzleBroadcastRepository(sql: Sql): BroadcastRepository {
         suppressedCount: Number(row.suppressed_count),
         eventsMessaged: Number(row.events_messaged),
         lastBroadcastAt: row.last_broadcast_at,
-        sortAt: row.sort_at,
+        cursorAt: row.cursor_at,
       }))
     },
 
@@ -415,7 +474,7 @@ export function makeDrizzleBroadcastRepository(sql: Sql): BroadcastRepository {
       broadcastId: string,
       patch: BroadcastDraftPatch,
     ): Promise<BroadcastRecord | null> {
-      const sets: Array<ReturnType<Sql>> = []
+      const sets: SqlFragment[] = []
       if (patch.subject !== undefined) sets.push(sql`subject = ${patch.subject}`)
       if (patch.bodyMd !== undefined) sets.push(sql`body_md = ${patch.bodyMd}`)
       if ("ctaLabel" in patch) sets.push(sql`cta_label = ${patch.ctaLabel ?? null}`)
@@ -427,10 +486,7 @@ export function makeDrizzleBroadcastRepository(sql: Sql): BroadcastRepository {
       const rows = await sql<BroadcastRowSelect[]>`
         UPDATE broadcasts SET ${joinSet(sql, sets)}, updated_at = now()
          WHERE id = ${broadcastId} AND cleanup_id = ${cleanupId} AND status = 'draft'
-        RETURNING id, cleanup_id, created_by, kind, reminder_offset_min, status, subject, body_md,
-               cta_label, cta_url, segment, channels, reply_to, scheduled_at, planned_at, started_at,
-               finished_at, chunk_size, chunk_count, recipient_count, sent_count, failed_count,
-               suppressed_count, content_scrubbed_at, created_at, updated_at`
+        RETURNING ${broadcastColumns(sql)}`
       return rows[0] ? toRecord(rows[0]) : null
     },
 
@@ -449,7 +505,7 @@ export function makeDrizzleBroadcastRepository(sql: Sql): BroadcastRepository {
       to: BroadcastStatus,
       fields = {},
     ): Promise<BroadcastRecord | null> {
-      const sets: Array<ReturnType<Sql>> = [sql`status = ${to}`]
+      const sets: SqlFragment[] = [sql`status = ${to}`]
       if ("scheduledAt" in fields) sets.push(sql`scheduled_at = ${fields.scheduledAt ?? null}`)
       if ("startedAt" in fields) sets.push(sql`started_at = ${fields.startedAt ?? null}`)
       if ("finishedAt" in fields) sets.push(sql`finished_at = ${fields.finishedAt ?? null}`)
@@ -457,10 +513,7 @@ export function makeDrizzleBroadcastRepository(sql: Sql): BroadcastRepository {
       const rows = await sql<BroadcastRowSelect[]>`
         UPDATE broadcasts SET ${joinSet(sql, sets)}, updated_at = now()
          WHERE id = ${broadcastId} AND status = ANY(${[...from]}::text[])
-        RETURNING id, cleanup_id, created_by, kind, reminder_offset_min, status, subject, body_md,
-               cta_label, cta_url, segment, channels, reply_to, scheduled_at, planned_at, started_at,
-               finished_at, chunk_size, chunk_count, recipient_count, sent_count, failed_count,
-               suppressed_count, content_scrubbed_at, created_at, updated_at`
+        RETURNING ${broadcastColumns(sql)}`
       return rows[0] ? toRecord(rows[0]) : null
     },
 
@@ -570,7 +623,9 @@ export function makeDrizzleBroadcastRepository(sql: Sql): BroadcastRepository {
       const reasons = outcomes.map((o) => o.suppressionReason ?? null)
       const failures = outcomes.map((o) => o.failureKind ?? null)
       const providerIds = outcomes.map((o) => o.providerMessageId ?? null)
-      const sentAts = outcomes.map((o) => o.sentAt ?? null)
+      // postgres.js types an array parameter by its first element, so a Date-led array binds as a
+      // scalar timestamptz and the ::timestamptz[] cast fails (42846); ISO strings bind untyped.
+      const sentAts = outcomes.map((o) => o.sentAt?.toISOString() ?? null)
       await sql`
         UPDATE broadcast_deliveries d
            SET status = t.status,
@@ -628,9 +683,7 @@ export function makeDrizzleBroadcastRepository(sql: Sql): BroadcastRepository {
     },
 
     async deliveryCounts(broadcastId: string): Promise<DeliveryCounts> {
-      const rows = await sql<
-        { status: DeliveryStatus; n: string }[]
-      >`
+      const rows = await sql<{ status: DeliveryStatus; n: string }[]>`
         SELECT status, count(*)::text AS n
           FROM broadcast_deliveries
          WHERE broadcast_id = ${broadcastId}
@@ -661,19 +714,17 @@ export function makeDrizzleBroadcastRepository(sql: Sql): BroadcastRepository {
               FROM broadcast_deliveries WHERE broadcast_id = ${broadcastId}
           ) AS c
          WHERE b.id = ${broadcastId}
-        RETURNING id, cleanup_id, created_by, kind, reminder_offset_min, status, subject, body_md,
-               cta_label, cta_url, segment, channels, reply_to, scheduled_at, planned_at, started_at,
-               finished_at, chunk_size, chunk_count, recipient_count, sent_count, failed_count,
-               suppressed_count, content_scrubbed_at, created_at, updated_at`
+        RETURNING ${broadcastColumns(sql)}`
       return rows[0] ? toRecord(rows[0]) : null
     },
 
-    async listDeliveries(query: DeliveryListQuery): Promise<DeliveryListRow[]> {
+    async listDeliveries(query: DeliveryListQuery): Promise<KeysetRow<DeliveryListRow>[]> {
       const statusFilter = query.status !== undefined ? sql`AND status = ${query.status}` : sql``
-      const channelFilter = query.channel !== undefined ? sql`AND channel = ${query.channel}` : sql``
+      const channelFilter =
+        query.channel !== undefined ? sql`AND channel = ${query.channel}` : sql``
       const cursorFilter =
         query.cursor !== null
-          ? sql`AND (created_at, id) < (${query.cursor.createdAt}, ${query.cursor.id})`
+          ? sql`AND ${keysetPredicate(sql, sql`created_at`, sql`id`, query.cursor)}`
           : sql``
       const rows = await sql<
         {
@@ -686,10 +737,11 @@ export function makeDrizzleBroadcastRepository(sql: Sql): BroadcastRepository {
           attempts: number
           sent_at: Date | null
           created_at: Date
+          cursor_at: string
         }[]
       >`
         SELECT id, channel, recipient_kind, status, suppression_reason, failure_kind, attempts,
-               sent_at, created_at
+               sent_at, created_at, ${keysetInstant(sql, sql`created_at`)} AS cursor_at
           FROM broadcast_deliveries
          WHERE broadcast_id = ${query.broadcastId}
            ${statusFilter}
@@ -707,6 +759,7 @@ export function makeDrizzleBroadcastRepository(sql: Sql): BroadcastRepository {
         attempts: row.attempts,
         sentAt: row.sent_at,
         createdAt: row.created_at,
+        cursorAt: row.cursor_at,
       }))
     },
 
@@ -816,45 +869,24 @@ export function makeDrizzleBroadcastRepository(sql: Sql): BroadcastRepository {
     },
 
     async eventContext(cleanupId: string): Promise<EventBroadcastContext | null> {
-      const rows = await sql<
-        {
-          id: string
-          title: string
-          page_slug: string | null
-          scheduled_at: Date
-          ends_at: Date | null
-          timezone: string | null
-          address: string | null
-          status: string
-          organizer_user_id: string
-          organization_suspended: boolean
-          host_reply_to: string | null
-          host_reply_to_verified_at: Date | null
-        }[]
-      >`
-        SELECT c.id, c.title, c.page_slug, c.scheduled_at, c.ends_at, c.timezone, c.address, c.status,
-               c.organizer_user_id, c.host_reply_to, c.host_reply_to_verified_at,
-               (o.suspended_at IS NOT NULL) AS organization_suspended
-          FROM cleanups c
-          LEFT JOIN organizations o ON o.id = c.organization_id AND o.deleted_at IS NULL
+      const rows = await sql<EventContextRow[]>`
+        ${selectEventContext(sql)}
          WHERE c.id = ${cleanupId}
          LIMIT 1`
       const row = rows[0]
-      if (row === undefined) return null
-      return {
-        cleanupId: row.id,
-        title: row.title,
-        pageSlug: row.page_slug,
-        scheduledAt: row.scheduled_at,
-        endsAt: row.ends_at,
-        timezone: row.timezone,
-        address: row.address,
-        status: row.status,
-        organizerUserId: row.organizer_user_id,
-        organizationSuspended: row.organization_suspended,
-        replyTo: row.host_reply_to,
-        replyToVerified: row.host_reply_to_verified_at !== null,
-      }
+      return row === undefined ? null : toEventContext(row)
+    },
+
+    async eventContexts(
+      cleanupIds: readonly string[],
+    ): Promise<Map<string, EventBroadcastContext>> {
+      const out = new Map<string, EventBroadcastContext>()
+      if (cleanupIds.length === 0) return out
+      const rows = await sql<EventContextRow[]>`
+        ${selectEventContext(sql)}
+         WHERE c.id = ANY(${[...cleanupIds]}::uuid[])`
+      for (const row of rows) out.set(row.id, toEventContext(row))
+      return out
     },
 
     async hostMessagingState(userId: string): Promise<HostMessagingState | null> {
@@ -875,14 +907,22 @@ export function makeDrizzleBroadcastRepository(sql: Sql): BroadcastRepository {
       }
     },
 
-    async setHostMessagingSuspended(userId: string, suspended: boolean): Promise<boolean> {
-      const rows = await sql<{ user_id: string }[]>`
-        INSERT INTO user_moderation (user_id, host_messaging_suspended)
-        VALUES (${userId}, ${suspended})
-        ON CONFLICT (user_id) DO UPDATE
-          SET host_messaging_suspended = ${suspended}, updated_at = now()
-        RETURNING user_id`
-      return rows.length > 0
+    setHostMessagingSuspended(
+      userId: string,
+      suspended: boolean,
+      audit: WriteAuditInput,
+    ): Promise<boolean> {
+      return sql.begin(async (tx) => {
+        const rows = await tx<{ user_id: string }[]>`
+          INSERT INTO user_moderation (user_id, host_messaging_suspended)
+          SELECT u.id, ${suspended} FROM users u WHERE u.id = ${userId} AND u.deleted_at IS NULL
+          ON CONFLICT (user_id) DO UPDATE
+            SET host_messaging_suspended = ${suspended}, updated_at = now()
+          RETURNING user_id`
+        if (rows.length === 0) return false
+        await insertAuditRow(tx, audit)
+        return true
+      })
     },
 
     async isEmailSuppressed(emailHash: string): Promise<boolean> {
@@ -974,24 +1014,12 @@ export function makeDrizzleBroadcastRepository(sql: Sql): BroadcastRepository {
       return rows.map((row) => ({ cleanupId: row.cleanup_id, offsetMin: row.offset_min }))
     },
 
-    async audiencePage(query: AudiencePageQuery): Promise<{ members: string[]; guests: string[] }> {
-      const [members, guests] = await Promise.all([
-        listMemberAudiencePage(sql, {
-          cleanupId: query.cleanupId,
-          segment: query.segment,
-          kind: query.kind,
-          after: query.afterMember,
-          limit: query.limit,
-        }),
-        listGuestAudiencePage(sql, {
-          cleanupId: query.cleanupId,
-          segment: query.segment,
-          kind: query.kind,
-          after: query.afterGuest,
-          limit: query.limit,
-        }),
-      ])
-      return { members, guests }
+    audiencePage(query: AudiencePageQuery): Promise<{ members: string[]; guests: string[] }> {
+      return audience.audiencePage(query)
+    },
+
+    audienceCount(query: AudienceCountQuery): Promise<number> {
+      return audience.audienceCount(query)
     },
 
     async scrubBroadcastContent(cutoff: Date, batchSize: number): Promise<number> {

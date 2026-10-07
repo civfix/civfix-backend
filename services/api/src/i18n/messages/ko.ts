@@ -2,15 +2,12 @@
  * Korean (ko) catalog for server-generated, user-facing copy. Translated key-by-key from en.ts.
  * Preserves all {{interpolation}} placeholders exactly. "civfix", URLs, and @handles are not translated.
  * Tone: natural, friendly Hangul appropriate for a community app (informal-polite 해요체 register).
- *
- * SCOPE: push/bell notification titles + bodies; account/OTP email subjects + bodies.
- * Falls back to English (via renderMessage) for any key not present here.
+ * Missing keys fall back to English in renderMessage.
  */
 
 import type { MessageKey } from "./en.js"
 
 export const ko: Partial<Record<MessageKey, string>> = {
-  // ---- Push / in-app bell notifications --------------------------------------------------------
   "notification.follower.title": "새 팔로워",
   "notification.follower.body": "{{name}}님이 팔로우하기 시작했어요.",
 
@@ -75,11 +72,9 @@ export const ko: Partial<Record<MessageKey, string>> = {
   "notification.cleanup_slot.moved.body":
     '{{title}}의 "{{slot}}" 교대 시간이 바뀌었어요. 이벤트를 열어 확인해 주세요.',
 
-  // ---- Account / OTP emails --------------------------------------------------------------------
   "email.otp.subject": "civfix 로그인 코드",
-  "email.otp.body_line1": "civfix 로그인 코드는 {{code}}입니다.",
   "email.otp.body_expiry":
-    "코드는 5분 후 만료됩니다. 요청하지 않으셨다면 이 이메일을 무시하세요.",
+    "코드는 {{minutes}}분 후 만료됩니다. 요청하지 않으셨다면 이 이메일을 무시하세요.",
   "email.otp.html_intro": "civfix 로그인 코드:",
 
   "email.report_update.subject": "civfix 제보가 {{status}} 처리되었어요",
@@ -87,9 +82,8 @@ export const ko: Partial<Record<MessageKey, string>> = {
 
   "email.generic.subject": "civfix 알림",
   "email.generic.body": "새로운 civfix 알림이 있어요.",
-  // ---- 자원봉사 활동 증명서 (PDF, P5) --------------------------------------------------------------
   "certificate.doc.title": "자원봉사 활동 증명서",
-  "certificate.doc.pdf_title": "civfix 봉사 시간 — {{name}} — {{code}}",
+  "certificate.doc.pdf_title": "civfix 봉사 시간: {{name}}, {{code}}",
   "certificate.header.number": "증명서 번호",
   "certificate.holder.eyebrow": "발급 대상",
   "certificate.holder.period": "봉사 기간",
@@ -114,13 +108,12 @@ export const ko: Partial<Record<MessageKey, string>> = {
   "certificate.seal.line": "확인된 기록",
   "certificate.issuer.line": "civfix 발급 · civfix.org",
   "certificate.issuer.generated": "생성 {{timestamp}}",
-  "certificate.verify.prompt": "civfix.org/service-record에서 이 기록을 확인하세요",
+  "certificate.verify.prompt": "{{url}}에서 이 기록을 확인하세요",
   "certificate.verify.fingerprint": "문서 지문",
   "certificate.footer.page": "{{total}}페이지 중 {{page}}페이지",
   "certificate.footer.timezone": "날짜는 태평양 시간(America/Los_Angeles) 기준이에요.",
   "certificate.error.no_hours": "아직 기록된 봉사 시간이 없어요.",
 
-  // ---- Guest event RSVP -------------------------------------------------------------------------
   "email.guest_otp.subject": "{{title}} 참가 신청 코드",
   "email.guest_otp.html_intro": "{{title}} 참가 신청 코드:",
   "email.guest_otp.body_expiry":
@@ -148,7 +141,8 @@ export const ko: Partial<Record<MessageKey, string>> = {
     "{{code}}은(는) {{title}} 참가 신청을 위한 civfix 코드입니다. 메시지 및 데이터 요금이 부과될 수 있습니다. 수신을 원하지 않으시면 STOP으로 답장하세요.",
   "sms.guest_confirmed.body":
     "{{title}} 참가자 명단에 등록되었습니다. 취소: {{link}} 수신을 원하지 않으시면 STOP으로 답장하세요.",
-  "sms.guest_updated.body": "{{title}} 변경: 이제 {{when}}, 장소 {{place}}. 수신을 원하지 않으시면 STOP으로 답장하세요.",
-  "sms.guest_cancelled.body": "주최자가 {{title}}을(를) 취소했습니다. 수신을 원하지 않으시면 STOP으로 답장하세요.",
-
+  "sms.guest_updated.body":
+    "{{title}} 변경: 이제 {{when}}, 장소 {{place}}. 수신을 원하지 않으시면 STOP으로 답장하세요.",
+  "sms.guest_cancelled.body":
+    "주최자가 {{title}}을(를) 취소했습니다. 수신을 원하지 않으시면 STOP으로 답장하세요.",
 }

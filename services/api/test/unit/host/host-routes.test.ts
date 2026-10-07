@@ -3,15 +3,15 @@ import { randomUUID } from "node:crypto"
 import type { FastifyInstance } from "fastify"
 import { FakeMailer } from "@civfix/shared/fakes"
 import { endpoints, versionedPath } from "@civfix/shared/client"
-import { buildServer } from "../../../src/server.js"
-import { buildContainer } from "../../../src/di.js"
+import { makeServer } from "../../../src/server.js"
+import { makeContainer } from "../../../src/di.js"
 import { loadEnv } from "../../../src/env.js"
 import { InMemoryCounterStore } from "../../../src/abuse/counter-store.js"
 import { InMemoryCacheClient } from "../../../src/auth/cache.js"
 import { makeInMemoryStores } from "../../../src/auth/stores.js"
-import { buildAuthServices } from "../../../src/auth/auth-services.js"
+import { makeAuthServices } from "../../../src/auth/auth-services.js"
 import { StubJwksVerifier } from "../../helpers/auth.js"
-import { InMemoryHostRegistrationRepository } from "../../../src/services/host/registration-repository.memory.js"
+import { InMemoryHostRegistrationRepository } from "../../helpers/host/registration-repository.memory.js"
 import {
   OPEN_HOST_GUARDS,
   ORGANIZER_STANDING,
@@ -39,7 +39,7 @@ async function makeHarness(guards: HostGuards = OPEN_HOST_GUARDS): Promise<Harne
   const stores = makeInMemoryStores()
   const cache = new InMemoryCacheClient(() => Date.now())
   const mailer = new FakeMailer()
-  const authServices = buildAuthServices({
+  const authServices = makeAuthServices({
     stores,
     cache,
     mailer,
@@ -52,9 +52,9 @@ async function makeHarness(guards: HostGuards = OPEN_HOST_GUARDS): Promise<Harne
   repo.tokenHashResolver = (seatId) => tokens.hashFor(seatId)
   repo.seedEvent({ cleanupId: EVENT })
 
-  const container = buildContainer(env)
+  const container = makeContainer(env)
   const counters = new InMemoryCounterStore(() => Date.now())
-  const app = await buildServer({
+  const app = await makeServer({
     env,
     container,
     authServices,
@@ -160,7 +160,7 @@ describe("host registration routes", () => {
     for (const name of names) {
       const ep = endpoints[name]
       expect(
-        app.hasRoute({ method: ep.method as "GET", url: versionedPath(ep) }),
+        app.hasRoute({ method: ep.method, url: versionedPath(ep) }),
         `${name} is not registered at ${ep.method} ${versionedPath(ep)}`,
       ).toBe(true)
     }
@@ -371,12 +371,11 @@ describe("host registration routes", () => {
 
   it("configures the scanner at 300 requests a minute and the roster at 60", async () => {
     const { app } = await makeHarness()
-    expect(
-      app.hasRoute({ method: "POST", url: versionedPath(endpoints.scanEventTicket) }),
-    ).toBe(true)
-    const { SCAN_RATE_LIMIT, ROSTER_READ_RATE_LIMIT } = await import(
-      "../../../src/routes/host/_host-routes.js"
+    expect(app.hasRoute({ method: "POST", url: versionedPath(endpoints.scanEventTicket) })).toBe(
+      true,
     )
+    const { SCAN_RATE_LIMIT, ROSTER_READ_RATE_LIMIT } =
+      await import("../../../src/routes/host/_host-routes.js")
     expect(SCAN_RATE_LIMIT.max).toBe(300)
     expect(ROSTER_READ_RATE_LIMIT.max).toBe(60)
   })

@@ -1,6 +1,6 @@
 /**
- * Pure unit coverage for the around-mode window helpers (P2 2.4) so the split/merge/has-more math is
- * proven without Docker. The DB-backed window queries are covered by chat-around-pg.test.ts.
+ * The around-mode split/merge/has-more math, proven without a database. The DB-backed window queries
+ * are covered by chat-around-pg.test.ts.
  */
 
 import { describe, expect, it } from "vitest"

@@ -6,10 +6,7 @@ export interface EventMediaStorage {
   presignGet(key: string, ttlSec: number, opts?: { forceSigned?: boolean }): Promise<string>
 }
 
-export type EventMediaPresigner = (
-  key: string,
-  opts: { forceSigned: boolean },
-) => Promise<string>
+export type EventMediaPresigner = (key: string, opts: { forceSigned: boolean }) => Promise<string>
 
 export function makeEventMediaPresigner(storage: EventMediaStorage): EventMediaPresigner {
   return (key, opts) =>

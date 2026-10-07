@@ -2,9 +2,9 @@
  * makeContainerReportChatEmitter's optional BATCH seams (src/services/report-chat-emitter.ts).
  *
  * The emitter is assembled from container primitives (report-chat repo + notification service + mutes repo
- * + blocks repo) and fans a per-member bell for every timeline system message. Both batch seams it wires
- * are OPTIONAL on their repositories, and chat-room-fanout-notifier treats a PRESENT batch seam as
- * AUTHORITATIVE — it then never runs the per-candidate gate. So binding an absent method through a
+ * + blocks repo) and fans a per-member bell for every timeline system message. The mutes batch seam it
+ * wires is OPTIONAL on its repository, and chat-room-fanout-notifier treats a PRESENT batch seam as
+ * AUTHORITATIVE: it then never runs the per-candidate gate. So binding an absent method through a
  * `?? Promise.resolve(new Set())` default (which is what this file used to do for mutes) silently turns the
  * gate OFF for the whole room: every muted member gets belled.
  *
@@ -13,7 +13,7 @@
  *   - mutes store WITHOUT it            -> per-user isMuted runs, muted member STILL suppressed;
  *   - the blocks repo is read LAZILY    -> the factory must not touch it (this emitter is built per event
  *     from minimal containers, and a factory throw escapes emit()'s own try/catch and takes the CALLER
- *     down with it — that is why the batch block seam is not probed here).
+ *     down with it; that is why the batch block seam is not probed here).
  *
  * Only the DB-bound factory leaves are mocked; the fan-out pipeline, the lane binder and the real
  * notification service all run, so the gates under test are the production ones.
@@ -25,6 +25,7 @@ import type { ChatMessageDTO } from "@civfix/shared"
 import type { Container } from "../../src/di.js"
 
 const stub = vi.hoisted(() => ({
+  // eslint-disable-next-line @typescript-eslint/no-unnecessary-type-assertion -- the assertion is the field's declared type: vi.hoisted infers the record from this literal
   notifRepo: undefined as unknown,
   members: [] as string[],
   /** `${roomKind}|${roomId}|${userId}` */
@@ -139,7 +140,8 @@ function containerFor(opts: { batchBlocks?: string[] } = {}): Container {
 }
 
 function bells(userId: string): number {
-  return notifRepo.notifications.filter((n) => n.userId === userId && n.type === "report_chat").length
+  return notifRepo.notifications.filter((n) => n.userId === userId && n.type === "report_chat")
+    .length
 }
 
 describe("makeContainerReportChatEmitter: the mute seam is probed, never defaulted to empty", () => {
@@ -179,14 +181,14 @@ describe("makeContainerReportChatEmitter: the mute seam is probed, never default
 })
 
 describe("makeContainerReportChatEmitter: the block seam stays LAZY", () => {
-  it("never touches the blocks repo — not at construction, not per event (sender-less system messages)", async () => {
+  it("never touches the blocks repo: not at construction, not per event (sender-less system messages)", async () => {
     const blockCalls: string[] = []
     stub.members = [A, B]
 
     // A container with NO getBlocksRepo at all: constructing the emitter must not reach for it. Callers of
     // this factory (inbound mail correlation, autoforward/outreach jobs, the report + moderation routers)
     // build it PER EVENT off containers that are minimal in tests, and a throw in the factory escapes the
-    // emit() try/catch — it aborted the caller's remaining work (e.g. flipping a mail thread to 'replied').
+    // emit() try/catch; it aborted the caller's remaining work (e.g. flipping a mail thread to 'replied').
     const container = {
       env: { USE_FAKE_CHAT: false },
       getDb: () => ({ sql: {} }),

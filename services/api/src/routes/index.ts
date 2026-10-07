@@ -1,4 +1,3 @@
-
 import type { FastifyInstance } from "fastify"
 import type { Container } from "../di.js"
 import { registerHealthRoutes } from "./health.routes.js"

@@ -1,4 +1,3 @@
-
 import { afterAll, beforeAll, describe, expect, it } from "vitest"
 import { randomUUID } from "node:crypto"
 import { withPg, type PgHarness } from "../helpers/pg.js"
@@ -213,7 +212,9 @@ describe.skipIf(!pg)("H9: volunteer-hours integrity bounds (integration)", () =>
       )
     `
 
-    const rows = await h.sql<{ id: string; scheduled_at: Date; ends_at: Date; completed_at: Date | null }[]>`
+    const rows = await h.sql<
+      { id: string; scheduled_at: Date; ends_at: Date; completed_at: Date | null }[]
+    >`
       SELECT id, scheduled_at, ends_at, completed_at FROM cleanups
       WHERE id IN (${legacyId}, ${plainId})
     `

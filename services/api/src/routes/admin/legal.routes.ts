@@ -6,10 +6,8 @@ import { legalDocumentVersions } from "../../services/legal-service.js"
 
 export async function registerAdminLegalRoutes(
   app: FastifyInstance,
-  container: Container,
+  _container: Container,
 ): Promise<void> {
-  void container
-
   route(app, "adminGetLegalVersions", async (_request, reply) => {
     const payload: GetLegalVersionsResponse = {
       documents: legalDocumentVersions(),

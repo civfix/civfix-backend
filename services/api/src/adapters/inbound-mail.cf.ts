@@ -1,10 +1,10 @@
-
 import type {
   InboundMail,
   ParsedMail,
   ParsedMailAddress,
   ParsedMailAttachment,
 } from "@civfix/shared/interfaces"
+import { collapseWhitespace } from "@civfix/shared"
 import type { AddressObject, Attachment, EmailAddress, HeaderLines } from "mailparser"
 import { getDomain } from "tldts"
 import { domainOfOrNull } from "./mail-text.js"
@@ -12,13 +12,14 @@ import { domainOfOrNull } from "./mail-text.js"
 const THREAD_TOKEN_RE = /^[a-z0-9]{8,40}$/
 
 export interface CfInboundMailConfig {
-  webhookSecret?: string
   replyDomain?: string
 }
 
 export const DEFAULT_REPLY_DOMAIN = "civfix.org"
 
 const REPLY_ADDRESS_RE = /^(?:reply|report|event)[-+]([^@\s]+)@([^@\s]+)$/
+
+const MAILPARSER_OPTIONS = { skipImageLinks: true, skipHtmlToText: true } as const
 
 const MAX_MIME_PARTS = 200
 const MAX_DISTINCT_BOUNDARIES = 32
@@ -60,10 +61,7 @@ export class CfInboundMail implements InboundMail {
       throw new Error("inbound mail: too many MIME parts")
     }
     const { simpleParser } = await import("mailparser")
-    const parsed = await simpleParser(Buffer.from(raw), {
-      skipImageLinks: true,
-      skipHtmlToText: true,
-    })
+    const parsed = await simpleParser(Buffer.from(raw), MAILPARSER_OPTIONS)
 
     const fromValue = singleFromMailbox(parsed.headerLines, parsed.from)
     const headers = flattenHeaders(parsed.headers)
@@ -117,11 +115,25 @@ const QUOTED_REMOTE_IP_RE = /smtp\.remote-ip\s*=\s*"[0-9a-f:.]+"/gi
 
 const FLAT_COMMENT_RE = /\([^()]*\)/g
 
-const ENVELOPE_ADDRESS_RE = /^[a-z0-9!#$%&'*+/=?^_`{|}~-]+(?:\.[a-z0-9!#$%&'*+/=?^_`{|}~-]+)*@([^@]+)$/
+const QUOTE_OR_ESCAPE_RE = /["\\]/
+
+const PARENTHESIS_RE = /[()]/
+
+const SPACED_EQUALS_RE = /\s*=\s*/g
+
+const WHITESPACE_RUN_RE = /\s+/
+
+const AUTHSERV_ID_END_RE = /[\s;]/
+
+const SMTP_MAILFROM_RE = /smtp\.mailfrom/gi
+
+const ENVELOPE_ADDRESS_RE =
+  /^[a-z0-9!#$%&'*+/=?^_`{|}~-]+(?:\.[a-z0-9!#$%&'*+/=?^_`{|}~-]+)*@([^@]+)$/
 
 const REMOTE_IP_RE = /^[0-9a-f:.]+$/
 
-const HOSTNAME_RE = /^(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/
+const HOSTNAME_RE =
+  /^(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/
 
 const ORGANIZATIONAL_DOMAIN_OPTIONS = { allowPrivateDomains: true, extractHostname: false } as const
 
@@ -133,7 +145,9 @@ interface AuthResult {
 
 export function readMailAuthVerdict(mail: ParsedMail): MailAuthVerdict {
   const stamp = mail.headers[AUTHENTICATION_RESULTS_HEADER] ?? ""
-  if (stamp.trim().split(/[\s;]/, 1)[0]?.toLowerCase() !== CLOUDFLARE_AUTHSERV_ID) return "unknown"
+  if (stamp.trim().split(AUTHSERV_ID_END_RE, 1)[0]?.toLowerCase() !== CLOUDFLARE_AUTHSERV_ID) {
+    return "unknown"
+  }
   const results = parseStamp(stamp)
   if (results === null) return "fail"
   if (results.length === 0) return "unknown"
@@ -163,12 +177,16 @@ export function readMailAuthVerdict(mail: ParsedMail): MailAuthVerdict {
 
 function parseStamp(stamp: string): AuthResult[] | null {
   const unquoted = stamp.replace(QUOTED_REMOTE_IP_RE, "")
-  if (/["\\]/.test(unquoted)) return null
+  if (QUOTE_OR_ESCAPE_RE.test(unquoted)) return null
   const uncommented = unquoted.replace(FLAT_COMMENT_RE, " ")
-  if (/[()]/.test(uncommented)) return null
+  if (PARENTHESIS_RE.test(uncommented)) return null
   const results: AuthResult[] = []
   for (const resinfo of uncommented.split(";").slice(1)) {
-    const [methodSpec = "", ...propSpecs] = resinfo.replace(/\s*=\s*/g, "=").trim().toLowerCase().split(/\s+/)
+    const [methodSpec = "", ...propSpecs] = resinfo
+      .replace(SPACED_EQUALS_RE, "=")
+      .trim()
+      .toLowerCase()
+      .split(WHITESPACE_RUN_RE)
     if (propSpecs.length === 0 && (methodSpec === "" || methodSpec === "none")) continue
     const [, method, result] = METHOD_SPEC_RE.exec(methodSpec) ?? []
     if (method === undefined || result === undefined) return null
@@ -193,7 +211,7 @@ function leadingDkimResults(results: readonly AuthResult[]): readonly AuthResult
 }
 
 function soleMailFromResult(stamp: string, results: readonly AuthResult[]): AuthResult | undefined {
-  if (stamp.match(/smtp\.mailfrom/gi)?.length !== 1) return undefined
+  if (stamp.match(SMTP_MAILFROM_RE)?.length !== 1) return undefined
   const index = results.findIndex((r) => r.props.has("smtp.mailfrom"))
   const carrier = results[index]
   if (carrier?.method !== "spf" || carrier.props.size !== 1) return undefined
@@ -209,7 +227,9 @@ function isEnvelopeAddress(value: string): boolean {
 
 function isBareArcResult(result: AuthResult): boolean {
   if (result.method !== "arc") return false
-  return [...result.props].every(([name, value]) => name === "smtp.remote-ip" && REMOTE_IP_RE.test(value))
+  return [...result.props].every(
+    ([name, value]) => name === "smtp.remote-ip" && REMOTE_IP_RE.test(value),
+  )
 }
 
 function isAlignedPass(result: AuthResult, identity: string | undefined, from: string): boolean {
@@ -245,7 +265,7 @@ function singleFromMailbox(
 }
 
 function headerLineValue(header: HeaderLines[number]): string {
-  return header.line.slice(header.line.indexOf(":") + 1).replace(/\s+/g, " ").trim()
+  return collapseWhitespace(header.line.slice(header.line.indexOf(":") + 1))
 }
 
 function toAddress(value: EmailAddress): ParsedMailAddress {
@@ -300,9 +320,11 @@ function stringifyHeader(value: unknown): string {
     try {
       return JSON.stringify(value)
     } catch {
+      // eslint-disable-next-line @typescript-eslint/no-base-to-string -- last resort for a header object JSON cannot encode; mailparser documents no shape for it
       return String(value)
     }
   }
+  // eslint-disable-next-line @typescript-eslint/no-base-to-string -- only primitives reach here; objects returned above
   return String(value)
 }
 

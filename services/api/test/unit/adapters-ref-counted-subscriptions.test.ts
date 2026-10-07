@@ -1,15 +1,7 @@
-/**
- * Tests for the shared ref-counted subscription registry (src/adapters/ref-counted-subscriptions.ts) and
- * the RedisChatPubSub bug it exists to prevent.
- *
- * THE BUG: subscribe() inserted an EMPTY handler set into the channel map and THEN awaited the Redis
- * SUBSCRIBE. When that rejected (a Redis blip; maxRetriesPerRequest is 2), the empty set stayed behind, so
- * every later join saw a live-looking entry, SKIPPED the SUBSCRIBE, and attached handlers to a channel
- * Redis never delivers — permanent, silent message loss for that room on that worker, surviving every retry.
- *
- * The registry now (a) shares ONE in-flight subscribe between concurrent first-adders so neither leaks a
- * teardown handle, and (b) deletes the entry when that subscribe rejects so the next add really re-opens.
- */
+// subscribe() once inserted an empty handler set before awaiting the Redis SUBSCRIBE; when that rejected,
+// every later join skipped the SUBSCRIBE and attached handlers to a channel Redis never delivers:
+// permanent, silent message loss for that room on that worker. The registry now shares one in-flight
+// subscribe between concurrent first-adders and deletes the entry when it rejects.
 
 import { describe, it, expect, vi } from "vitest"
 import { EventEmitter } from "node:events"
@@ -67,7 +59,6 @@ describe("RefCountedSubscriptions", () => {
     expect(subs.size("room")).toBe(2)
     await releaseA()
     await releaseB()
-    // Exactly ONE teardown existed to call.
     expect(closed).toEqual(["room"])
   })
 
@@ -84,7 +75,6 @@ describe("RefCountedSubscriptions", () => {
     })
 
     await expect(subs.add("room", "a")).rejects.toThrow("upstream blip")
-    // No phantom entry: the failed add left NOTHING behind.
     expect(subs.size("room")).toBe(0)
     expect(subs.keyCount).toBe(0)
     expect(subs.membersOf("room")).toBeUndefined()
@@ -186,7 +176,6 @@ describe("RefCountedSubscriptions", () => {
   })
 })
 
-/** Minimal ioredis stand-in: only what RedisChatPubSub touches, with a scriptable SUBSCRIBE failure. */
 class FakeRedis extends EventEmitter {
   subscribed = new Set<string>()
   subscribeCalls: string[] = []
@@ -216,7 +205,6 @@ class FakeRedis extends EventEmitter {
   }
 
   publish(channel: string, payload: string): Promise<number> {
-    // Deliver only to the duplicated subscriber connections that actually SUBSCRIBEd.
     let n = 0
     for (const dup of this.duplicated) {
       if (dup.subscribed.has(channel)) {
@@ -243,7 +231,7 @@ describe("RedisChatPubSub subscribe failure (the stranded-channel bug)", () => {
     const handler = vi.fn()
     await expect(pubsub.subscribe(channel, handler)).rejects.toThrow("Stream isn't writeable")
 
-    // The retry must issue a REAL Redis SUBSCRIBE (this is what the stale empty handler set used to skip).
+    // The stale empty handler set used to skip this SUBSCRIBE.
     const unsubscribe = await pubsub.subscribe(channel, handler)
     expect(sub.subscribeCalls).toEqual([channel, channel])
     expect(sub.subscribed.has(channel)).toBe(true)
@@ -267,7 +255,6 @@ describe("RedisChatPubSub subscribe failure (the stranded-channel bug)", () => {
 
     await pubsub.close()
     expect(sub.disconnected).toBe(true)
-    // A frame arriving after close reaches nobody: the local handler registry was cleared.
     await pubsub.publish(chatChannel("a"), "x")
     expect(handler).not.toHaveBeenCalled()
   })

@@ -1,4 +1,3 @@
-
 import { describe, expect, it } from "vitest"
 import { runTool, SandboxSpawnError, SandboxToolError } from "../../src/sandbox/exec.js"
 
@@ -39,12 +38,9 @@ describe("runTool classification against real children", () => {
   })
 
   it("a missing binary IS an infra fault", async () => {
-    const err = await runTool(
-      "missing",
-      "/nonexistent/civfix/decoder",
-      ["-version"],
-      OPTS,
-    ).catch((e: unknown) => e)
+    const err = await runTool("missing", "/nonexistent/civfix/decoder", ["-version"], OPTS).catch(
+      (e: unknown) => e,
+    )
 
     expect(err).toBeInstanceOf(SandboxSpawnError)
   })

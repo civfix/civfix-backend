@@ -1,18 +1,37 @@
 import type { PageViewSource } from "@civfix/shared"
 import type { FastifyBaseLogger } from "fastify"
 import type { CacheClient } from "../../auth/cache.js"
-import type { MetricUpsert, MetricsRepository } from "./metrics-repository.drizzle.js"
+import type { MetricUpsert, MetricsRepository } from "./metrics-repository.js"
 import { eventDayKey } from "./event-day.js"
+import { DEFAULT_EVENT_TIME_ZONE } from "./event-fields.js"
+import {
+  METRIC_DONATION_CLICKS,
+  METRIC_PAGE_VIEWS,
+  METRIC_SOURCE,
+  NO_BUCKET,
+} from "./event-metric-names.js"
+import { isoDayOf } from "./host-analytics-shaping.js"
+import { MS_PER_DAY } from "../../lib/time.js"
 
 export { eventDayKey }
 
-export const METRIC_PAGE_VIEWS = "page_views"
-export const METRIC_SOURCE = "source"
-export const METRIC_DONATION_CLICKS = "donation_clicks"
+const COUNTER_TTL_SEC = 4 * 24 * 60 * 60
 
-export const COUNTER_TTL_SEC = 4 * 24 * 60 * 60
+const ROLLUP_PAGE_SIZE = 500
+
+const FLUSH_READ_BATCH = 200
+
+const FLUSH_UPSERT_BATCH = 500
+
+// One day ahead: a bump keys its dirty set by the event-local day, which east of UTC is already
+// tomorrow.
+const FLUSH_LEAD_DAYS = 1
 
 const COUNTER_PREFIX = "evm:v1"
+
+const COUNTER_KEY_PARTS = 6
+
+const DAY_KEY_LENGTH = 10
 
 const BOT_UA_RE =
   /bot|crawler|spider|crawling|slurp|facebookexternalhit|embedly|quora link preview|whatsapp|telegram|discordbot|preview|monitor|curl|wget|python-requests|headless|lighthouse|pingdom|uptime/i
@@ -74,7 +93,11 @@ export function classifyPageViewSource(input: {
   if (SEARCH_HOSTS.some((prefix) => host.startsWith(prefix) || host.includes(`.${prefix}`))) {
     return "search"
   }
-  if (SOCIAL_HOSTS.some((prefix) => host === prefix || host.startsWith(prefix) || host.includes(`.${prefix}`))) {
+  if (
+    SOCIAL_HOSTS.some(
+      (prefix) => host === prefix || host.startsWith(prefix) || host.includes(`.${prefix}`),
+    )
+  ) {
     return "social"
   }
   return "referral"
@@ -85,6 +108,7 @@ function hostOf(referrer: string | undefined): string | null {
   try {
     return new URL(referrer).hostname.toLowerCase()
   } catch {
+    // An unparseable Referer is client-controlled noise; it is counted as a direct visit.
     return null
   }
 }
@@ -124,13 +148,21 @@ export function makeMetricsService(deps: MetricsServiceDeps): MetricsService {
     return `${COUNTER_PREFIX}:dirty:${day}`
   }
 
+  function flushDays(): string[] {
+    const days: string[] = []
+    for (let i = -FLUSH_LEAD_DAYS; i <= deps.lookbackDays; i += 1) {
+      days.push(isoDayOf(new Date(now().getTime() - i * MS_PER_DAY)))
+    }
+    return days
+  }
+
   async function bump(
     cleanupId: string,
     timezone: string | null,
     metric: string,
     bucket: string,
   ): Promise<void> {
-    const day = eventDayKey(now(), timezone)
+    const day = eventDayKey(now(), timezone ?? DEFAULT_EVENT_TIME_ZONE)
     const key = counterKey(cleanupId, day, metric, bucket)
     try {
       await deps.cache.incr(key, COUNTER_TTL_SEC)
@@ -155,23 +187,19 @@ export function makeMetricsService(deps: MetricsServiceDeps): MetricsService {
         ...(input.referrer !== undefined ? { referrer: input.referrer } : {}),
         selfHosts: deps.selfHosts,
       })
-      await bump(resolved.cleanupId, resolved.timezone, METRIC_PAGE_VIEWS, "")
+      await bump(resolved.cleanupId, resolved.timezone, METRIC_PAGE_VIEWS, NO_BUCKET)
       await bump(resolved.cleanupId, resolved.timezone, METRIC_SOURCE, source)
       return { ok: true }
     },
 
     async recordDonationClick(cleanupId: string) {
       const timezone = await deps.repo.eventTimezone(cleanupId)
-      await bump(cleanupId, timezone, METRIC_DONATION_CLICKS, "")
+      await bump(cleanupId, timezone, METRIC_DONATION_CLICKS, NO_BUCKET)
     },
 
     async flushCounters() {
-      const days: string[] = []
-      for (let i = 0; i <= deps.lookbackDays; i += 1) {
-        days.push(new Date(now().getTime() - i * 86_400_000).toISOString().slice(0, 10))
-      }
       const upserts: MetricUpsert[] = []
-      for (const day of days) {
+      for (const day of flushDays()) {
         let keys: string[]
         try {
           keys = await deps.cache.smembers(dirtyKey(day))
@@ -179,37 +207,34 @@ export function makeMetricsService(deps: MetricsServiceDeps): MetricsService {
           deps.logger?.warn({ err, day }, "event metrics: dirty-set read failed (skipping day)")
           continue
         }
-        for (let i = 0; i < keys.length; i += 200) {
-          const batch = keys.slice(i, i + 200)
-          const values = await readMany(deps.cache, batch)
-          batch.forEach((key, index) => {
-            const parsed = parseCounterKey(key)
-            const raw = values[index]
-            if (parsed === null || raw === null || raw === undefined) return
-            const value = Number(raw)
-            if (!Number.isFinite(value) || value <= 0) return
-            upserts.push({ ...parsed, value })
-          })
-        }
+        await collectCounters(deps.cache, keys, upserts)
       }
-      for (let i = 0; i < upserts.length; i += 500) {
-        await deps.repo.upsertGreatest(upserts.slice(i, i + 500))
+      for (let i = 0; i < upserts.length; i += FLUSH_UPSERT_BATCH) {
+        await deps.repo.upsertGreatest(upserts.slice(i, i + FLUSH_UPSERT_BATCH))
       }
       return { flushed: upserts.length }
     },
 
     async rollup() {
-      const since = new Date(now().getTime() - deps.lookbackDays * 86_400_000)
-      const cleanupIds = await deps.repo.listRollupEvents(since, 500)
+      const since = new Date(now().getTime() - deps.lookbackDays * MS_PER_DAY)
+      let after: string | null = null
+      let events = 0
       let rows = 0
-      for (const cleanupId of cleanupIds) {
-        const timezone = (await deps.repo.eventTimezone(cleanupId)) ?? "UTC"
-        const computed = await deps.repo.recomputeFromSource(cleanupId, timezone, since)
-        await deps.repo.upsertExact(computed)
-        rows += computed.length
-        await new Promise<void>((resolve) => setImmediate(resolve))
+      for (;;) {
+        const page = await deps.repo.listRollupEvents(since, after, ROLLUP_PAGE_SIZE)
+        for (const event of page) {
+          const timezone = event.timezone ?? DEFAULT_EVENT_TIME_ZONE
+          const computed = await deps.repo.recomputeFromSource(event.id, timezone, since)
+          await deps.repo.upsertExact(computed)
+          rows += computed.length
+          await new Promise<void>((resolve) => setImmediate(resolve))
+        }
+        events += page.length
+        const last = page.at(-1)
+        if (page.length < ROLLUP_PAGE_SIZE || last === undefined) break
+        after = last.id
       }
-      return { events: cleanupIds.length, rows }
+      return { events, rows }
     },
   }
 }
@@ -219,11 +244,30 @@ async function readMany(cache: CacheClient, keys: readonly string[]): Promise<(s
   return Promise.all(keys.map((key) => cache.get(key)))
 }
 
+async function collectCounters(
+  cache: CacheClient,
+  keys: readonly string[],
+  upserts: MetricUpsert[],
+): Promise<void> {
+  for (let i = 0; i < keys.length; i += FLUSH_READ_BATCH) {
+    const batch = keys.slice(i, i + FLUSH_READ_BATCH)
+    const values = await readMany(cache, batch)
+    batch.forEach((key, index) => {
+      const parsed = parseCounterKey(key)
+      const raw = values[index]
+      if (parsed === null || raw === null || raw === undefined) return
+      const value = Number(raw)
+      if (!Number.isFinite(value) || value <= 0) return
+      upserts.push({ ...parsed, value })
+    })
+  }
+}
+
 export function parseCounterKey(
   key: string,
 ): { cleanupId: string; day: string; metric: string; bucket: string } | null {
   const parts = key.split(":")
-  if (parts.length !== 6) return null
+  if (parts.length !== COUNTER_KEY_PARTS) return null
   const [prefix, version, cleanupId, day, metric, bucket] = parts as [
     string,
     string,
@@ -233,6 +277,6 @@ export function parseCounterKey(
     string,
   ]
   if (`${prefix}:${version}` !== COUNTER_PREFIX) return null
-  if (cleanupId.length === 0 || day.length !== 10 || metric.length === 0) return null
+  if (cleanupId.length === 0 || day.length !== DAY_KEY_LENGTH || metric.length === 0) return null
   return { cleanupId, day, metric, bucket }
 }

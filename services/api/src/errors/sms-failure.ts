@@ -1,8 +1,8 @@
 import { AppError, ErrorCode } from "@civfix/shared"
 
-export const SMS_FAILURE_FIELD = "smsDelivery"
+const SMS_FAILURE_FIELD = "smsDelivery"
 
-export const SMS_FAILURE_KINDS = ["opted_out", "invalid_number", "permanent", "temporary"] as const
+const SMS_FAILURE_KINDS = ["opted_out", "invalid_number", "permanent", "temporary"] as const
 
 export type SmsFailureKind = (typeof SMS_FAILURE_KINDS)[number]
 
@@ -26,11 +26,5 @@ export function smsFailureKind(err: unknown): SmsFailureKind | null {
   if (typeof fields !== "object" || fields === null) return null
   const value = (fields as Record<string, unknown>)[SMS_FAILURE_FIELD]
   if (typeof value !== "string") return null
-  return (SMS_FAILURE_KINDS as readonly string[]).includes(value)
-    ? (value as SmsFailureKind)
-    : null
-}
-
-export function isRetryableSmsFailure(err: unknown): boolean {
-  return smsFailureKind(err) === "temporary"
+  return (SMS_FAILURE_KINDS as readonly string[]).includes(value) ? (value as SmsFailureKind) : null
 }

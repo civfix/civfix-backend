@@ -5,7 +5,7 @@ import {
   mediaBoundElsewhere,
   mediaBoundToCleanup,
 } from "../../src/services/media-bindings.js"
-import { orphanPredicate } from "../../src/services/media-worker-repo.js"
+import { orphanPredicate } from "../../src/services/media-worker-repository.drizzle.js"
 
 const sql = postgres("postgres://user:pass@127.0.0.1:1/unused", { max: 1 })
 
@@ -48,7 +48,7 @@ describe("media binding predicate", () => {
       const [table, column] = relation.split(".")
       expect(
         text,
-        `${relation} is not exempted — a bound asset older than the TTL would be reaped`,
+        `${relation} is not exempted; a bound asset older than the TTL would be reaped`,
       ).toContain(table as string)
       expect(text).toContain(column as string)
     }

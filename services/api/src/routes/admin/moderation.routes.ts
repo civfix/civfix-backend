@@ -1,4 +1,3 @@
-
 import {
   ApproveModerationRequestSchema,
   AppealModerationRequestSchema,
@@ -14,6 +13,7 @@ import { requireOperator } from "../../auth/admin-guard.js"
 import { route } from "../../versioning/route.js"
 import {
   idParam,
+  makeContainerMessageUpdateAnnouncer,
   overridableService,
   parse,
   parseBodyWithId,
@@ -22,9 +22,9 @@ import {
 } from "./_route-utils.js"
 import {
   makeModerationService,
-  type ModerationRepository,
   type ModerationSessionControl,
 } from "../../services/admin/moderation-service.js"
+import type { ModerationRepository } from "../../services/admin/moderation-repository.js"
 import { makeDrizzleModerationRepository } from "../../services/admin/moderation-repository.drizzle.js"
 import { makeContainerReportChatEmitter } from "../../services/report-chat-emitter.js"
 import { makePrivateMediaPresigner, type PresignMedia } from "../../services/media-presign.js"
@@ -73,6 +73,7 @@ export async function registerAdminModerationRoutes(
           applyStatus: (userId, status) =>
             app.authServices.sessions.applyAccountStatus(userId, status),
         },
+        announceMessageUpdate: makeContainerMessageUpdateAnnouncer(container, app.log),
       })
     },
   )

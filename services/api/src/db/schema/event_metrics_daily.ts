@@ -1,4 +1,13 @@
-import { bigint, date, index, pgTable, primaryKey, text, timestamp, uuid } from "drizzle-orm/pg-core"
+import {
+  bigint,
+  date,
+  index,
+  pgTable,
+  primaryKey,
+  text,
+  timestamp,
+  uuid,
+} from "drizzle-orm/pg-core"
 import { cleanups } from "./cleanups.js"
 
 export const eventMetricsDaily = pgTable(

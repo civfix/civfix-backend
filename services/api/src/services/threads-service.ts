@@ -1,13 +1,14 @@
-
 import { relativeAgo, avatarGradient } from "@civfix/shared"
-import type { MessageThreadDTO, PersonDTO } from "@civfix/shared"
+import type { MessageThreadDTO, PersonDTO, RoomKind } from "@civfix/shared"
 import {
   encodeTimeCursor,
+  isBeforeTimeCursor,
   pageWith,
   parseTimeCursor,
   type TimeCursor,
 } from "../db/cursor-helpers.js"
 import { officialPersonFlag } from "../auth/official-account.js"
+import type { ThreadAggregate, ThreadsRepository } from "./threads-repository.js"
 
 export interface ChatReadState {
   markRead(cleanupId: string, userId: string, at: Date): Promise<void>
@@ -28,28 +29,6 @@ export class InMemoryChatReadState implements ChatReadState {
     const ms = this.marks.get(`${userId}:${cleanupId}`)
     return Promise.resolve(ms !== undefined ? new Date(ms) : null)
   }
-}
-
-export interface ThreadAggregate {
-  cleanupId: string
-  title: string
-  joinedAt: Date
-  members: number
-  unread?: number
-  last: {
-    body: string | null
-    createdAt: Date
-    senderId: string
-  } | null
-}
-
-export interface ThreadsRepository {
-  listThreadsFor(
-    userId: string,
-    limit: number,
-    cursor?: TimeCursor | null,
-  ): Promise<ThreadAggregate[]>
-  countUnread(cleanupId: string, userId: string, after: Date): Promise<number>
 }
 
 export interface DmThreadAggregateView {
@@ -123,14 +102,12 @@ export interface GroupThreadsSource {
 }
 
 export interface ThreadsMutesSource {
-  mutedRoomIdsFor(
-    userId: string,
-    roomKind: "cleanup" | "dm" | "report" | "group",
-    roomIds: string[],
-  ): Promise<Set<string>>
+  mutedRoomIdsFor(userId: string, roomKind: RoomKind, roomIds: string[]): Promise<Set<string>>
 }
 
 export const THREADS_DEFAULT_LIMIT = 30
+
+const DM_MEMBER_COUNT = 2
 
 export interface ThreadsServiceDeps {
   repo: ThreadsRepository
@@ -162,30 +139,78 @@ export interface ListThreadsOptions {
   cursor?: string | null
 }
 
-export interface ThreadsService {
-  list(
-    userId: string,
-    opts?: ListThreadsOptions,
-  ): Promise<{ items: MessageThreadDTO[]; nextCursor: string | null }>
-  listThreads(
-    userId: string,
-    limit?: number,
-  ): Promise<{ items: MessageThreadDTO[]; nextCursor: string | null }>
+export interface ThreadsPage {
+  items: MessageThreadDTO[]
+  nextCursor: string | null
 }
 
-function beforeCursor(cursor: TimeCursor | null, activity: number, id: string): boolean {
-  if (cursor === null) return true
-  const at = cursor.at.getTime()
-  return activity < at || (activity === at && id < cursor.id)
+export interface ThreadsService {
+  list(userId: string, opts?: ListThreadsOptions): Promise<ThreadsPage>
+  listThreads(userId: string, limit?: number): Promise<ThreadsPage>
+}
+
+interface ThreadLastMessage {
+  body: string | null
+  createdAt: Date
+  senderId: string | null
+}
+
+interface ThreadEntryInput {
+  id: string
+  kind: MessageThreadDTO["kind"]
+  title: string
+  peer?: PersonDTO
+  last: ThreadLastMessage | null
+  unread: number
+  members: number
+  muted: boolean
+  since: Date
+  channel?: boolean
+}
+
+interface ThreadEntry {
+  dto: MessageThreadDTO
+  activity: number
+}
+
+function toThreadEntry(input: ThreadEntryInput, userId: string, now: () => Date): ThreadEntry {
+  const { last } = input
+  return {
+    dto: {
+      id: input.id,
+      kind: input.kind,
+      refId: input.id,
+      title: input.title,
+      ...(input.peer !== undefined ? { peer: input.peer } : {}),
+      last: last !== null ? (last.body ?? "") : null,
+      ago: last !== null ? relativeAgo(last.createdAt, now()) : null,
+      lastMessageAt: last !== null ? last.createdAt.toISOString() : null,
+      lastFromMe: last !== null && last.senderId === userId,
+      unread: input.unread,
+      members: input.members,
+      muted: input.muted,
+      ...(input.channel === true ? { channel: true as const } : {}),
+    },
+    activity: (last?.createdAt ?? input.since).getTime(),
+  }
+}
+
+function dmThreadTitle(peer: DmThreadAggregateView["peer"]): string {
+  if (peer.displayName.trim() !== "") return peer.displayName
+  return peer.handle !== null ? `@${peer.handle}` : peer.displayName
 }
 
 export function makeThreadsService(deps: ThreadsServiceDeps): ThreadsService {
   const now = deps.now ?? (() => new Date())
 
-  async function list(
-    userId: string,
-    opts?: ListThreadsOptions,
-  ): Promise<{ items: MessageThreadDTO[]; nextCursor: string | null }> {
+  async function countCleanupUnread(agg: ThreadAggregate, userId: string): Promise<number> {
+    const lastRead = await deps.readState.lastReadAt(agg.cleanupId, userId)
+    const watermark =
+      lastRead !== null && lastRead.getTime() > agg.joinedAt.getTime() ? lastRead : agg.joinedAt
+    return deps.repo.countUnread(agg.cleanupId, userId, watermark)
+  }
+
+  async function list(userId: string, opts?: ListThreadsOptions): Promise<ThreadsPage> {
     const limit = Math.max(1, opts?.limit ?? THREADS_DEFAULT_LIMIT)
     const cursor = parseTimeCursor(opts?.cursor ?? null)
     const fetchLimit = limit + 1
@@ -211,10 +236,7 @@ export function makeThreadsService(deps: ThreadsServiceDeps): ThreadsService {
       groupFetch,
     ])
 
-    const mutedIdsFor = async (
-      roomKind: "cleanup" | "dm" | "report" | "group",
-      roomIds: string[],
-    ): Promise<Set<string>> =>
+    const mutedIdsFor = async (roomKind: RoomKind, roomIds: string[]): Promise<Set<string>> =>
       deps.mutes && roomIds.length > 0
         ? await deps.mutes.mutedRoomIdsFor(userId, roomKind, roomIds)
         : new Set<string>()
@@ -238,115 +260,79 @@ export function makeThreadsService(deps: ThreadsServiceDeps): ThreadsService {
     ])
 
     const cleanupEntries = await Promise.all(
-      aggregates.map(async (agg): Promise<{ dto: MessageThreadDTO; activity: number }> => {
-        let unread = agg.unread
-        if (unread === undefined) {
-          const lastRead = await deps.readState.lastReadAt(agg.cleanupId, userId)
-          const watermark =
-            lastRead !== null && lastRead.getTime() > agg.joinedAt.getTime()
-              ? lastRead
-              : agg.joinedAt
-          unread = await deps.repo.countUnread(agg.cleanupId, userId, watermark)
-        }
-
-        const lastFromMe = agg.last !== null && agg.last.senderId === userId
-
-        return {
-          dto: {
+      aggregates.map(async (agg) =>
+        toThreadEntry(
+          {
             id: agg.cleanupId,
             kind: "cleanup",
-            refId: agg.cleanupId,
             title: agg.title,
-            last: agg.last !== null ? (agg.last.body ?? "") : null,
-            ago: agg.last !== null ? relativeAgo(agg.last.createdAt, now()) : null,
-            lastMessageAt: agg.last !== null ? agg.last.createdAt.toISOString() : null,
-            lastFromMe,
-            unread,
+            last: agg.last,
+            unread: agg.unread ?? (await countCleanupUnread(agg, userId)),
             members: agg.members,
             muted: mutedCleanup.has(agg.cleanupId),
+            since: agg.joinedAt,
           },
-          activity: (agg.last?.createdAt ?? agg.joinedAt).getTime(),
-        }
-      }),
+          userId,
+          now,
+        ),
+      ),
     )
 
-    const dmEntries = dmAggregates.map(
-      (agg): { dto: MessageThreadDTO; activity: number } => {
-        const lastFromMe = agg.last !== null && agg.last.senderId === userId
-        const peer = peerOf(agg.peer)
-        const title =
-          agg.peer.displayName.trim() !== ""
-            ? agg.peer.displayName
-            : agg.peer.handle !== null
-              ? `@${agg.peer.handle}`
-              : agg.peer.displayName
-        return {
-          dto: {
-            id: agg.threadId,
-            kind: "dm",
-            refId: agg.threadId,
-            title,
-            peer,
-            last: agg.last !== null ? (agg.last.body ?? "") : null,
-            ago: agg.last !== null ? relativeAgo(agg.last.createdAt, now()) : null,
-            lastMessageAt: agg.last !== null ? agg.last.createdAt.toISOString() : null,
-            lastFromMe,
-            unread: agg.unread,
-            members: 2,
-            muted: mutedDm.has(agg.threadId),
-          },
-          activity: (agg.last?.createdAt ?? agg.createdAt).getTime(),
-        }
-      },
+    const dmEntries = dmAggregates.map((agg) =>
+      toThreadEntry(
+        {
+          id: agg.threadId,
+          kind: "dm",
+          title: dmThreadTitle(agg.peer),
+          peer: peerOf(agg.peer),
+          last: agg.last,
+          unread: agg.unread,
+          members: DM_MEMBER_COUNT,
+          muted: mutedDm.has(agg.threadId),
+          since: agg.createdAt,
+        },
+        userId,
+        now,
+      ),
     )
 
-    const reportEntries = reportAggregates.map(
-      (agg): { dto: MessageThreadDTO; activity: number } => {
-        const lastFromMe = agg.last !== null && agg.last.senderId === userId
-        return {
-          dto: {
-            id: agg.reportId,
-            kind: "report",
-            refId: agg.reportId,
-            title: agg.title,
-            last: agg.last !== null ? (agg.last.body ?? "") : null,
-            ago: agg.last !== null ? relativeAgo(agg.last.createdAt, now()) : null,
-            lastMessageAt: agg.last !== null ? agg.last.createdAt.toISOString() : null,
-            lastFromMe,
-            unread: agg.unread,
-            members: agg.members,
-            muted: mutedReport.has(agg.reportId),
-          },
-          activity: (agg.last?.createdAt ?? agg.joinedAt).getTime(),
-        }
-      },
+    const reportEntries = reportAggregates.map((agg) =>
+      toThreadEntry(
+        {
+          id: agg.reportId,
+          kind: "report",
+          title: agg.title,
+          last: agg.last,
+          unread: agg.unread,
+          members: agg.members,
+          muted: mutedReport.has(agg.reportId),
+          since: agg.joinedAt,
+        },
+        userId,
+        now,
+      ),
     )
 
-    const groupEntries = groupAggregates.map(
-      (agg): { dto: MessageThreadDTO; activity: number } => {
-        const lastFromMe = agg.last !== null && agg.last.senderId === userId
-        return {
-          dto: {
-            id: agg.groupId,
-            kind: "group",
-            refId: agg.groupId,
-            title: agg.title,
-            last: agg.last !== null ? (agg.last.body ?? "") : null,
-            ago: agg.last !== null ? relativeAgo(agg.last.createdAt, now()) : null,
-            lastMessageAt: agg.last !== null ? agg.last.createdAt.toISOString() : null,
-            lastFromMe,
-            unread: agg.unread,
-            members: agg.members,
-            muted: mutedGroup.has(agg.groupId),
-            ...(agg.kind === "channel" ? { channel: true as const } : {}),
-          },
-          activity: (agg.last?.createdAt ?? agg.joinedAt).getTime(),
-        }
-      },
+    const groupEntries = groupAggregates.map((agg) =>
+      toThreadEntry(
+        {
+          id: agg.groupId,
+          kind: "group",
+          title: agg.title,
+          last: agg.last,
+          unread: agg.unread,
+          members: agg.members,
+          muted: mutedGroup.has(agg.groupId),
+          since: agg.joinedAt,
+          channel: agg.kind === "channel",
+        },
+        userId,
+        now,
+      ),
     )
 
     const merged = [...cleanupEntries, ...dmEntries, ...reportEntries, ...groupEntries]
-      .filter((e) => beforeCursor(cursor, e.activity, e.dto.id))
+      .filter((e) => isBeforeTimeCursor(e.activity, e.dto.id, cursor))
       .sort(
         (a, b) =>
           b.activity - a.activity || (a.dto.id < b.dto.id ? 1 : a.dto.id > b.dto.id ? -1 : 0),

@@ -1,4 +1,3 @@
-
 import { existsSync } from "node:fs"
 import { access, constants } from "node:fs/promises"
 import type { SandboxIdentity } from "../config.js"
@@ -31,7 +30,15 @@ const PREFLIGHT_CLIPS: Record<"h264" | "hevc", Buffer> = {
 const STATUS_READER = "/bin/cat"
 const PROC_STATUS = "/proc/self/status"
 
-const ALLOWED_BOUNDING_MASK = (1n << 7n) | (1n << 6n)
+const PREFLIGHT_MAX_STDOUT_BYTES = 64 * 1024
+const CAP_SETGID_BIT = 6n
+const CAP_SETUID_BIT = 7n
+const ALLOWED_BOUNDING_MASK = (1n << CAP_SETUID_BIT) | (1n << CAP_SETGID_BIT)
+// Real, effective, saved-set and filesystem ids, in that order.
+const PROC_STATUS_ID_COUNT = 4
+const CLEARED_CAP_FIELDS = ["CapInh", "CapPrm", "CapEff", "CapAmb"] as const
+const CAP_FIELDS = [...CLEARED_CAP_FIELDS, "CapBnd"] as const
+const HEX_DIGITS = /^[0-9a-f]+$/i
 
 export type PreflightLog = (msg: string, fields?: Record<string, unknown>) => void
 
@@ -42,21 +49,23 @@ export interface SandboxProof {
 }
 
 export function parseProcStatus(text: string): SandboxProof {
+  const lines = text.split("\n")
+  const field = (label: string): string | undefined =>
+    lines.find((l) => l.startsWith(`${label}:`))?.slice(label.length + 1)
   const ids = (label: string): number[] => {
-    const line = text.split("\n").find((l) => l.startsWith(`${label}:`))
-    if (!line) return []
-    return line
-      .slice(label.length + 1)
+    const value = field(label)
+    if (value === undefined) return []
+    return value
       .trim()
       .split(/\s+/)
       .map((v) => Number.parseInt(v, 10))
   }
   const caps: Record<string, bigint> = {}
-  for (const name of ["CapInh", "CapPrm", "CapEff", "CapAmb", "CapBnd"]) {
-    const line = text.split("\n").find((l) => l.startsWith(`${name}:`))
-    if (line === undefined) continue
-    const hex = line.slice(name.length + 1).trim()
-    caps[name] = /^[0-9a-f]+$/i.test(hex) ? BigInt(`0x${hex}`) : -1n
+  for (const name of CAP_FIELDS) {
+    const value = field(name)
+    if (value === undefined) continue
+    const hex = value.trim()
+    caps[name] = HEX_DIGITS.test(hex) ? BigInt(`0x${hex}`) : -1n
   }
   return { uid: ids("Uid"), gid: ids("Gid"), caps }
 }
@@ -73,33 +82,49 @@ export function sandboxProofFailure(
   context: SandboxProofContext,
 ): string | null {
   const proof = parseProcStatus(text)
+  return (
+    idFailure(proof, identity, context) ??
+    clearedCapsFailure(proof) ??
+    boundingSetFailure(proof, context.boundingMustBeZero === true)
+  )
+}
 
-  const { parentUid, parentGid } = context
+function idFailure(
+  proof: SandboxProof,
+  identity: SandboxIdentity,
+  { parentUid, parentGid }: SandboxProofContext,
+): string | null {
   if (parentUid !== undefined && proof.uid.some((v) => v === parentUid)) {
     return `child Uid [${proof.uid.join(" ")}] still contains the worker's own uid ${parentUid}`
   }
   if (parentGid !== undefined && proof.gid.some((v) => v === parentGid)) {
     return `child Gid [${proof.gid.join(" ")}] still contains the worker's own gid ${parentGid}`
   }
-
-  if (proof.uid.length !== 4 || proof.uid.some((v) => v !== identity.uid)) {
+  if (proof.uid.length !== PROC_STATUS_ID_COUNT || proof.uid.some((v) => v !== identity.uid)) {
     return `child Uid is [${proof.uid.join(" ")}], expected all four ids to be ${identity.uid}`
   }
-  if (proof.gid.length !== 4 || proof.gid.some((v) => v !== identity.gid)) {
+  if (proof.gid.length !== PROC_STATUS_ID_COUNT || proof.gid.some((v) => v !== identity.gid)) {
     return `child Gid is [${proof.gid.join(" ")}], expected all four ids to be ${identity.gid}`
   }
+  return null
+}
 
-  for (const name of ["CapInh", "CapPrm", "CapEff", "CapAmb"]) {
+function clearedCapsFailure(proof: SandboxProof): string | null {
+  for (const name of CLEARED_CAP_FIELDS) {
     const value = proof.caps[name]
     if (value === undefined) return `child /proc/self/status has no ${name} line`
     if (value !== 0n) return `child ${name} is ${value.toString(16)}, expected 0`
   }
+  return null
+}
 
+function boundingSetFailure(proof: SandboxProof, mustBeZero: boolean): string | null {
   const bounding = proof.caps.CapBnd
   if (bounding === undefined) return "child /proc/self/status has no CapBnd line"
-  if (context.boundingMustBeZero === true) {
-    if (bounding !== 0n) return `child CapBnd is ${bounding.toString(16)}, expected 0`
-  } else if ((bounding & ~ALLOWED_BOUNDING_MASK) !== 0n) {
+  if (mustBeZero) {
+    return bounding !== 0n ? `child CapBnd is ${bounding.toString(16)}, expected 0` : null
+  }
+  if ((bounding & ~ALLOWED_BOUNDING_MASK) !== 0n) {
     return (
       `child CapBnd is ${bounding.toString(16)}, which contains capabilities beyond ` +
       "CAP_SETUID/CAP_SETGID (the container's own grant)"
@@ -127,7 +152,9 @@ export async function assertSandboxPreflight(
   const tools = await resolveMediaToolPaths(source)
   const identity = sandboxIdentity(source)
   if (identity === null) {
-    throw new Error("media-worker: MEDIA_SANDBOX_UID / MEDIA_SANDBOX_GID are required in production")
+    throw new Error(
+      "media-worker: MEDIA_SANDBOX_UID / MEDIA_SANDBOX_GID are required in production",
+    )
   }
 
   await assertScratchHandover(identity)
@@ -135,7 +162,9 @@ export async function assertSandboxPreflight(
   await assertVideoLaneRuns()
 
   if (process.platform !== "linux") {
-    log("media-worker: sandbox capability proof skipped (not Linux)", { platform: process.platform })
+    log("media-worker: sandbox capability proof skipped (not Linux)", {
+      platform: process.platform,
+    })
     return
   }
 
@@ -230,7 +259,7 @@ async function assertUnprivilegedChild(identity: SandboxIdentity): Promise<void>
   try {
     const res = await runTool("sandbox-preflight", STATUS_READER, [PROC_STATUS], {
       timeoutMs: PREFLIGHT_TIMEOUT_MS,
-      maxStdoutBytes: 64 * 1024,
+      maxStdoutBytes: PREFLIGHT_MAX_STDOUT_BYTES,
       identity,
     })
     stdout = res.stdout

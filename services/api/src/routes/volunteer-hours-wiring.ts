@@ -1,7 +1,5 @@
-import { NO_HOST_STANDING } from "@civfix/shared/host"
 import type { Container } from "../di.js"
 import { makeDrizzleCleanupRepository } from "../services/cleanup-repository.drizzle.js"
-import { hostStandingOf } from "../services/host/host-standing.js"
 import type { CleanupHoursLookup } from "../services/volunteer-hours-service.js"
 
 export function makeCleanupHoursLookup(container: Container): CleanupHoursLookup {
@@ -15,6 +13,7 @@ export function makeCleanupHoursLookup(container: Container): CleanupHoursLookup
       return {
         organizerUserId: record.organizerUserId,
         status: record.status,
+        visibility: record.visibility,
         jurisdictionGeoid: record.jurisdictionGeoid,
         title: record.title,
         scheduledAt: record.scheduledAt,
@@ -28,8 +27,7 @@ export function makeCleanupHoursLookup(container: Container): CleanupHoursLookup
     roleOf: (cleanupId: string, userId: string) =>
       makeDrizzleCleanupRepository(container.getDb().sql).roleOf(cleanupId, userId),
     async standingOf(cleanupId: string, userId: string) {
-      const resolved = await hostStandingOf(container.getDb().sql, cleanupId, userId)
-      return resolved?.standing ?? NO_HOST_STANDING
+      return makeDrizzleCleanupRepository(container.getDb().sql).standingOf(cleanupId, userId)
     },
   }
 }

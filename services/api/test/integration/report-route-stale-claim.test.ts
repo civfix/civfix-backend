@@ -229,7 +229,11 @@ describe.skipIf(!pg)("report outreach: stranded route claims are recoverable", (
     expect((await reports.getReport(routable))?.status).toBe("acknowledged")
 
     const moved = await seedReport("guarded-advance-moved")
-    await reports.setStatus(moved, { status: "resolved", note: "operator closed it", actorId: null })
+    await reports.setStatus(moved, {
+      status: "resolved",
+      note: "operator closed it",
+      actorId: null,
+    })
     expect(
       await reports.advanceStatusIfIn(moved, {
         from: ["submitted", "held", "published"],

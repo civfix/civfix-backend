@@ -31,13 +31,13 @@
 CREATE EXTENSION IF NOT EXISTS pg_trgm;
 
 -- -----------------------------------------------------------------------------
--- users.handle + users.display_name  (findings 16, 17, 19 — handle; 7, 8 — both)
+-- users.handle + users.display_name  (findings 16, 17, 19: handle; 7, 8: both)
 -- -----------------------------------------------------------------------------
 -- @handle typeahead: `(handle::text) ILIKE 'prefix%'` (social-repository.drizzle.ts searchByHandlePrefix).
 -- People directory + admin reports/events/users search: infix `ILIKE '%term%'` on
 -- handle and display_name (social-repository.drizzle.ts, admin-report/-event/-user-repository).
 -- handle is CITEXT, and gin_trgm_ops has no citext operator class, so this is an EXPRESSION index on
--- (handle::text). For the planner to USE it, the consuming queries must filter on the SAME expression —
+-- (handle::text). For the planner to USE it, the consuming queries must filter on the SAME expression,
 -- so every handle search above was updated to `(u.handle::text) ILIKE ...` (a bare `handle ILIKE` would
 -- not match the index and, when OR'd with other branches, would force a seq scan for the whole predicate).
 -- ILIKE is case-insensitive on text, so the cast does not change which rows match. display_name is plain
@@ -79,7 +79,7 @@ CREATE INDEX IF NOT EXISTS cleanups_address_trgm
 -- -----------------------------------------------------------------------------
 -- Inbox thread search: `t.org ILIKE '%q%' OR t.subject ILIKE '%q%'`. (The third
 -- search column, latest-message from_addr, is reached through a per-row LATERAL
--- and is intentionally NOT indexed here — it would require denormalizing the
+-- and is intentionally NOT indexed here: it would require denormalizing the
 -- latest from_addr onto mail_threads; left as-is per finding 18.)
 --   mail-repository.drizzle.ts:542.
 CREATE INDEX IF NOT EXISTS mail_threads_org_trgm

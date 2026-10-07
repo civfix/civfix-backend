@@ -1,14 +1,7 @@
 import type { Mailer } from "@civfix/shared/interfaces"
 import { formatEventWhen } from "./host/broadcast-render.js"
 import { DEFAULT_EVENT_TIME_ZONE } from "./host/event-fields.js"
-import type { GuestRsvpRepository } from "./guest-rsvp-service.js"
-
-export function guestManageLinkBase(webOrigins: readonly string[]): string {
-  const origin = webOrigins[0]
-  return origin !== undefined && origin.length > 0
-    ? origin.replace(/\/+$/, "")
-    : "https://civfix.org"
-}
+import type { GuestRsvpRepository } from "./guest-rsvp-repository.js"
 
 export function guestEventLink(linkBase: string, cleanupId: string): string {
   return `${linkBase}/cleanups/${cleanupId}`

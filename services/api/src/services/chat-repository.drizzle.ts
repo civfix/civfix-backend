@@ -1,7 +1,4 @@
-
 import type { Queryable, Sql } from "../db/client.js"
-import { publicAuthorIdentity } from "./public-author.js"
-import { officialPersonFlag } from "../auth/official-account.js"
 import type {
   ChatMessageDTO,
   ChatMessageKind,
@@ -13,23 +10,33 @@ import type {
   UserMentionDTO,
 } from "@civfix/shared"
 import type { ChatHistoryPage, PersistChatInput } from "@civfix/shared/interfaces"
-import { loadChatReactions, loadChatReactionsFor, toggleChatReaction } from "./chat-reactions.drizzle.js"
-import { loadChatMentions, loadChatMentionsFor } from "./chat-mentions.drizzle.js"
-import { attachChatMedia, loadChatAttachments } from "./chat-attachments.drizzle.js"
+import { loadChatReactions, toggleChatReaction } from "./chat-reactions-repository.drizzle.js"
+import { loadChatMentions } from "./chat-mentions-repository.drizzle.js"
+import { attachChatMedia, loadChatAttachments } from "./chat-attachments-repository.drizzle.js"
 import type { PresignMedia } from "./media-presign.js"
 import { mapSystemRow } from "./report-chat-repository.drizzle.js"
 import { parseCityMention, effectiveJurisdictionHandle } from "./discussion-mentions.js"
 import { assertReplyTarget, replyMapForRows } from "./chat-reply-hydration.js"
 import { loadPollsFor } from "./chat-poll-repository.drizzle.js"
 import {
+  makeDrizzleRoomMessagesRepository,
   PIN_LIST_CAP,
-  roomFindMessage,
-  roomHistory,
-  roomListPins,
-  roomSetPinned,
   type RoomScopeSql,
-} from "./chat-room-scope.drizzle.js"
+} from "./room-messages-repository.drizzle.js"
 import { liveMessageIds, toTombstoneDTO } from "./chat-tombstone.js"
+import {
+  loadMessageExtras,
+  messageCoreFields,
+  replyFor,
+  senderColumns,
+  type MessageCoreRow,
+} from "./chat-message-core-sql.js"
+import type {
+  ChatMessageMeta,
+  ChatRepository,
+  InsertMessageOptions,
+  SoftDeleteOpts,
+} from "./chat-repository.js"
 
 export interface ReportCityContext {
   geoid: string
@@ -37,196 +44,48 @@ export interface ReportCityContext {
   handle: string | null
 }
 
-export interface ChatMessageMeta {
-  id: string
-  cleanupId: string | null
-  reportId: string | null
-  groupId: string | null
-  senderId: string | null
-  kind: ChatMessageKind
-  createdAt: Date
-  deletedAt: Date | null
-}
-
-export interface InsertedChatRow {
-  id: string
-  createdAt: Date
-}
-
-export interface InsertMessageOptions {
-  inTx?: (tx: Queryable, row: InsertedChatRow) => Promise<void>
-}
-
-export interface ChatRepository {
-  insertMessage(
-    input: PersistChatInput,
-    id: string,
-    options?: InsertMessageOptions,
-  ): Promise<ChatMessageDTO>
-  findMessageMeta(messageId: string): Promise<ChatMessageMeta | null>
-  history(
-    cleanupId: string,
-    before: string | undefined,
-    limit: number,
-    viewerUserId?: string | null,
-    around?: string,
-  ): Promise<ChatHistoryPage>
-  findMessage(
-    cleanupId: string,
-    messageId: string,
-    viewerUserId: string | null,
-  ): Promise<ChatMessageDTO | null>
-  toggleReaction(messageId: string, userId: string, emoji: ReactionEmoji): Promise<boolean>
-  editMessage(
-    cleanupId: string,
-    messageId: string,
-    senderId: string,
-    body: string,
-  ): Promise<ChatMessageDTO | null>
-  softDelete(
-    cleanupId: string,
-    messageId: string,
-    senderId: string,
-    opts?: SoftDeleteOpts,
-  ): Promise<ChatMessageDTO | null>
-  setPinned(
-    cleanupId: string,
-    messageId: string,
-    userId: string,
-    pinned: boolean,
-  ): Promise<ChatMessageDTO | null>
-  setReportPinned(
-    reportId: string,
-    messageId: string,
-    userId: string,
-    pinned: boolean,
-  ): Promise<ChatMessageDTO | null>
-  listPins(cleanupId: string, viewerUserId: string | null): Promise<ChatMessageDTO[]>
-  listReportPins(reportId: string, viewerUserId: string | null): Promise<ChatMessageDTO[]>
-  reportHistory(
-    reportId: string,
-    before: string | undefined,
-    limit: number,
-    viewerUserId?: string | null,
-    around?: string,
-  ): Promise<ChatHistoryPage>
-  findReportMessage(
-    reportId: string,
-    messageId: string,
-    viewerUserId: string | null,
-  ): Promise<ChatMessageDTO | null>
-  editReportMessage(
-    reportId: string,
-    messageId: string,
-    senderId: string,
-    body: string,
-  ): Promise<ChatMessageDTO | null>
-  softDeleteReport(
-    reportId: string,
-    messageId: string,
-    senderId: string,
-    opts?: SoftDeleteOpts,
-  ): Promise<ChatMessageDTO | null>
-  countReportMessages(reportId: string): Promise<number>
-  groupHistory(
-    groupId: string,
-    before: string | undefined,
-    limit: number,
-    viewerUserId?: string | null,
-    around?: string,
-  ): Promise<ChatHistoryPage>
-  findGroupMessage(
-    groupId: string,
-    messageId: string,
-    viewerUserId: string | null,
-  ): Promise<ChatMessageDTO | null>
-  editGroupMessage(
-    groupId: string,
-    messageId: string,
-    senderId: string,
-    body: string,
-  ): Promise<ChatMessageDTO | null>
-  softDeleteGroup(
-    groupId: string,
-    messageId: string,
-    senderId: string,
-    opts?: SoftDeleteOpts,
-  ): Promise<ChatMessageDTO | null>
-  setGroupPinned(
-    groupId: string,
-    messageId: string,
-    userId: string,
-    pinned: boolean,
-  ): Promise<ChatMessageDTO | null>
-  listGroupPins(groupId: string, viewerUserId: string | null): Promise<ChatMessageDTO[]>
-}
-
-export interface SoftDeleteOpts {
-  bypassSenderGate?: boolean
-}
-
 export { PIN_LIST_CAP }
 
-interface ChatRowSelect {
-  id: string
+interface ChatRowSelect extends MessageCoreRow {
   cleanup_id: string | null
   report_id: string | null
   group_id: string | null
   sender_id: string | null
-  body: string | null
-  kind: ChatMessageKind
   attachments: unknown[] | null
-  created_at: Date
-  edited_at: Date | null
-  deleted_at: Date | null
-  reply_to_id: string | null
-  pinned_at: Date | null
   system_status: string | null
   system_kind: string | null
   system_body: string | null
-  sender_display_name: string | null
-  sender_handle: string | null
-  sender_bio: string | null
-  sender_avatar_url: string | null
-  sender_deleted_at: Date | null
   forwarded_to_city?: boolean
 }
 
-function toMessageDTO(
-  r: ChatRowSelect,
-  reactions: ReactionSummaryDTO[],
-  mentions: UserMentionDTO[],
-  viewerUserId?: string | null,
-  clientId?: string,
-  attachments: MediaDTO[] = [],
-  reportCity?: ReportCityContext | null,
-  replyTo?: ReplyToDTO | null,
-  poll?: PollDTO | null,
-): ChatMessageDTO {
-  const dto = buildMessageDTO(
-    r,
-    reactions,
-    mentions,
-    viewerUserId,
-    clientId,
-    attachments,
-    reportCity,
-    replyTo,
-    poll,
-  )
+interface MessageExtras {
+  reactions?: ReactionSummaryDTO[]
+  mentions?: UserMentionDTO[]
+  viewerUserId?: string | null
+  clientId?: string
+  attachments?: MediaDTO[]
+  reportCity?: ReportCityContext | null
+  replyTo?: ReplyToDTO | null
+  poll?: PollDTO | null
+}
+
+function toMessageDTO(r: ChatRowSelect, extras: MessageExtras = {}): ChatMessageDTO {
+  const dto = buildMessageDTO(r, extras)
   return r.deleted_at !== null ? toTombstoneDTO(dto, r.deleted_at) : dto
 }
 
 function buildMessageDTO(
   r: ChatRowSelect,
-  reactions: ReactionSummaryDTO[],
-  mentions: UserMentionDTO[],
-  viewerUserId?: string | null,
-  clientId?: string,
-  attachments: MediaDTO[] = [],
-  reportCity?: ReportCityContext | null,
-  replyTo?: ReplyToDTO | null,
-  poll?: PollDTO | null,
+  {
+    reactions = [],
+    mentions = [],
+    viewerUserId,
+    clientId,
+    attachments = [],
+    reportCity,
+    replyTo,
+    poll,
+  }: MessageExtras,
 ): ChatMessageDTO {
   if (r.sender_id === null && r.report_id !== null) {
     return mapSystemRow({
@@ -239,13 +98,6 @@ function buildMessageDTO(
       system_body: r.system_body,
     })
   }
-  const author = publicAuthorIdentity({
-    id: r.sender_id!,
-    displayName: r.sender_display_name ?? "",
-    handle: r.sender_handle,
-    avatarUrl: r.sender_avatar_url,
-    deletedAt: r.sender_deleted_at,
-  })
   const isReport = r.report_id !== null
   const isGroup = r.group_id !== null
   return {
@@ -253,28 +105,7 @@ function buildMessageDTO(
     cleanupId: r.cleanup_id ?? r.report_id ?? r.group_id!,
     ...(isReport ? { roomKind: "report" as const } : {}),
     ...(isGroup ? { roomKind: "group" as const } : {}),
-    from: {
-      id: r.sender_id!,
-      name: author.name,
-      handle: author.handle,
-      bio: author.deleted ? null : r.sender_bio,
-      avatar: author.avatar,
-      ...(author.avatarUrl !== undefined ? { avatarUrl: author.avatarUrl } : {}),
-      followers: 0,
-      following: 0,
-      isFollowing: false,
-      ...(author.deleted ? { deleted: true } : officialPersonFlag(r.sender_id!)),
-    },
-    ...(r.body !== null ? { body: r.body } : {}),
-    kind: r.kind,
-    attachments,
-    reactions,
-    mentions,
-    createdAt: r.created_at.toISOString(),
-    ...(r.edited_at !== null ? { editedAt: r.edited_at.toISOString() } : {}),
-    ...(r.deleted_at !== null ? { deletedAt: r.deleted_at.toISOString() } : {}),
-    ...(r.reply_to_id !== null ? { replyToId: r.reply_to_id, replyTo: replyTo ?? null } : {}),
-    ...(r.pinned_at != null ? { pinnedAt: r.pinned_at.toISOString() } : {}),
+    ...messageCoreFields(r, r.sender_id!, { attachments, reactions, mentions, replyTo }),
     ...(poll != null ? { poll } : {}),
     mine: viewerUserId != null && r.sender_id === viewerUserId,
     ...(isReport ? cityForwardFields(r, reportCity) : {}),
@@ -327,11 +158,7 @@ function chatColumns(sql: Queryable, includeForward: boolean) {
     cm.system_status,
     cm.system_kind,
     cm.system_body,
-    u.display_name AS sender_display_name,
-    u.handle AS sender_handle,
-    u.bio AS sender_bio,
-    u.avatar_url AS sender_avatar_url,
-    u.deleted_at AS sender_deleted_at
+    ${senderColumns(sql)}
     ${forward}
   `
 }
@@ -356,11 +183,7 @@ function selectChatRowFrom(tag: Queryable, cte: string, includeForward: boolean)
       ${tag(cte)}.system_status,
       ${tag(cte)}.system_kind,
       ${tag(cte)}.system_body,
-      u.display_name AS sender_display_name,
-      u.handle AS sender_handle,
-      u.bio AS sender_bio,
-      u.avatar_url AS sender_avatar_url,
-      u.deleted_at AS sender_deleted_at
+      ${senderColumns(tag)}
       ${forward}
     FROM ${tag(cte)}
     LEFT JOIN users u ON u.id = ${tag(cte)}.sender_id
@@ -391,28 +214,18 @@ export function makeDrizzleChatRepository(sql: Sql, presign?: PresignMedia): Cha
     viewerUserId: string | null,
     reportCity: ReportCityContext | null,
   ): Promise<ChatMessageDTO[]> {
-    const ids = liveMessageIds(page)
     const pollIds = page.filter((r) => r.kind === "poll" && r.deleted_at === null).map((r) => r.id)
-    const [attachmentsByMessage, reactionsByMessage, mentionsByMessage, replyByTarget, pollsByMessage] =
-      await Promise.all([
-        presign ? loadChatAttachments(sql, ids, presign) : Promise.resolve(new Map<string, MediaDTO[]>()),
-        loadChatReactionsFor(sql, ids, viewerUserId),
-        loadChatMentionsFor(sql, ids),
-        replyMapForRows(sql, "chat_messages", page),
-        loadPollsFor(sql, pollIds, viewerUserId),
-      ])
+    const [partsFor, pollsByMessage] = await Promise.all([
+      loadMessageExtras(sql, "chat_messages", page, viewerUserId, presign),
+      loadPollsFor(sql, pollIds, viewerUserId),
+    ])
     return page.map((r) =>
-      toMessageDTO(
-        r,
-        reactionsByMessage.get(r.id) ?? [],
-        mentionsByMessage.get(r.id) ?? [],
+      toMessageDTO(r, {
+        ...partsFor(r),
         viewerUserId,
-        undefined,
-        attachmentsByMessage.get(r.id) ?? [],
         reportCity,
-        r.reply_to_id !== null ? replyByTarget.get(r.reply_to_id) ?? null : null,
-        pollsByMessage.get(r.id) ?? null,
-      ),
+        poll: pollsByMessage.get(r.id) ?? null,
+      }),
     )
   }
 
@@ -427,22 +240,22 @@ export function makeDrizzleChatRepository(sql: Sql, presign?: PresignMedia): Cha
       await Promise.all([
         liveIds.length > 0 ? loadChatReactions(sql, row.id, viewerUserId) : Promise.resolve([]),
         liveIds.length > 0 ? loadChatMentions(sql, row.id) : Promise.resolve([]),
-        presign ? loadChatAttachments(sql, liveIds, presign) : Promise.resolve(new Map<string, MediaDTO[]>()),
+        presign
+          ? loadChatAttachments(sql, liveIds, presign, viewerUserId)
+          : Promise.resolve(new Map<string, MediaDTO[]>()),
         resolveReportCity(scope),
         replyMapForRows(sql, "chat_messages", [row]),
         loadPollsFor(sql, pollIds, viewerUserId),
       ])
-    return toMessageDTO(
-      row,
+    return toMessageDTO(row, {
       reactions,
       mentions,
       viewerUserId,
-      undefined,
-      attachmentsByMessage.get(row.id) ?? [],
+      attachments: attachmentsByMessage.get(row.id) ?? [],
       reportCity,
-      row.reply_to_id !== null ? replyByTarget.get(row.reply_to_id) ?? null : null,
-      pollsByMessage.get(row.id) ?? null,
-    )
+      replyTo: replyFor(row, replyByTarget),
+      poll: pollsByMessage.get(row.id) ?? null,
+    })
   }
 
   function roomSql(scope: RoomScope): RoomScopeSql<ChatRowSelect, ReportCityContext | null> {
@@ -451,7 +264,9 @@ export function makeDrizzleChatRepository(sql: Sql, presign?: PresignMedia): Cha
       table: "chat_messages",
       alias: "cm",
       scope: (prefix) =>
-        prefix === null ? anchorScope(scope) : sql`${sql(prefix)}.${sql(scope.column)} = ${scope.id}`,
+        prefix === null
+          ? anchorScope(scope)
+          : sql`${sql(prefix)}.${sql(scope.column)} = ${scope.id}`,
       columns: chatColumns(sql, isReport),
       from: sql`FROM chat_messages cm LEFT JOIN users u ON u.id = cm.sender_id`,
       context: () => resolveReportCity(scope),
@@ -467,7 +282,12 @@ export function makeDrizzleChatRepository(sql: Sql, presign?: PresignMedia): Cha
     viewerUserId: string | null,
     around?: string,
   ): Promise<ChatHistoryPage> {
-    return roomHistory(sql, roomSql(scope), before, limit, viewerUserId, around)
+    return makeDrizzleRoomMessagesRepository(sql, roomSql(scope)).history(
+      before,
+      limit,
+      viewerUserId,
+      around,
+    )
   }
 
   function findMessageScoped(
@@ -475,7 +295,10 @@ export function makeDrizzleChatRepository(sql: Sql, presign?: PresignMedia): Cha
     messageId: string,
     viewerUserId: string | null,
   ): Promise<ChatMessageDTO | null> {
-    return roomFindMessage(sql, roomSql(scope), messageId, viewerUserId)
+    return makeDrizzleRoomMessagesRepository(sql, roomSql(scope)).findMessage(
+      messageId,
+      viewerUserId,
+    )
   }
 
   async function editScoped(
@@ -484,17 +307,22 @@ export function makeDrizzleChatRepository(sql: Sql, presign?: PresignMedia): Cha
     senderId: string,
     body: string,
   ): Promise<ChatMessageDTO | null> {
-    const rows = await sql<{ id: string }[]>`
-      UPDATE chat_messages
-      SET body = ${body}, edited_at = now()
-      WHERE id = ${messageId}
-        AND ${anchorScope(scope)}
-        AND sender_id = ${senderId}
-        AND deleted_at IS NULL
-      RETURNING id
+    const isReport = scope.column === "report_id"
+    const rows = await sql<ChatRowSelect[]>`
+      WITH updated AS (
+        UPDATE chat_messages
+        SET body = ${body}, edited_at = now()
+        WHERE id = ${messageId}
+          AND ${anchorScope(scope)}
+          AND sender_id = ${senderId}
+          AND deleted_at IS NULL
+        RETURNING id, cleanup_id, report_id, group_id, sender_id, body, kind, attachments, created_at, edited_at, deleted_at, reply_to_id, pinned_at, system_status, system_kind, system_body
+      )
+      ${selectChatRowFrom(sql, "updated", isReport)}
     `
-    if (!rows[0]) return null
-    return findMessageScoped(scope, messageId, senderId)
+    const row = rows[0]
+    if (!row) return null
+    return hydrateRow(scope, row, senderId)
   }
 
   function setPinnedScoped(
@@ -503,11 +331,18 @@ export function makeDrizzleChatRepository(sql: Sql, presign?: PresignMedia): Cha
     userId: string,
     pinned: boolean,
   ): Promise<ChatMessageDTO | null> {
-    return roomSetPinned(sql, roomSql(scope), messageId, userId, pinned)
+    return makeDrizzleRoomMessagesRepository(sql, roomSql(scope)).setPinned(
+      messageId,
+      userId,
+      pinned,
+    )
   }
 
-  function listPinsScoped(scope: RoomScope, viewerUserId: string | null): Promise<ChatMessageDTO[]> {
-    return roomListPins(sql, roomSql(scope), viewerUserId)
+  function listPinsScoped(
+    scope: RoomScope,
+    viewerUserId: string | null,
+  ): Promise<ChatMessageDTO[]> {
+    return makeDrizzleRoomMessagesRepository(sql, roomSql(scope)).listPins(viewerUserId)
   }
 
   async function softDeleteScoped(
@@ -538,16 +373,11 @@ export function makeDrizzleChatRepository(sql: Sql, presign?: PresignMedia): Cha
     const row = rows[0]
     if (!row) return null
     const replyByTarget = await replyMapForRows(sql, "chat_messages", [row])
-    return toMessageDTO(
-      row,
-      [],
-      [],
-      senderId,
-      undefined,
-      [],
+    return toMessageDTO(row, {
+      viewerUserId: senderId,
       reportCity,
-      row.reply_to_id !== null ? replyByTarget.get(row.reply_to_id) ?? null : null,
-    )
+      replyTo: replyFor(row, replyByTarget),
+    })
   }
 
   return {
@@ -600,7 +430,7 @@ export function makeDrizzleChatRepository(sql: Sql, presign?: PresignMedia): Cha
           ? sql.begin(async (tx) => {
               const inserted = await run(tx)
               const createdAt = inserted[0]!.created_at
-              if (wantsMedia) await attachChatMedia(tx, id, uploadIds, createdAt)
+              if (wantsMedia) await attachChatMedia(tx, id, uploadIds, createdAt, input.userId)
               if (inTx) await inTx(tx, { id, createdAt })
               return inserted
             })
@@ -609,8 +439,16 @@ export function makeDrizzleChatRepository(sql: Sql, presign?: PresignMedia): Cha
           ? resolveReportCity({ column: "report_id", id: input.cleanupId })
           : Promise.resolve(null),
       ])
-      const attachments = wantsMedia ? (await loadChatAttachments(sql, [id], presign!)).get(id) ?? [] : []
-      return toMessageDTO(rows[0]!, [], [], input.userId, input.clientId, attachments, reportCity, replyTo)
+      const attachments = wantsMedia
+        ? ((await loadChatAttachments(sql, [id], presign, input.userId)).get(id) ?? [])
+        : []
+      return toMessageDTO(rows[0]!, {
+        viewerUserId: input.userId,
+        clientId: input.clientId,
+        attachments,
+        reportCity,
+        replyTo,
+      })
     },
 
     async findMessageMeta(messageId: string): Promise<ChatMessageMeta | null> {
@@ -652,7 +490,13 @@ export function makeDrizzleChatRepository(sql: Sql, presign?: PresignMedia): Cha
       viewerUserId: string | null = null,
       around?: string,
     ): Promise<ChatHistoryPage> {
-      return historyScoped({ column: "cleanup_id", id: cleanupId }, before, limit, viewerUserId, around)
+      return historyScoped(
+        { column: "cleanup_id", id: cleanupId },
+        before,
+        limit,
+        viewerUserId,
+        around,
+      )
     },
 
     editMessage(
@@ -727,7 +571,13 @@ export function makeDrizzleChatRepository(sql: Sql, presign?: PresignMedia): Cha
       viewerUserId: string | null = null,
       around?: string,
     ): Promise<ChatHistoryPage> {
-      return historyScoped({ column: "report_id", id: reportId }, before, limit, viewerUserId, around)
+      return historyScoped(
+        { column: "report_id", id: reportId },
+        before,
+        limit,
+        viewerUserId,
+        around,
+      )
     },
 
     findReportMessage(

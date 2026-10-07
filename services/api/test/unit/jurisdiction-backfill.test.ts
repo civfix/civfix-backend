@@ -3,9 +3,9 @@
  * (JURISDICTION_LAYER_RANK_CASE in src/db/sql/jurisdiction.ts).
  *
  * This constant is THE single ranking definition shared by the write-time resolver
- * (JURISDICTION_RESOLVE_SQL) and the Phase-5 backfill CLI (src/db/backfill-jurisdictions.ts, which
+ * (JURISDICTION_RESOLVE_SQL) and the backfill CLI (src/db/backfill-jurisdictions.ts, which
  * embeds it verbatim via `sql.unsafe`). Because both paths interpolate the exact same string, a
- * backfilled report resolves identically to a fresh insert — there is no second, drifting copy of the
+ * backfilled report resolves identically to a fresh insert; there is no second, drifting copy of the
  * CASE expression to keep in sync. Here we pin the literal value and the ordering it encodes.
  *
  * NOTE: the byte-for-byte tie between JURISDICTION_RESOLVE_SQL and this constant is asserted in

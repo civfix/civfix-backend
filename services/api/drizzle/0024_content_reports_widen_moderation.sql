@@ -12,7 +12,7 @@
 --                                       (the reportable UGC subjects; the
 --                                        existing report/user/chat stay valid).
 --
--- subject_id remains uuid NOT NULL — every reportable id in civfix is a uuid
+-- subject_id remains uuid NOT NULL: every reportable id in civfix is a uuid
 -- (report, discussion comment, chat/dm message, cleanup event, user profile,
 -- media photo), so no column-type change is needed.
 --

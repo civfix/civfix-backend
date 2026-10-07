@@ -1,34 +1,15 @@
 import type { Sql } from "../../db/client.js"
+import type { MetricRow, MetricUpsert, MetricsRepository } from "./metrics-repository.js"
 
-export interface MetricUpsert {
-  cleanupId: string
+interface MetricRowSelect {
   day: string
   metric: string
   bucket: string
-  value: number
+  value: string
 }
 
-export interface MetricRow {
-  day: string
-  metric: string
-  bucket: string
-  value: number
-}
-
-export interface MetricsRepository {
-  resolveSlug(slug: string): Promise<{ cleanupId: string; timezone: string | null } | null>
-  eventTimezone(cleanupId: string): Promise<string | null>
-  listRollupEvents(since: Date, limit: number): Promise<string[]>
-  recomputeFromSource(cleanupId: string, timezone: string, since: Date): Promise<MetricUpsert[]>
-  upsertExact(rows: readonly MetricUpsert[]): Promise<void>
-  upsertGreatest(rows: readonly MetricUpsert[]): Promise<void>
-  read(cleanupId: string, metrics: readonly string[], from: string, to: string): Promise<MetricRow[]>
-  readMany(
-    cleanupIds: readonly string[],
-    metrics: readonly string[],
-    from: string,
-    to: string,
-  ): Promise<MetricRow[]>
+function toMetricRow(row: MetricRowSelect): MetricRow {
+  return { day: row.day, metric: row.metric, bucket: row.bucket, value: Number(row.value) }
 }
 
 export function makeDrizzleMetricsRepository(sql: Sql): MetricsRepository {
@@ -48,72 +29,82 @@ export function makeDrizzleMetricsRepository(sql: Sql): MetricsRepository {
       return rows[0]?.timezone ?? null
     },
 
-    async listRollupEvents(since: Date, limit: number) {
-      const rows = await sql<{ id: string }[]>`
-        SELECT DISTINCT c.id
+    async listRollupEvents(since: Date, after: string | null, limit: number) {
+      const afterFilter = after === null ? sql`` : sql`AND c.id > ${after}`
+      const rows = await sql<{ id: string; timezone: string | null }[]>`
+        SELECT c.id, c.timezone
           FROM cleanups c
-         WHERE c.updated_at >= ${since}
+         WHERE (c.updated_at >= ${since}
             OR EXISTS (
               SELECT 1 FROM cleanup_registrations r
                WHERE r.cleanup_id = c.id AND r.registered_at >= ${since})
             OR EXISTS (
               SELECT 1 FROM broadcasts b
-               WHERE b.cleanup_id = c.id AND b.created_at >= ${since})
+               WHERE b.cleanup_id = c.id AND b.created_at >= ${since}))
+           ${afterFilter}
          ORDER BY c.id
          LIMIT ${limit}`
-      return rows.map((r) => r.id)
+      return rows.map((r) => ({ id: r.id, timezone: r.timezone }))
     },
 
+    /**
+     * upsertExact overwrites whole days, so the window must start at a local midnight: a mid-day
+     * instant would rewrite the oldest day in the window with only the part after that instant.
+     */
     async recomputeFromSource(cleanupId: string, timezone: string, since: Date) {
       const rows = await sql<{ day: string; metric: string; bucket: string; n: string }[]>`
+        WITH bound AS (
+          SELECT date_trunc('day', ${since}::timestamptz AT TIME ZONE ${timezone})
+                   AT TIME ZONE ${timezone} AS since
+        )
         SELECT to_char((r.registered_at AT TIME ZONE ${timezone})::date, 'YYYY-MM-DD') AS day,
                'registrations' AS metric, '' AS bucket, count(*)::text AS n
           FROM cleanup_registrations r
-         WHERE r.cleanup_id = ${cleanupId} AND r.registered_at >= ${since}
+         WHERE r.cleanup_id = ${cleanupId} AND r.registered_at >= (SELECT since FROM bound)
          GROUP BY 1
         UNION ALL
         SELECT to_char((r.cancelled_at AT TIME ZONE ${timezone})::date, 'YYYY-MM-DD'),
                'cancellations', '', count(*)::text
           FROM cleanup_registrations r
-         WHERE r.cleanup_id = ${cleanupId} AND r.cancelled_at IS NOT NULL AND r.cancelled_at >= ${since}
+         WHERE r.cleanup_id = ${cleanupId} AND r.cancelled_at IS NOT NULL AND r.cancelled_at >= (SELECT since FROM bound)
          GROUP BY 1
         UNION ALL
         SELECT to_char((s.checked_in_at AT TIME ZONE ${timezone})::date, 'YYYY-MM-DD'),
                'checkins', '', count(*)::text
           FROM cleanup_registration_seats s
-         WHERE s.cleanup_id = ${cleanupId} AND s.checked_in_at IS NOT NULL AND s.checked_in_at >= ${since}
+         WHERE s.cleanup_id = ${cleanupId} AND s.checked_in_at IS NOT NULL AND s.checked_in_at >= (SELECT since FROM bound)
          GROUP BY 1
         UNION ALL
         SELECT to_char((s.no_show_at AT TIME ZONE ${timezone})::date, 'YYYY-MM-DD'),
                'no_shows', '', count(*)::text
           FROM cleanup_registration_seats s
-         WHERE s.cleanup_id = ${cleanupId} AND s.no_show_at IS NOT NULL AND s.no_show_at >= ${since}
+         WHERE s.cleanup_id = ${cleanupId} AND s.no_show_at IS NOT NULL AND s.no_show_at >= (SELECT since FROM bound)
          GROUP BY 1
         UNION ALL
         SELECT to_char((w.created_at AT TIME ZONE ${timezone})::date, 'YYYY-MM-DD'),
                'waitlist_joined', '', count(*)::text
           FROM cleanup_waitlist w
-         WHERE w.cleanup_id = ${cleanupId} AND w.created_at >= ${since}
+         WHERE w.cleanup_id = ${cleanupId} AND w.created_at >= (SELECT since FROM bound)
          GROUP BY 1
         UNION ALL
         SELECT to_char((b.finished_at AT TIME ZONE ${timezone})::date, 'YYYY-MM-DD'),
                'broadcast_recipients', '', sum(b.recipient_count)::text
           FROM broadcasts b
-         WHERE b.cleanup_id = ${cleanupId} AND b.finished_at IS NOT NULL AND b.finished_at >= ${since}
+         WHERE b.cleanup_id = ${cleanupId} AND b.finished_at IS NOT NULL AND b.finished_at >= (SELECT since FROM bound)
          GROUP BY 1
         UNION ALL
         SELECT to_char((d.created_at AT TIME ZONE ${timezone})::date, 'YYYY-MM-DD'),
                'broadcast_' || d.status, d.channel, count(*)::text
           FROM broadcast_deliveries d
           JOIN broadcasts b ON b.id = d.broadcast_id
-         WHERE b.cleanup_id = ${cleanupId} AND d.created_at >= ${since}
+         WHERE b.cleanup_id = ${cleanupId} AND d.created_at >= (SELECT since FROM bound)
            AND d.status IN ('sent','failed','suppressed')
          GROUP BY 1, 2, 3
         UNION ALL
         SELECT to_char((bu.created_at AT TIME ZONE ${timezone})::date, 'YYYY-MM-DD'),
                'unsubscribes', '', count(*)::text
           FROM broadcast_unsubscribes bu
-         WHERE bu.cleanup_id = ${cleanupId} AND bu.created_at >= ${since}
+         WHERE bu.cleanup_id = ${cleanupId} AND bu.created_at >= (SELECT since FROM bound)
          GROUP BY 1`
       return rows.map((row) => ({
         cleanupId,
@@ -154,7 +145,7 @@ export function makeDrizzleMetricsRepository(sql: Sql): MetricsRepository {
     },
 
     async read(cleanupId: string, metrics: readonly string[], from: string, to: string) {
-      const rows = await sql<{ day: string; metric: string; bucket: string; value: string }[]>`
+      const rows = await sql<MetricRowSelect[]>`
         SELECT to_char(day, 'YYYY-MM-DD') AS day, metric, bucket, value::text
           FROM event_metrics_daily
          WHERE cleanup_id = ${cleanupId}
@@ -162,12 +153,7 @@ export function makeDrizzleMetricsRepository(sql: Sql): MetricsRepository {
            AND day BETWEEN ${from}::date AND ${to}::date
          ORDER BY day
          LIMIT 20000`
-      return rows.map((row) => ({
-        day: row.day,
-        metric: row.metric,
-        bucket: row.bucket,
-        value: Number(row.value),
-      }))
+      return rows.map(toMetricRow)
     },
 
     async readMany(
@@ -177,7 +163,7 @@ export function makeDrizzleMetricsRepository(sql: Sql): MetricsRepository {
       to: string,
     ) {
       if (cleanupIds.length === 0) return []
-      const rows = await sql<{ day: string; metric: string; bucket: string; value: string }[]>`
+      const rows = await sql<MetricRowSelect[]>`
         SELECT to_char(day, 'YYYY-MM-DD') AS day, metric, bucket, sum(value)::text AS value
           FROM event_metrics_daily
          WHERE cleanup_id = ANY(${[...cleanupIds]}::uuid[])
@@ -186,12 +172,7 @@ export function makeDrizzleMetricsRepository(sql: Sql): MetricsRepository {
          GROUP BY 1, 2, 3
          ORDER BY day
          LIMIT 20000`
-      return rows.map((row) => ({
-        day: row.day,
-        metric: row.metric,
-        bucket: row.bucket,
-        value: Number(row.value),
-      }))
+      return rows.map(toMetricRow)
     },
   }
 }

@@ -3,7 +3,6 @@ import { FakeAbuseChecks } from "@civfix/shared/fakes"
 import { releaseAnonHoldIfReady } from "../../src/services/anon-hold-release.js"
 import { InMemoryAnonStore } from "../helpers/anon.js"
 
-
 function harness() {
   const store = new InMemoryAnonStore()
   const abuse = new FakeAbuseChecks()
@@ -15,7 +14,12 @@ function harness() {
 describe("releaseAnonHoldIfReady: publishes when ready + clean", () => {
   it("flips a held anon report to published once its single media is ready and clean", async () => {
     const { store, release } = harness()
-    const r = store.seedReport({ status: "held", reporterUserId: null, anonSessionId: "anontok-1", publishedAt: null })
+    const r = store.seedReport({
+      status: "held",
+      reporterUserId: null,
+      anonSessionId: "anontok-1",
+      publishedAt: null,
+    })
     store.seedMedia({ reportId: r.id, status: "ready" })
 
     const res = await release(r.id)
@@ -29,7 +33,12 @@ describe("releaseAnonHoldIfReady: publishes when ready + clean", () => {
 
   it("publishes a media-less held report (nothing to validate)", async () => {
     const { store, release } = harness()
-    const r = store.seedReport({ status: "held", reporterUserId: null, anonSessionId: "anontok-1", publishedAt: null })
+    const r = store.seedReport({
+      status: "held",
+      reporterUserId: null,
+      anonSessionId: "anontok-1",
+      publishedAt: null,
+    })
     const res = await release(r.id)
     expect(res.outcome).toBe("published")
     expect(store.reports.get(r.id)!.status).toBe("published")
@@ -37,7 +46,12 @@ describe("releaseAnonHoldIfReady: publishes when ready + clean", () => {
 
   it("publishes when every one of several media is ready", async () => {
     const { store, release } = harness()
-    const r = store.seedReport({ status: "held", reporterUserId: null, anonSessionId: "anontok-1", publishedAt: null })
+    const r = store.seedReport({
+      status: "held",
+      reporterUserId: null,
+      anonSessionId: "anontok-1",
+      publishedAt: null,
+    })
     store.seedMedia({ reportId: r.id, status: "ready" })
     store.seedMedia({ reportId: r.id, status: "ready" })
     const res = await release(r.id)
@@ -48,7 +62,12 @@ describe("releaseAnonHoldIfReady: publishes when ready + clean", () => {
 describe("releaseAnonHoldIfReady: stays held", () => {
   it("stays held when a media is HELD (nsfw)", async () => {
     const { store, release } = harness()
-    const r = store.seedReport({ status: "held", reporterUserId: null, anonSessionId: "anontok-1", publishedAt: null })
+    const r = store.seedReport({
+      status: "held",
+      reporterUserId: null,
+      anonSessionId: "anontok-1",
+      publishedAt: null,
+    })
     store.seedMedia({ reportId: r.id, status: "ready" })
     store.seedMedia({ reportId: r.id, status: "held" })
     const res = await release(r.id)
@@ -58,7 +77,12 @@ describe("releaseAnonHoldIfReady: stays held", () => {
 
   it("stays held when a media is REJECTED", async () => {
     const { store, release } = harness()
-    const r = store.seedReport({ status: "held", reporterUserId: null, anonSessionId: "anontok-1", publishedAt: null })
+    const r = store.seedReport({
+      status: "held",
+      reporterUserId: null,
+      anonSessionId: "anontok-1",
+      publishedAt: null,
+    })
     store.seedMedia({ reportId: r.id, status: "rejected" })
     const res = await release(r.id)
     expect(res.outcome).toBe("media_blocked")
@@ -67,7 +91,12 @@ describe("releaseAnonHoldIfReady: stays held", () => {
 
   it("stays held while a media is still validating (not done yet)", async () => {
     const { store, release } = harness()
-    const r = store.seedReport({ status: "held", reporterUserId: null, anonSessionId: "anontok-1", publishedAt: null })
+    const r = store.seedReport({
+      status: "held",
+      reporterUserId: null,
+      anonSessionId: "anontok-1",
+      publishedAt: null,
+    })
     store.seedMedia({ reportId: r.id, status: "ready" })
     store.seedMedia({ reportId: r.id, status: "validating" })
     const res = await release(r.id)
@@ -77,7 +106,12 @@ describe("releaseAnonHoldIfReady: stays held", () => {
 
   it("stays held when an OPEN abuse_flag exists for the report (dup)", async () => {
     const { store, release } = harness()
-    const r = store.seedReport({ status: "held", reporterUserId: null, anonSessionId: "anontok-1", publishedAt: null })
+    const r = store.seedReport({
+      status: "held",
+      reporterUserId: null,
+      anonSessionId: "anontok-1",
+      publishedAt: null,
+    })
     store.seedMedia({ reportId: r.id, status: "ready" })
     store.seedOpenFlag("report", r.id, "phash_dup")
     const res = await release(r.id)
@@ -87,7 +121,12 @@ describe("releaseAnonHoldIfReady: stays held", () => {
 
   it("stays held when an OPEN abuse_flag exists for one of its media", async () => {
     const { store, release } = harness()
-    const r = store.seedReport({ status: "held", reporterUserId: null, anonSessionId: "anontok-1", publishedAt: null })
+    const r = store.seedReport({
+      status: "held",
+      reporterUserId: null,
+      anonSessionId: "anontok-1",
+      publishedAt: null,
+    })
     const m = store.seedMedia({ reportId: r.id, status: "ready" })
     store.seedOpenFlag("media", m.id, "nsfw")
     const res = await release(r.id)

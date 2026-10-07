@@ -6,20 +6,26 @@ import {
   type ChatHistoryResponse,
 } from "@civfix/shared"
 import type { FastifyInstance } from "fastify"
-import { perIdentity } from "../../plugins/rate-limit.js"
+import { perIdentity, type RouteRateLimitSpec } from "../../plugins/rate-limit.js"
 import type { Container } from "../../di.js"
 import { route } from "../../versioning/route.js"
-import { idParam, overridableService, parse, sendOk, twoIdParams } from "./_route-utils.js"
+import {
+  idParam,
+  makeContainerMessageUpdateAnnouncer,
+  overridableService,
+  parse,
+  sendOk,
+  twoIdParams,
+} from "./_route-utils.js"
 import { requireOperator } from "../../auth/admin-guard.js"
 import {
   makeAdminReportChatService,
   type AdminReportChatService,
 } from "../../services/admin/admin-report-chat-service.js"
-import {
-  makeDrizzleAdminReportChatRepository,
-  type AdminReportChatRepository,
-} from "../../services/admin/admin-report-chat-repository.drizzle.js"
-import { makeDrizzleChatRepository, type ChatRepository } from "../../services/chat-repository.drizzle.js"
+import { makeDrizzleAdminReportChatRepository } from "../../services/admin/admin-report-chat-repository.drizzle.js"
+import type { AdminReportChatRepository } from "../../services/admin/admin-report-chat-repository.js"
+import type { ChatRepository } from "../../services/chat-repository.js"
+import { makeDrizzleChatRepository } from "../../services/chat-repository.drizzle.js"
 import type { ChatHistorySource } from "../chat-route-helpers.js"
 import { makePrivateMediaPresigner } from "../../services/media-presign.js"
 import { makeContainerReportChatSendDeps } from "../../services/report-chat-send-wiring.js"
@@ -38,17 +44,15 @@ declare module "fastify" {
   }
 }
 
-export const ADMIN_REPORT_CHAT_SEND_RATE_LIMIT = perIdentity({
+const OPERATOR_CHAT_WRITE_LIMIT: RouteRateLimitSpec = {
   max: 60,
   timeWindow: "1 minute",
   skipOnError: false,
-})
+}
 
-export const ADMIN_REPORT_CHAT_REMOVE_RATE_LIMIT = perIdentity({
-  max: 60,
-  timeWindow: "1 minute",
-  skipOnError: false,
-})
+export const ADMIN_REPORT_CHAT_SEND_RATE_LIMIT = perIdentity(OPERATOR_CHAT_WRITE_LIMIT)
+
+export const ADMIN_REPORT_CHAT_REMOVE_RATE_LIMIT = perIdentity(OPERATOR_CHAT_WRITE_LIMIT)
 
 export async function registerAdminReportChatRoutes(
   app: FastifyInstance,
@@ -65,13 +69,13 @@ export async function registerAdminReportChatRoutes(
         historySource: historySourceFrom(() => overrides.chatRepo),
         send: overrides.send,
       }),
-    () => (containerService ??= buildContainerService()),
+    () => (containerService ??= makeContainerService()),
   )
 
   let containerService: AdminReportChatService | undefined
   let chatRepo: ChatRepository | undefined
 
-  function buildContainerService(): AdminReportChatService {
+  function makeContainerService(): AdminReportChatService {
     const sql = container.getDb().sql
     const getChatRepo = (): ChatRepository =>
       (chatRepo ??= makeDrizzleChatRepository(sql, makePrivateMediaPresigner(container.storage)))
@@ -83,6 +87,7 @@ export async function registerAdminReportChatRoutes(
         mentions: chatMentionDeps(app, container),
         logger: app.log,
       }),
+      announceMessageUpdate: makeContainerMessageUpdateAnnouncer(container, app.log),
     })
   }
 

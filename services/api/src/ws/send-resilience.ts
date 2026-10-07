@@ -1,5 +1,8 @@
 import type { FastifyBaseLogger } from "fastify"
 import type { ChatMessageDTO, RoomKind, WsServerMessage } from "@civfix/shared"
+import { unrefSleep } from "../lib/sleep.js"
+import { MS_PER_SECOND } from "../lib/time.js"
+import { settleWithin } from "../lib/timeout.js"
 
 export const SEND_DEDUPE_TTL_SECONDS = 24 * 60 * 60
 
@@ -13,13 +16,17 @@ export const SEND_DEDUPE_INFLIGHT_DELAY_MS = 100
 
 export const BROADCAST_ATTEMPTS = 3
 
-export const BROADCAST_BACKOFF_MS: readonly number[] = [100, 250]
+const BROADCAST_BACKOFF_MS: readonly number[] = [100, 250]
 
-export const BROADCAST_ATTEMPT_TIMEOUT_MS = 2000
+const BROADCAST_ATTEMPT_TIMEOUT_MS = 2000
 
-export const RESERVE_TIMEOUT_MS = 1000
+const RESERVE_TIMEOUT_MS = 1000
 
-export const DEDUPE_WARN_INTERVAL_MS = 60_000
+const DEDUPE_WARN_INTERVAL_MS = 60_000
+
+const SEND_DEDUPE_KEY_PREFIX = "chat:send:"
+
+const DEDUPE_LOG_COMPONENT = "chat-send-dedupe"
 
 export type SendReservation =
   | { state: "reserved" }
@@ -33,7 +40,7 @@ export interface SendDedupeStore {
 }
 
 export function sendDedupeKey(userId: string, roomKey: string, clientId: string): string {
-  return `chat:send:${userId}:${roomKey}:${clientId}`
+  return `${SEND_DEDUPE_KEY_PREFIX}${userId}:${roomKey}:${clientId}`
 }
 
 const IN_MEMORY_SWEEP_THRESHOLD = 5000
@@ -63,7 +70,7 @@ export class InMemorySendDedupeStore implements SendDedupeStore {
         if (entry.expiresAtMs <= at) this.store.delete(k)
       }
     }
-    this.store.set(key, { value, expiresAtMs: at + ttlSeconds * 1000 })
+    this.store.set(key, { value, expiresAtMs: at + ttlSeconds * MS_PER_SECOND })
   }
 
   reserve(key: string): Promise<SendReservation> {
@@ -144,34 +151,13 @@ export interface SendResilience {
     message: ChatMessageDTO,
     excludeConnId: string,
   ): Promise<void>
-  broadcastFailureCount(): number
   dedupeFailureCount(): number
 }
-
-const realSleep = (ms: number): Promise<void> =>
-  new Promise((resolve) => {
-    const timer = setTimeout(resolve, ms)
-    if (typeof timer.unref === "function") timer.unref()
-  })
 
 const OPEN: SendReservation = { state: "open" }
 
 function withTimeout<T>(work: Promise<T>, ms: number): Promise<T> {
-  work.catch(() => undefined)
-  return new Promise<T>((resolve, reject) => {
-    const timer = setTimeout(() => reject(new Error("timed out")), ms)
-    if (typeof timer.unref === "function") timer.unref()
-    work.then(
-      (value) => {
-        clearTimeout(timer)
-        resolve(value)
-      },
-      (err: unknown) => {
-        clearTimeout(timer)
-        reject(err instanceof Error ? err : new Error(String(err)))
-      },
-    )
-  })
+  return settleWithin(work, ms, { timeoutError: () => new Error("timed out"), unref: true })
 }
 
 export function makeRateLimitedWarn(
@@ -196,7 +182,7 @@ export function makeRateLimitedWarn(
 }
 
 export function makeSendResilience(deps: SendResilienceDeps = {}): SendResilience {
-  const sleep = deps.sleep ?? realSleep
+  const sleep = deps.sleep ?? unrefSleep
   const jitter = deps.jitter ?? Math.random
   const attemptTimeoutMs = deps.attemptTimeoutMs ?? BROADCAST_ATTEMPT_TIMEOUT_MS
   const reserveTimeoutMs = deps.reserveTimeoutMs ?? RESERVE_TIMEOUT_MS
@@ -213,7 +199,7 @@ export function makeSendResilience(deps: SendResilienceDeps = {}): SendResilienc
       } catch {
         dedupeFailures += 1
         warn(
-          { component: "chat-send-dedupe", op: "reserve", dedupeFailures },
+          { component: DEDUPE_LOG_COMPONENT, op: "reserve", dedupeFailures },
           "chat: send dedupe unavailable; the send will insert without an idempotency reservation",
         )
         return OPEN
@@ -224,7 +210,7 @@ export function makeSendResilience(deps: SendResilienceDeps = {}): SendResilienc
         ? deps.dedupe.commit(key, messageId).catch(() => {
             dedupeFailures += 1
             warn(
-              { component: "chat-send-dedupe", op: "commit", dedupeFailures },
+              { component: DEDUPE_LOG_COMPONENT, op: "commit", dedupeFailures },
               "chat: send dedupe commit failed; a retry of this clientId may duplicate",
             )
           })
@@ -234,7 +220,7 @@ export function makeSendResilience(deps: SendResilienceDeps = {}): SendResilienc
         ? deps.dedupe.release(key).catch(() => {
             dedupeFailures += 1
             warn(
-              { component: "chat-send-dedupe", op: "release", dedupeFailures },
+              { component: DEDUPE_LOG_COMPONENT, op: "release", dedupeFailures },
               "chat: send dedupe release failed; the reservation will expire on its own",
             )
           })
@@ -243,7 +229,7 @@ export function makeSendResilience(deps: SendResilienceDeps = {}): SendResilienc
       deps.findRoomMessage
         ? deps.findRoomMessage(kind, roomId, messageId, viewerUserId).catch((err: unknown) => {
             deps.logger?.warn(
-              { err, kind, roomId, messageId, component: "chat-send-dedupe" },
+              { err, kind, roomId, messageId, component: DEDUPE_LOG_COMPONENT },
               "chat: idempotent re-ack lookup failed; the resend will insert a new message",
             )
             return null
@@ -267,7 +253,11 @@ export function makeSendResilience(deps: SendResilienceDeps = {}): SendResilienc
       let localRecipients = 0
       if (deps.deliverLocally) {
         try {
-          localRecipients = deps.deliverLocally(roomKey, { type: "message", message }, excludeConnId)
+          localRecipients = deps.deliverLocally(
+            roomKey,
+            { type: "message", message },
+            excludeConnId,
+          )
         } catch {
           localRecipients = 0
         }
@@ -281,7 +271,6 @@ export function makeSendResilience(deps: SendResilienceDeps = {}): SendResilienc
       })
     },
 
-    broadcastFailureCount: () => failures,
     dedupeFailureCount: () => dedupeFailures,
   }
 }

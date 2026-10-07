@@ -1,16 +1,16 @@
 import { describe, expect, it } from "vitest"
 import { AdminUserHoursResponseSchema, type AdminCreditUserHoursRequest } from "@civfix/shared"
 import { CIVFIX_OFFICIAL_USER_ID } from "../../src/auth/official-account.js"
-import { InMemoryAdminUserRepository } from "../../src/services/admin/admin-user-repository.memory.js"
+import { InMemoryAdminUserRepository } from "../helpers/admin/admin-user-repository.memory.js"
 import {
   HOURS_CREDIT_NOTICE_LINK,
   makeAdminUserHoursService,
   type AdminUserHoursService,
 } from "../../src/services/admin/admin-user-hours-service.js"
 import { buildTranscriptModel } from "../../src/services/certificate-model.js"
-import { InMemoryCertificateRepository } from "../../src/services/certificate-repository.memory.js"
+import { InMemoryCertificateRepository } from "../helpers/certificate-repository.memory.js"
 import type { NotificationService } from "../../src/services/notification-service.js"
-import { InMemoryVolunteerHoursRepository } from "../../src/services/volunteer-hours-repository.memory.js"
+import { InMemoryVolunteerHoursRepository } from "../helpers/volunteer-hours-repository.memory.js"
 import type { CleanupHoursView } from "../../src/services/volunteer-hours-service.js"
 
 const HOST = "11111111-1111-4111-8111-111111111111"
@@ -28,6 +28,7 @@ function endedEvent(patch: Partial<CleanupHoursView> = {}): CleanupHoursView {
   return {
     organizerUserId: HOST,
     status: "done",
+    visibility: "public",
     jurisdictionGeoid: GEOID,
     title: "Ocean Beach sweep",
     scheduledAt: SCHEDULED_AT,
@@ -100,7 +101,7 @@ function harness(opts: { notifierFails?: boolean } = {}): Harness {
         type: input.type,
         titleKey: input.titleKey,
         bodyKey: input.bodyKey,
-        vars: (input.vars ?? {}) as Record<string, unknown>,
+        vars: input.vars ?? {},
         link: input.link ?? undefined,
       })
       return Promise.resolve({} as Awaited<ReturnType<NotificationService["createNotification"]>>)

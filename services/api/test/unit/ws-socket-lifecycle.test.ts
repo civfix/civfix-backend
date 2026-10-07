@@ -25,11 +25,12 @@ import { makeWsTicketStore } from "../../src/auth/ws-ticket.js"
 import { sha256Hex } from "../../src/auth/crypto.js"
 import {
   WS_CLOSE_POLICY_VIOLATION,
+  WS_FRAME_LIMIT,
+  WS_MAX_QUEUED_FRAMES,
   WS_REAUTH_INTERVAL_MS,
   WS_REAUTH_JITTER_MS,
 } from "../../src/ws/types.js"
 import { SESSION_COOKIE } from "../../src/auth/transport.js"
-
 
 const WS_OPEN = 1
 const WS_CLOSED = 3
@@ -230,7 +231,7 @@ describe("frames sent during the async handshake are buffered, not dropped", () 
   it("a join sent before the handshake settles is applied once the session exists", async () => {
     const handler = captureGatewayHandler(baseOpts())
     const socket = new MockSocket()
-    handler(socket as unknown as WebSocket, authedRequest(ALICE))
+    handler(socket, authedRequest(ALICE))
     socket.emit("message", JSON.stringify({ type: "join", cleanupId: ROOM }))
     await flush()
 
@@ -241,7 +242,7 @@ describe("frames sent during the async handshake are buffered, not dropped", () 
   it("buffered frames are drained IN ORDER (a join lands before the send that followed it)", async () => {
     const handler = captureGatewayHandler(baseOpts())
     const socket = new MockSocket()
-    handler(socket as unknown as WebSocket, authedRequest(ALICE))
+    handler(socket, authedRequest(ALICE))
     socket.emit("message", JSON.stringify({ type: "join", cleanupId: ROOM }))
     socket.emit(
       "message",
@@ -258,7 +259,7 @@ describe("frames sent during the async handshake are buffered, not dropped", () 
   it("a REJECTED handshake discards the buffer unread (only the error frame goes out)", async () => {
     const handler = captureGatewayHandler(baseOpts())
     const socket = new MockSocket()
-    handler(socket as unknown as WebSocket, anonRequest())
+    handler(socket, anonRequest())
     socket.emit("message", JSON.stringify({ type: "join", cleanupId: ROOM }))
     await flush()
 
@@ -271,7 +272,7 @@ describe("frames sent during the async handshake are buffered, not dropped", () 
   it("stops buffering past the BYTE ceiling (a legit join behind 64 KiB of junk is dropped)", async () => {
     const handler = captureGatewayHandler(baseOpts())
     const socket = new MockSocket()
-    handler(socket as unknown as WebSocket, authedRequest(ALICE))
+    handler(socket, authedRequest(ALICE))
     const filler = JSON.stringify("x".repeat(WS_HANDSHAKE_BUFFER_BYTES / 2 - 2))
     expect(Buffer.byteLength(filler)).toBe(WS_HANDSHAKE_BUFFER_BYTES / 2)
     socket.emit("message", filler)
@@ -286,7 +287,7 @@ describe("frames sent during the async handshake are buffered, not dropped", () 
   it("still stops buffering past the frame COUNT, independently of size", async () => {
     const handler = captureGatewayHandler(baseOpts())
     const socket = new MockSocket()
-    handler(socket as unknown as WebSocket, authedRequest(ALICE))
+    handler(socket, authedRequest(ALICE))
     for (let i = 0; i < WS_HANDSHAKE_FRAME_BUFFER; i += 1) socket.emit("message", '"x"')
     socket.emit("message", JSON.stringify({ type: "join", cleanupId: ROOM }))
     await flush()
@@ -295,27 +296,73 @@ describe("frames sent during the async handshake are buffered, not dropped", () 
     expect(chat.roomSize(ROOM)).toBe(0)
   })
 
-  it("a join that fits under BOTH bounds is still applied (the caps are not off-by-one)", async () => {
+  it("a join that fits under BOTH bounds is still buffered and answered (the caps are not off-by-one)", async () => {
     const handler = captureGatewayHandler(baseOpts())
     const socket = new MockSocket()
-    handler(socket as unknown as WebSocket, authedRequest(ALICE))
+    handler(socket, authedRequest(ALICE))
     for (let i = 0; i < WS_HANDSHAKE_FRAME_BUFFER - 1; i += 1) socket.emit("message", '"x"')
     socket.emit("message", JSON.stringify({ type: "join", cleanupId: ROOM }))
     await flush()
 
-    expect(socket.framesOfType("presence_snapshot")).toHaveLength(1)
-    expect(chat.roomSize(ROOM)).toBe(1)
+    const answers = socket.framesOfType("error")
+    expect(answers).toHaveLength(WS_HANDSHAKE_FRAME_BUFFER)
+    expect(answers.at(-1)).toMatchObject({ code: "RATE_LIMITED" })
   })
 
   it("frames arriving after the session is live still dispatch (the handover works)", async () => {
     const handler = captureGatewayHandler(baseOpts())
     const socket = new MockSocket()
-    handler(socket as unknown as WebSocket, authedRequest(ALICE))
+    handler(socket, authedRequest(ALICE))
     await flush()
     socket.emit("message", JSON.stringify({ type: "join", cleanupId: ROOM }))
     await flush()
 
     expect(socket.framesOfType("presence_snapshot")).toHaveLength(1)
+  })
+})
+
+describe("the pre-auth buffer holds as many frames as the post-auth queue", () => {
+  const DRAIN_BUDGET_MS = 1_000
+  const roomN = (n: number): string =>
+    `bbbb${String(n).padStart(4, "0")}-bbbb-4bbb-8bbb-bbbbbbbbbbbb`
+
+  function pipelineJoins(count: number): MockSocket {
+    const handler = captureGatewayHandler(baseOpts({ isMember: () => Promise.resolve(true) }))
+    const socket = new MockSocket()
+    handler(socket, authedRequest(ALICE))
+    for (let i = 0; i < count; i += 1) {
+      socket.emit("message", JSON.stringify({ type: "join", cleanupId: roomN(i) }))
+    }
+    return socket
+  }
+
+  it("sizes the handshake buffer from the post-auth frame cap", () => {
+    expect(WS_HANDSHAKE_FRAME_BUFFER).toBe(WS_MAX_QUEUED_FRAMES)
+  })
+
+  it("applies a full frame-bucket burst of joins pipelined before auth", async () => {
+    const socket = pipelineJoins(WS_FRAME_LIMIT.capacity)
+    await settleUntil(
+      () => socket.framesOfType("presence_snapshot").length >= WS_FRAME_LIMIT.capacity,
+      DRAIN_BUDGET_MS,
+    ).catch(() => undefined)
+
+    expect(socket.framesOfType("presence_snapshot")).toHaveLength(WS_FRAME_LIMIT.capacity)
+    expect(socket.framesOfType("error")).toHaveLength(0)
+  })
+
+  it("answers every buffered frame past the burst instead of dropping it silently", async () => {
+    const socket = pipelineJoins(WS_MAX_QUEUED_FRAMES)
+    const answered = (): number =>
+      socket.framesOfType("presence_snapshot").length + socket.framesOfType("error").length
+    await settleUntil(() => answered() >= WS_MAX_QUEUED_FRAMES, DRAIN_BUDGET_MS).catch(
+      () => undefined,
+    )
+
+    expect(socket.framesOfType("presence_snapshot")).toHaveLength(WS_FRAME_LIMIT.capacity)
+    const limited = socket.framesOfType("error")
+    expect(limited).toHaveLength(WS_MAX_QUEUED_FRAMES - WS_FRAME_LIMIT.capacity)
+    expect(limited.every((f) => f.code === "RATE_LIMITED")).toBe(true)
   })
 })
 
@@ -325,7 +372,7 @@ describe("per-user connection cap and slot release", () => {
     handler: (socket: WebSocket, request: FastifyRequest) => void,
   ): Promise<MockSocket> {
     const socket = new MockSocket()
-    handler(socket as unknown as WebSocket, authedRequest(ALICE, ipN(opened++)))
+    handler(socket, authedRequest(ALICE, ipN(opened++)))
     await flush()
     return socket
   }
@@ -351,22 +398,19 @@ describe("per-user connection cap and slot release", () => {
     const shared = "203.0.113.44"
     for (let i = 0; i < MAX_CONNECTIONS_PER_IP; i += 1) {
       const socket = new MockSocket()
-      handler(socket as unknown as WebSocket, authedRequest(userN(i), shared))
+      handler(socket, authedRequest(userN(i), shared))
       await flush()
       expect(socket.closes).toHaveLength(0)
     }
 
     const rejected = new MockSocket()
-    handler(rejected as unknown as WebSocket, authedRequest(userN(MAX_CONNECTIONS_PER_IP), shared))
+    handler(rejected, authedRequest(userN(MAX_CONNECTIONS_PER_IP), shared))
     await flush()
     expect(rejected.framesOfType("error")[0]).toMatchObject({ code: "RATE_LIMITED" })
     expect(rejected.closes[0]?.code).toBe(1008)
 
     const elsewhere = new MockSocket()
-    handler(
-      elsewhere as unknown as WebSocket,
-      authedRequest(userN(MAX_CONNECTIONS_PER_IP), "203.0.113.45"),
-    )
+    handler(elsewhere, authedRequest(userN(MAX_CONNECTIONS_PER_IP), "203.0.113.45"))
     await flush()
     expect(elsewhere.closes).toHaveLength(0)
     expect(elsewhere.framesOfType("error")).toHaveLength(0)
@@ -398,7 +442,7 @@ describe("per-user connection cap and slot release", () => {
 
     const handler = captureGatewayHandler(baseOpts({ userChannel: racing }))
     const dying = new MockSocket()
-    handler(dying as unknown as WebSocket, authedRequest(ALICE))
+    handler(dying, authedRequest(ALICE))
     await flush()
     dying.readyState = WS_CLOSED
     release!()
@@ -418,15 +462,15 @@ describe("socket close DURING an in-flight join", () => {
       joinRoom: (roomKey: string, conn: unknown, userId: string) =>
         new Promise<void>((resolve) => {
           gate.release = () =>
-            resolve(chat.joinRoom(roomKey, conn as Parameters<WsChatService["joinRoom"]>[1], userId))
+            resolve(
+              chat.joinRoom(roomKey, conn as Parameters<WsChatService["joinRoom"]>[1], userId),
+            )
         }),
       leaveRoom: (roomKey: string, conn: unknown) =>
         chat.leaveRoom(roomKey, conn as Parameters<WsChatService["leaveRoom"]>[1]),
       persist: (input: unknown) => chat.persist(input as Parameters<WsChatService["persist"]>[0]),
-      history: (...args: unknown[]) =>
-        (chat.history as (...a: unknown[]) => unknown)(...args),
-      broadcast: (...args: unknown[]) =>
-        (chat.broadcast as (...a: unknown[]) => unknown)(...args),
+      history: (...args: unknown[]) => (chat.history as (...a: unknown[]) => unknown)(...args),
+      broadcast: (...args: unknown[]) => (chat.broadcast as (...a: unknown[]) => unknown)(...args),
       broadcastEvent: (...args: unknown[]) =>
         (chat.broadcastEvent as (...a: unknown[]) => unknown)(...args),
     } as unknown as GatewayOptions["chat"]
@@ -441,7 +485,7 @@ describe("socket close DURING an in-flight join", () => {
       }),
     )
     const socket = new MockSocket()
-    handler(socket as unknown as WebSocket, authedRequest(ALICE))
+    handler(socket, authedRequest(ALICE))
     await flush()
 
     socket.emit("message", JSON.stringify({ type: "join", cleanupId: ROOM }))
@@ -464,7 +508,7 @@ describe("socket close DURING an in-flight join", () => {
     expect(await presence.online(ROOM)).toEqual([])
   })
 
-  it("un-does it with NO presence dep too — the post-joinRoom check is the one that must catch it", async () => {
+  it("un-does it with NO presence dep too; the post-joinRoom check is the one that must catch it", async () => {
     await joinThenSettle({ close: true, withPresence: false })
 
     expect(chat.roomSize(ROOM)).toBe(0)
@@ -485,7 +529,7 @@ describe("outbound backpressure (wrapSocket)", () => {
   it("drops droppable frame types once the outbound buffer is over threshold, keeps messages", () => {
     const socket = new MockSocket()
     socket.bufferedAmount = WS_BUFFER_DROP_THRESHOLD + 1
-    const conn = wrapSocket(socket as unknown as WebSocket)
+    const conn = wrapSocket(socket)
 
     conn.send(typing)
     conn.send(JSON.stringify({ type: "presence", cleanupId: ROOM, userId: ALICE, state: "join" }))
@@ -501,7 +545,7 @@ describe("outbound backpressure (wrapSocket)", () => {
   it("drops nothing while the buffer is under threshold", () => {
     const socket = new MockSocket()
     socket.bufferedAmount = WS_BUFFER_DROP_THRESHOLD
-    const conn = wrapSocket(socket as unknown as WebSocket)
+    const conn = wrapSocket(socket)
     conn.send(typing)
     conn.send(message)
     expect(socket.sent).toHaveLength(2)
@@ -510,7 +554,7 @@ describe("outbound backpressure (wrapSocket)", () => {
   it("classifies on the frame's OWN type, not a 'type' spelled inside user content", () => {
     const socket = new MockSocket()
     socket.bufferedAmount = WS_BUFFER_DROP_THRESHOLD + 1
-    const conn = wrapSocket(socket as unknown as WebSocket)
+    const conn = wrapSocket(socket)
     conn.send(
       JSON.stringify({
         type: "message",
@@ -524,7 +568,7 @@ describe("outbound backpressure (wrapSocket)", () => {
   it("sends nothing on a socket that is no longer OPEN", () => {
     const socket = new MockSocket()
     socket.readyState = WS_CLOSED
-    const conn = wrapSocket(socket as unknown as WebSocket)
+    const conn = wrapSocket(socket)
     conn.send(message)
     expect(socket.sent).toHaveLength(0)
   })
@@ -534,7 +578,7 @@ describe("outbound backpressure (wrapSocket)", () => {
     try {
       const handler = captureGatewayHandler(baseOpts())
       const socket = new MockSocket()
-      handler(socket as unknown as WebSocket, authedRequest(ALICE))
+      handler(socket, authedRequest(ALICE))
       await microflush()
 
       const ticks = WS_BUFFER_TERMINATE_TICKS + 3
@@ -551,7 +595,7 @@ describe("outbound backpressure (wrapSocket)", () => {
     try {
       const handler = captureGatewayHandler(baseOpts())
       const socket = new MockSocket()
-      handler(socket as unknown as WebSocket, authedRequest(ALICE))
+      handler(socket, authedRequest(ALICE))
       await microflush()
 
       socket.bufferedAmount = WS_BUFFER_DROP_THRESHOLD + 1
@@ -574,7 +618,7 @@ describe("outbound backpressure (wrapSocket)", () => {
       const handler = captureGatewayHandler(baseOpts())
       const socket = new MockSocket()
       socket.respondToPing = false
-      handler(socket as unknown as WebSocket, authedRequest(ALICE))
+      handler(socket, authedRequest(ALICE))
       await microflush()
 
       await vi.advanceTimersByTimeAsync(WS_HEARTBEAT_MS)
@@ -593,7 +637,7 @@ describe("outbound backpressure (wrapSocket)", () => {
     try {
       const handler = captureGatewayHandler(baseOpts())
       const socket = new MockSocket()
-      handler(socket as unknown as WebSocket, authedRequest(ALICE))
+      handler(socket, authedRequest(ALICE))
       await microflush()
 
       socket.bufferedAmount = WS_BUFFER_DROP_THRESHOLD + 1
@@ -641,7 +685,7 @@ describe("send limiter routes each room kind to its own bucket", () => {
       }),
     )
     const socket = new MockSocket()
-    handler(socket as unknown as WebSocket, authedRequest(ALICE))
+    handler(socket, authedRequest(ALICE))
     await flush()
     socket.emit("message", JSON.stringify(frame))
     await flush()
@@ -663,7 +707,12 @@ describe("send limiter routes each room kind to its own bucket", () => {
   it("F042: an UNAUTHORIZED report send creates no bucket key (authorization gates first)", async () => {
     const socket = await sendFrame(
       { type: "send", roomKind: "report", cleanupId: ROOM, clientId: "c1", body: "hi" },
-      { reportChat: { isMember: () => Promise.resolve(false), advanceReadWatermark: () => Promise.resolve() } },
+      {
+        reportChat: {
+          isMember: () => Promise.resolve(false),
+          advanceReadWatermark: () => Promise.resolve(),
+        },
+      },
     )
     expect(consumed).toEqual([])
     expect(socket.framesOfType("error")[0]).toMatchObject({ code: "FORBIDDEN" })
@@ -708,15 +757,15 @@ describe("F038: post-handshake frames are dispatched in wire order, one at a tim
       persist: (input: { body?: string }) => {
         if (input.body === "first") {
           return new Promise((resolve) => {
-            gate.release = () =>
-              resolve((chat.persist as (i: unknown) => unknown)(input))
+            gate.release = () => resolve((chat.persist as (i: unknown) => unknown)(input))
           })
         }
         return (chat.persist as (i: unknown) => unknown)(input)
       },
       history: (...a: unknown[]) => (chat.history as (...x: unknown[]) => unknown)(...a),
       broadcast: (...a: unknown[]) => (chat.broadcast as (...x: unknown[]) => unknown)(...a),
-      broadcastEvent: (...a: unknown[]) => (chat.broadcastEvent as (...x: unknown[]) => unknown)(...a),
+      broadcastEvent: (...a: unknown[]) =>
+        (chat.broadcastEvent as (...x: unknown[]) => unknown)(...a),
     } as unknown as GatewayOptions["chat"]
   }
 
@@ -724,11 +773,17 @@ describe("F038: post-handshake frames are dispatched in wire order, one at a tim
     const gate: { release?: () => void } = {}
     const handler = captureGatewayHandler(baseOpts({ chat: orderedPersistChat(gate) }))
     const socket = new MockSocket()
-    handler(socket as unknown as WebSocket, authedRequest(ALICE))
+    handler(socket, authedRequest(ALICE))
     await flush()
 
-    socket.emit("message", JSON.stringify({ type: "send", cleanupId: ROOM, clientId: "c1", body: "first" }))
-    socket.emit("message", JSON.stringify({ type: "send", cleanupId: ROOM, clientId: "c2", body: "second" }))
+    socket.emit(
+      "message",
+      JSON.stringify({ type: "send", cleanupId: ROOM, clientId: "c1", body: "first" }),
+    )
+    socket.emit(
+      "message",
+      JSON.stringify({ type: "send", cleanupId: ROOM, clientId: "c2", body: "second" }),
+    )
     await flush()
 
     expect(gate.release).toBeTypeOf("function")
@@ -752,7 +807,7 @@ describe("F022: the heartbeat re-authorizes joined rooms and evicts a revoked me
         Promise.resolve(cleanupId === ROOM && userId === ALICE && allowed)
       const handler = captureGatewayHandler(baseOpts({ isMember }))
       const socket = new MockSocket()
-      handler(socket as unknown as WebSocket, authedRequest(ALICE))
+      handler(socket, authedRequest(ALICE))
       await microflush()
       socket.emit("message", JSON.stringify({ type: "join", cleanupId: ROOM }))
       await microflush()
@@ -774,7 +829,7 @@ describe("F022: the heartbeat re-authorizes joined rooms and evicts a revoked me
     try {
       const handler = captureGatewayHandler(baseOpts())
       const socket = new MockSocket()
-      handler(socket as unknown as WebSocket, authedRequest(ALICE))
+      handler(socket, authedRequest(ALICE))
       await microflush()
       socket.emit("message", JSON.stringify({ type: "join", cleanupId: ROOM }))
       await microflush()
@@ -808,7 +863,7 @@ describe("H2: a ?ticket socket is re-validated against session revocation, exact
       baseOpts({ sessions, redeemTicket: (t) => tickets.redeem(t) }),
     )
     const socket = new MockSocket()
-    handler(socket as unknown as WebSocket, ticketRequest(ticket))
+    handler(socket, ticketRequest(ticket))
     await settleUntil(() => vi.getTimerCount() > 0 || socket.closes.length > 0)
     return { sessions, socket, token }
   }
@@ -872,7 +927,7 @@ describe("H2: a ?ticket socket is re-validated against session revocation, exact
       baseOpts({ sessions, redeemTicket: (t) => tickets.redeem(t) }),
     )
     const socket = new MockSocket()
-    handler(socket as unknown as WebSocket, ticketRequest(ticket))
+    handler(socket, ticketRequest(ticket))
     await settleUntil(() => socket.closes.length > 0)
 
     expect(socket.closes).toHaveLength(1)
@@ -905,7 +960,7 @@ describe("H3: the cookie socket honours the revocation epoch even when the Redis
 
       const handler = captureGatewayHandler(baseOpts({ sessions }))
       const socket = new MockSocket()
-      handler(socket as unknown as WebSocket, cookieRequest(ALICE, token))
+      handler(socket, cookieRequest(ALICE, token))
       await settleUntil(() => vi.getTimerCount() > 0 || socket.closes.length > 0)
       expect(socket.closes).toHaveLength(0)
 
@@ -937,7 +992,7 @@ describe("NB4: a ticket socket carries a status revalidator so suspension bites 
       baseOpts({ sessions, redeemTicket: (t) => tickets.redeem(t) }),
     )
     const socket = new MockSocket()
-    handler(socket as unknown as WebSocket, ticketRequest(ticket))
+    handler(socket, ticketRequest(ticket))
     await settle()
     expect(socket.closes).toHaveLength(0)
 
@@ -977,7 +1032,7 @@ describe("NB4: a ticket socket carries a status revalidator so suspension bites 
       baseOpts({ sessions, redeemTicket: (t) => tickets.redeem(t) }),
     )
     const socket = new MockSocket()
-    handler(socket as unknown as WebSocket, ticketRequest(ticket))
+    handler(socket, ticketRequest(ticket))
     await settle()
 
     socket.emit("message", JSON.stringify({ type: "join", cleanupId: ROOM }))

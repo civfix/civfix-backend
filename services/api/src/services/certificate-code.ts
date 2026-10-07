@@ -1,9 +1,9 @@
 /**
- * The public capability printed on a service-hours transcript (P5).
+ * The public capability printed on a service-hours transcript.
  *
  * The code IS the capability: it travels on the paper the holder hands to a registrar, and the verify
  * endpoint accepts nothing else. 12 Crockford base32 symbols is 32^12 ~= 2^60, so enumeration is not a
- * threat model — but the draw still has to be a real CSPRNG draw, because a predictable code would let
+ * threat model, but the draw still has to be a real CSPRNG draw, because a predictable code would let
  * anyone assert someone else's service record.
  *
  * The format itself (alphabet, canonicalization, the `CFX-` display prefix) lives in @civfix/shared so
@@ -25,11 +25,8 @@ export { formatCertificateCode, normalizeCertificateCode } from "@civfix/shared"
 export const CERTIFICATE_CODE_MINT_ATTEMPTS = 5
 
 /**
- * Mint one canonical 12-char code: `CERTIFICATE_CODE_LENGTH` independent unbiased draws over the 32-symbol
- * alphabet, via the audited rejection-sampling primitive.
- *
- * NEVER `Math.random` (not a CSPRNG) and NEVER `randomBytes(n) % 32` (modulo bias) — `randomIntBelow` is
- * the one place in this codebase that gets uniformity right, and OTP generation already relies on it.
+ * NEVER `Math.random` (not a CSPRNG) and NEVER `randomBytes(n) % 32` (modulo bias): `randomIntBelow` is
+ * the audited rejection-sampling primitive that gets uniformity right, and OTP generation relies on it.
  */
 export function generateCertificateCode(): string {
   let out = ""

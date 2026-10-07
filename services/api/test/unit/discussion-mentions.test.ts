@@ -1,4 +1,3 @@
-
 import { describe, expect, it } from "vitest"
 import {
   jurisdictionHandle,
@@ -116,7 +115,9 @@ describe("parseUserMentions", () => {
   })
 
   it("F050: caps distinct handles at MAX_MENTIONS_PER_MESSAGE (mention-bomb bound)", () => {
-    const body = Array.from({ length: MAX_MENTIONS_PER_MESSAGE + 40 }, (_, i) => `@user${i}`).join(" ")
+    const body = Array.from({ length: MAX_MENTIONS_PER_MESSAGE + 40 }, (_, i) => `@user${i}`).join(
+      " ",
+    )
     const out = parseUserMentions(body)
     expect(out).toHaveLength(MAX_MENTIONS_PER_MESSAGE)
     expect(out[0]).toBe("user0")

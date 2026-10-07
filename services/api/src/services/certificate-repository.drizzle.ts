@@ -1,13 +1,11 @@
 /**
- * Drizzle/postgres.js implementation of `CertificateRepository` (P5).
- *
- * ⚠ THE RULE FOR THIS FILE: **every read SELECTs an explicit column list; none of them selects
+ * THE RULE FOR THIS FILE: **every read SELECTs an explicit column list; none of them selects
  * `snapshot`, and none of them uses `SELECT *`.**
  *
  * `service_hours_certificates.snapshot` is the exact rendered model. At the 1000-entry cap it is ~200 KB
  * of jsonb, which Postgres stores out of line in TOAST. A `SELECT *` (or any projection naming
- * `snapshot`) detoasts that blob on EVERY holder list read and on EVERY anonymous public verification —
- * the highest-traffic read in this feature, served to a school registrar who needs six scalars. The
+ * `snapshot`) detoasts that blob on EVERY holder list read and on EVERY anonymous public verification
+ * (the highest-traffic read in this feature, served to a school registrar who needs six scalars). The
  * column is written once and never projected; `service-hours-certificates-pg.test.ts` greps this
  * source to keep it that way. The one read that looks inside it is `liveCodesListingEntry`, a
  * containment filter run only when an operator voids a ledger entry, over one holder's live rows.
@@ -19,36 +17,39 @@
  */
 
 import type { Sql } from "../db/client.js"
-import {
-  CertificateConflictError,
-  type CertificateEntryCode,
-  type CertificateHolder,
-  type CertificateInsert,
-  type CertificateRepository,
-  type CertificateRow,
-  type CertificateVerifyRow,
-} from "./certificate-service.js"
-
-const PG_UNIQUE_VIOLATION = "23505"
+import { CertificateConflictError, type CertificateConflictKind } from "./certificate-service.js"
+import type {
+  CertificateEntryCode,
+  CertificateHolder,
+  CertificateInsert,
+  CertificateRepository,
+  CertificateRow,
+  CertificateVerifyRow,
+} from "./certificate-repository.js"
+import { PG_UNIQUE_VIOLATION } from "../db/pg-errors.js"
 
 /** The partial `(user_id, ledger_fingerprint) WHERE revoked_at IS NULL` index (0064). */
 const FINGERPRINT_INDEX = "service_hours_certificates_live_fp_uidx"
 /** The `(code)` index (0064). */
 const CODE_INDEX = "service_hours_certificates_code_uidx"
+/** Substrings of the driver's `detail` text naming each index's key columns. */
+const FINGERPRINT_DETAIL_MARKER = "ledger_fingerprint"
+const CODE_DETAIL_MARKER = "(code)"
 
 /**
  * postgres.js surfaces the violated index/constraint name on `constraint_name`. The `detail` fallback is
  * belt-and-braces for a driver that ever stops populating it: misclassifying a fingerprint conflict as a
  * code conflict would burn all five mint attempts and then 500 on a race the design says must succeed.
  */
-function conflictKind(err: unknown): "code" | "fingerprint" | null {
+function conflictKind(err: unknown): CertificateConflictKind | null {
   if (typeof err !== "object" || err === null) return null
   const e = err as { code?: unknown; constraint_name?: unknown; detail?: unknown }
   if (e.code !== PG_UNIQUE_VIOLATION) return null
   const constraint = typeof e.constraint_name === "string" ? e.constraint_name : ""
   const detail = typeof e.detail === "string" ? e.detail : ""
-  if (constraint === FINGERPRINT_INDEX || detail.includes("ledger_fingerprint")) return "fingerprint"
-  if (constraint === CODE_INDEX || detail.includes("(code)")) return "code"
+  if (constraint === FINGERPRINT_INDEX || detail.includes(FINGERPRINT_DETAIL_MARKER))
+    return "fingerprint"
+  if (constraint === CODE_INDEX || detail.includes(CODE_DETAIL_MARKER)) return "code"
   return null
 }
 
@@ -174,7 +175,7 @@ export function makeDrizzleCertificateRepository(sql: Sql): CertificateRepositor
     /**
      * The PUBLIC verification read. The join to `users` exists ONLY to surface the tombstone: filtering
      * `deleted_at IS NULL` out of the result would collapse "that account was closed" into "no such
-     * code", which are different answers for the person holding the paper (DP §5.3).
+     * code", which are different answers for the person holding the paper.
      */
     async findByCode(code: string): Promise<CertificateVerifyRow | null> {
       const rows = await sql<(CertificateRowSelect & { holder_deleted: boolean })[]>`
@@ -196,7 +197,7 @@ export function makeDrizzleCertificateRepository(sql: Sql): CertificateRepositor
     /**
      * `COALESCE` makes this idempotent: revoking an already-revoked code returns the row unchanged
      * (200, "still revoked") rather than the 404 a `WHERE revoked_at IS NULL` guard would produce on a
-     * double tap. Null comes back only for an unknown code or someone else's — both 404 at the service.
+     * double tap. Null comes back only for an unknown code or someone else's; both 404 at the service.
      */
     async revoke(
       userId: string,
@@ -236,9 +237,7 @@ export function makeDrizzleCertificateRepository(sql: Sql): CertificateRepositor
 
     /** Holder identity frozen onto the document. A tombstoned account cannot issue. */
     async findHolder(userId: string): Promise<CertificateHolder | null> {
-      const rows = await sql<
-        { display_name: string; handle: string | null; locale: string }[]
-      >`
+      const rows = await sql<{ display_name: string; handle: string | null; locale: string }[]>`
         SELECT
           u.display_name,
           u.handle,

@@ -1,4 +1,3 @@
-
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest"
 import { randomUUID } from "node:crypto"
 import { withPg, testHandle, type PgHarness } from "../helpers/pg.js"
@@ -7,7 +6,7 @@ import {
   insertModerationItem,
   makeDrizzleModerationRepository,
 } from "../../src/services/admin/moderation-repository.drizzle.js"
-import type { ModerationRepository } from "../../src/services/admin/moderation-service.js"
+import type { ModerationRepository } from "../../src/services/admin/moderation-repository.js"
 import { LA_CITY } from "../../src/db/seed-fixtures.js"
 
 const pg = await withPg()
@@ -64,11 +63,7 @@ async function insertGroupMessage(
   return rows[0]!.id
 }
 
-async function insertDmMessage(
-  h: PgHarness,
-  senderId: string,
-  peerId: string,
-): Promise<string> {
+async function insertDmMessage(h: PgHarness, senderId: string, peerId: string): Promise<string> {
   const thread = await h.sql<{ id: string }[]>`
     INSERT INTO dm_threads (user_lo, user_hi)
     VALUES (
@@ -288,7 +283,11 @@ describe.skipIf(!pg)("admin moderation repository (integration: real schema)", (
   it("remove strikes the reporter and createItem captures a real user snapshot", async () => {
     const userId = await insertUser(h, "rmreporter")
     const reportId = await insertReport(h, { status: "held", reporterUserId: userId })
-    const id = (await repo.createItem({ kind: "image", subjectType: "report", subjectId: reportId }))!
+    const id = (await repo.createItem({
+      kind: "image",
+      subjectType: "report",
+      subjectId: reportId,
+    }))!
 
     const detail = await repo.getItem(id)
     expect(detail?.user?.handle).toBe("rmreporter")
@@ -300,6 +299,66 @@ describe.skipIf(!pg)("admin moderation repository (integration: real schema)", (
     `
     expect(um?.strikes).toBe(1)
     expect(um?.removals).toBe(1)
+  })
+
+  describe("owner takedown strikes", () => {
+    async function strikesFor(userId: string): Promise<number> {
+      const rows = await h.sql<{ strikes: number }[]>`
+        SELECT strikes FROM user_moderation WHERE user_id = ${userId}
+      `
+      return rows[0]?.strikes ?? 0
+    }
+
+    function ownerRequest(reportId: string, reporterUserId: string) {
+      return {
+        kind: "user_report" as const,
+        subjectType: "report" as const,
+        subjectId: reportId,
+        flag: "Owner takedown request",
+        reason: "please remove",
+        reporter: "@owner",
+        reporterUserId,
+        priority: "high" as const,
+        dedupeOpen: true,
+      }
+    }
+
+    it("a pure owner takedown skips the strike", async () => {
+      const owner = await insertUser(h, testHandle())
+      const reportId = await insertReport(h, { status: "published", reporterUserId: owner })
+      const id = (await repo.createItem(ownerRequest(reportId, owner)))!
+      await repo.remove(id, { actorId: null, reason: null })
+      expect(await strikesFor(owner)).toBe(0)
+    })
+
+    it("an owner request folded into a pipeline hold still strikes", async () => {
+      const owner = await insertUser(h, testHandle())
+      const reportId = await insertReport(h, { status: "held", reporterUserId: owner })
+      const id = await insertModerationItem(h.sql, {
+        kind: "image",
+        subjectType: "report",
+        subjectId: reportId,
+        flag: "Held media (NSFW)",
+        priority: "high",
+      })
+      await expect(repo.createItem(ownerRequest(reportId, owner))).resolves.toBeNull()
+      await repo.remove(id, { actorId: null, reason: null })
+      expect(await strikesFor(owner)).toBe(1)
+    })
+
+    it("a third-party report folded into an owner's item still strikes", async () => {
+      const owner = await insertUser(h, testHandle())
+      const other = await insertUser(h, testHandle())
+      const reportId = await insertReport(h, { status: "published", reporterUserId: owner })
+      const id = (await repo.createItem(ownerRequest(reportId, owner)))!
+      await repo.createItem({
+        ...ownerRequest(reportId, other),
+        flag: "User report",
+        priority: "med",
+      })
+      await repo.remove(id, { actorId: null, reason: null })
+      expect(await strikesFor(owner)).toBe(1)
+    })
   })
 
   it("hold extends the hold (report stays held; item leaves the queue)", async () => {
@@ -417,7 +476,7 @@ describe.skipIf(!pg)("admin moderation repository (integration: real schema)", (
 
     // The account is erased after the suspension (softDeleteAndAnonymize). An overturn that upserted
     // account_status='active' unconditionally would resurrect it in the operator console as a live,
-    // unflagged account — and, with the session hook wired, lift its ban marker too.
+    // unflagged account and, with the session hook wired, lift its ban marker too.
     await h.sql`UPDATE users SET deleted_at = now() WHERE id = ${deleted}`
 
     const appealId = await insertModerationItem(h.sql, {

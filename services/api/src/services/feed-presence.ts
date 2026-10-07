@@ -26,23 +26,31 @@ export interface FeedSnapshotEntry {
 export interface FeedPresence {
   readonly snapshotsAvailable: boolean
   readSnapshot(userId: string, filter: string): Promise<FeedSnapshotEntry[] | null>
-  writeSnapshot(userId: string, filter: string, ranked: readonly RankedCandidate[]): Promise<boolean>
+  writeSnapshot(
+    userId: string,
+    filter: string,
+    ranked: readonly RankedCandidate[],
+  ): Promise<boolean>
   touchSnapshot(userId: string, filter: string): Promise<void>
   seenBy(userId: string, postIds: readonly string[]): Promise<Set<string>>
   recordServed(userId: string, postIds: readonly string[]): Promise<void>
   viewersOf(postId: string): Promise<string[]>
 }
 
+const SNAPSHOT_KEY_PREFIX = "feed:rank:v1:"
+const SERVED_KEY_PREFIX = "feed:served:v1:"
+const VIEWERS_KEY_PREFIX = "feed:viewers:v1:"
+
 export function snapshotKey(userId: string, filter: string): string {
-  return `feed:rank:v1:${userId}:${filter}`
+  return `${SNAPSHOT_KEY_PREFIX}${userId}:${filter}`
 }
 
 export function servedKey(userId: string): string {
-  return `feed:served:v1:${userId}`
+  return `${SERVED_KEY_PREFIX}${userId}`
 }
 
 export function viewersKey(postId: string): string {
-  return `feed:viewers:v1:${postId}`
+  return `${VIEWERS_KEY_PREFIX}${postId}`
 }
 
 function isSnapshotEntry(value: unknown): value is [string, number] {

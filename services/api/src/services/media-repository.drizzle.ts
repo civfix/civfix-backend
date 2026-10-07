@@ -1,12 +1,7 @@
-
 import { and, eq, isNull, sql } from "drizzle-orm"
 import { mediaAssets } from "../db/schema/media.js"
 import type { Db } from "../db/client.js"
-import type {
-  MediaAssetView,
-  MediaRepository,
-  NewMediaAsset,
-} from "./media-intake-service.js"
+import type { MediaAssetView, MediaRepository, NewMediaAsset } from "./media-repository.js"
 
 function toView(row: typeof mediaAssets.$inferSelect): MediaAssetView {
   return {
@@ -27,6 +22,7 @@ function toView(row: typeof mediaAssets.$inferSelect): MediaAssetView {
     postId: row.postId,
     finalizedAt: row.finalizedAt,
     createdAt: row.createdAt,
+    uploader: row.uploader,
   }
 }
 
@@ -40,6 +36,7 @@ export function makeDrizzleMediaRepository(db: Db): MediaRepository {
         r2Key: row.r2Key,
         status: row.status,
         byteSize: row.byteSize,
+        uploader: row.uploader,
       })
     },
 
@@ -59,10 +56,13 @@ export function makeDrizzleMediaRepository(db: Db): MediaRepository {
       return row ? toView(row) : null
     },
 
-    async markFinalized(uploadId: string): Promise<MediaAssetView | null> {
+    async markFinalized(
+      uploadId: string,
+      uploadEtag: string | null,
+    ): Promise<MediaAssetView | null> {
       const rows = await db
         .update(mediaAssets)
-        .set({ finalizedAt: sql`now()` })
+        .set({ finalizedAt: sql`now()`, uploadEtag })
         .where(and(eq(mediaAssets.uploadId, uploadId), isNull(mediaAssets.finalizedAt)))
         .returning()
       const row = rows[0]

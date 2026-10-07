@@ -12,7 +12,7 @@
 -- NOT NULL. Because existing rows predate the column, we add it with a TEMPORARY
 -- default so the ADD COLUMN succeeds on a populated table, BACKFILL each legacy
 -- row to a representative fine type derived from its category (the inverse map
--- below — legacy reports need not preserve an exact fine type), then SET NOT NULL
+-- below; legacy reports need not preserve an exact fine type), then SET NOT NULL
 -- and DROP the temporary default so new inserts MUST supply `type` explicitly.
 --
 -- Representative inverse backfill (category -> type):

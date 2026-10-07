@@ -1,24 +1,20 @@
-/**
- * Postgres-backed report lookup for the report-chat @city-forward + visibility path.
- *
- * All that remains of the former discussion persistence layer is a single read: resolve a report's
- * visibility handle + its jurisdiction + first usable contact email. (The discussion message CRUD /
- * reaction / mention repository was removed with the discussion system — report chat replaced it.)
- */
+// The only read left from the retired discussion system (report chat replaced it); it backs report-chat
+// visibility and the @city forward.
 
 import type { Sql } from "../db/client.js"
+import { firstUsableLegacyContactExpr, usableContactRowExpr } from "./admin/sql-fragments.js"
 import type {
   DiscussionReportView,
   DiscussionRepository,
   ReportJurisdictionView,
-} from "./discussion-types.js"
+} from "./discussion-repository.js"
 import type { ReportCategory } from "@civfix/shared"
 
 export function makeDrizzleDiscussionRepository(sql: Sql): DiscussionRepository {
   return {
     async findReportForDiscussion(reportId: string): Promise<DiscussionReportView | null> {
-      // Report visibility handle + its resolved jurisdiction + first usable contact email, using the SAME
-      // contact precedence as admin getRouting: category-specific -> default -> legacy[1].
+      // Same contact precedence and bounce rule as admin getRouting, so a city forward never goes to an
+      // address the admin screen already reports as unusable.
       const rows = await sql<
         {
           id: string
@@ -49,11 +45,11 @@ export function makeDrizzleDiscussionRepository(sql: Sql): DiscussionRepository 
           j.handle AS j_handle,
           (SELECT jc.email FROM jurisdiction_contacts jc
              WHERE jc.geoid = j.geoid AND jc.category = r.category
-               AND jc.email IS NOT NULL AND jc.email <> '' LIMIT 1) AS cat_email,
+               AND ${usableContactRowExpr(sql, "jc")} LIMIT 1) AS cat_email,
           (SELECT jc.email FROM jurisdiction_contacts jc
              WHERE jc.geoid = j.geoid AND jc.category IS NULL
-               AND jc.email IS NOT NULL AND jc.email <> '' LIMIT 1) AS default_email,
-          j.contact_emails[1] AS legacy_email
+               AND ${usableContactRowExpr(sql, "jc")} LIMIT 1) AS default_email,
+          ${firstUsableLegacyContactExpr(sql, "j")} AS legacy_email
         FROM reports r
         LEFT JOIN jurisdictions j ON j.geoid = r.jurisdiction_geoid
         WHERE r.id = ${reportId}

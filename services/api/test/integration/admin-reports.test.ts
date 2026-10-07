@@ -1,8 +1,7 @@
-
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest"
 import { withPg, type PgHarness, testHandle } from "../helpers/pg.js"
 import { makeDrizzleAdminReportRepository } from "../../src/services/admin/admin-report-repository.drizzle.js"
-import type { AdminReportRepository } from "../../src/services/admin/admin-report-service.js"
+import type { AdminReportRepository } from "../../src/services/admin/admin-report-repository.js"
 import { LA_CITY } from "../../src/db/seed-fixtures.js"
 
 const pg = await withPg()
@@ -144,7 +143,11 @@ describe.skipIf(!pg)("admin report repository (integration: real schema)", () =>
       addr: "1200 S Figueroa St",
       referenceCode: "PD-42-000001",
     })
-    await insertReport(h, { title: "Graffiti", addr: "44 Sunset Blvd", referenceCode: "GR-42-000007" })
+    await insertReport(h, {
+      title: "Graffiti",
+      addr: "44 Sunset Blvd",
+      referenceCode: "GR-42-000007",
+    })
 
     const list = async (q: string): Promise<string[]> =>
       (
@@ -179,6 +182,31 @@ describe.skipIf(!pg)("admin report repository (integration: real schema)", () =>
     expect(routing?.contact).toBe("hazard@lacity.gov")
     expect(routing?.geoid).toBe(GEOID)
     expect(routing?.routed).toBe(true)
+  })
+
+  it("getRouting skips a bounced per-category contact and a bounced legacy address", async () => {
+    const id = await insertReport(h, { category: "hazard" })
+    await h.sql`UPDATE jurisdictions SET contact_emails = ARRAY['dead@lacity.gov', 'live@lacity.gov'], contact_updated_at = NULL WHERE geoid = ${GEOID}`
+    const threads = await h.sql<{ id: string }[]>`
+      INSERT INTO mail_threads (thread_token, jurisdiction_geoid, subject, status, report_id)
+      VALUES (${`bounce-${Math.random().toString(36).slice(2, 14)}`}, ${GEOID}, 'S', 'bounced', ${id})
+      RETURNING id
+    `
+    const threadId = threads[0]!.id
+    await h.sql`
+      INSERT INTO mail_events (thread_id, type, meta)
+      VALUES (${threadId}, 'bounced', ${h.sql.json({ failedRecipient: "DEAD@lacity.gov" })})
+    `
+    expect((await repo.getRouting(id))?.contact).toBe("live@lacity.gov")
+
+    await h.sql`INSERT INTO jurisdiction_contacts (geoid, category, email, bounced_at) VALUES (${GEOID}, 'hazard', 'hazard@lacity.gov', now())`
+    expect((await repo.getRouting(id))?.contact).toBe("live@lacity.gov")
+
+    await h.sql`UPDATE jurisdictions SET contact_emails = ARRAY['dead@lacity.gov'] WHERE geoid = ${GEOID}`
+    expect(await repo.getRouting(id)).toMatchObject({ contact: null, routed: false })
+
+    await h.sql`DELETE FROM mail_events WHERE thread_id = ${threadId}`
+    await h.sql`DELETE FROM mail_threads WHERE id = ${threadId}`
   })
 
   it("setStatus writes report_timeline + an audit row", async () => {
@@ -313,5 +341,27 @@ describe.skipIf(!pg)("admin report repository (integration: real schema)", () =>
     const searched = await repo.countByBucket({ q: "Bulk" })
     expect(searched.submitted).toBe(1050)
     expect(searched.completed).toBe(0)
+  })
+
+  it("flagged counts each live report with an open flag once, and skips deleted reports and resolved flags", async () => {
+    const twice = await insertReport(h, { title: "Twice flagged" })
+    const resolvedOnly = await insertReport(h, { title: "Resolved flag" })
+    const deleted = await insertReport(h, { title: "Deleted flagged" })
+    await insertReport(h, { title: "Never flagged" })
+    await h.sql`UPDATE reports SET deleted_at = now() WHERE id = ${deleted}`
+    await h.sql`
+      INSERT INTO abuse_flags (subject_type, subject_id, reason, source, resolved_at)
+      VALUES ('report', ${twice}, 'spam', 'user', NULL),
+             ('report', ${twice}, 'abuse', 'user', NULL),
+             ('report', ${resolvedOnly}, 'spam', 'user', now()),
+             ('report', ${deleted}, 'spam', 'user', NULL),
+             ('user', ${twice}, 'spam', 'user', NULL)
+    `
+
+    const counts = await repo.countByBucket({ q: null })
+    expect(counts.flagged).toBe(1)
+    expect(counts.all).toBe(3)
+    expect((await repo.countByBucket({ q: "Twice" })).flagged).toBe(1)
+    expect((await repo.countByBucket({ q: "Resolved" })).flagged).toBe(0)
   })
 })

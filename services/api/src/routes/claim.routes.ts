@@ -1,4 +1,3 @@
-
 import {
   ClaimNudgeRequestSchema,
   ClaimReportRequestSchema,
@@ -6,9 +5,10 @@ import {
   type ClaimNudgeResponse,
   type ClaimReportResponse,
 } from "@civfix/shared"
-import type { FastifyInstance } from "fastify"
+import type { FastifyInstance, FastifyRequest } from "fastify"
 import { perHost } from "../plugins/rate-limit.js"
 import type { Container } from "../di.js"
+import { isProd } from "../env.js"
 import { requireAuth } from "../auth/context.js"
 import { ANON_COOKIE } from "../auth/transport.js"
 import { makeClaimService, type ClaimService } from "../services/claim-service.js"
@@ -16,10 +16,9 @@ import { makeDrizzleClaimRepository } from "../services/anon-repository.drizzle.
 import { makeDrizzleReportRepository } from "../services/report-repository.drizzle.js"
 import { makeReportService, type ReportService } from "../services/report-service.js"
 import { makeMediaPresigner, makePrivateMediaPresigner } from "../services/media-presign.js"
+import { ANON_HOLD_RELEASE_JOB } from "../lib/queue-names.js"
 import { route } from "../versioning/route.js"
 import { parse } from "./_validate.js"
-
-const ANON_HOLD_RELEASE_JOB = "anon.hold.release"
 
 export interface ClaimServiceOverride {
   service: ClaimService
@@ -32,6 +31,21 @@ declare module "fastify" {
 }
 
 export const CLAIM_RATE_LIMIT = perHost({ max: 20, timeWindow: "1 minute" })
+
+// A bodiless credentialed POST is a CORS simple request, so any same-site page could make the
+// browser attach the Lax anon cookie and rotate the visitor's on-screen claim code. csrfProtect
+// cannot help because anonymous reporters have no session cookie. Browsers always send Origin on a
+// cross-origin POST, so an absent Origin is a non-browser caller that could send the token in the
+// body anyway; only a present origin outside the web allowlist (including "null") is refused.
+function isCookieNudgeOriginAllowed(
+  request: FastifyRequest,
+  webOrigins: readonly string[],
+): boolean {
+  const origin = request.headers.origin
+  if (origin === undefined) return true
+  if (webOrigins.length === 0) return !isProd()
+  return webOrigins.includes(origin)
+}
 
 export async function registerClaimRoutes(
   app: FastifyInstance,
@@ -61,8 +75,13 @@ export async function registerClaimRoutes(
       anonTokenSigningKey: container.env.ANON_TOKEN_SIGNING_KEY,
       getReportForOwner: (reportId, owner) => reportService().getReport(reportId, owner),
       enqueueHoldRelease: async (reportId) => {
-        await container.jobs.enqueue(ANON_HOLD_RELEASE_JOB, { reportId }, { singletonKey: reportId })
+        await container.jobs.enqueue(
+          ANON_HOLD_RELEASE_JOB,
+          { reportId },
+          { singletonKey: reportId },
+        )
       },
+      logger: app.log,
     })
   }
 
@@ -71,6 +90,12 @@ export async function registerClaimRoutes(
     const anonToken = body.anonToken ?? request.cookies[ANON_COOKIE]
     if (!anonToken) {
       throw AppError.notFound("No pending report for this session")
+    }
+    if (
+      body.anonToken === undefined &&
+      !isCookieNudgeOriginAllowed(request, container.env.WEB_ORIGINS)
+    ) {
+      throw AppError.forbidden("Origin not allowed.")
     }
     const payload: ClaimNudgeResponse = await service().claimNudge(anonToken)
     reply.status(200).send(payload)

@@ -11,7 +11,7 @@ import type {
   FeedCandidateRow,
   PostBrief,
   PostRepository,
-} from "../../src/services/post-repository.drizzle.js"
+} from "../../src/services/post-repository.js"
 
 const VIEWER = "11111111-1111-1111-1111-111111111111"
 const AUTHOR = "22222222-2222-2222-2222-222222222222"
@@ -116,10 +116,13 @@ function repoOver(over: Partial<PostRepository>): PostRepository {
     listUserPosts: () => Promise.resolve({ items: [], nextCursor: null }),
     listSaves: () => Promise.resolve({ items: [], nextCursor: null }),
     ...over,
-  } as PostRepository
+  }
 }
 
-function recordingChannel(): { channel: UserChannel; sent: Array<{ users: string[]; signal: UserSignal }> } {
+function recordingChannel(): {
+  channel: UserChannel
+  sent: Array<{ users: string[]; signal: UserSignal }>
+} {
   const sent: Array<{ users: string[]; signal: UserSignal }> = []
   const channel = {
     subscribeUser: () => Promise.resolve(() => Promise.resolve()),
@@ -524,11 +527,13 @@ describe("ranked feed: a signed-out reader keeps scrolling", () => {
     let cursor: string | undefined = first.nextCursor ?? undefined
     seen.push(...first.items.map((item) => item.id))
     while (cursor !== undefined) {
-      const page: { items: PostDTO[]; nextCursor: string | null } = await guestService().publicFeed({
-        filter: "all",
-        limit: 20,
-        cursor,
-      })
+      const page: { items: PostDTO[]; nextCursor: string | null } = await guestService().publicFeed(
+        {
+          filter: "all",
+          limit: 20,
+          cursor,
+        },
+      )
       seen.push(...page.items.map((item) => item.id))
       cursor = page.nextCursor ?? undefined
     }
@@ -554,11 +559,12 @@ describe("ranked feed: the cold-start leniency pages to exhaustion, it does not 
 
   function service(): { svc: PostService; presence: ReturnType<typeof makeFeedPresence> } {
     const cache = new InMemoryCacheClient(() => Date.now())
-    const presence = makeFeedPresence({ cache, config: DEFAULT_FEED_RANKING })
+    const presence = makeFeedPresence({ cache, config: NO_JITTER })
     const svc = makePostService({
       repo: repoOver({ feedCandidates: () => Promise.resolve(rows) }),
       sql: throwingSql,
       feedPresence: presence,
+      feedRanking: NO_JITTER,
       now: () => NOW,
     })
     return { svc, presence }
@@ -609,8 +615,9 @@ describe("ranked feed: the cold-start leniency pages to exhaustion, it does not 
       sql: throwingSql,
       feedPresence: makeFeedPresence({
         cache: new InMemoryCacheClient(() => Date.now()),
-        config: DEFAULT_FEED_RANKING,
+        config: NO_JITTER,
       }),
+      feedRanking: NO_JITTER,
       now: () => NOW,
     })
     const second = await expired.homeFeed(VIEWER, {
@@ -619,7 +626,7 @@ describe("ranked feed: the cold-start leniency pages to exhaustion, it does not 
       cursor: first.nextCursor!,
     })
 
-    expect(second.items.length).toBeGreaterThan(0)
+    expect(second.items).toHaveLength(20)
   })
 })
 
@@ -996,7 +1003,13 @@ describe("ranked feed: realtime fanout never blocks the request path", () => {
     })
 
     await svc.createPost(
-      { kind: "post", body: "reply", replyToId: REPOST, mediaUploadIds: [], mentionedUserIds: [] } as never,
+      {
+        kind: "post",
+        body: "reply",
+        replyToId: REPOST,
+        mediaUploadIds: [],
+        mentionedUserIds: [],
+      } as never,
       VIEWER,
     )
 

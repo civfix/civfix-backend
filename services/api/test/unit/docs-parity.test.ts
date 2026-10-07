@@ -1,14 +1,12 @@
 /**
- * Documentation-vs-tree parity guards.
- *
  * Two doc facts have already drifted from the code once and cost real time:
  *
  *   1. The README's reviewer-OTP bypass table listed only two of the three variables the loader
  *      validates, so an operator following it would set `REVIEWER_OTP_BYPASS` in production and the box
  *      would refuse to boot on the missing `REVIEWER_OTP_BYPASS_ACK` (env.ts pushes that error).
- *   2. The operator runbook in docs/security enumerates the migrations that must be applied by hand
- *      (the deploy does not auto-migrate) and states how many files drizzle/ holds. A file added
- *      without a runbook row is a migration nobody applies; a stale count is how "the full 59-file set"
+ *   2. docs/operator-runbook.md carries an operational note for every migration from 0052 on and states
+ *      how many files drizzle/ holds. A migration without a row is one whose backfill, out-of-band
+ *      validation or image ordering nobody wrote down; a stale count is how "the full 59-file set"
  *      outlived the 60th file.
  *
  * Both are cheap to assert mechanically, so they are asserted here rather than re-reviewed by hand.
@@ -22,22 +20,19 @@ import { describe, expect, it } from "vitest"
 import { REVIEWER_OTP_CODE_MIN_LENGTH } from "../../src/env.js"
 
 const HERE = dirname(fileURLToPath(import.meta.url))
-/** services/api/drizzle */
 const DRIZZLE_DIR = join(HERE, "..", "..", "drizzle")
-/** services/api/src/env.ts — the source of truth for which variables exist. */
 const ENV_TS = join(HERE, "..", "..", "src", "env.ts")
-/** Repo root of civfix-backend (services/api/test/unit -> ../../../..). */
 const BACKEND_ROOT = join(HERE, "..", "..", "..", "..")
 const README = join(BACKEND_ROOT, "README.md")
-const SECURITY_DOCS_DIR = join(BACKEND_ROOT, "docs", "security")
+const DOCS_DIR = join(BACKEND_ROOT, "docs")
 
-/** The first (and only) security doc that carries the operator runbook, found by heading, not filename. */
+/** The first (and only) doc that carries the operator runbook, found by heading, not filename. */
 function readRunbookDoc(): string {
-  const files = readdirSync(SECURITY_DOCS_DIR).filter((f) => f.endsWith(".md"))
+  const files = readdirSync(DOCS_DIR).filter((f) => f.endsWith(".md"))
   const hits = files
-    .map((f) => readFileSync(join(SECURITY_DOCS_DIR, f), "utf8"))
+    .map((f) => readFileSync(join(DOCS_DIR, f), "utf8"))
     .filter((text) => text.includes("# Operator runbook"))
-  expect(hits, "exactly one docs/security/*.md should carry the operator runbook").toHaveLength(1)
+  expect(hits, "exactly one docs/*.md should carry the operator runbook").toHaveLength(1)
   return hits[0]!
 }
 

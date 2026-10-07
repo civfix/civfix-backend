@@ -1,4 +1,3 @@
-
 import { ReportContentRequestSchema, type ReportContentResponse } from "@civfix/shared"
 import type { FastifyInstance } from "fastify"
 import type { Container } from "../di.js"
@@ -6,20 +5,29 @@ import { requireAuth } from "../auth/context.js"
 import { route } from "../versioning/route.js"
 import { parse } from "./_validate.js"
 import { perIdentity } from "../plugins/rate-limit.js"
-import { writeAudit } from "../services/admin/audit.js"
+import { insertAuditRow } from "../services/admin/audit-repository.drizzle.js"
 import {
   makeModerationService,
   type ModerationService,
 } from "../services/admin/moderation-service.js"
 import { makeDrizzleModerationRepository } from "../services/admin/moderation-repository.drizzle.js"
-import { reportOwnedBy } from "../services/report-sql.js"
+import { isReportOwnedBy } from "../services/report-repository.drizzle.js"
 import {
   makeAllowAllContentSubjectGate,
   makeDrizzleContentSubjectGate,
   type ContentSubjectGate,
 } from "../services/content-report-subject.js"
 
-export const REPORT_CONTENT_RATE_LIMIT = perIdentity({ max: 20, timeWindow: "1 minute", hostMax: 60 })
+export const REPORT_CONTENT_RATE_LIMIT = perIdentity({
+  max: 20,
+  timeWindow: "1 minute",
+  hostMax: 60,
+})
+
+const OWNER_TAKEDOWN_FLAG = "Owner takedown request"
+const USER_REPORT_FLAG = "User report"
+const FALLBACK_REPORTER_LABEL = "User"
+const TAKEDOWN_REQUESTED_AUDIT_ACTION = "report.takedown_requested"
 
 declare module "fastify" {
   interface FastifyInstance {
@@ -64,11 +72,7 @@ export async function registerReportContentRoutes(
       await subjectGate().assertReportable(body.subjectType, body.subjectId, userId)
 
       const store = app.authServices?.users
-      const reporterUser = store ? await store.findById(userId) : null
-      const reporter =
-        reporterUser?.handle != null && reporterUser.handle !== ""
-          ? `@${reporterUser.handle}`
-          : (reporterUser?.displayName ?? "User")
+      const reporter = reporterLabel(store ? await store.findById(userId) : null)
 
       const isOwnerTakedown =
         body.subjectType === "report" &&
@@ -78,7 +82,7 @@ export async function registerReportContentRoutes(
         kind: "user_report",
         subjectType: body.subjectType,
         subjectId: body.subjectId,
-        flag: isOwnerTakedown ? "Owner takedown request" : "User report",
+        flag: isOwnerTakedown ? OWNER_TAKEDOWN_FLAG : USER_REPORT_FLAG,
         reason: body.reason,
         reporter,
         reporterUserId: userId,
@@ -88,9 +92,9 @@ export async function registerReportContentRoutes(
       })
 
       if (isOwnerTakedown) {
-        await writeAudit(container.getDb().sql, {
+        await insertAuditRow(container.getDb().sql, {
           actorId: userId,
-          action: "report.takedown_requested",
+          action: TAKEDOWN_REQUESTED_AUDIT_ACTION,
           target: `report:${body.subjectId}`,
           meta: { reason: body.reason, via: "content-reports" },
         })
@@ -102,11 +106,19 @@ export async function registerReportContentRoutes(
   )
 }
 
+function reporterLabel(
+  user: { handle?: string | null; displayName?: string | null } | null | undefined,
+): string {
+  return user?.handle != null && user.handle !== ""
+    ? `@${user.handle}`
+    : (user?.displayName ?? FALLBACK_REPORTER_LABEL)
+}
+
 async function isOwnerTakedownReport(
   container: Container,
   reportId: string,
   userId: string,
 ): Promise<boolean> {
   if (!container.env.DATABASE_URL) return false
-  return reportOwnedBy(container.getDb().sql, reportId, userId)
+  return isReportOwnedBy(container.getDb().sql, reportId, userId)
 }

@@ -1,8 +1,10 @@
-import Fastify, { type FastifyInstance } from "fastify"
+import Fastify, { type FastifyInstance, type FastifyServerOptions } from "fastify"
 import { loadEnv, type Env } from "./env.js"
-import { assertRedisReachable, buildContainer, type Container } from "./di.js"
+import { assertRedisReachable, makeContainer, type Container } from "./di.js"
 import { makeErrorHandler, makeNotFoundHandler } from "./errors/http-mapper.js"
 import { initErrorReporting } from "./errors/glitchtip.js"
+import { LOG_REDACTION_CENSOR, redactLogObject } from "./errors/log-redaction.js"
+import { loggedRequestUrl } from "./lib/request-url.js"
 import { genReqId, registerRequestId } from "./plugins/request-id.js"
 import { registerCors } from "./plugins/cors.js"
 import { registerHelmet } from "./plugins/helmet.js"
@@ -11,8 +13,8 @@ import { registerRateLimit } from "./plugins/rate-limit.js"
 import { registerVersionGate } from "./versioning/version-gate.js"
 import { registerAuthContext } from "./auth/context.js"
 import { registerAccountStatusGuard } from "./auth/account-status.js"
-import { buildAuthServicesFromContainer, type AuthServices } from "./auth/auth-services.js"
-import type { MediaRepository } from "./services/media-intake-service.js"
+import { makeAuthServicesFromContainer, type AuthServices } from "./auth/auth-services.js"
+import type { MediaRepository } from "./services/media-repository.js"
 import type { ReportServiceOverrides } from "./routes/reports.routes.js"
 import type { AnonServiceOverride } from "./routes/anon.routes.js"
 import type { HomeTurfOverrides } from "./routes/forms.routes.js"
@@ -30,7 +32,10 @@ import type { ModerationRouteOverrides } from "./routes/admin/moderation.routes.
 import type { OrganizationOverrides } from "./routes/host/orgs.routes.js"
 import type { HostTeamOverrides } from "./routes/host/team.routes.js"
 import type { HostPortfolioOverrides } from "./routes/host/portfolio.routes.js"
-import type { HostRegistrationOverrides, HostPageOverrides } from "./services/host/registration-wiring.js"
+import type {
+  HostRegistrationOverrides,
+  HostPageOverrides,
+} from "./services/host/registration-wiring.js"
 import type { BroadcastOverrides } from "./routes/host/broadcasts.routes.js"
 import type { HostAnalyticsOverrides } from "./routes/host/analytics.routes.js"
 import type { HostExportOverrides } from "./routes/host/exports.routes.js"
@@ -40,7 +45,8 @@ import type { AdminBroadcastOverrides } from "./routes/admin/broadcasts.routes.j
 import type { ContentSubjectGate } from "./services/content-report-subject.js"
 import { registerRoutes } from "./routes/index.js"
 import { registerOutreachJobs } from "./services/admin/outreach-jobs.js"
-import { registerInboundJobs, INBOUND_SWEEP_JOB } from "./services/admin/inbound-jobs.js"
+import { registerInboundJobs } from "./services/admin/inbound-jobs.js"
+import { INBOUND_SWEEP_JOB } from "./lib/queue-names.js"
 import { registerDiscoveryJobs } from "./services/admin/discovery-jobs.js"
 import { registerAutoForwardJobs } from "./services/admin/autoforward-jobs.js"
 import { registerDataExportJobs } from "./services/data-export-jobs.js"
@@ -52,13 +58,18 @@ import { registerCommsJobs } from "./services/host/comms-jobs.js"
 import { SERVICE_VERSION } from "./version.js"
 import { makeLifecycle, makeShutdown, REQUEST_TIMEOUT_MS } from "./lifecycle.js"
 
+const API_BODY_LIMIT_BYTES = 256 * 1024
+const SOCKET_CONNECTION_TIMEOUT_MS = 30_000
+const KEEP_ALIVE_TIMEOUT_MS = 5_000
+const LISTEN_HOST = "0.0.0.0"
+
 declare module "fastify" {
   interface FastifyInstance {
     container: Container
   }
 }
 
-export interface BuildServerOptions {
+export interface MakeServerOptions {
   env?: Env
   container?: Container
   authServices?: AuthServices
@@ -119,44 +130,15 @@ const OVERRIDE_KEYS = [
   "conversationRoutesOverrides",
   "moderationOverrides",
   "contentSubjectGate",
-] as const satisfies readonly (keyof BuildServerOptions)[]
+] as const satisfies readonly (keyof MakeServerOptions)[]
 
+// Header and error-envelope paths only. Sensitive keys inside logged objects are censored at any depth by
+// redactLogObject; wildcard paths here only ever reached one nesting level.
 export const LOG_REDACT_PATHS = [
   "req.headers.authorization",
   "req.headers.cookie",
   "res.headers['set-cookie']",
   "req.headers['x-csrf-token']",
-  "*.password",
-  "*.token",
-  "*.otp",
-  "*.email",
-  "*.phone",
-  "*.tokenHash",
-  "*.ticketToken",
-  "*.ticketTokens",
-  "*.manageToken",
-  "*.accessCode",
-  "*.attendeeName",
-  "*.attendeeNames",
-  "*.answer",
-  "*.answers",
-  "*.hostNote",
-  "*.note",
-  "*.einNumber",
-  "*.ein_number",
-  "*.invitedEmail",
-  "*.maskedEmail",
-  "*.recipientEmail",
-  "*.replyTo",
-  "*.to",
-  "*.clientSecret",
-  "*.client_secret",
-  "*.card",
-  "*.cvc",
-  "*.pan",
-  "*.last4",
-  "*.cardLast4",
-  "*.webhookSecret",
   "err.raw",
   "err.raw.source",
   "err.headers",
@@ -165,42 +147,47 @@ export const LOG_REDACT_PATHS = [
   "err.smtp.response",
 ]
 
-export function loggedRequestUrl(url: string): string {
-  return url.split("?")[0] ?? url
+export { loggedRequestUrl }
+
+type LoggerOptions = Exclude<NonNullable<FastifyServerOptions["logger"]>, boolean>
+
+export function loggerOptions(env: Env): LoggerOptions {
+  return {
+    level: env.NODE_ENV === "test" ? "silent" : env.NODE_ENV === "production" ? "info" : "debug",
+    serializers: {
+      req(request) {
+        const acceptVersion = request.headers["accept-version"]
+        return {
+          method: request.method,
+          url: loggedRequestUrl(request.url),
+          version: typeof acceptVersion === "string" ? acceptVersion : undefined,
+          host: request.host,
+          remoteAddress: request.ip,
+          remotePort: request.socket.remotePort,
+        }
+      },
+    },
+    formatters: { log: redactLogObject },
+    redact: {
+      paths: LOG_REDACT_PATHS,
+      censor: LOG_REDACTION_CENSOR,
+    },
+  }
 }
 
-export async function buildServer(opts: BuildServerOptions = {}): Promise<FastifyInstance> {
+export async function makeServer(opts: MakeServerOptions = {}): Promise<FastifyInstance> {
   const env = opts.env ?? opts.container?.env ?? loadEnv()
-  const container = opts.container ?? buildContainer(env)
+  const container = opts.container ?? makeContainer(env)
 
   const app = Fastify({
     genReqId,
     trustProxy: env.TRUST_PROXY,
-    bodyLimit: 262144,
+    bodyLimit: API_BODY_LIMIT_BYTES,
     requestTimeout: REQUEST_TIMEOUT_MS,
     forceCloseConnections: false,
-    connectionTimeout: 30000,
-    keepAliveTimeout: 5000,
-    logger: {
-      level: env.NODE_ENV === "test" ? "silent" : env.NODE_ENV === "production" ? "info" : "debug",
-      serializers: {
-        req(request) {
-          const acceptVersion = request.headers["accept-version"]
-          return {
-            method: request.method,
-            url: loggedRequestUrl(request.url),
-            version: typeof acceptVersion === "string" ? acceptVersion : undefined,
-            host: request.host,
-            remoteAddress: request.ip,
-            remotePort: request.socket.remotePort,
-          }
-        },
-      },
-      redact: {
-        paths: LOG_REDACT_PATHS,
-        censor: "[REDACTED]",
-      },
-    },
+    connectionTimeout: SOCKET_CONNECTION_TIMEOUT_MS,
+    keepAliveTimeout: KEEP_ALIVE_TIMEOUT_MS,
+    logger: loggerOptions(env),
   })
 
   app.decorate("container", container)
@@ -254,16 +241,35 @@ export async function buildServer(opts: BuildServerOptions = {}): Promise<Fastif
 }
 
 function resolveAuthServices(
-  opts: BuildServerOptions,
+  opts: MakeServerOptions,
   env: Env,
   container: Container,
   logger: FastifyInstance["log"],
 ): AuthServices | undefined {
   if (opts.authServices) return opts.authServices
   if (env.DATABASE_URL && env.REDIS_URL) {
-    return buildAuthServicesFromContainer(container, { logger })
+    return makeAuthServicesFromContainer(container, { logger })
   }
   return undefined
+}
+
+export async function startBackgroundJobs(app: FastifyInstance, env: Env): Promise<void> {
+  const startableJobs = app.container.jobs as { start?: () => Promise<void> }
+  if (typeof startableJobs.start !== "function" || !env.DATABASE_URL) return
+  await startableJobs.start()
+  app.log.info("jobs: queue started")
+
+  await registerOutreachJobs(app.container, app.log)
+  await registerInboundJobs(app.container)
+  await app.container.jobs.enqueue(INBOUND_SWEEP_JOB, {})
+  await registerDiscoveryJobs(app.container)
+  if (env.REPORT_AUTOFORWARD_ENABLED) await registerAutoForwardJobs(app.container, app.log)
+  await registerDataExportJobs(app.container, { logger: app.log })
+  await registerCleanupCancelFanoutJob(app.container, app.log)
+  await registerGuestJobs(app.container, app.log)
+  await registerChatRoomFanoutJob(app.container, app.log)
+  await registerRegistrationJobs(app.container, app.log)
+  await registerCommsJobs(app.container, app.log)
 }
 
 export async function start(env: Env = loadEnv()): Promise<FastifyInstance> {
@@ -273,25 +279,8 @@ export async function start(env: Env = loadEnv()): Promise<FastifyInstance> {
     release: SERVICE_VERSION,
   })
 
-  const app = await buildServer({ env })
-
-  const startableJobs = app.container.jobs as { start?: () => Promise<void> }
-  if (typeof startableJobs.start === "function" && env.DATABASE_URL) {
-    await startableJobs.start()
-    app.log.info("jobs: queue started")
-
-    await registerOutreachJobs(app.container)
-    await registerInboundJobs(app.container)
-    await app.container.jobs.enqueue(INBOUND_SWEEP_JOB, {})
-    await registerDiscoveryJobs(app.container)
-    if (env.REPORT_AUTOFORWARD_ENABLED) await registerAutoForwardJobs(app.container, app.log)
-    await registerDataExportJobs(app.container, { logger: app.log })
-    await registerCleanupCancelFanoutJob(app.container, app.log)
-    await registerGuestJobs(app.container, app.log)
-    await registerChatRoomFanoutJob(app.container, app.log)
-    await registerRegistrationJobs(app.container, app.log)
-    await registerCommsJobs(app.container, app.log)
-  }
+  const app = await makeServer({ env })
+  await startBackgroundJobs(app, env)
 
   const shutdown = makeShutdown(app, {
     drainMs: env.SHUTDOWN_DRAIN_MS,
@@ -301,7 +290,7 @@ export async function start(env: Env = loadEnv()): Promise<FastifyInstance> {
   process.on("SIGTERM", () => void shutdown("SIGTERM"))
   process.on("SIGINT", () => void shutdown("SIGINT"))
 
-  await app.listen({ host: "0.0.0.0", port: env.PORT })
+  await app.listen({ host: LISTEN_HOST, port: env.PORT })
   app.log.info({ port: env.PORT, env: env.NODE_ENV }, "civfix-api listening")
   return app
 }

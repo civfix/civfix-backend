@@ -1,7 +1,7 @@
 -- =============================================================================
 -- 0068_resolve_unscored_nsfw_flags.sql
 -- -----------------------------------------------------------------------------
--- FINDING F076 (critical) — recovery migration. The media pipeline's "unscored"
+-- FINDING F076 (critical): recovery migration. The media pipeline's "unscored"
 -- branch was pushing an abuse_flags row (source='worker', reason='nsfw') for
 -- media it could not actually score, and the anon hold-release gate counts OPEN
 -- worker flags: every already-held anon report therefore stays held forever with
@@ -10,7 +10,7 @@
 -- clears the flags already stranded in prod so the drain sweep can release them.
 --
 -- WHY THIS IS SAFE: no NSFW scorer is vendored in this deployment, so a
--- worker-raised 'nsfw' flag is never a real content verdict — it is only ever the
+-- worker-raised 'nsfw' flag is never a real content verdict; it is only ever the
 -- artifact of the unscored branch this release removes. The genuine fail-closed
 -- control for un-inspectable media is the media STATUS (held/rejected), which is
 -- untouched here; resolving these flags does not publish anything the status gate

@@ -1,18 +1,18 @@
-
-import type { Sql } from "../../db/client.js"
-import { decodeOffsetCursor, encodeOffsetCursor, clampLimit } from "./pagination.js"
-import { writeAudit } from "./audit.js"
-import { upsertJurisdictionContacts } from "./discovery-repository.drizzle.js"
+import type { Queryable, Sql, SqlFragment } from "../../db/client.js"
+import { clampLimit } from "./pagination.js"
+import { decodeOffsetCursor, encodeOffsetCursor } from "../../db/cursor-helpers.js"
+import { insertAuditRow } from "./audit-repository.drizzle.js"
 import { buildUnmappedRecord, shouldIncludeUnmapped } from "./jurisdiction-directory-projection.js"
 import {
   ADMIN_CATEGORIES,
-  categoryCountsFragment,
-  categoryCountsProjection,
   parseCategoryCounts,
   parseCount,
   type CategoryCountRow,
 } from "./category-counts.js"
+import { categoryCountsFragment, categoryCountsProjection } from "./category-counts-sql.js"
 import type {
+  DirectoryFilter,
+  DirectorySort,
   JurisdictionContactsRepository,
   JurisdictionDirectoryRecord,
   JurisdictionGeometryRecord,
@@ -20,45 +20,15 @@ import type {
   ListDirectoryResult,
   PatchContactsInput,
   SaveContactsInput,
-} from "./jurisdiction-contacts-types.js"
+} from "./jurisdiction-contacts-repository.js"
 import { AppError } from "@civfix/shared"
 import type { JurisdictionLayer, ReportCategory } from "@civfix/shared"
 import { ilikeAnyOf } from "./sql-fragments.js"
+import { isUniqueViolationOn } from "../../db/pg-errors.js"
 
-const DIRECTORY_FACET_TTL_MS = 30_000
-
-const PG_UNIQUE_VIOLATION = "23505"
 const JURISDICTION_HANDLE_CONSTRAINT = "jurisdictions_handle_lower_key"
 
-function isJurisdictionHandleConflict(err: unknown): boolean {
-  if (typeof err !== "object" || err === null) return false
-  const e = err as { code?: unknown; constraint_name?: unknown }
-  return e.code === PG_UNIQUE_VIOLATION && e.constraint_name === JURISDICTION_HANDLE_CONSTRAINT
-}
-
-interface DirectoryFacetAggregate {
-  total: number
-  facets: { routed: number; unrouted: number }
-}
-
-let defaultFacetCache: { at: number; value: DirectoryFacetAggregate } | null = null
-
-function readDefaultFacetCache(): DirectoryFacetAggregate | null {
-  if (defaultFacetCache === null) return null
-  if (Date.now() - defaultFacetCache.at > DIRECTORY_FACET_TTL_MS) {
-    defaultFacetCache = null
-    return null
-  }
-  return defaultFacetCache.value
-}
-
-function writeDefaultFacetCache(value: DirectoryFacetAggregate): void {
-  defaultFacetCache = { at: Date.now(), value }
-}
-
-function invalidateDefaultFacetCache(): void {
-  defaultFacetCache = null
-}
+const HANDLE_TAKEN_BY_JURISDICTION = "That @handle is already used by another jurisdiction."
 
 interface DirectoryRow extends CategoryCountRow {
   geoid: string
@@ -127,6 +97,87 @@ async function loadUnmappedAggregate(
   return { total: parseCount(r?.total), perCategoryCounts: parseCategoryCounts(r) }
 }
 
+function directoryMethodFilter(
+  sql: Sql,
+  filter: DirectoryFilter,
+  hasEmailExpr: SqlFragment,
+  hasFormExpr: SqlFragment,
+): SqlFragment {
+  switch (filter) {
+    case "email":
+      return sql`AND ${hasEmailExpr}`
+    case "form":
+      return sql`AND NOT ${hasEmailExpr} AND ${hasFormExpr}`
+    case "none":
+      return sql`AND NOT (${hasEmailExpr} OR ${hasFormExpr})`
+    case "routed":
+      return sql`AND (${hasEmailExpr} OR ${hasFormExpr})`
+    case "needs_mapping":
+      return sql`AND NOT (${hasEmailExpr} OR ${hasFormExpr}) AND COALESCE(w.total, 0) > 0`
+    default:
+      return sql``
+  }
+}
+
+interface DirectorySortKeys {
+  waitingTotal: SqlFragment
+  oldestWaitingAt: SqlFragment
+  name: SqlFragment
+  population: SqlFragment
+  geoid: SqlFragment
+}
+
+// Every order ends in geoid, so it is total: re-sorting the page rows on the carried keys reproduces the
+// order the page was cut in.
+function directoryOrderBy(sql: Sql, sort: DirectorySort, keys: DirectorySortKeys): SqlFragment {
+  switch (sort) {
+    case "reports":
+      return sql`ORDER BY COALESCE(${keys.waitingTotal}, 0) DESC, ${keys.geoid} ASC`
+    case "name":
+      return sql`ORDER BY ${keys.name} ASC, ${keys.geoid} ASC`
+    case "oldest":
+      return sql`ORDER BY ${keys.oldestWaitingAt} ASC NULLS LAST, ${keys.geoid} ASC`
+    default:
+      return sql`ORDER BY COALESCE(${keys.population}, 0) DESC, ${keys.geoid} ASC`
+  }
+}
+
+interface FacetAggregateRow {
+  total: string
+  routed: string
+  unrouted: string
+}
+
+async function directoryTotals(
+  args: ListDirectoryArgs,
+  offset: number,
+  filteredTotal: string | undefined,
+  queryFacets: () => Promise<FacetAggregateRow | undefined>,
+): Promise<Pick<ListDirectoryResult, "total" | "facets">> {
+  if (offset !== 0) return { total: null, facets: null }
+  const isDefaultView = args.filter === "all" && args.q === null && args.layer === null
+  const cached = isDefaultView ? readDirectoryFacetCache() : null
+  if (cached !== null) return { total: cached.total, facets: cached.facets }
+  const a = await queryFacets()
+  const facets = { routed: Number(a?.routed ?? "0"), unrouted: Number(a?.unrouted ?? "0") }
+  if (isDefaultView) writeDirectoryFacetCache({ total: Number(a?.total ?? "0"), facets })
+  return { total: Number(filteredTotal ?? "0"), facets }
+}
+
+async function withUnmappedRecord(
+  sql: Sql,
+  args: ListDirectoryArgs,
+  result: ListDirectoryResult,
+): Promise<ListDirectoryResult> {
+  if (!shouldIncludeUnmapped(args)) return result
+  const unmapped = await loadUnmappedAggregate(sql)
+  if (unmapped.total <= 0) return result
+  return {
+    ...result,
+    records: [buildUnmappedRecord(unmapped.total, unmapped.perCategoryCounts), ...result.records],
+  }
+}
+
 export function makeDrizzleJurisdictionContactsRepository(
   sql: Sql,
 ): JurisdictionContactsRepository {
@@ -144,7 +195,13 @@ export function makeDrizzleJurisdictionContactsRepository(
       audit: { actorId: string | null },
     ): Promise<{ taskResolved: boolean }> {
       const committed = await sql.begin(async (tx) => {
-        await upsertJurisdictionContacts(tx, geoid, input.contacts, input.defaultEmails, input.formUrl)
+        await upsertJurisdictionContacts(
+          tx,
+          geoid,
+          input.contacts,
+          input.defaultEmails,
+          input.formUrl,
+        )
         await tx`
           UPDATE jurisdictions
           SET contact_updated_at = now(),
@@ -169,7 +226,7 @@ export function makeDrizzleJurisdictionContactsRepository(
         `
         const taskResolved = tasks.length > 0
 
-        await writeAudit(tx, {
+        await insertAuditRow(tx, {
           actorId: audit.actorId,
           action: "discovery.contacts_saved",
           target: `jurisdiction:${geoid}`,
@@ -183,7 +240,7 @@ export function makeDrizzleJurisdictionContactsRepository(
 
         return { taskResolved }
       })
-      invalidateDefaultFacetCache()
+      invalidateDirectoryFacetCache()
       return { taskResolved: committed.taskResolved }
     },
 
@@ -233,10 +290,10 @@ export function makeDrizzleJurisdictionContactsRepository(
               LIMIT 1
             `
             if (dupeJurisdiction.length > 0) {
-              throw AppError.conflict("That @handle is already used by another jurisdiction.")
+              throw AppError.conflict(HANDLE_TAKEN_BY_JURISDICTION)
             }
             const dupeUser = await tx<{ id: string }[]>`
-              SELECT id FROM users WHERE lower(handle::text) = lower(${handle}) LIMIT 1
+              SELECT id FROM users WHERE handle = ${handle}::citext LIMIT 1
             `
             if (dupeUser.length > 0) {
               throw AppError.conflict("That @handle is already taken by a member.")
@@ -244,8 +301,8 @@ export function makeDrizzleJurisdictionContactsRepository(
             try {
               await tx`UPDATE jurisdictions SET handle = ${handle} WHERE geoid = ${geoid}`
             } catch (err) {
-              if (isJurisdictionHandleConflict(err)) {
-                throw AppError.conflict("That @handle is already used by another jurisdiction.")
+              if (isUniqueViolationOn(err, JURISDICTION_HANDLE_CONSTRAINT)) {
+                throw AppError.conflict(HANDLE_TAKEN_BY_JURISDICTION)
               }
               throw err
             }
@@ -259,18 +316,20 @@ export function makeDrizzleJurisdictionContactsRepository(
           const t = input.forwardBodyTemplate
           await tx`UPDATE jurisdictions SET forward_body_template = ${t === null || t === "" ? null : t} WHERE geoid = ${geoid}`
         }
-        await writeAudit(tx, {
+        await insertAuditRow(tx, {
           actorId: audit.actorId,
           action: "jurisdiction.patched",
           target: `jurisdiction:${geoid}`,
           meta: {
             geoid,
-            fields: Object.keys(input).filter((k) => (input as Record<string, unknown>)[k] !== undefined),
+            fields: Object.keys(input).filter(
+              (k) => (input as Record<string, unknown>)[k] !== undefined,
+            ),
           },
         })
         return true
       })
-      invalidateDefaultFacetCache()
+      invalidateDirectoryFacetCache()
       return result
     },
 
@@ -303,32 +362,27 @@ export function makeDrizzleJurisdictionContactsRepository(
         )
       )`
       const hasFormExpr = sql`(j.report_form_url IS NOT NULL AND btrim(j.report_form_url) <> '')`
-      const methodFilter =
-        args.filter === "email"
-          ? sql`AND ${hasEmailExpr}`
-          : args.filter === "form"
-            ? sql`AND NOT ${hasEmailExpr} AND ${hasFormExpr}`
-            : args.filter === "none"
-              ? sql`AND NOT (${hasEmailExpr} OR ${hasFormExpr})`
-              : args.filter === "routed"
-                ? sql`AND (${hasEmailExpr} OR ${hasFormExpr})`
-                :
-                  args.filter === "needs_mapping"
-                  ? sql`AND NOT (${hasEmailExpr} OR ${hasFormExpr}) AND COALESCE(w.total, 0) > 0`
-                  : sql``
+      const methodFilter = directoryMethodFilter(sql, args.filter, hasEmailExpr, hasFormExpr)
 
       const layerFilter = args.layer !== null ? sql`AND j.layer = ${args.layer}` : sql``
 
-      const orderBy =
-        args.sort === "reports"
-          ? sql`ORDER BY COALESCE(w.total, 0) DESC, j.geoid ASC`
-          : args.sort === "name"
-            ? sql`ORDER BY j.name ASC, j.geoid ASC`
-            :
-              args.sort === "oldest"
-              ? sql`ORDER BY w.oldest_waiting_at ASC NULLS LAST, j.geoid ASC`
-              : sql`ORDER BY COALESCE(j.population, 0) DESC, j.geoid ASC`
+      const orderBy = directoryOrderBy(sql, args.sort, {
+        waitingTotal: sql`w.total`,
+        oldestWaitingAt: sql`w.oldest_waiting_at`,
+        name: sql`j.name`,
+        population: sql`j.population`,
+        geoid: sql`j.geoid`,
+      })
+      const pageOrderBy = directoryOrderBy(sql, args.sort, {
+        waitingTotal: sql`p.waiting_total`,
+        oldestWaitingAt: sql`p.oldest_waiting_at`,
+        name: sql`p.name`,
+        population: sql`p.population`,
+        geoid: sql`p.geoid`,
+      })
 
+      // The per-row decorations are computed over the page CTE, so they run only for the page rows rather
+      // than for every filtered jurisdiction the window count and the sort had to visit.
       const rows = await sql<DirectoryRow[]>`
         WITH waiting AS (
           -- "Waiting" = open, un-routed reports: excludes acknowledged/in_progress (already routed) and
@@ -349,16 +403,40 @@ export function makeDrizzleJurisdictionContactsRepository(
             AND r.deleted_at IS NULL
             AND r.status NOT IN ('rejected', 'resolved', 'acknowledged', 'in_progress')
           GROUP BY r.jurisdiction_geoid
+        ),
+        page AS (
+          SELECT
+            j.geoid,
+            j.name,
+            j.contact_emails AS default_emails,
+            j.report_form_url,
+            j.contact_updated_at,
+            j.layer,
+            j.population,
+            j.flagged_at,
+            j.handle,
+            j.forward_subject_template,
+            j.forward_body_template,
+            COUNT(*) OVER()::text AS filtered_total,
+            w.total AS waiting_total,
+            COALESCE(w.total, 0)::text AS reports_waiting,
+            w.oldest_waiting_at,
+            ${categoryCountsProjection(sql, "w")}
+          FROM jurisdictions j
+          LEFT JOIN waiting w ON w.geoid = j.geoid
+          WHERE true
+          ${search}
+          ${methodFilter}
+          ${layerFilter}
+          ${orderBy}
+          OFFSET ${offset}
+          LIMIT ${limit + 1}
         )
         SELECT
-          j.geoid,
-          j.name,
-          j.contact_emails AS default_emails,
-          j.report_form_url,
-          j.contact_updated_at,
+          p.*,
           EXISTS (
             SELECT 1 FROM jurisdiction_contacts dc
-            WHERE dc.geoid = j.geoid AND dc.category IS NULL
+            WHERE dc.geoid = p.geoid AND dc.category IS NULL
               AND dc.email IS NOT NULL AND dc.email <> ''
           ) AS has_default_contact,
           (
@@ -367,70 +445,44 @@ export function makeDrizzleJurisdictionContactsRepository(
               '[]'::json
             )
             FROM jurisdiction_contacts cc
-            WHERE cc.geoid = j.geoid AND cc.category IS NOT NULL
+            WHERE cc.geoid = p.geoid AND cc.category IS NOT NULL
           ) AS category_emails,
           (
             SELECT MAX(rt.created_at)
             FROM report_timeline rt
             JOIN reports r2 ON r2.id = rt.report_id
-            WHERE r2.jurisdiction_geoid = j.geoid AND rt.status = 'acknowledged'
+            WHERE r2.jurisdiction_geoid = p.geoid AND rt.status = 'acknowledged'
           ) AS last_routed_at,
           (
-            -- A contact is 'bounced' when ANY of the geoid's contact rows has a bounce marker (the inbound
-            -- bounce handler stamps jurisdiction_contacts.bounced_at; this takes precedence over
-            -- verified/pending). The legacy mail_events signal is OR'd in for threads with no per-contact
-            -- row (e.g. a digest-only bounce), so an existing bounce never silently disappears.
-            --
-            -- That fallback is scoped to events NEWER than the last contact save: mail_events rows are never
-            -- deleted, so an unscoped EXISTS pinned the directory to 'bounced' forever — re-entering a good
-            -- address cleared bounced_at (and cleared the flag in the in-memory repo, which is what the
-            -- offline tests asserted) yet the row still read bounced in production.
+            -- The legacy mail_events signal is OR'd in for threads with no per-contact row (a digest-only
+            -- bounce), so an existing bounce never silently disappears. It is scoped to events newer than
+            -- the last contact save: mail_events rows are never deleted, so an unscoped EXISTS would pin the
+            -- row to 'bounced' forever even after a good address is re-entered.
             EXISTS (
               SELECT 1 FROM jurisdiction_contacts bc
-              WHERE bc.geoid = j.geoid AND bc.bounced_at IS NOT NULL
+              WHERE bc.geoid = p.geoid AND bc.bounced_at IS NOT NULL
             )
             OR EXISTS (
               SELECT 1 FROM mail_events me
               JOIN mail_threads mt ON mt.id = me.thread_id
-              WHERE mt.jurisdiction_geoid = j.geoid AND me.type = 'bounced'
-                AND (j.contact_updated_at IS NULL OR me.created_at > j.contact_updated_at)
+              WHERE mt.jurisdiction_geoid = p.geoid AND me.type = 'bounced'
+                AND (p.contact_updated_at IS NULL OR me.created_at > p.contact_updated_at)
             )
-          ) AS bounced,
-          j.layer,
-          j.population,
-          j.flagged_at,
-          j.handle,
-          j.forward_subject_template,
-          j.forward_body_template,
-          COUNT(*) OVER()::text AS filtered_total,
-          COALESCE(w.total, 0)::text AS reports_waiting,
-          w.oldest_waiting_at,
-          ${categoryCountsProjection(sql, "w")}
-        FROM jurisdictions j
-        LEFT JOIN waiting w ON w.geoid = j.geoid
-        WHERE true
-        ${search}
-        ${methodFilter}
-        ${layerFilter}
-        ${orderBy}
-        OFFSET ${offset}
-        LIMIT ${limit + 1}
+          ) AS bounced
+        FROM page p
+        ${pageOrderBy}
       `
 
       const hasMore = rows.length > limit
       const page = (hasMore ? rows.slice(0, limit) : rows).map(toRecord)
       const nextCursor = hasMore ? encodeOffsetCursor(offset + limit) : null
 
-      let total: number | null = null
-      let facets: { routed: number; unrouted: number } | null = null
-      if (offset === 0) {
-        const isDefaultView = args.q === null && args.layer === null
-        const cached = args.filter === "all" && isDefaultView ? readDefaultFacetCache() : null
-        if (cached !== null) {
-          total = cached.total
-          facets = cached.facets
-        } else {
-          const agg = await sql<{ total: string; routed: string; unrouted: string }[]>`
+      const { total, facets } = await directoryTotals(
+        args,
+        offset,
+        rows[0]?.filtered_total,
+        async () => {
+          const agg = await sql<FacetAggregateRow[]>`
             SELECT
               COUNT(*)::text AS total,
               COUNT(*) FILTER (WHERE ${hasEmailExpr} OR ${hasFormExpr})::text AS routed,
@@ -438,27 +490,11 @@ export function makeDrizzleJurisdictionContactsRepository(
             FROM jurisdictions j
             WHERE true ${search} ${layerFilter}
           `
-          const a = agg[0]
-          total = Number(rows[0]?.filtered_total ?? "0")
-          facets = { routed: Number(a?.routed ?? "0"), unrouted: Number(a?.unrouted ?? "0") }
-          if (args.filter === "all" && isDefaultView) {
-            writeDefaultFacetCache({ total: Number(a?.total ?? "0"), facets })
-          }
-        }
-      }
+          return agg[0]
+        },
+      )
 
-      if (shouldIncludeUnmapped(args)) {
-        const unmapped = await loadUnmappedAggregate(sql)
-        if (unmapped.total > 0) {
-          return {
-            records: [buildUnmappedRecord(unmapped.total, unmapped.perCategoryCounts), ...page],
-            nextCursor,
-            total,
-            facets,
-          }
-        }
-      }
-      return { records: page, nextCursor, total, facets }
+      return withUnmappedRecord(sql, args, { records: page, nextCursor, total, facets })
     },
 
     async getGeometry(geoid: string): Promise<JurisdictionGeometryRecord | null> {
@@ -503,4 +539,114 @@ export function makeDrizzleJurisdictionContactsRepository(
       }
     },
   }
+}
+
+const DIRECTORY_FACET_TTL_MS = 30_000
+
+export interface DirectoryFacetAggregate {
+  total: number
+  facets: { routed: number; unrouted: number }
+}
+
+// The directory's default-view facet counts are cached per process. The cache lives beside
+// upsertJurisdictionContacts so every in-process writer of routing contacts can drop it after commit.
+let directoryFacetCache: { at: number; value: DirectoryFacetAggregate } | null = null
+
+function readDirectoryFacetCache(): DirectoryFacetAggregate | null {
+  if (directoryFacetCache === null) return null
+  if (Date.now() - directoryFacetCache.at > DIRECTORY_FACET_TTL_MS) {
+    directoryFacetCache = null
+    return null
+  }
+  return directoryFacetCache.value
+}
+
+function writeDirectoryFacetCache(value: DirectoryFacetAggregate): void {
+  directoryFacetCache = { at: Date.now(), value }
+}
+
+export function invalidateDirectoryFacetCache(): void {
+  directoryFacetCache = null
+}
+
+export async function upsertJurisdictionContacts(
+  tx: Queryable,
+  geoid: string,
+  contacts: Partial<Record<ReportCategory, string | null>>,
+  defaultEmails: string[],
+  formUrl: string | null,
+): Promise<void> {
+  const clears: ReportCategory[] = []
+  const setCategories: ReportCategory[] = []
+  const setEmails: string[] = []
+  for (const [category, rawEmail] of Object.entries(contacts) as [
+    ReportCategory,
+    string | null,
+  ][]) {
+    const email = rawEmail && rawEmail.trim() !== "" ? rawEmail.trim() : null
+    if (email === null) {
+      clears.push(category)
+    } else {
+      setCategories.push(category)
+      setEmails.push(email)
+    }
+  }
+  if (clears.length > 0) {
+    await tx`
+      DELETE FROM jurisdiction_contacts WHERE geoid = ${geoid} AND category = ANY(${clears}::text[])
+    `
+  }
+  // Object keys are unique, so no category repeats in the unnest and the upsert can never touch a row twice.
+  if (setCategories.length > 0) {
+    await tx`
+      INSERT INTO jurisdiction_contacts (geoid, category, email, updated_at, bounced_at)
+      SELECT ${geoid}, u.category, u.email, now(), NULL
+        FROM unnest(${setCategories}::text[], ${setEmails}::text[]) AS u(category, email)
+      ON CONFLICT (geoid, category) WHERE category IS NOT NULL
+      DO UPDATE SET email = EXCLUDED.email, updated_at = now(), bounced_at = NULL
+    `
+  }
+
+  const defaultEmail = defaultEmails.find((e) => e.trim() !== "")?.trim() ?? null
+  const form = formUrl && formUrl.trim() !== "" ? formUrl.trim() : null
+  const setEmail = defaultEmail !== null
+  const setForm = form !== null
+  if (setEmail || setForm) {
+    await tx`
+      INSERT INTO jurisdiction_contacts (geoid, category, email, form_url, updated_at, bounced_at)
+      VALUES (${geoid}, NULL, ${defaultEmail}, ${form}, now(), NULL)
+      ON CONFLICT (geoid) WHERE category IS NULL
+      DO UPDATE SET
+        email = CASE WHEN ${setEmail} THEN EXCLUDED.email ELSE jurisdiction_contacts.email END,
+        form_url = CASE WHEN ${setForm} THEN EXCLUDED.form_url ELSE jurisdiction_contacts.form_url END,
+        updated_at = now(),
+        bounced_at = CASE WHEN ${setEmail} THEN NULL ELSE jurisdiction_contacts.bounced_at END
+    `
+  }
+
+  if (defaultEmails.length > 0 || form !== null) {
+    const emails = defaultEmails.filter((e) => e.trim() !== "")
+    await tx`
+      UPDATE jurisdictions
+      SET
+        contact_emails = CASE WHEN ${emails.length} > 0 THEN ${emails} ELSE contact_emails END,
+        report_form_url = COALESCE(${form}, report_form_url)
+      WHERE geoid = ${geoid}
+    `
+  }
+}
+
+export async function markBouncedContact(sql: Sql, email: string, geoid: string): Promise<void> {
+  await sql`
+    UPDATE jurisdiction_contacts
+    SET bounced_at = now()
+    WHERE lower(email) = lower(${email}) AND geoid = ${geoid}
+  `
+}
+
+export async function geoidForContact(sql: Sql, email: string): Promise<string | null> {
+  const rows = await sql<{ geoid: string }[]>`
+    SELECT geoid FROM jurisdiction_contacts WHERE lower(email) = lower(${email}) LIMIT 1
+  `
+  return rows[0]?.geoid ?? null
 }

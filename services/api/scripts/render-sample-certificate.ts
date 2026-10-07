@@ -2,7 +2,7 @@
  * render-sample-certificate: write a set of sample service-hours transcripts to disk so a HUMAN can look
  * at them. Run once per layout change.
  *
- *   pnpm --filter @civfix/api exec tsx scripts/render-sample-certificate.ts [outDir]
+ *   pnpm --filter @civfix/api render:sample-certificate [outDir]
  *
  * NOT a CI step, deliberately. The unit suite proves the structure (page count, byte band, Info
  * dictionary, the Hangul path); it cannot prove that the seal overlaps the QR, that a long Korean event
@@ -15,7 +15,7 @@
  *   sample-en-1200.pdf             the 1000-row cap + the truncation banner under the totals
  *
  * This is a `scripts/` tsx tool: it is never bundled into the API image and touches no DB, no storage and
- * no network — the renderer is pure, so a sample needs nothing but the vendored fonts.
+ * no network: the renderer is pure, so a sample needs nothing but the vendored fonts.
  */
 
 import { mkdirSync, writeFileSync } from "node:fs"

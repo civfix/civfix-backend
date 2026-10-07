@@ -32,9 +32,7 @@ describe("updateSettings: primaryOrganizationId", () => {
 
   it("422s an organization the user does not belong to, and changes nothing", async () => {
     const id = await seeded()
-    await expect(
-      store.updateSettings(id, { primaryOrganizationId: ORG_B }),
-    ).rejects.toMatchObject({
+    await expect(store.updateSettings(id, { primaryOrganizationId: ORG_B })).rejects.toMatchObject({
       code: "VALIDATION",
       fields: { primaryOrganizationId: PRIMARY_ORGANIZATION_NOT_A_MEMBER },
     })

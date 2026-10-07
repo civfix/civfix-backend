@@ -1,11 +1,11 @@
 import type { FastifyBaseLogger } from "fastify"
 import type { CacheClient } from "../../auth/cache.js"
 
-export const HOST_ANALYTICS_CACHE_PREFIX = "hostan:v1"
+const HOST_ANALYTICS_CACHE_PREFIX = "hostan:v1"
 
-export const INSIGHTS_GENERATION_TTL_SEC = 86_400
+const INSIGHTS_GENERATION_TTL_SEC = 86_400
 
-export const INSIGHTS_GENERATION_ZERO = "0"
+const INSIGHTS_GENERATION_ZERO = "0"
 
 export interface HostAnalyticsCacheDeps {
   cache: CacheClient
@@ -40,6 +40,12 @@ export function hostAnalyticsCacheKey(args: {
 }): string {
   const key = `${HOST_ANALYTICS_CACHE_PREFIX}:${args.endpoint}:${args.scope}:${args.range}:${args.viewerScope}`
   return args.generation === undefined ? key : `${key}:g${args.generation}`
+}
+
+// Comparison and returning-attendee figures come from the viewer's own hosted events, so the user id
+// is part of the key.
+export function perViewerScope(viewer: { viewerScope: string; userId: string }): string {
+  return `${viewer.viewerScope}:${viewer.userId}`
 }
 
 export function insightsGenerationKey(cleanupId: string): string {

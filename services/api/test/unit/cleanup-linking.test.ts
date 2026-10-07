@@ -12,7 +12,6 @@ import {
 } from "../../src/services/cleanup-repository.drizzle.js"
 import { AppError, type CreateCleanupRequest } from "@civfix/shared"
 
-
 const ORG = "11111111-1111-1111-1111-111111111111"
 const STRANGER = "22222222-2222-2222-2222-222222222222"
 const R1 = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaa1"
@@ -63,20 +62,25 @@ describe("createCleanup linking", () => {
     expect(r1.thumbUrl).toBe("thumb/r1.jpg")
     expect(r1.title).toBe("Bin 1")
     expect(repo.links.filter((l) => l.cleanupId === dto.id)).toHaveLength(2)
-    expect(repo.timeline.filter((t) => t.cleanupId === dto.id && t.kind === "report_linked")).toHaveLength(2)
+    expect(
+      repo.timeline.filter((t) => t.cleanupId === dto.id && t.kind === "report_linked"),
+    ).toHaveLength(2)
   })
 
   it("rejects an invisible (held) report at create time with a 422", async () => {
-    await expect(service.createCleanup(baseInput({ linkedReportIds: [R1, R3] }), ORG)).rejects.toMatchObject(
-      { code: "VALIDATION" },
-    )
+    await expect(
+      service.createCleanup(baseInput({ linkedReportIds: [R1, R3] }), ORG),
+    ).rejects.toMatchObject({ code: "VALIDATION" })
     expect(repo.cleanups.size).toBe(0)
     expect(repo.links).toHaveLength(0)
   })
 
   it("rejects linking on a non-cleanup eventKind (other_volunteer)", async () => {
     await expect(
-      service.createCleanup(baseInput({ eventKind: "other_volunteer", linkedReportIds: [R1] }), ORG),
+      service.createCleanup(
+        baseInput({ eventKind: "other_volunteer", linkedReportIds: [R1] }),
+        ORG,
+      ),
     ).rejects.toMatchObject({ code: "VALIDATION" })
   })
 
@@ -90,7 +94,9 @@ describe("createCleanup linking", () => {
 describe("updateCleanup (host-gated PATCH)", () => {
   it("403s a non-organizer", async () => {
     const created = await service.createCleanup(baseInput(), ORG)
-    await expect(service.updateCleanup(created.id, { title: "Hijack" }, STRANGER)).rejects.toMatchObject({
+    await expect(
+      service.updateCleanup(created.id, { title: "Hijack" }, STRANGER),
+    ).rejects.toMatchObject({
       code: "FORBIDDEN",
     })
     expect(repo.cleanups.get(created.id)?.title).toBe("Beach cleanup")
@@ -119,7 +125,9 @@ describe("updateCleanup (host-gated PATCH)", () => {
     const created = await service.createCleanup(baseInput({ linkedReportIds: [R1] }), ORG)
     const updated = await service.updateCleanup(created.id, { linkedReportIds: [R2] }, ORG)
     expect(updated.linkedReports.map((r) => r.id)).toEqual([R2])
-    expect(repo.links.filter((l) => l.cleanupId === created.id).map((l) => l.reportId)).toEqual([R2])
+    expect(repo.links.filter((l) => l.cleanupId === created.id).map((l) => l.reportId)).toEqual([
+      R2,
+    ])
     const kinds = repo.timeline.filter((t) => t.cleanupId === created.id).map((t) => t.kind)
     expect(kinds).toContain("report_unlinked")
   })
@@ -155,9 +163,12 @@ describe("reconcileLinkedReports only unlinks what the host can see", () => {
     const updated = await service.updateCleanup(created.id, { linkedReportIds: [R1] }, ORG)
 
     expect(updated.linkedReports.map((r) => r.id)).toEqual([R1])
-    expect(repo.links.filter((l) => l.cleanupId === created.id).map((l) => l.reportId).sort()).toEqual(
-      [R1, R3].sort(),
-    )
+    expect(
+      repo.links
+        .filter((l) => l.cleanupId === created.id)
+        .map((l) => l.reportId)
+        .sort(),
+    ).toEqual([R1, R3].sort())
     expect(
       repo.timeline.filter((t) => t.cleanupId === created.id && t.kind === "report_unlinked"),
     ).toHaveLength(0)
@@ -169,7 +180,9 @@ describe("reconcileLinkedReports only unlinks what the host can see", () => {
     const updated = await service.updateCleanup(created.id, { linkedReportIds: [R1] }, ORG)
 
     expect(updated.linkedReports.map((r) => r.id)).toEqual([R1])
-    expect(repo.links.filter((l) => l.cleanupId === created.id).map((l) => l.reportId)).toEqual([R1])
+    expect(repo.links.filter((l) => l.cleanupId === created.id).map((l) => l.reportId)).toEqual([
+      R1,
+    ])
     const unlinked = repo.timeline.filter(
       (t) => t.cleanupId === created.id && t.kind === "report_unlinked",
     )
@@ -183,14 +196,20 @@ describe("reconcileLinkedReports only unlinks what the host can see", () => {
     const updated = await service.updateCleanup(created.id, { linkedReportIds: [R1, R4] }, ORG)
 
     expect(updated.linkedReports.map((r) => r.id).sort()).toEqual([R1, R4].sort())
-    expect(repo.links.filter((l) => l.cleanupId === created.id).map((l) => l.reportId).sort()).toEqual(
-      [R1, R3, R4].sort(),
-    )
+    expect(
+      repo.links
+        .filter((l) => l.cleanupId === created.id)
+        .map((l) => l.reportId)
+        .sort(),
+    ).toEqual([R1, R3, R4].sort())
     const kinds = repo.timeline.filter((t) => t.cleanupId === created.id)
     expect(kinds.filter((t) => t.kind === "report_unlinked").map((t) => t.reportId)).toEqual([R2])
-    expect(kinds.filter((t) => t.kind === "report_linked").map((t) => t.reportId).sort()).toEqual(
-      [R1, R2, R4].sort(),
-    )
+    expect(
+      kinds
+        .filter((t) => t.kind === "report_linked")
+        .map((t) => t.reportId)
+        .sort(),
+    ).toEqual([R1, R2, R4].sort())
   })
 })
 
@@ -296,7 +315,8 @@ describe("listCleanups linkedReports hydration (#70 map blend)", () => {
       { length: 10 },
       (_, i) => `bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbb${String(i).padStart(4, "0")}`,
     )
-    for (const [i, id] of extra.entries()) repo.seedReport({ id, title: `Bulk ${i}`, category: "trash" })
+    for (const [i, id] of extra.entries())
+      repo.seedReport({ id, title: `Bulk ${i}`, category: "trash" })
     const linked = await service.createCleanup(
       baseInput({ title: "Big gallery", linkedReportIds: extra }),
       ORG,

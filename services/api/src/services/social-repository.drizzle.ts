@@ -1,14 +1,13 @@
-
-import type postgres from "postgres"
-import type { Queryable, Sql } from "../db/client.js"
+import type { Queryable, Sql, SqlFragment } from "../db/client.js"
 import type {
+  PeoplePage,
   PersonView,
   ProfileEventsPage,
   ProfileEventsPageArgs,
   ProfileStats,
   SocialRepository,
   UpcomingEventsArgs,
-} from "./social-service.js"
+} from "./social-repository.js"
 import type { CleanupRecord, CleanupPersonView } from "./cleanup-service.js"
 import type {
   CleanupStatus,
@@ -21,27 +20,18 @@ import type {
 import {
   encodeNameCursor,
   encodeTimeCursor,
+  keysetInstant,
+  keysetPredicate,
   pageWith,
-  paginate,
+  paginateKeyset,
+  parseKeysetCursor,
   parseNameCursor,
   parseTimeCursor,
 } from "../db/cursor-helpers.js"
-import { escapeLike } from "./admin/like.js"
+import { likeContains } from "../db/like.js"
 import { cleanupStatusExpr, goingScalar } from "./cleanup-sql.js"
-import { servedKeyExpr } from "./media-served-key.js"
+import { publicServedKeyExpr } from "./media-served-key.js"
 import { CIVFIX_OFFICIAL_USER_ID } from "../auth/official-account.js"
-
-export {
-  searchByHandlePrefix,
-  searchMentionable,
-} from "./user-search.drizzle.js"
-export {
-  resolveHandles,
-  resolveMentionTargets,
-  resolveUserIdsToMentions,
-} from "./mention-resolver.drizzle.js"
-
-type SqlFragment = postgres.Fragment
 
 const SUGGEST_NEARBY_METERS = 25_000
 
@@ -86,10 +76,7 @@ export function toPersonView(r: PersonRowSelect): PersonView {
   }
 }
 
-function pagePeople(
-  rows: PersonRowSelectWithFollow[],
-  limit: number,
-): { items: Array<PersonView & { isFollowing: boolean }>; nextCursor: string | null } {
+function pagePeople(rows: PersonRowSelectWithFollow[], limit: number): PeoplePage {
   const { items, nextCursor } = pageWith(rows, limit, (last) =>
     encodeNameCursor({ name: last.display_name, id: last.id }),
   )
@@ -178,11 +165,11 @@ function toCleanupRecord(r: CleanupRowSelect): CleanupRecord {
   }
 }
 
-function organizedIds(sql: Sql, userId: string): ReturnType<Sql> {
+function organizedIds(sql: Sql, userId: string): SqlFragment {
   return sql`SELECT id AS cleanup_id FROM cleanups WHERE organizer_user_id = ${userId}`
 }
 
-function organizedOrAttendedIds(sql: Sql, userId: string): ReturnType<Sql> {
+function organizedOrAttendedIds(sql: Sql, userId: string): SqlFragment {
   return sql`
     SELECT id AS cleanup_id FROM cleanups WHERE organizer_user_id = ${userId}
     UNION
@@ -192,7 +179,7 @@ function organizedOrAttendedIds(sql: Sql, userId: string): ReturnType<Sql> {
 
 function profileEventRows(
   sql: Sql,
-  args: { ids: ReturnType<Sql>; where: ReturnType<Sql>; order: ReturnType<Sql>; limit: number },
+  args: { ids: SqlFragment; where: SqlFragment; order: SqlFragment; limit: number },
 ): Promise<CleanupRowSelect[]> {
   return sql<CleanupRowSelect[]>`
     WITH ids AS (${args.ids})
@@ -235,14 +222,11 @@ function profileEventRows(
   `
 }
 
-type ConnectionRow = PersonRowSelectWithFollow & { edge_created_at: Date }
+type ConnectionRow = PersonRowSelectWithFollow & { cursor_at: string | null }
 
-function pageConnections(
-  rows: ConnectionRow[],
-  limit: number,
-): { items: Array<PersonView & { isFollowing: boolean }>; nextCursor: string | null } {
-  const { items, nextCursor } = paginate(rows, limit, (last) => ({
-    at: last.edge_created_at,
+function pageConnections(rows: ConnectionRow[], limit: number): PeoplePage {
+  const { items, nextCursor } = paginateKeyset(rows, limit, (last) => ({
+    atText: last.cursor_at,
     id: last.id,
   }))
   const sorted = [...items].sort((a, b) => {
@@ -258,14 +242,13 @@ function pageConnections(
 async function connectionsPage(
   sql: Sql,
   args: { viewerId: string | null; cursor: string | null; limit: number },
-  joinPredicate: ReturnType<Sql>,
-): Promise<{ items: Array<PersonView & { isFollowing: boolean }>; nextCursor: string | null }> {
-  const cursor = parseTimeCursor(args.cursor)
+  joinPredicate: SqlFragment,
+  edgePeer: SqlFragment,
+): Promise<PeoplePage> {
+  const cursor = parseKeysetCursor(args.cursor)
   const viewerId = args.viewerId
   const cursorFilter =
-    cursor !== null
-      ? sql`AND (f.created_at, u.id) < (${cursor.at}, ${cursor.id}::uuid)`
-      : sql``
+    cursor !== null ? sql`AND ${keysetPredicate(sql, sql`f.created_at`, edgePeer, cursor)}` : sql``
   const followingExpr =
     viewerId !== null
       ? sql`EXISTS (SELECT 1 FROM follows_people ff WHERE ff.follower_id = ${viewerId} AND ff.followee_id = u.id)`
@@ -287,23 +270,24 @@ async function connectionsPage(
       u.bio,
       u.follower_count AS followers,
       u.following_count AS following,
-      ${servedKeyExpr(sql, "am")} AS avatar_r2_key,
+      ${publicServedKeyExpr(sql, "am")} AS avatar_r2_key,
       u.avatar_url,
       u.show_volunteer_hours,
-      u.edge_created_at,
+      u.cursor_at,
       ${followingExpr} AS is_following
     FROM (
       SELECT
         u.id, u.display_name, u.handle, u.bio, u.avatar_media_id, u.avatar_url,
         u.show_volunteer_hours,
         u.follower_count, u.following_count,
-        f.created_at AS edge_created_at
+        f.created_at AS edge_created_at,
+        ${keysetInstant(sql, sql`f.created_at`)} AS cursor_at
       FROM users u
       JOIN follows_people f ON ${joinPredicate}
       WHERE u.deleted_at IS NULL
         ${blockFilter}
         ${cursorFilter}
-      ORDER BY f.created_at DESC, u.id DESC
+      ORDER BY f.created_at DESC, ${edgePeer} DESC
       LIMIT ${args.limit + 1}
     ) u
     LEFT JOIN media_assets am ON am.id = u.avatar_media_id
@@ -425,7 +409,7 @@ function suggestFollowsStatement(
           c.bio,
           c.followers,
           c.following,
-          ${servedKeyExpr(sql, "am")} AS avatar_r2_key,
+          ${publicServedKeyExpr(sql, "am")} AS avatar_r2_key,
           c.avatar_url,
           c.show_volunteer_hours,
           c.is_organizer
@@ -452,7 +436,7 @@ export async function explainSuggestFollows(
 }
 
 export function makeDrizzleSocialRepository(sql: Sql): SocialRepository {
-  async function findPerson(keyFilter: ReturnType<Sql>): Promise<PersonView | null> {
+  async function findPerson(keyFilter: SqlFragment): Promise<PersonView | null> {
     const rows = await sql<PersonRowSelect[]>`
       SELECT
         u.id,
@@ -461,7 +445,7 @@ export function makeDrizzleSocialRepository(sql: Sql): SocialRepository {
         u.bio,
         u.follower_count AS followers,
         u.following_count AS following,
-        ${servedKeyExpr(sql, "am")} AS avatar_r2_key,
+        ${publicServedKeyExpr(sql, "am")} AS avatar_r2_key,
         u.avatar_url,
         u.social_links,
         u.donation_url,
@@ -482,16 +466,13 @@ export function makeDrizzleSocialRepository(sql: Sql): SocialRepository {
   }
 
   return {
-    async listPeople(args): Promise<{
-      items: Array<PersonView & { isFollowing: boolean }>
-      nextCursor: string | null
-    }> {
+    async listPeople(args): Promise<PeoplePage> {
       const cursor = parseNameCursor(args.cursor)
       const viewerId = args.viewerId
+      const term = args.q !== null ? likeContains(args.q) : null
       const qFilter =
-        args.q !== null
-          ?
-            sql`AND ((u.handle::text) ILIKE ${"%" + escapeLike(args.q) + "%"} ESCAPE '\\' OR u.display_name ILIKE ${"%" + escapeLike(args.q) + "%"} ESCAPE '\\')`
+        term !== null
+          ? sql`AND ((u.handle::text) ILIKE ${term} ESCAPE '\\' OR u.display_name ILIKE ${term} ESCAPE '\\')`
           : sql``
       const selfFilter = viewerId !== null ? sql`AND u.id <> ${viewerId}` : sql``
       const cursorFilter =
@@ -519,7 +500,7 @@ export function makeDrizzleSocialRepository(sql: Sql): SocialRepository {
           u.bio,
           u.follower_count AS followers,
           u.following_count AS following,
-          ${servedKeyExpr(sql, "am")} AS avatar_r2_key,
+          ${publicServedKeyExpr(sql, "am")} AS avatar_r2_key,
           u.avatar_url,
           u.show_volunteer_hours,
           ${followingExpr} AS is_following
@@ -549,18 +530,22 @@ export function makeDrizzleSocialRepository(sql: Sql): SocialRepository {
       `.then((rows) => rows.map((r) => ({ ...toPersonView(r), isFollowing: false })))
     },
 
-    async listFollowers(args): Promise<{
-      items: Array<PersonView & { isFollowing: boolean }>
-      nextCursor: string | null
-    }> {
-      return connectionsPage(sql, args, sql`f.followee_id = ${args.id} AND f.follower_id = u.id`)
+    async listFollowers(args): Promise<PeoplePage> {
+      return connectionsPage(
+        sql,
+        args,
+        sql`f.followee_id = ${args.id} AND f.follower_id = u.id`,
+        sql`f.follower_id`,
+      )
     },
 
-    async listFollowing(args): Promise<{
-      items: Array<PersonView & { isFollowing: boolean }>
-      nextCursor: string | null
-    }> {
-      return connectionsPage(sql, args, sql`f.follower_id = ${args.id} AND f.followee_id = u.id`)
+    async listFollowing(args): Promise<PeoplePage> {
+      return connectionsPage(
+        sql,
+        args,
+        sql`f.follower_id = ${args.id} AND f.followee_id = u.id`,
+        sql`f.followee_id`,
+      )
     },
 
     async findPersonById(id: string): Promise<PersonView | null> {
@@ -629,13 +614,17 @@ export function makeDrizzleSocialRepository(sql: Sql): SocialRepository {
       return rows[0]?.count ?? 0
     },
 
-    async pastEventsPageFor(userId: string, args: ProfileEventsPageArgs): Promise<ProfileEventsPage> {
+    async pastEventsPageFor(
+      userId: string,
+      args: ProfileEventsPageArgs,
+    ): Promise<ProfileEventsPage> {
       const cursor = parseTimeCursor(args.cursor)
       const rows = await profileEventRows(sql, {
         ids: organizedOrAttendedIds(sql, userId),
-        where: cursor !== null
-          ? sql`AND c.scheduled_at < now() AND (c.scheduled_at, c.id) < (${cursor.at}, ${cursor.id}::uuid)`
-          : sql`AND c.scheduled_at < now()`,
+        where:
+          cursor !== null
+            ? sql`AND c.scheduled_at < now() AND (c.scheduled_at, c.id) < (${cursor.at}, ${cursor.id}::uuid)`
+            : sql`AND c.scheduled_at < now()`,
         order: sql`ORDER BY c.scheduled_at DESC, c.id DESC`,
         limit: args.limit + 1,
       })
