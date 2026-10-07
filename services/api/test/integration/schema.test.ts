@@ -53,6 +53,7 @@ const EXPECTED_TABLES = [
   "boundary_vintage",
   "reference_counters",
   "inbound_emails",
+  "inbound_bounce_attempts",
   "chat_message_reactions",
   "chat_message_mentions",
   "report_chat_members",
