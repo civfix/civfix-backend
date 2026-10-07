@@ -71,7 +71,7 @@
     "@smithy/node-http-handler": "4.7.5",
     "arctic": "^2.3.0",
     "drizzle-orm": "^0.45.2",
-    "fastify": "^5.12.3",
+    "fastify": "^5.12.5",
     "firebase-admin": "^14.3.0",
     "h3-js": "^4.1.0",
     "https-proxy-agent": "7.0.6",
