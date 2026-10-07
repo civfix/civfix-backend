@@ -493,6 +493,46 @@ describe.skipIf(!pg)("operator volunteer-hours ledger (integration)", () => {
     })
   })
 
+  it("pages every ledger entry once when two share a sub-millisecond created_at", async () => {
+    const alice = await newUser("Tie Alice")
+    const operator = await newUser("Tie Olive")
+    const repo = makeDrizzleVolunteerHoursRepository(h.sql)
+    const credit = async (hours: number) =>
+      (
+        await repo.creditManual({
+          operatorId: operator,
+          userId: alice,
+          hours,
+          serviceDate: "2026-05-01",
+          reason: `${hours} h`,
+        })
+      ).entryId
+    const oldest = await credit(1)
+    const tiedA = await credit(2)
+    const tiedB = await credit(3)
+    await h.sql`
+      UPDATE volunteer_hours SET created_at = CASE id
+        WHEN ${oldest} THEN '2026-05-01T10:00:00.100000Z'::timestamptz
+        ELSE '2026-05-01T10:00:00.259633Z'::timestamptz END
+      WHERE user_id = ${alice}
+    `
+
+    const seen: string[] = []
+    let cursor: string | null = null
+    for (let page = 0; page < 4; page++) {
+      const res = await repo.listOperatorLedger({
+        userId: alice,
+        cursor: parseKeysetCursor(cursor),
+        limit: 1,
+      })
+      seen.push(...res.items.map((i) => i.id))
+      cursor = res.nextCursor
+      if (cursor === null) break
+    }
+    expect(cursor).toBeNull()
+    expect(seen).toEqual([...[tiedA, tiedB].sort().reverse(), oldest])
+  })
+
   it("finds the live certificates whose snapshot itemised an entry", async () => {
     const alice = await newUser("Cert Alice")
     const certs = makeDrizzleCertificateRepository(h.sql)
