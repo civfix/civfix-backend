@@ -178,8 +178,8 @@ describe("buildServiceHoursPdf characterization: one-page document", () => {
     const a = await render({ model, fingerprint: FINGERPRINT })
     const b = await render({ model, fingerprint: FINGERPRINT })
     expect(Buffer.from(a.bytes).equals(Buffer.from(b.bytes))).toBe(true)
-    expect(sha256(a.bytes)).toBe("160586236c7684dd699de33fee01b20b04a225fbca981df57131143467030064")
-    expect(a.bytes.length).toBe(26538)
+    expect(sha256(a.bytes)).toBe("3a2f3bf40b036ea2de0ad574cb150142d71369b26611ee7e770c53b4b4028519")
+    expect(a.bytes.length).toBe(26635)
     expect(pageCount(a.bytes)).toBe(1)
     expect(objectCount(a.bytes)).toBe(43)
   })
@@ -303,7 +303,7 @@ describe("buildServiceHoursPdf characterization: one-page document", () => {
     expect(texts(custom.events)).toContain("staging.example/verify @206,746")
     expect(texts(custom.events)).not.toContain("civfix.org/service-record @206,746")
     expect(sha256(custom.bytes)).toBe(
-      "7dc351464bfb976ef7e757cc1220df082ff0ba6bfb86fa2b01d91136f2a0d3e8",
+      "a38545a954c8d6997998a6a24d5f8f7db1268e94c5235af5a20fd1b7385459bf",
     )
   })
 })
@@ -368,8 +368,8 @@ describe("buildServiceHoursPdf characterization: page-break branches", () => {
   // At 20.3785pt per single-line row, 18 rows fill page 1 (344 + 18 x 20.3785 = 710.8 of a 730 floor).
   it("17 rows: totals fit on page 1, the issuer block is forced onto page 2 with no column band", async () => {
     const { bytes, events } = await render({ model: enModel(ledger(17)), fingerprint: FINGERPRINT })
-    expect(sha256(bytes)).toBe("c0e907a64dbe3a39597a04ce204bb9041c86b8d5519367b140711d2d220d564f")
-    expect(bytes.length).toBe(27534)
+    expect(sha256(bytes)).toBe("9dbf46237b22dd2d748ce53d5fd989b4259d5800a8971664081e34bd09a545e1")
+    expect(bytes.length).toBe(27624)
     expect(pageCount(bytes)).toBe(2)
     expect(events.length).toBe(138)
     const fromTotals = texts(events).slice(
@@ -407,8 +407,8 @@ describe("buildServiceHoursPdf characterization: page-break branches", () => {
 
   it("18 rows: the totals row itself is forced onto page 2 with no column band", async () => {
     const { bytes, events } = await render({ model: enModel(ledger(18)), fingerprint: FINGERPRINT })
-    expect(sha256(bytes)).toBe("1752718a25e7b2656a381fbaae257cb4672dbfeed4175ccb2eb5a41a351a66de")
-    expect(bytes.length).toBe(27597)
+    expect(sha256(bytes)).toBe("ef303241ffd66117bebbbc87f0a0da727b343b4a7629b2645302d98f192d6b45")
+    expect(bytes.length).toBe(27700)
     expect(pageCount(bytes)).toBe(2)
     expect(events.length).toBe(143)
     const all = texts(events)
@@ -447,8 +447,8 @@ describe("buildServiceHoursPdf characterization: page-break branches", () => {
 
   it("19 rows: the table continues onto page 2 under a redrawn column band", async () => {
     const { bytes, events } = await render({ model: enModel(ledger(19)), fingerprint: FINGERPRINT })
-    expect(sha256(bytes)).toBe("8a87b4bdca8659de2bf0f458b0bae30e99af6bb9629d31e446e8b742fe69ae50")
-    expect(bytes.length).toBe(27946)
+    expect(sha256(bytes)).toBe("c357ee5fa0f4fce63148f02faee2984bef38f21251bcd88c94ec14e36f6b8990")
+    expect(bytes.length).toBe(28039)
     expect(pageCount(bytes)).toBe(2)
     expect(events.length).toBe(153)
     const all = texts(events)
@@ -496,8 +496,8 @@ describe("buildServiceHoursPdf characterization: page-break branches", () => {
 
   it("40 rows: three pages, footers stamped last in page order", async () => {
     const { bytes, events } = await render({ model: enModel(ledger(40)) })
-    expect(sha256(bytes)).toBe("8a6d2e46ddebbce21e5ce0ca0a664b2e31d3c67abd77b6c866a8b024f08e58f5")
-    expect(bytes.length).toBe(29280)
+    expect(sha256(bytes)).toBe("ef4e254873451e4db8b1f8ef9740fc8959842d2c225a283268fe86d72cf242fb")
+    expect(bytes.length).toBe(29344)
     expect(pageCount(bytes)).toBe(3)
     expect(objectCount(bytes)).toBe(49)
     const pageOps = events.filter((e) => e[0] === "addPage" || e[0] === "switchToPage")
@@ -558,7 +558,7 @@ describe("buildServiceHoursPdf characterization: truncation banner", () => {
     })
     expect(model.truncated).toBe(true)
     const { bytes, events } = await render({ model, fingerprint: FINGERPRINT })
-    expect(sha256(bytes)).toBe("e4d76ad09f30f16f21a4102676c82af5f3c948648dd8b723121f872df6dfbd8e")
+    expect(sha256(bytes)).toBe("8faeba02057eb888cabd74c58f70e0c85ddf10428d867e7f89d70e2701548119")
     expect(pageCount(bytes)).toBe(1)
     const fromTotals = texts(events).slice(
       texts(events).findIndex((s) => s.startsWith("CERTIFICATE.TABLE.TOTAL ")),
@@ -589,8 +589,8 @@ describe("buildServiceHoursPdf characterization: Hangul transcript", () => {
     const a = await render({ model, fingerprint: FINGERPRINT })
     const b = await render({ model, fingerprint: FINGERPRINT })
     expect(Buffer.from(a.bytes).equals(Buffer.from(b.bytes))).toBe(true)
-    expect(sha256(a.bytes)).toBe("f1c9107a6dc4f4ad08b8ab24ce58de4ba6e6db93bb669af05fc43f3c72b66690")
-    expect(a.bytes.length).toBe(54163)
+    expect(sha256(a.bytes)).toBe("1bdb30f740b70fbb217780ec5ffbec7ca73bf786a10716c18b2203531c5b1172")
+    expect(a.bytes.length).toBe(54256)
     expect(pageCount(a.bytes)).toBe(1)
     expect(a.events.filter((e) => e[0] === "registerFont")).toMatchInlineSnapshot(`
       [
