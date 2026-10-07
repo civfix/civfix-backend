@@ -49,7 +49,7 @@ export interface HoldReleaseSweepResult {
 export async function runHoldReleaseSweep(
   deps: HoldReleaseSweepDeps,
 ): Promise<HoldReleaseSweepResult> {
-  const { log, report } = resolveJobObs(deps)
+  const { log, debug, report } = resolveJobObs(deps)
 
   let ids: string[]
   try {
@@ -78,6 +78,7 @@ export async function runHoldReleaseSweep(
     }
   }
 
-  log("anon.hold.release.sweep: done", { scanned: ids.length, published, errors })
+  const summary = published > 0 || errors > 0 ? log : debug
+  summary("anon.hold.release.sweep: done", { scanned: ids.length, published, errors })
   return { scanned: ids.length, published, errors }
 }

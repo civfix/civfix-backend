@@ -55,7 +55,7 @@ function derivedKeys(o: OrphanRow): string[] {
 }
 
 export async function runOrphanSweep(deps: OrphanSweepDeps): Promise<OrphanSweepResult> {
-  const { log, report, now: clock } = resolveJobObs(deps)
+  const { log, debug, report, now: clock } = resolveJobObs(deps)
   const cutoff = new Date(clock().getTime() - deps.limits.orphanTtlMs)
 
   let deleted = 0
@@ -102,7 +102,10 @@ export async function runOrphanSweep(deps: OrphanSweepDeps): Promise<OrphanSweep
     errors++
   }
 
-  log("orphan.sweep: done", {
+  const changed =
+    deleted + adoptedLegacyServedKeys + errors + leaked + retry.retried + retry.reclaimed > 0
+  const summary = changed ? log : debug
+  summary("orphan.sweep: done", {
     scanned,
     deleted,
     adoptedLegacyServedKeys,

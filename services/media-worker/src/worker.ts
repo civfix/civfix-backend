@@ -15,6 +15,7 @@ import {
 import { runMediaChecksJobDetailed, parsePayload } from "./jobs/media-checks.js"
 import { runOrphanSweep } from "./jobs/orphan-sweep.js"
 import { runHoldReleaseSweep } from "./jobs/hold-release-sweep.js"
+import { debugLog } from "./jobs/obs.js"
 import { runPartitionMaintenance } from "./jobs/partition-maintenance.js"
 import { runRetentionSweep } from "./jobs/retention-sweep.js"
 import { runStuckSweep } from "./jobs/stuck-sweep.js"
@@ -104,7 +105,7 @@ function makeMediaChecksHandler(jobs: WorkerJobs, seams: WorkerSeams): JobHandle
           { singletonKey: reportId },
         )
       } else {
-        console.debug("media.checks: hold-release skipped (no row/reportId, or not anon-held)", {
+        debugLog("media.checks: hold-release skipped (no row/reportId, or not anon-held)", {
           uploadId: payload.uploadId,
           status: outcome.status,
         })
