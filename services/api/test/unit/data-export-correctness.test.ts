@@ -154,12 +154,12 @@ describe("a data export the mail provider refuses is not dropped silently", () =
     const handler = handlers.get(DATA_EXPORT_JOB)!
 
     await expect(
-      handler({ id: "job-1", data: { userId: USER_ID }, retryCount: 1, retryLimit: 10 } as never),
+      handler({ id: "job-1", data: { userId: USER_ID }, retryCount: 1, retryLimit: 10 }),
     ).rejects.toBe(SENDER_REJECTED)
     expect(auditActions(ctl)).toEqual([])
 
     await expect(
-      handler({ id: "job-1", data: { userId: USER_ID }, retryCount: 10, retryLimit: 10 } as never),
+      handler({ id: "job-1", data: { userId: USER_ID }, retryCount: 10, retryLimit: 10 }),
     ).resolves.toBeUndefined()
     expect(auditReasons(ctl)).toEqual(["rejected"])
   })
