@@ -145,6 +145,8 @@ export function keysetInstant(sql: Queryable, column: postgres.Fragment): postgr
 /**
  * `(ts, id) < anchor` (or `>` for an ascending list), with the anchor instant cast from its text so the
  * comparison is exact. The bare column stays on the left so a (ts, id) index still serves the scan.
+ * The anchor goes through `::text` first: a bare `$n::timestamptz` makes Postgres type the parameter
+ * timestamptz, and postgres.js then reserializes the string with Date#toISOString, back to milliseconds.
  */
 export function keysetPredicate(
   sql: Queryable,
@@ -153,7 +155,7 @@ export function keysetPredicate(
   anchor: { atText: string; id: string },
   opts: { direction?: "asc" | "desc"; idType?: "uuid" | "text" } = {},
 ): postgres.Fragment {
-  const anchorAt = sql`${anchor.atText}::timestamptz`
+  const anchorAt = sql`${anchor.atText}::text::timestamptz`
   const anchorId = opts.idType === "text" ? sql`${anchor.id}::text` : sql`${anchor.id}::uuid`
   return opts.direction === "asc"
     ? sql`(${ts}, ${id}) > (${anchorAt}, ${anchorId})`

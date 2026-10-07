@@ -42,7 +42,7 @@ function expectExactAnchor(ctl: FakeSqlControl, match: RegExp, atText = AT_TEXT)
   expect(stmt.sql).toMatch(/to_char\([\s\S]* AT TIME ZONE 'UTC', \?\) AS cursor_at/)
   expect(stmt.values).toContain(atText)
   expect(stmt.values.some((v) => v instanceof Date && v.getTime() === AT.getTime())).toBe(false)
-  expect(stmt.sql).toContain("?::timestamptz")
+  expect(stmt.sql).toContain("?::text::timestamptz")
 }
 
 function fake(match: RegExp, rows: Record<string, unknown>[]): FakeSqlControl {
@@ -116,7 +116,7 @@ describe("organization member lists", () => {
     await repo(ctl).listMembers({ organizationId: ORG, cursor: NEXT, limit: 1 })
     expectExactAnchor(ctl, MEMBERS)
     expect(lastStatement(ctl, MEMBERS).sql).toMatch(
-      /\(m\.joined_at, m\.user_id\) > \(\?::timestamptz, \?::uuid\)/,
+      /\(m\.joined_at, m\.user_id\) > \(\?::text::timestamptz, \?::uuid\)/,
     )
   })
 
@@ -212,7 +212,7 @@ describe("event waitlist", () => {
     await list(ctl, NEXT)
     expectExactAnchor(ctl, LIST)
     expect(lastStatement(ctl, LIST).sql).toMatch(
-      /\(w\.created_at, w\.id\) > \(\?::timestamptz, \?::uuid\)/,
+      /\(w\.created_at, w\.id\) > \(\?::text::timestamptz, \?::uuid\)/,
     )
   })
 })
@@ -271,7 +271,7 @@ describe("host roster", () => {
     await roster(ctl).listRoster(query("checked_in_at_desc", next))
     const stmt = lastStatement(ctl, ROSTER)
     expect(stmt.sql).toMatch(
-      /'epoch'::timestamptz\), r\.registered_at, r\.id\) < \(\?::timestamptz, \?::timestamptz, \?::uuid\)/,
+      /'epoch'::timestamptz\), r\.registered_at, r\.id\) < \(\?::text::timestamptz, \?::text::timestamptz, \?::uuid\)/,
     )
     expect(stmt.values).toEqual(expect.arrayContaining([CHECKED_IN_TEXT, AT_TEXT, ID_A]))
     expect(stmt.values.some((v) => v instanceof Date)).toBe(false)

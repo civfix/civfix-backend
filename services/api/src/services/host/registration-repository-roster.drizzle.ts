@@ -143,9 +143,9 @@ function checkedInCursorFilter(tag: Queryable, raw: string) {
   if (cursor.registeredAtText === null) {
     // A cursor minted before it carried registered_at cannot place itself inside a tie, so it
     // resumes at the start of that tie: a row may repeat once, none is skipped.
-    return tag`AND ${rosterCheckedInKey(tag)} <= ${cursor.checkedInAtText}::timestamptz`
+    return tag`AND ${rosterCheckedInKey(tag)} <= ${cursor.checkedInAtText}::text::timestamptz`
   }
-  return tag`AND (${rosterCheckedInKey(tag)}, r.registered_at, r.id) < (${cursor.checkedInAtText}::timestamptz, ${cursor.registeredAtText}::timestamptz, ${cursor.id}::uuid)`
+  return tag`AND (${rosterCheckedInKey(tag)}, r.registered_at, r.id) < (${cursor.checkedInAtText}::text::timestamptz, ${cursor.registeredAtText}::text::timestamptz, ${cursor.id}::uuid)`
 }
 
 function rosterCursorFilter(tag: Queryable, sort: RegistrationRosterSort, raw: string | null) {

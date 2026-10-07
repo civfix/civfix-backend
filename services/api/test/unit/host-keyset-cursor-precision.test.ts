@@ -103,7 +103,7 @@ function expectExactAnchor(ctl: FakeSqlControl, match: RegExp, atText = AT_TEXT)
   expect(stmt.sql).toMatch(/to_char\([\s\S]* AT TIME ZONE 'UTC', \?\) AS cursor_at/)
   expect(stmt.values).toContain(atText)
   expect(stmt.values.some((v) => v instanceof Date && v.getTime() === AT.getTime())).toBe(false)
-  expect(stmt.sql).toContain("?::timestamptz")
+  expect(stmt.sql).toContain("?::text::timestamptz")
 }
 
 function broadcastService(handlers: SqlHandler[]) {
@@ -272,7 +272,7 @@ describe("operator host list cursors", () => {
     const stmt = lastStatement(ctl, HOSTS)
     expectExactAnchor(ctl, HOSTS)
     expect(stmt.sql).toMatch(
-      /\(COALESCE\(agg\.last_broadcast_at, 'epoch'::timestamptz\), u\.id\) < \(\?::timestamptz, \?::uuid\)/,
+      /\(COALESCE\(agg\.last_broadcast_at, 'epoch'::timestamptz\), u\.id\) < \(\?::text::timestamptz, \?::uuid\)/,
     )
   })
 })
@@ -308,7 +308,7 @@ describe("operator event page list cursors", () => {
     await nextCursorOf(app, `/v1/admin/pages?limit=1&cursor=${encodeURIComponent(NEXT)}`)
     expectExactAnchor(ctl, PAGES)
     expect(lastStatement(ctl, PAGES).sql).toMatch(
-      /\(COALESCE\(p\.published_at, p\.updated_at\), p\.id\) < \(\?::timestamptz, \?::uuid\)/,
+      /\(COALESCE\(p\.published_at, p\.updated_at\), p\.id\) < \(\?::text::timestamptz, \?::uuid\)/,
     )
   })
 })

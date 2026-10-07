@@ -131,7 +131,7 @@ describe("announcement listing SQL", () => {
     })
 
     const statement = fake.statements.at(-1)!
-    expect(statement.sql).toMatch(/\(created_at, id\) < \(\?::timestamptz, \?::uuid\)/)
+    expect(statement.sql).toMatch(/\(created_at, id\) < \(\?::text::timestamptz, \?::uuid\)/)
     expect(statement.values).toContain(ANNOUNCEMENT)
   })
 

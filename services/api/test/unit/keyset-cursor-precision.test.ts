@@ -47,7 +47,7 @@ function expectExactAnchor(ctl: FakeSqlControl, match: RegExp, atText = AT_TEXT)
   expect(stmt.sql).toMatch(/to_char\(.* AT TIME ZONE 'UTC', \?\) AS cursor_at/)
   expect(stmt.values).toContain(atText)
   expect(stmt.values.some((v) => v instanceof Date && v.getTime() === AT.getTime())).toBe(false)
-  expect(stmt.sql).toContain("?::timestamptz")
+  expect(stmt.sql).toContain("?::text::timestamptz")
 }
 
 function person(id: string): Record<string, unknown> {

@@ -54,7 +54,7 @@ describe("guest roster keyset cursor", () => {
       limit: 1,
     })
     const stmt = lastRosterStatement(ctl)
-    expect(stmt.sql).toContain("(created_at, id) < (?::timestamptz, ?::uuid)")
+    expect(stmt.sql).toContain("(created_at, id) < (?::text::timestamptz, ?::uuid)")
     expect(stmt.values).toContain(AT_TEXT)
     expect(stmt.values.some((v) => v instanceof Date)).toBe(false)
   })

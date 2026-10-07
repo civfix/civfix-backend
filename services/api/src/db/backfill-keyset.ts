@@ -129,7 +129,7 @@ export async function stampReferenceCodes<Row extends ReferenceCodeRow>(
     const cursorFilter: SqlFragment =
       cursor === null
         ? sql``
-        : sql`AND (t.created_at, t.id) > (${cursor.at}::timestamptz, ${cursor.id})`
+        : sql`AND (t.created_at, t.id) > (${cursor.at}::text::timestamptz, ${cursor.id})`
     const batch = await sql<Row[]>`
       SELECT t.id, t.created_at,
         to_char(t.created_at AT TIME ZONE 'UTC', ${TIME_CURSOR_SQL_FORMAT}) AS cursor_at,

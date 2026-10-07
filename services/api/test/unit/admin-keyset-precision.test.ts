@@ -36,7 +36,7 @@ function expectExactAnchor(ctl: FakeSqlControl, match: RegExp): void {
   const stmt = lastStatement(ctl, match)
   expect(stmt.values).toContain(AT_TEXT)
   expect(stmt.values.some((v) => v instanceof Date && v.getTime() === AT.getTime())).toBe(false)
-  expect(stmt.sql).toContain("::timestamptz")
+  expect(stmt.sql).toContain("?::text::timestamptz")
 }
 
 describe("parseKeysetCursor keeps the cursor instant as text", () => {
