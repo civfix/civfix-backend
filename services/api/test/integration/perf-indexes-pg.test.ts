@@ -27,12 +27,12 @@ const INDEXES: Array<{ table: string; name: string; def: RegExp }> = [
   {
     table: "moderation_items",
     name: "moderation_items_meta_user_id_idx",
-    def: /\(\(\(meta -> 'user'::text\) ->> 'id'::text\)\) WHERE \(\(\(meta -> 'user'::text\) ->> 'id'::text\) IS NOT NULL\)$/,
+    def: /\(\(\(meta -> 'user'::text\) ->> 'id'::text\)\)\) WHERE \(\(\(meta -> 'user'::text\) ->> 'id'::text\) IS NOT NULL\)$/,
   },
   {
     table: "moderation_items",
     name: "moderation_items_meta_reporter_user_id_idx",
-    def: /\(\(meta ->> 'reporterUserId'::text\)\) WHERE \(\(meta ->> 'reporterUserId'::text\) IS NOT NULL\)$/,
+    def: /\(\(meta ->> 'reporterUserId'::text\)\)\) WHERE \(\(meta ->> 'reporterUserId'::text\) IS NOT NULL\)$/,
   },
   {
     table: "mail_events",
@@ -110,7 +110,7 @@ describe.skipIf(!pg)("performance indexes 0186-0192 (integration)", () => {
       const at = new Date(Date.UTC(2026, 0, 1, 0, i))
       await seedFollowEdge(h.sql, await newUser(`Follower ${i}`), target, at)
     }
-    await h.sql`ANALYZE follows_people`
+    await h.sql`ANALYZE follows_people, users`
 
     const repo = makeDrizzleSocialRepository(debugSql)
     const first = await repo.listFollowers({ id: target, viewerId: null, cursor: null, limit: 5 })
@@ -123,6 +123,20 @@ describe.skipIf(!pg)("performance indexes 0186-0192 (integration)", () => {
   })
 
   it("lets erasure BitmapOr both arms of the pending event-team invite revoke", async () => {
+    const people: string[] = []
+    for (let i = 0; i < 50; i++) people.push(await newUser(`Invitee ${i}`))
+    for (let c = 0; c < 4; c++) {
+      const cleanupId = await seedCleanup(h.sql, { organizerUserId: people[0]! })
+      for (let i = 0; i < people.length; i++) {
+        await h.sql`
+          INSERT INTO cleanup_team_invites (cleanup_id, invited_user_id, role, token_hash, invited_by, expires_at)
+          VALUES (${cleanupId}, ${people[i]!}, 'staff', ${randomUUID()}, ${people[(i * 7 + c) % people.length]!},
+                  now() + interval '7 days')
+        `
+      }
+    }
+    await h.sql`ANALYZE cleanup_team_invites`
+
     const plan = await planOf(
       `UPDATE cleanup_team_invites
           SET status = 'revoked', invited_email = NULL, email_scrubbed_at = now()
