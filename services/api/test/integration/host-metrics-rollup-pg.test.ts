@@ -59,6 +59,26 @@ describe.skipIf(!pg)("event metrics rollup windows (integration)", () => {
     expect(after.every((event) => event.id > cleanupId)).toBe(true)
   })
 
+  it("lists an event that ends inside the window with no registrations or broadcasts", async () => {
+    const host = await user("Quiet host")
+    const since = new Date("2026-03-01T00:00:00Z")
+    const endsInside = await seedCleanup(h.sql, {
+      organizerUserId: host,
+      title: "Quiet sweep",
+      scheduledAt: new Date("2026-03-05T17:00:00Z"),
+      endsAt: new Date("2026-03-05T19:00:00Z"),
+    })
+    const endedBefore = await seedCleanup(h.sql, {
+      organizerUserId: host,
+      title: "Old sweep",
+      scheduledAt: new Date("2026-02-20T17:00:00Z"),
+      endsAt: new Date("2026-02-20T19:00:00Z"),
+    })
+    const ids = (await metrics.listRollupEvents(since, null, 1000)).map((event) => event.id)
+    expect(ids).toContain(endsInside)
+    expect(ids).not.toContain(endedBefore)
+  })
+
   it("carries each event's stored timezone on the rollup page", async () => {
     const since = new Date("2026-01-01T00:00:00Z")
     await h.sql`UPDATE cleanups SET timezone = ${ZONE} WHERE id = ${cleanupId}`

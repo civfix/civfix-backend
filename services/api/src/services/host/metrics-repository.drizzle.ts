@@ -31,10 +31,12 @@ export function makeDrizzleMetricsRepository(sql: Sql): MetricsRepository {
 
     async listRollupEvents(since: Date, after: string | null, limit: number) {
       const afterFilter = after === null ? sql`` : sql`AND c.id > ${after}`
+      // An event that has not ended before the window is where its check-ins, no-shows,
+      // cancellations and waitlist rows land; registrations and broadcasts can predate that.
       const rows = await sql<{ id: string; timezone: string | null }[]>`
         SELECT c.id, c.timezone
           FROM cleanups c
-         WHERE (c.updated_at >= ${since}
+         WHERE (c.ends_at >= ${since}
             OR EXISTS (
               SELECT 1 FROM cleanup_registrations r
                WHERE r.cleanup_id = c.id AND r.registered_at >= ${since})
