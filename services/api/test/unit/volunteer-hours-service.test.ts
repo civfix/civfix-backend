@@ -215,7 +215,10 @@ describe("volunteer hours: logEventHours (service gating + crediting)", () => {
         actorId: HOST,
         entries: [{ userId: HOST, hours: 8 }],
       }),
-    ).rejects.toMatchObject({ code: "FORBIDDEN" })
+    ).rejects.toMatchObject({
+      code: "FORBIDDEN",
+      message: "You can't log volunteer hours for yourself. Another host must credit you.",
+    })
     expect((await repo.totalsFor(HOST)).totalHours).toBe(0)
   })
 

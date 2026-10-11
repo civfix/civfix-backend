@@ -109,7 +109,14 @@ describe("event page service", () => {
   it("rejects a third-party image url in a hero, host or sponsor block", () => {
     expect(() =>
       validatePageBlocks([{ id: "b1", kind: "hero", imageUrl: "https://tracker.example/px.gif" }]),
-    ).toThrow(AppError)
+    ).toThrow(
+      expect.objectContaining({
+        fields: {
+          "blocks.0.imageUrl":
+            "must reference platform media: upload the image and send its mediaId",
+        },
+      }),
+    )
     expect(() =>
       validatePageBlocks([
         {

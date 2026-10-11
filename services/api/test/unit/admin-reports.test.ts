@@ -599,7 +599,10 @@ describe("admin reports mutations", () => {
     }
     await expect(
       svc.setStatus("rep-1", { status: "in_progress", actorId: "op-1" }),
-    ).rejects.toMatchObject({ httpStatus: 409 })
+    ).rejects.toMatchObject({
+      httpStatus: 409,
+      message: "This report moved on while you were looking at it. Reload and try again.",
+    })
     expect(repo.reports.get("rep-1")?.record.status).toBe("held")
   })
 
@@ -811,7 +814,11 @@ describe("admin reports mutations", () => {
     const before = mailRepo.messagesOf(thread.id).length
     await expect(
       svc.sendFollowup("rep-1", { to: "city", body: "hi", actorId: "op-1" }),
-    ).rejects.toMatchObject({ httpStatus: 409 })
+    ).rejects.toMatchObject({
+      httpStatus: 409,
+      message:
+        "A send to this jurisdiction is still in progress. Check back shortly to see the outcome on the outreach trail.",
+    })
     expect(mailer.sent).toHaveLength(0)
     expect(mailRepo.messagesOf(thread.id)).toHaveLength(before)
   })
@@ -925,7 +932,11 @@ describe("M5: routeToJurisdiction destination + audit", () => {
     })
     await expect(
       h.svc.routeToJurisdiction("rep-2", { note: null, actorId: "op-1" }),
-    ).rejects.toMatchObject({ code: "NOT_ROUTABLE", httpStatus: 422 })
+    ).rejects.toMatchObject({
+      code: "NOT_ROUTABLE",
+      httpStatus: 422,
+      message: "This report's jurisdiction has no routing contact. Set one in Jurisdictions first.",
+    })
     expect(h.mailer.sent).toHaveLength(0)
     expect(h.mailRepo.audits).toHaveLength(0)
   })

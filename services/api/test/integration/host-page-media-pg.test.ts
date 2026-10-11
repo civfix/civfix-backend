@@ -90,6 +90,30 @@ describe.skipIf(!pg)("event page media binding (integration)", () => {
     expect(keys.get(logo.id)).toBe(logo.servedKey)
   })
 
+  it("serves a bound block image only once it has a processed copy, never its uploaded original", async () => {
+    const organizer = await newUser("Organizer")
+    const cleanupId = await newCleanup(organizer)
+    const logo = await freshUpload()
+    const outcome = await repo.savePage({
+      cleanupId,
+      actorUserId: organizer,
+      slug: undefined,
+      themeAccent: undefined,
+      blocks: [sponsorsBlock(logo.id)],
+      blockMediaIds: [logo.id],
+      seo: undefined,
+      coverMediaId: undefined,
+      now: new Date(),
+    })
+    expect(outcome.kind).toBe("saved")
+
+    await h.sql`UPDATE media_assets SET served_key = NULL WHERE id = ${logo.id}`
+    expect((await repo.mediaKeysFor(cleanupId, [logo.id])).size).toBe(0)
+
+    await h.sql`UPDATE media_assets SET served_key = ${logo.servedKey} WHERE id = ${logo.id}`
+    expect((await repo.mediaKeysFor(cleanupId, [logo.id])).get(logo.id)).toBe(logo.servedKey)
+  })
+
   it("refuses a stale upload nothing on this event ever referenced", async () => {
     const organizer = await newUser("Organizer")
     const cleanupId = await newCleanup(organizer)

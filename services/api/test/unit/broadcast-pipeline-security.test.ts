@@ -147,6 +147,13 @@ describe("scheduled release under a suspended organization", () => {
     expect(h.chunks).toHaveLength(0)
     expect(h.counterKeys).toHaveLength(0)
     expect(await generation(h)).toBeGreaterThan(before)
+    expect(h.audits).toEqual([
+      {
+        action: "event.broadcast_killed",
+        target: `broadcast:${id}`,
+        meta: { cleanupId: EVENT, kind: "host_broadcast", reason: "org_suspended", suppressed: 0 },
+      },
+    ])
   })
 
   it("fails a due host-composed thank-you the same way", async () => {
@@ -184,6 +191,13 @@ describe("plan under a suspended organization", () => {
     expect(h.repo.allDeliveries()).toHaveLength(0)
     expect(h.chunks).toHaveLength(0)
     expect(await generation(h)).toBeGreaterThan(before)
+    expect(h.audits).toEqual([
+      {
+        action: "event.broadcast_killed",
+        target: `broadcast:${id}`,
+        meta: { cleanupId: EVENT, kind: "host_broadcast", reason: "org_suspended", suppressed: 0 },
+      },
+    ])
   })
 
   it("stops an announcement too", async () => {

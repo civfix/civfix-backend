@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest"
 import { normalizeFeatures } from "../../src/db/ingest-jurisdictions.js"
+import { isIngestLayer } from "../../src/db/ingest-jurisdictions-core.js"
 
 /**
  * Pure, DB-free unit tests for the ingest CLI's optional load-time geoid prefix. The prefix
@@ -138,5 +139,12 @@ describe("normalizeFeatures layer validation", () => {
       )
       expect(rows[0]?.layer).toBe("federal")
     }
+  })
+
+  it("refuses a default layer that only names an Object.prototype member", () => {
+    expect(isIngestLayer("constructor")).toBe(false)
+    expect(isIngestLayer("__proto__")).toBe(false)
+    expect(isIngestLayer("toString")).toBe(false)
+    expect(isIngestLayer("federal")).toBe(true)
   })
 })

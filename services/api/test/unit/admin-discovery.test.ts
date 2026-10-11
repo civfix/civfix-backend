@@ -267,8 +267,9 @@ describe("discovery detail", () => {
     const detail = await svc.getTask("JUR-1")
     const reporterNotes = detail.notes.filter((n) => n.who === "Reporter")
     expect(reporterNotes).toHaveLength(1)
-    expect(reporterNotes[0]?.text).toContain("311@austintexas.gov")
-    expect(reporterNotes[0]?.text).toContain("ask for the SR desk")
+    expect(reporterNotes[0]?.text).toBe(
+      "Suggested contact: 311@austintexas.gov (note: ask for the SR desk)",
+    )
   })
 
   it("interleaves operator notes and citizen suggestions oldest-first", async () => {

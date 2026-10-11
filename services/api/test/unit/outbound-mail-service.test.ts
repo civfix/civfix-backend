@@ -821,7 +821,10 @@ describe("OutboundMailService: total send deadline", () => {
   it("a deadline expiry is a CONFLICT for the operator, not a 500", async () => {
     const err = new OutboundSendDeadlineError(30_000)
     expect(err.httpStatus).toBe(409)
-    expect(err.message.toLowerCase()).toContain("still in progress")
+    expect(err.message).toBe(
+      "The send to this jurisdiction is still in progress. Its outcome will appear on the outreach " +
+        "trail once the mail server answers, so check back shortly.",
+    )
     expect(isOutboundSendDeadlineError(err)).toBe(true)
   })
 

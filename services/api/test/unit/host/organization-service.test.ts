@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it } from "vitest"
+import { beforeEach, describe, expect, it, vi } from "vitest"
 import { randomUUID } from "node:crypto"
 import { InMemoryCounterStore } from "../../../src/abuse/counter-store.js"
 import { InMemoryOrganizationRepository } from "../../helpers/host/organization-repository.memory.js"
@@ -1359,6 +1359,18 @@ describe("admin org management (0.41.0)", () => {
     await expect(
       service.adminUpdateOrganization(randomUUID(), OPERATOR, { name: "x", reason: "x" }),
     ).rejects.toMatchObject({ code: "NOT_FOUND" })
+  })
+
+  it("claims an operator's new logo as the operator's own upload", async () => {
+    const a = await created()
+    const logoMediaId = randomUUID()
+    const update = vi.spyOn(repo, "updateOrganizationTx")
+    await service.adminUpdateOrganization(a.id, OPERATOR, { logoMediaId, reason: "rebrand" })
+    expect(update).toHaveBeenCalledWith(a.id, { logoMediaId }, expect.any(Date), OPERATOR, {
+      actorId: OPERATOR,
+      reason: "rebrand",
+      changed: ["logoMediaId"],
+    })
   })
 
   it("lists members with operator actor refs", async () => {

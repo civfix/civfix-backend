@@ -102,6 +102,7 @@ describe("POST /forms/home-turf", () => {
     expect(confirm.from).toBe("donotreply@civfix.org")
     expect(confirm.to).toBe("coach@example.org")
     expect(confirm.subject).toBe("We got your Home Turf sign-up")
+    expect(confirm.text).toContain("Thanks! We received your Home Turf sign-up.")
     expect(confirm.text).toContain(NOTIFY_TO)
     expect(confirm.text).toContain("The civfix team")
     for (const value of [

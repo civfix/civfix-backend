@@ -64,6 +64,22 @@ describe("renderMessage", () => {
     }
   })
 
+  it("titles the service-hours PDF with the holder and the certificate code in every locale", () => {
+    const vars = { name: "Jane Doe", code: "CIVFIX-2026-0001" }
+    expect(renderMessage("en", "certificate.doc.pdf_title", vars)).toBe(
+      "civfix service hours: Jane Doe, CIVFIX-2026-0001",
+    )
+    expect(renderMessage("es", "certificate.doc.pdf_title", vars)).toBe(
+      "Horas de servicio en civfix: Jane Doe, CIVFIX-2026-0001",
+    )
+    expect(renderMessage("de", "certificate.doc.pdf_title", vars)).toBe(
+      "civfix-Einsatzstunden: Jane Doe, CIVFIX-2026-0001",
+    )
+    expect(renderMessage("ko", "certificate.doc.pdf_title", vars)).toBe(
+      "civfix 봉사 시간: Jane Doe, CIVFIX-2026-0001",
+    )
+  })
+
   it("falls back to English for a key the catalog does not translate", () => {
     // If es ever translates every key, this asserts nothing false.
     const missing = (Object.keys(en) as MessageKey[]).find((k) => es[k] === undefined)

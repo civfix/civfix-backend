@@ -86,7 +86,10 @@ describe("ticket type service", () => {
 
     await expect(
       h.service.update({ id: EVENT, ticketTypeId: created.id, capacity: 2 }, HOST),
-    ).rejects.toBeInstanceOf(AppError)
+    ).rejects.toMatchObject({
+      code: "VALIDATION",
+      fields: { capacity: "already holding 3 seats, so cancel registrations before lowering it" },
+    })
   })
 
   it("refuses to delete a type that has registrations", async () => {
@@ -186,7 +189,14 @@ describe("ticket type service", () => {
     await h.service.create({ ...base, name: "General", capacity: 20 }, HOST)
     await expect(
       h.service.create({ ...base, name: "Crew", capacity: 15 }, HOST),
-    ).rejects.toMatchObject({ code: "VALIDATION" })
+    ).rejects.toMatchObject({
+      code: "VALIDATION",
+      fields: {
+        capacity:
+          "the ticket types on this event may hold at most 30 seats in total " +
+          "(20 already allocated), so raise the event capacity first",
+      },
+    })
 
     const created = await h.service.create({ ...base, name: "Crew", capacity: 10 }, HOST)
     await expect(

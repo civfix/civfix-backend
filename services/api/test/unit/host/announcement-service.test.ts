@@ -237,7 +237,10 @@ describe("createEventAnnouncement", () => {
         bodyMd: "One too many",
         audience: { kind: "all_registered" },
       }),
-    ).rejects.toMatchObject({ code: "RATE_LIMITED" })
+    ).rejects.toMatchObject({
+      code: "RATE_LIMITED",
+      message: "Announcement limit reached for today. Use the group chat for ongoing discussion.",
+    })
   })
 
   it("admits exactly one of two concurrent creates that race for the last daily slot", async () => {

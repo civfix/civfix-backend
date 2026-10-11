@@ -47,6 +47,19 @@ describe("WS_ALLOW_QUERY_TOKEN comes from the validated env", () => {
     )
   })
 
+  it("reads the flag like every other boolean setting: yes and on, any case, around spaces", () => {
+    for (const raw of ["yes", "on", " TRUE ", "On"]) {
+      expect(loadEnv({ NODE_ENV: "test", WS_ALLOW_QUERY_TOKEN: raw }).WS_ALLOW_QUERY_TOKEN).toBe(
+        true,
+      )
+    }
+    for (const raw of ["0", "false", "no", "off", "enabled"]) {
+      expect(loadEnv({ NODE_ENV: "test", WS_ALLOW_QUERY_TOKEN: raw }).WS_ALLOW_QUERY_TOKEN).toBe(
+        false,
+      )
+    }
+  })
+
   it("accepts a ?token handshake when the env flag is on", async () => {
     const { sessions, token } = await sessionToken()
 

@@ -881,7 +881,7 @@ describe("requestResources (D19 event resource request)", () => {
     const row = r.timeline.find((t) => t.cleanupId === id && t.kind === "resource_request")
     expect(row).toBeDefined()
     expect(row?.actorId).toBe(ORG)
-    expect(row?.note).toContain("Need 20 trash bags.")
+    expect(row?.note).toBe("Resources requested: Need 20 trash bags.")
   })
 
   it("F068: 422s a slur in the message and neither sends nor writes a timeline row", async () => {
@@ -1234,7 +1234,10 @@ describe("WS4 co-hosts: setMemberRole / removeMember / role-aware reads", () => 
     await svc.setMemberRole(id, ORG, ALICE, "cohost")
     await expect(svc.removeMember(id, ALICE, ORG)).rejects.toMatchObject({ code: "FORBIDDEN" })
     await expect(svc.removeMember(id, ORG, ORG)).rejects.toMatchObject({ code: "CONFLICT" })
-    await expect(svc.removeMember(id, ALICE, ALICE)).rejects.toMatchObject({ code: "CONFLICT" })
+    await expect(svc.removeMember(id, ALICE, ALICE)).rejects.toMatchObject({
+      code: "CONFLICT",
+      message: "You can't remove yourself. Leave the event instead.",
+    })
     expect(await repo.isMember(id, ORG)).toBe(true)
   })
 
