@@ -611,6 +611,48 @@ describe("media.checks orchestration robustness", () => {
     expect(env.reports.length).toBeGreaterThan(0)
   })
 
+  describe("the processing budget includes the transcode slot wait for a video only", () => {
+    // Processing outlasts jobTimeoutMs but stays well inside jobTimeoutMs + the slot wait
+    // ((2 - 1) x 30s), like a video queued behind a sibling's transcode.
+    const slotLimits: WorkerLimits = {
+      ...limits,
+      jobTimeoutMs: 1_000,
+      transcodeTimeoutMs: 30_000,
+      mediaChecksConcurrency: 2,
+    }
+    const slowScore = () => new Promise<number>((resolve) => setTimeout(() => resolve(0), 1_500))
+
+    it("a video completes (no infra retry)", async () => {
+      const env = makeDeps({ limits: slotLimits })
+      ;(env.abuse as { nsfwScore: (b: Uint8Array) => Promise<number> }).nsfwScore = slowScore
+      const input = await fx.makeValidMp4()
+      const { id, uploadId, r2Key } = await seedAsset(env.storage, env.repo, "video", input)
+
+      const status = await runMediaChecksJob(
+        { mediaId: id, uploadId, r2Key, kind: "video" },
+        env.deps,
+      )
+
+      expect(status).toBe("ready")
+      expect(env.repo.get(id)!.status).toBe("ready")
+      expect(env.reports).toEqual([])
+    })
+
+    it("an image still times out and stays validating", async () => {
+      const env = makeDeps({ limits: slotLimits })
+      ;(env.abuse as { nsfwScore: (b: Uint8Array) => Promise<number> }).nsfwScore = slowScore
+      const input = await fx.makeValidPng()
+      const { id, uploadId, r2Key } = await seedAsset(env.storage, env.repo, "image", input)
+
+      await expect(
+        runMediaChecksJob({ mediaId: id, uploadId, r2Key, kind: "image" }, env.deps),
+      ).rejects.toBeInstanceOf(MediaInfraError)
+
+      expect(env.repo.get(id)!.status).toBe("validating")
+      expect(env.reports.length).toBeGreaterThan(0)
+    })
+  })
+
   it("parsePayload rejects malformed payloads", () => {
     expect(parsePayload(null)).toBeNull()
     expect(parsePayload({ mediaId: "a", uploadId: "b", r2Key: "c", kind: "audio" })).toBeNull()

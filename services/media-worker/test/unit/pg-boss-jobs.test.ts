@@ -177,7 +177,6 @@ describe("PgBossWorkerJobs lifecycle", () => {
     await expect(jobs.stop()).resolves.toBeUndefined()
     expect(boxed.instances).toHaveLength(0)
   })
-
 })
 
 describe("media.checks budget chain", () => {
