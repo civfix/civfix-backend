@@ -41,7 +41,7 @@
 -- filters on users.deleted_at instead.
 --
 -- CANONICAL DDL: this hand-authored SQL is the source of truth. The Drizzle mirror
--- lives at src/db/schema/service-hours-certificates.ts and
+-- lives at src/db/schema/service_hours_certificates.ts and
 -- test/integration/schema.test.ts asserts the two agree.
 --
 -- NO `BEGIN;` / `COMMIT;` IN THIS FILE. src/db/migrate.ts:83-97 wraps EVERY file

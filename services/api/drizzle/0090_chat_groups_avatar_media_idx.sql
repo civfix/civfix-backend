@@ -7,7 +7,7 @@
 -- sequential scan of chat_groups per candidate asset. Add a partial index over the
 -- non-null avatar references. (mw fixes the stale findOrphans comment, its half.)
 --
--- CANONICAL DDL: hand-authored source of truth. Mirror: schema/chat-groups.ts.
+-- CANONICAL DDL: hand-authored source of truth. Mirror: schema/chat_groups.ts.
 --
 -- Conventions: additive CREATE INDEX IF NOT EXISTS; one transaction per file;
 -- non-CONCURRENTLY build accepted (pre-launch, trivial rows). Forward-only, no down.

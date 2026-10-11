@@ -3,7 +3,7 @@
 -- -----------------------------------------------------------------------------
 -- FINDING H13 (supporting index) + the audit's "sweep predicates have no index"
 -- medium: the hourly orphan sweep (findOrphans / deleteOrphan in
--- services/media-worker-repo.ts) scans media_assets for rows with NO binding
+-- services/media-worker-repository.drizzle.ts) scans media_assets for rows with NO binding
 -- older than the orphan TTL, and the nightly retention sweep scans email_otps
 -- for consumed/expired rows. Neither predicate had a supporting index, so both
 -- ran a sequential scan every run.

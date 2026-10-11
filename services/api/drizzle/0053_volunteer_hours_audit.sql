@@ -22,7 +22,7 @@
 -- unique index the upsert itself conflicts on.
 --
 -- CANONICAL DDL: this hand-authored SQL is the source of truth. The Drizzle mirror
--- lives alongside the other hours tables in src/db/schema/volunteer-hours.ts.
+-- lives alongside the other hours tables in src/db/schema/volunteer_hours.ts.
 --
 -- Conventions (match the rest of the suite): timestamptz, additive
 -- IF NOT EXISTS so a partial or repeat apply is safe; the migrate runner

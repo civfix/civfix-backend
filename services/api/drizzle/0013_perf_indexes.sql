@@ -179,7 +179,7 @@ CREATE INDEX IF NOT EXISTS mail_threads_inbox_keyset_idx
 -- deleted_at IS NULL ORDER BY created_at ASC LIMIT n`. A partial index that
 -- exactly matches the filter and is ordered by created_at serves the LIMIT via an
 -- ordered index scan with no Sort and no held-row heap visibility churn.
---   anon-hold-release-repo.drizzle.ts:104-111.
+--   anon-hold-release-repository.drizzle.ts.
 CREATE INDEX IF NOT EXISTS reports_held_anon_created_idx
   ON reports (created_at)
   WHERE status = 'held' AND reporter_user_id IS NULL AND deleted_at IS NULL;

@@ -10,7 +10,7 @@
  * exactly the statements those timeouts exist to kill: a 1000-row correlated ST_Contains UPDATE, a
  * full-table UPDATE over reports, and per-feature inserts of continent-scale multipolygons.
  *
- * pruneNonAuthoritative COMMITS destructive deletes (jurisdictions + every FK pointer into them).
+ * pruneNonAuthoritativeJurisdictions COMMITS destructive deletes (jurisdictions + every FK pointer into them).
  * Running it before the fallible download/convert/ingest means any failure after it (a Census layer
  * that 404s, a missing ogr2ogr source, a statement timeout) strictly REDUCES coverage with no re-seed
  * path. In full-refresh mode the prune must therefore happen only AFTER the ingest loop succeeded;

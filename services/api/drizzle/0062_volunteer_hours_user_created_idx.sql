@@ -22,7 +22,7 @@
 -- migrate runner (src/db/migrate.ts) documents this exact escape hatch.
 --
 -- CANONICAL DDL: this hand-authored SQL is the source of truth. The Drizzle mirror
--- lives at src/db/schema/volunteer-hours.ts.
+-- lives at src/db/schema/volunteer_hours.ts.
 --
 -- Conventions (match the rest of the suite): additive IF NOT EXISTS so a partial
 -- or repeat apply is safe; the migrate runner wraps each file in ONE transaction

@@ -344,17 +344,17 @@ Operator notes:
 
 ## 3. media-worker `stop_grace_period` (civfix-infra, different repo)
 
-`MEDIA_JOB_TIMEOUT_MS` (default 60s) is charged **per phase**, not per job: `jobs/media-checks.ts` wraps the download in one budget and `processMedia` in a second, so one job can legitimately run ~2x it before the persist writes. The worker therefore derives its graceful-stop timeout as `2 x jobTimeoutMs + 5s` (`stopGraceMsFor` in `services/media-worker/src/jobs.ts`) = **125s at the default**, and passes it to `boss.stop({ graceful: true, wait: true, timeout })`.
+`MEDIA_JOB_TIMEOUT_MS` (default 60s) is charged **per phase**, not per job: `jobs/media-checks.ts` wraps the download in one budget and `processMedia` in a second, so one job can legitimately run ~2x it before the persist writes. The worker therefore derives its graceful-stop timeout as `2 x jobTimeoutMs + 5s` (`stopGraceMsFor` in `services/media-worker/src/worker-jobs.ts`) = **125s at the default**, and passes it to `boss.stop({ graceful: true, wait: true, timeout })`.
 
 **The container's `stop_grace_period` in the civfix-infra compose file must exceed that**: set it to ~150s for the media-worker service. Docker's default is 10s, so without this the runtime SIGKILLs the process mid-job and the derivation buys nothing: the asset is left `validating` until a sweep reconciles it. Raising `MEDIA_JOB_TIMEOUT_MS` raises this requirement with it (`.env.example` says so at the knob).
 
 ## 4. Boundary refresh prunes only federal/tribal fixtures
 
-`services/api/scripts/refresh-boundaries.ts` → `pruneNonAuthoritative()` deletes legacy dev-seed rows by geoid prefix, and **only for the federal and tribal layers** (`layer='federal' AND geoid NOT LIKE 'PADUS-%'`, `layer='tribal' AND geoid NOT LIKE 'AIANNH-%'`). There is deliberately **no equivalent for stale place / county / state rows**, because those layers use real TIGER geoids that the refresh re-upserts: nothing distinguishes a stale fixture from a live row, and nothing prunes them.
+`services/api/scripts/refresh-boundaries.ts` → `pruneNonAuthoritativeJurisdictions()` (`src/db/backfill-jurisdictions-core.ts`) deletes legacy dev-seed rows by geoid prefix, and **only for the federal and tribal layers** (`layer='federal' AND geoid NOT LIKE 'PADUS-%'`, `layer='tribal' AND geoid NOT LIKE 'AIANNH-%'`). It only counts what it would delete until the operator re-runs with `--yes`; a full refresh asks before it downloads or writes anything. There is deliberately **no equivalent for stale place / county / state rows**, because those layers use real TIGER geoids that the refresh re-upserts: nothing distinguishes a stale fixture from a live row, and nothing prunes them.
 
 Two consequences to keep in mind:
 
-- A place/county/state row that stops existing upstream (a dissolved municipality, a re-coded place) stays in `jurisdictions` forever with its contacts attached. Removing one is a manual, FK-aware operation modelled on `pruneNonAuthoritative`.
+- A place/county/state row that stops existing upstream (a dissolved municipality, a re-coded place) stays in `jurisdictions` forever with its contacts attached. Removing one is a manual, FK-aware operation modelled on `pruneNonAuthoritativeJurisdictions`.
 - It is why the dev-seed fix clears **placeholder contact emails** instead of using fake geoids: the seed genuinely upserts real geoids (`06`, `06037`, `0644000`), so the geoids must stay, and clearing `example.*` addresses on conflict also heals rows already damaged in an environment that was seeded over.
 
 ## 5. Running the Docker-gated integration suites locally (macOS / Apple silicon)
