@@ -3,6 +3,7 @@ import type PgBoss from "pg-boss"
 import type { Jobs, EnqueueOptions, JobHandler } from "@civfix/shared/interfaces"
 import { REGISTRATION_QUEUE_NAMES } from "../services/host/registration-queues.js"
 import { COMMS_QUEUE_NAMES } from "../services/host/broadcast-queues.js"
+import { MEDIA_CHECKS_EXPIRE_SECONDS, MEDIA_CHECKS_JOB } from "../services/media-intake-service.js"
 
 export interface PgBossJobsConfig {
   connectionString: string
@@ -10,7 +11,7 @@ export interface PgBossJobsConfig {
 }
 
 export const API_QUEUE_NAMES = [
-  "media.checks",
+  MEDIA_CHECKS_JOB,
   "jurisdiction.discovery",
   "outreach.digest",
   "inbound.sweep",
@@ -24,6 +25,14 @@ export const API_QUEUE_NAMES = [
   ...REGISTRATION_QUEUE_NAMES,
   ...COMMS_QUEUE_NAMES,
 ] as const
+
+// The media worker creates media.checks with the same expiry; whichever process boots first creates the
+// queue, and the jobs it accepts take the queue's expiry at send time.
+function queueOptions(name: string): PgBoss.Queue {
+  return name === MEDIA_CHECKS_JOB
+    ? { name, policy: "short", expireInSeconds: MEDIA_CHECKS_EXPIRE_SECONDS }
+    : { name, policy: "short" }
+}
 
 function toSendOptions(opts?: EnqueueOptions): PgBoss.SendOptions {
   const out: PgBoss.SendOptions = {}
@@ -51,8 +60,8 @@ export class PgBossJobs implements Jobs {
     boss.on("error", (err: Error) => console.error("pg-boss error:", err))
     await boss.start()
     for (const name of API_QUEUE_NAMES) {
-      await boss.createQueue(name, { name, policy: "short" })
-      await boss.updateQueue(name, { name, policy: "short" })
+      await boss.createQueue(name, queueOptions(name))
+      await boss.updateQueue(name, queueOptions(name))
     }
     this.boss = boss
   }

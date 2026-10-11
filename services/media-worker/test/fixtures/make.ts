@@ -378,6 +378,7 @@ export interface PhoneClipOptions {
   durationSec?: number
   rotation?: number
   location?: string
+  pixFmt?: string
 }
 
 /** A MOV with an AAC track, shaped like phone footage; `rotation` adds the display matrix phones write. */
@@ -408,7 +409,7 @@ export async function makePhoneClip(opts: PhoneClipOptions): Promise<Buffer> {
         "-preset",
         "ultrafast",
         "-pix_fmt",
-        "yuv420p",
+        opts.pixFmt ?? "yuv420p",
         "-c:a",
         "aac",
         ...(opts.location !== undefined ? ["-metadata", `location=${opts.location}`] : []),

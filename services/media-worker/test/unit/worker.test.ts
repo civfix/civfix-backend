@@ -65,7 +65,12 @@ describe("media-worker wiring", () => {
     const handle = buildJobs()
     const calls: {
       name: string
-      options?: { retryLimit?: number; retryBackoff?: boolean; policy?: string }
+      options?: {
+        retryLimit?: number
+        retryBackoff?: boolean
+        policy?: string
+        expireInSeconds?: number
+      }
     }[] = []
     const original = handle.jobs.createQueue.bind(handle.jobs)
     handle.jobs.createQueue = (name, options) => {
@@ -77,7 +82,12 @@ describe("media-worker wiring", () => {
     await worker.start()
 
     const mediaQueue = calls.find((c) => c.name === MEDIA_CHECKS_JOB)
-    expect(mediaQueue?.options).toEqual({ policy: "short", retryLimit: 5, retryBackoff: true })
+    expect(mediaQueue?.options).toEqual({
+      policy: "short",
+      retryLimit: 5,
+      retryBackoff: true,
+      expireInSeconds: 30 * 60,
+    })
     expect(calls.find((c) => c.name === ANON_HOLD_RELEASE_JOB)?.options).toEqual({ policy: "short" })
     expect(calls.find((c) => c.name === ORPHAN_SWEEP_JOB)?.options).toEqual({ policy: "singleton" })
     expect(calls.find((c) => c.name === RETENTION_SWEEP_JOB)?.options).toEqual({ policy: "singleton" })

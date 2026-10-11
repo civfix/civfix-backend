@@ -184,12 +184,27 @@ function videoGeometryNote(
 
 export type ServedVideoPlan = { transcode: false } | { transcode: true; capFps: boolean }
 
+// What every phone and Safari plays: 8-bit 4:2:0 in the three common H.264 profiles. High 10, High
+// 4:2:2 and High 4:4:4 are valid H.264 that many of them cannot decode, so those clips transcode.
+const PLAYABLE_PIX_FMTS: ReadonlySet<string> = new Set(["yuv420p", "yuvj420p"])
+const PLAYABLE_H264_PROFILES: ReadonlySet<string> = new Set([
+  "Constrained Baseline",
+  "Baseline",
+  "Main",
+  "High",
+])
+
 // A clip already within the served spec is only remuxed: a second lossy pass would cost quality and
-// CPU for nothing. An unknown frame rate or bitrate cannot be shown to be within it, so it transcodes.
+// CPU for nothing. An unknown frame rate, bitrate, pixel format or profile cannot be shown to be within
+// it, so it transcodes.
 export function servedVideoPlan(probe: ProbeResult, limits: WorkerLimits): ServedVideoPlan {
   const capFps = probe.fps === null || probe.fps > SERVED_VIDEO_MAX_FPS
   const withinSpec =
     probe.codec?.toLowerCase() === "h264" &&
+    probe.pixFmt !== null &&
+    PLAYABLE_PIX_FMTS.has(probe.pixFmt) &&
+    probe.profile !== null &&
+    PLAYABLE_H264_PROFILES.has(probe.profile) &&
     probe.width !== null &&
     probe.height !== null &&
     Math.max(probe.width, probe.height) <= SERVED_VIDEO_MAX_EDGE &&

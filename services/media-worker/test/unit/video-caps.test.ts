@@ -10,6 +10,8 @@ type StubProbe = {
   height: number | null
   fps: number | null
   bitrateBps: number | null
+  pixFmt: string | null
+  profile: string | null
   isVideo: boolean
 }
 
@@ -21,6 +23,8 @@ const stub = vi.hoisted(() => ({
     height: 1080,
     fps: 30,
     bitrateBps: 4_000_000,
+    pixFmt: "yuv420p",
+    profile: "High",
     isVideo: true,
   } as StubProbe,
   servedProbe: {
@@ -30,6 +34,8 @@ const stub = vi.hoisted(() => ({
     height: 720,
     fps: 30,
     bitrateBps: 2_000_000,
+    pixFmt: "yuv420p",
+    profile: "High",
     isVideo: true,
   } as StubProbe,
   remuxCalls: 0,
@@ -147,6 +153,8 @@ describe("served video: remux what is already within spec, transcode the rest", 
     height: 720,
     fps: 30,
     bitrateBps: 3_000_000,
+    pixFmt: "yuv420p",
+    profile: "High",
   }
 
   it.each<[string, Partial<StubProbe>, ReturnType<typeof servedVideoPlan>]>([
@@ -167,6 +175,21 @@ describe("served video: remux what is already within spec, transcode the rest", 
     ],
     ["an unknown bitrate", { bitrateBps: null }, { transcode: true, capFps: false }],
     ["an unknown frame rate", { fps: null }, { transcode: true, capFps: true }],
+    ["full-range 4:2:0", { pixFmt: "yuvj420p" }, { transcode: false }],
+    ["Main profile", { profile: "Main" }, { transcode: false }],
+    ["Baseline profile", { profile: "Baseline" }, { transcode: false }],
+    ["Constrained Baseline profile", { profile: "Constrained Baseline" }, { transcode: false }],
+    [
+      "High 4:4:4",
+      { profile: "High 4:4:4 Predictive", pixFmt: "yuv444p" },
+      { transcode: true, capFps: false },
+    ],
+    ["High 10", { profile: "High 10", pixFmt: "yuv420p10le" }, { transcode: true, capFps: false }],
+    ["4:2:2 chroma", { profile: "High 4:2:2", pixFmt: "yuv422p" }, { transcode: true, capFps: false }],
+    ["10-bit under a High label", { pixFmt: "yuv420p10le" }, { transcode: true, capFps: false }],
+    ["the Extended profile", { profile: "Extended" }, { transcode: true, capFps: false }],
+    ["an unknown pixel format", { pixFmt: null }, { transcode: true, capFps: false }],
+    ["an unknown profile", { profile: null }, { transcode: true, capFps: false }],
   ])("%s", (_label, over, plan) => {
     expect(servedVideoPlan({ ...stub.probe, ...compliant, ...over }, limits)).toEqual(plan)
   })

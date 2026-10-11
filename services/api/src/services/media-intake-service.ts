@@ -28,6 +28,11 @@ interface IntakeLogger {
 
 export const MEDIA_CHECKS_JOB = "media.checks"
 
+// pg-boss fails a media.checks job still running at its expiry and re-delivers it, so a slow video
+// would be processed twice. The worker sizes its job budget under this and refuses to boot otherwise
+// (media-worker jobs.ts assertBudgetWithinExpiry). pg-boss v10's default is 15 minutes.
+export const MEDIA_CHECKS_EXPIRE_SECONDS = 30 * 60
+
 export const MEDIA_GET_URL_TTL_SEC = 15 * 60
 
 export const MEDIA_PRIVATE_GET_URL_TTL_SEC = 5 * 60

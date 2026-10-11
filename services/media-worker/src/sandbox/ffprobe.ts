@@ -11,6 +11,8 @@ export interface ProbeResult {
   height: number | null
   fps: number | null
   bitrateBps: number | null
+  pixFmt: string | null
+  profile: string | null
   isVideo: boolean
 }
 
@@ -28,6 +30,8 @@ interface FfprobeStream {
   avg_frame_rate?: string
   r_frame_rate?: string
   bit_rate?: string
+  pix_fmt?: string
+  profile?: string
 }
 
 interface FfprobeFormat {
@@ -118,6 +122,8 @@ export async function probeBytes(bytes: Uint8Array, limits: WorkerLimits): Promi
       height: typeof video?.height === "number" ? video.height : null,
       fps: frameRate(video?.avg_frame_rate, video?.r_frame_rate),
       bitrateBps: bitrate(video?.bit_rate, parsed.format?.bit_rate),
+      pixFmt: video?.pix_fmt ?? null,
+      profile: video?.profile ?? null,
       isVideo,
     }
   } finally {

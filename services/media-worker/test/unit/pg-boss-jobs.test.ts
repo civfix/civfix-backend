@@ -16,6 +16,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest"
 import { FakeJobs } from "@civfix/shared/fakes"
 import type { JobHandler } from "@civfix/shared/interfaces"
+import { loadLimits } from "../../src/config.js"
 
 /** The recorded surface of the stub (kept in a hoisted box so the vi.mock factory can reach it). */
 interface StubBoss {
@@ -114,7 +115,14 @@ vi.mock("pg-boss", () => {
   return { default: StubPgBoss }
 })
 
-const { PgBossWorkerJobs, buildJobs, stopGraceMsFor } = await import("../../src/jobs.js")
+const {
+  PgBossWorkerJobs,
+  assertBudgetWithinExpiry,
+  buildJobs,
+  processBudgetMs,
+  stopGraceMsFor,
+  transcodeSlotWaitMs,
+} = await import("../../src/jobs.js")
 
 /** The stub instance created by the most recent start(). */
 function lastBoss(): StubBoss {
@@ -151,12 +159,13 @@ describe("PgBossWorkerJobs lifecycle", () => {
   })
 
   it("stop() passes the DERIVED graceful timeout (every phase's budget + margin), then forgets the boss", async () => {
-    const jobs = new PgBossWorkerJobs("postgres://stub/civfix", 20_000)
+    const budget = { jobTimeoutMs: 20_000, transcodeTimeoutMs: 10_000, mediaChecksConcurrency: 2 }
+    const jobs = new PgBossWorkerJobs("postgres://stub/civfix", budget)
     await jobs.start()
     await jobs.stop()
 
     expect(lastBoss().stopCalls).toEqual([
-      { graceful: true, wait: true, timeout: stopGraceMsFor(20_000) },
+      { graceful: true, wait: true, timeout: stopGraceMsFor(budget) },
     ])
     // A second stop is a no-op (the handle dropped the boss), not a second pg-boss stop.
     await jobs.stop()
@@ -169,17 +178,45 @@ describe("PgBossWorkerJobs lifecycle", () => {
     expect(boxed.instances).toHaveLength(0)
   })
 
+})
+
+describe("media.checks budget chain", () => {
+  const budget = { jobTimeoutMs: 60_000, transcodeTimeoutMs: 40_000, mediaChecksConcurrency: 3 }
+
+  it("gives a video one transcode timeout of slot wait per other job in its batch", () => {
+    expect(transcodeSlotWaitMs(budget)).toBe(80_000)
+    expect(transcodeSlotWaitMs({ ...budget, mediaChecksConcurrency: 1 })).toBe(0)
+    expect(processBudgetMs("video", budget)).toBe(140_000)
+    expect(processBudgetMs("image", budget)).toBe(60_000)
+  })
+
   /**
-   * The grace MUST exceed the per-job budget charged ONCE PER PHASE (download, then processMedia), which is
-   * what a 1x derivation got wrong: SIGTERM abandoned a job that was still inside its own budget and left
-   * the asset `validating`.
+   * The grace MUST exceed the download budget plus the processing budget, slot wait included: a 1x
+   * derivation let SIGTERM abandon a job that was still inside its own budget and left the asset
+   * `validating`.
    */
-  it("stopGraceMsFor covers BOTH job phases plus persist margin", () => {
-    expect(stopGraceMsFor(60_000)).toBe(125_000)
-    expect(stopGraceMsFor(1_000)).toBe(7_000)
-    for (const budget of [1_000, 60_000, 300_000]) {
-      expect(stopGraceMsFor(budget)).toBeGreaterThan(2 * budget)
-    }
+  it("stopGraceMsFor covers the download, a video's processing and the persist margin", () => {
+    expect(stopGraceMsFor(budget)).toBe(60_000 + 140_000 + 5_000)
+  })
+
+  it("at the defaults, the heaviest transcode fits the job budget and the batch fits the expiry", () => {
+    const defaults = loadLimits({})
+    const videoPathTools =
+      defaults.ffprobeTimeoutMs +
+      defaults.transcodeTimeoutMs +
+      defaults.ffprobeTimeoutMs +
+      defaults.ffmpegTimeoutMs +
+      defaults.imageTimeoutMs
+    expect(defaults.jobTimeoutMs).toBeGreaterThan(videoPathTools)
+    expect(stopGraceMsFor(defaults)).toBe(1_265_000)
+    expect(() => assertBudgetWithinExpiry(defaults)).not.toThrow()
+  })
+
+  it("refuses a budget that a media.checks batch could outlive its pg-boss expiry with", () => {
+    const defaults = loadLimits({})
+    expect(() => assertBudgetWithinExpiry({ ...defaults, mediaChecksConcurrency: 4 })).toThrow(
+      /reaches the queue's 1800s expiry/,
+    )
   })
 })
 
@@ -205,6 +242,16 @@ describe("PgBossWorkerJobs queue policy", () => {
       { name: "orphan.sweep", policy: { name: "orphan.sweep" } },
     ])
     expect(lastBoss().updateQueueCalls).toEqual([])
+  })
+
+  it("an expiry-only queue still gets the updateQueue write", async () => {
+    const jobs = new PgBossWorkerJobs("postgres://stub/civfix")
+    await jobs.start()
+    await jobs.createQueue("media.checks", { expireInSeconds: 1800 })
+
+    expect(lastBoss().updateQueueCalls).toEqual([
+      { name: "media.checks", policy: { name: "media.checks", expireInSeconds: 1800 } },
+    ])
   })
 
   it("a policy-only queue still gets the updateQueue write", async () => {
@@ -429,11 +476,12 @@ describe("buildJobs seam selection", () => {
     ).toThrow(/DATABASE_URL is required when USE_FAKE_JOBS is off/)
   })
 
-  it("builds the real handle in production and derives its stop grace from MEDIA_JOB_TIMEOUT_MS", async () => {
+  it("builds the real handle in production and derives its stop grace from the job budget env", async () => {
     const handle = buildJobs({
       NODE_ENV: "production",
       DATABASE_URL: "postgres://stub/civfix",
       MEDIA_JOB_TIMEOUT_MS: "1000",
+      MEDIA_TRANSCODE_TIMEOUT_MS: "2000",
     } as NodeJS.ProcessEnv)
     expect(handle.jobs).toBeInstanceOf(PgBossWorkerJobs)
 
@@ -441,6 +489,6 @@ describe("buildJobs seam selection", () => {
     await handle.stop()
 
     expect(lastBoss().connectionString).toBe("postgres://stub/civfix")
-    expect(lastBoss().stopCalls).toEqual([{ graceful: true, wait: true, timeout: 7_000 }])
+    expect(lastBoss().stopCalls).toEqual([{ graceful: true, wait: true, timeout: 9_000 }])
   })
 })

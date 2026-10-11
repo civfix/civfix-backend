@@ -10,6 +10,7 @@ import type { FindPhashDuplicateFn } from "@civfix/api/adapters/abuse-checks"
 import type { WorkerLimits } from "../config.js"
 import { DownloadTooLargeError, type DownloadedObject, type DownloadFn } from "../download.js"
 import { settleWithin } from "../timeout.js"
+import { processBudgetMs } from "../jobs.js"
 import { resolveJobObs, type JobObsDeps, type JobLogFn, type JobReportFn } from "./obs.js"
 import { readEtag } from "@civfix/api/media-repo"
 import { SandboxSpawnError } from "../sandbox/exec.js"
@@ -184,7 +185,7 @@ async function processAsset(
           ...(deps.findPhashDuplicate ? { findPhashDuplicate: deps.findPhashDuplicate } : {}),
         },
       ),
-      deps.limits.jobTimeoutMs,
+      processBudgetMs(asset.kind, deps.limits),
     )
   } catch (err) {
     if (err instanceof JobTimeoutError) {

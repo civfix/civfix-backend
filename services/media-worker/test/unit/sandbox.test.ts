@@ -8,6 +8,7 @@ import { runTool, SandboxToolError } from "../../src/sandbox/exec.js"
 import { probeBytes } from "../../src/sandbox/ffprobe.js"
 import { grabFrameJpeg, remuxStripMetadata } from "../../src/sandbox/ffmpeg-remux.js"
 import { transcodeToServedMp4 } from "../../src/sandbox/ffmpeg-transcode.js"
+import { servedVideoPlan } from "../../src/jobs/media-pipeline.js"
 import {
   processImage,
   readExifGps,
@@ -530,6 +531,22 @@ describe("sandbox/ffmpeg-transcode", () => {
       height: 360,
       avgFrameRate: "30/1",
     })
+  })
+
+  it.each([
+    ["yuv444p", "High 4:4:4 Predictive"],
+    ["yuv420p10le", "High 10"],
+  ])("transcodes a 720p30 %s (%s) H.264 clip to a playable one", async (pixFmt, profile) => {
+    const input = await fx.makePhoneClip({ codec: "h264", width: 1280, height: 720, fps: 30, pixFmt })
+    const probe = await probeBytes(input, limits)
+    expect(probe).toMatchObject({ codec: "h264", pixFmt, profile })
+    expect(servedVideoPlan(probe, limits)).toEqual({ transcode: true, capFps: false })
+
+    const out = await transcodeToServedMp4(input, { capFps: false }, limits)
+
+    const served = await probeBytes(out, limits)
+    expect(served).toMatchObject({ codec: "h264", pixFmt: "yuv420p", width: 1280, height: 720 })
+    expect(servedVideoPlan(served, limits)).toEqual({ transcode: false })
   })
 })
 

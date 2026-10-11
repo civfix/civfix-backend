@@ -151,9 +151,10 @@ against crafted fixtures.
 Sandboxing + limits (`services/media-worker/src/config.ts`, overridable by env): ffprobe/ffmpeg run
 via `execa` with an ARGS ARRAY (no shell, no injection), a hard per-tool timeout, `killSignal`
 SIGKILL, and a `maxBuffer` output cap; sharp uses `limitInputPixels` + a wrapped wall-clock timeout.
-`media.checks` concurrency is capped (default 2; `MEDIA_CHECKS_CONCURRENCY`), per-job budget 60s
-(`MEDIA_JOB_TIMEOUT_MS`), download capped at `MAX_VIDEO_BYTES`. The infra compose additionally caps
-container CPU.
+`media.checks` concurrency is capped (default 2; `MEDIA_CHECKS_CONCURRENCY`), per-phase job budget
+450s (`MEDIA_JOB_TIMEOUT_MS`, plus a video's wait for the one-at-a-time transcode slot; see
+`services/media-worker/.env.example`), download capped at `MAX_VIDEO_BYTES`. The infra compose
+additionally caps container CPU.
 
 NSFW seam: `AbuseChecks.nsfwScore` stays behind the seam and defaults to `FakeAbuseChecks` (benign)
 under `USE_FAKE_ABUSE_NSFW=1`. The flag-and-hold FLOW is fully implemented and tested against the

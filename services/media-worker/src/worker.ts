@@ -1,8 +1,14 @@
 
 import type { JobHandler } from "@civfix/shared/interfaces"
-import { MEDIA_CHECKS_JOB } from "@civfix/api/media-repo"
+import { MEDIA_CHECKS_EXPIRE_SECONDS, MEDIA_CHECKS_JOB } from "@civfix/api/media-repo"
 import { releaseAnonHoldIfReady, type HeldReportView } from "@civfix/api/anon-hold-release"
-import { buildJobs, stopGraceMsFor, type JobsHandle, type WorkerJobs } from "./jobs.js"
+import {
+  assertBudgetWithinExpiry,
+  buildJobs,
+  stopGraceMsFor,
+  type JobsHandle,
+  type WorkerJobs,
+} from "./jobs.js"
 import { buildSeams, type WorkerSeams } from "./seams.js"
 import {
   CHAT_PARTITION_CRON,
@@ -250,7 +256,12 @@ async function registerHandlers(
   seams: WorkerSeams,
   limits: WorkerLimits,
 ): Promise<void> {
-  await jobs.createQueue(MEDIA_CHECKS_JOB, { policy: "short", retryLimit: 5, retryBackoff: true })
+  await jobs.createQueue(MEDIA_CHECKS_JOB, {
+    policy: "short",
+    retryLimit: 5,
+    retryBackoff: true,
+    expireInSeconds: MEDIA_CHECKS_EXPIRE_SECONDS,
+  })
   await jobs.createQueue(ORPHAN_SWEEP_JOB, { policy: "singleton" })
   await jobs.createQueue(CHAT_PARTITION_JOB, { policy: "singleton" })
   await jobs.createQueue(ANON_HOLD_RELEASE_JOB, { policy: "short" })
@@ -294,9 +305,11 @@ function cronSchedule(name: string): { expireInSeconds: number; singletonKey: st
 }
 
 function logStopGraceRequirement(limits: WorkerLimits): void {
-  const graceMs = stopGraceMsFor(limits.jobTimeoutMs)
+  const graceMs = stopGraceMsFor(limits)
   console.log("media-worker: graceful-stop budget", {
     jobTimeoutMs: limits.jobTimeoutMs,
+    transcodeTimeoutMs: limits.transcodeTimeoutMs,
+    mediaChecksConcurrency: limits.mediaChecksConcurrency,
     stopGraceMs: graceMs,
     requiredComposeStopGracePeriodSec: Math.ceil(graceMs / 1000) + 15,
   })
@@ -324,6 +337,7 @@ export async function buildWorker(
   async function start(): Promise<void> {
     if (started) return
     installSandboxChildCleanup()
+    assertBudgetWithinExpiry(resolvedSeams.limits)
     await assertSandboxPreflight()
     await sweepStaleScratchDirs().catch(() => 0)
     await handle.start()

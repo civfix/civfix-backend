@@ -18,9 +18,11 @@
  */
 
 import type PgBoss from "pg-boss"
+import type { MediaKind } from "@civfix/shared"
 import type { Jobs, EnqueueOptions, JobHandler } from "@civfix/shared/interfaces"
 import { FakeJobs } from "@civfix/shared/fakes"
-import { assertRealSeamInProd, loadLimits, parseBool } from "./config.js"
+import { MEDIA_CHECKS_EXPIRE_SECONDS } from "@civfix/api/media-repo"
+import { assertRealSeamInProd, loadLimits, parseBool, type WorkerLimits } from "./config.js"
 
 /** Default ON outside production so the worker boots offline; an explicit ON in prod fails boot. */
 function useFakeJobs(source: NodeJS.ProcessEnv = process.env): boolean {
@@ -58,6 +60,8 @@ export interface QueueOptions {
    * deploys. The worker likewise enqueues `anon.hold.release` with a singletonKey, so that queue needs it too.
    */
   policy?: PgBoss.Queue["policy"]
+  /** Fail and re-deliver a job still active after this many seconds (pg-boss v10 default: 15 min). */
+  expireInSeconds?: number
 }
 
 /** Per-schedule options for a cron (worker extension over Jobs.schedule's data-only signature). */
@@ -103,11 +107,12 @@ function toSendOptions(opts?: EnqueueOptions): PgBoss.SendOptions {
 /** Map the worker QueueOptions onto the pg-boss queue policy/retry fields (only set the provided ones). */
 function toQueueOptions(
   opts?: QueueOptions,
-): Pick<PgBoss.Queue, "retryLimit" | "retryBackoff" | "policy"> {
-  const out: Pick<PgBoss.Queue, "retryLimit" | "retryBackoff" | "policy"> = {}
+): Pick<PgBoss.Queue, "retryLimit" | "retryBackoff" | "policy" | "expireInSeconds"> {
+  const out: Pick<PgBoss.Queue, "retryLimit" | "retryBackoff" | "policy" | "expireInSeconds"> = {}
   if (opts?.retryLimit !== undefined) out.retryLimit = opts.retryLimit
   if (opts?.retryBackoff !== undefined) out.retryBackoff = opts.retryBackoff
   if (opts?.policy !== undefined) out.policy = opts.policy
+  if (opts?.expireInSeconds !== undefined) out.expireInSeconds = opts.expireInSeconds
   return out
 }
 
@@ -117,25 +122,51 @@ function toQueueOptions(
  */
 const STOP_GRACE_MARGIN_MS = 5_000
 
-/**
- * How many times a media.checks handler can pay the per-job budget in one run.
- *
- * MEDIA_JOB_TIMEOUT_MS is applied PER PHASE, not per job: jobs/media-checks.ts wraps the download in one
- * withJobTimeout and processMedia in a SECOND one, so a job that stalls in both phases runs for ~2x the
- * budget before it even reaches the persist writes. Sizing the graceful stop at 1x therefore abandoned an
- * in-flight job that was still inside its own budget (the asset left `validating` until a sweep reconciles
- * it). Deriving 2x + margin here keeps the two consistent without collapsing the phases into one shared
- * budget, which would make a slow download eat the processing budget.
- */
-const STOP_GRACE_PHASES = 2
+export type MediaChecksBudgetLimits = Pick<
+  WorkerLimits,
+  "jobTimeoutMs" | "transcodeTimeoutMs" | "mediaChecksConcurrency"
+>
 
 /**
- * The graceful-stop timeout for a given per-job budget: every phase's budget plus the persist margin.
- * Exported because it is the number the CONTAINER's SIGKILL grace must exceed (civfix-infra compose
- * `stop_grace_period`) - see stop().
+ * The longest a video can wait for the transcode slot: one transcode ahead of it for every other job in
+ * its pg-boss batch, each killed at its own timeout. pg-boss fetches the next batch only once this one
+ * has settled, so nothing outside the batch is ahead of it. The wait is not the job's own work, so it is
+ * allowed on top of MEDIA_JOB_TIMEOUT_MS rather than charged to it; that keeps the job budget meaningful
+ * when MEDIA_CHECKS_CONCURRENCY changes.
  */
-export function stopGraceMsFor(jobTimeoutMs: number): number {
-  return STOP_GRACE_PHASES * jobTimeoutMs + STOP_GRACE_MARGIN_MS
+export function transcodeSlotWaitMs(limits: MediaChecksBudgetLimits): number {
+  return (limits.mediaChecksConcurrency - 1) * limits.transcodeTimeoutMs
+}
+
+/** The processing phase's wall-clock budget for one media.checks job. Only a video waits for the slot. */
+export function processBudgetMs(kind: MediaKind, limits: MediaChecksBudgetLimits): number {
+  return limits.jobTimeoutMs + (kind === "video" ? transcodeSlotWaitMs(limits) : 0)
+}
+
+/**
+ * The longest a media.checks batch can run: the download phase's budget, then the processing phase's,
+ * then the persist writes. The download is wrapped in its own withJobTimeout (jobs/media-checks.ts), so
+ * it is not taken out of the processing budget. Sizing the graceful stop below this abandoned an in-flight
+ * job that was still inside its own budget (the asset left `validating` until a sweep reconciles it).
+ */
+export function stopGraceMsFor(limits: MediaChecksBudgetLimits): number {
+  return limits.jobTimeoutMs + processBudgetMs("video", limits) + STOP_GRACE_MARGIN_MS
+}
+
+/**
+ * pg-boss fails a batch still running at the media.checks expiry and re-delivers its jobs while the first
+ * run is still going, so every budget above must end before it. Checked at boot because each part is an
+ * env knob.
+ */
+export function assertBudgetWithinExpiry(limits: MediaChecksBudgetLimits): void {
+  const graceMs = stopGraceMsFor(limits)
+  if (graceMs >= MEDIA_CHECKS_EXPIRE_SECONDS * 1000) {
+    throw new Error(
+      `media-worker: a media.checks batch can run ${graceMs}ms (MEDIA_JOB_TIMEOUT_MS, ` +
+        "MEDIA_TRANSCODE_TIMEOUT_MS and MEDIA_CHECKS_CONCURRENCY), which reaches the queue's " +
+        `${MEDIA_CHECKS_EXPIRE_SECONDS}s expiry; lower one of them`,
+    )
+  }
 }
 
 /** Real pg-boss-backed implementation of the worker Jobs handle. */
@@ -145,9 +176,9 @@ export class PgBossWorkerJobs implements WorkerJobs {
   private readonly stopGraceMs: number
   private boss: PgBoss | undefined
 
-  constructor(connectionString: string, jobTimeoutMs: number = loadLimits().jobTimeoutMs) {
+  constructor(connectionString: string, limits: MediaChecksBudgetLimits = loadLimits()) {
     this.connectionString = connectionString
-    this.stopGraceMs = stopGraceMsFor(jobTimeoutMs)
+    this.stopGraceMs = stopGraceMsFor(limits)
   }
 
   async start(): Promise<void> {
@@ -163,16 +194,17 @@ export class PgBossWorkerJobs implements WorkerJobs {
   async stop(): Promise<void> {
     if (!this.boss) return
     // Graceful: let in-flight jobs finish, then close. wait:true resolves after fully stopped. The
-    // explicit timeout must EXCEED the longest per-job budget (media.checks' MEDIA_JOB_TIMEOUT_MS
-    // wall-clock, charged ONCE PER PHASE - see stopGraceMsFor): pg-boss's 30s graceful default would
+    // explicit timeout must EXCEED the longest media.checks batch (download and processing budgets plus
+    // the transcode slot wait - see stopGraceMsFor): pg-boss's 30s graceful default would
     // abandon an in-flight media job on SIGTERM (the asset stuck `validating` until a sweep reconciles).
     // That budget is ENV-TUNABLE, so the timeout is derived from it at construction instead of being a
     // constant an operator can silently outgrow by raising MEDIA_JOB_TIMEOUT_MS.
     //
     // OPERATOR REQUIREMENT (different repo): the media-worker container's `stop_grace_period` in the
     // civfix-infra compose file must EXCEED this value, or the runtime SIGKILLs the process mid-job and the
-    // derivation buys nothing. At the default budget that is 665s, so the compose needs >= 680s (Docker's
-    // default is 10s). Raising MEDIA_JOB_TIMEOUT_MS raises this requirement with it.
+    // derivation buys nothing. At the defaults that is 1265s, so the compose needs >= 1280s (Docker's
+    // default is 10s). Raising MEDIA_JOB_TIMEOUT_MS, MEDIA_TRANSCODE_TIMEOUT_MS or MEDIA_CHECKS_CONCURRENCY
+    // raises this requirement with it.
     await this.boss.stop({ graceful: true, wait: true, timeout: this.stopGraceMs })
     this.boss = undefined
   }
@@ -192,7 +224,8 @@ export class PgBossWorkerJobs implements WorkerJobs {
     if (
       options?.retryLimit !== undefined ||
       options?.retryBackoff !== undefined ||
-      options?.policy !== undefined
+      options?.policy !== undefined ||
+      options?.expireInSeconds !== undefined
     ) {
       await boss.updateQueue(name, queuePolicy)
     }
@@ -332,6 +365,6 @@ export function buildJobs(source: NodeJS.ProcessEnv = process.env): JobsHandle {
   if (!connectionString) {
     throw new Error("media-worker: DATABASE_URL is required when USE_FAKE_JOBS is off")
   }
-  const real = new PgBossWorkerJobs(connectionString, loadLimits(source).jobTimeoutMs)
+  const real = new PgBossWorkerJobs(connectionString, loadLimits(source))
   return { jobs: real, start: () => real.start(), stop: () => real.stop() }
 }
