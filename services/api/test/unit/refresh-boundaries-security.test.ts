@@ -199,4 +199,14 @@ describe("refresh-boundaries: the prune needs --yes", () => {
     expect(script).toContain("pruneNonAuthoritativeJurisdictions(")
     expect(script).toContain('includes("--yes")')
   })
+
+  it("refuses an unconfirmed full refresh before the download and ingest write anything", () => {
+    const fullRefresh = script.indexOf("if (backfillOnly) {")
+    const refusal = script.indexOf("await refuseUnconfirmedPrune(handle.sql)")
+    expect(fullRefresh).toBeGreaterThan(0)
+    expect(refusal).toBeGreaterThan(fullRefresh)
+    expect(refusal).toBeLessThan(script.indexOf("fetchSource(job, outDir)"))
+    expect(refusal).toBeLessThan(script.indexOf("await ingestGeoJsonSeqFile("))
+    expect(script).toContain("pruneNonAuthoritativeJurisdictions(sql, { apply: false })")
+  })
 })

@@ -15,6 +15,7 @@ import { ingestGeoJsonFile, ingestGeoJsonSeqFile } from "../src/db/ingest-jurisd
 import {
   backfillReports,
   pruneNonAuthoritativeJurisdictions,
+  type NonAuthoritativePrune,
 } from "../src/db/backfill-jurisdictions-core.js"
 import { backfillPopulation } from "../src/db/backfill-population-core.js"
 
@@ -215,16 +216,30 @@ async function countLoadedLayers(
   return { rowCounts, federalLoaded: (rowCounts.federal ?? 0) > 0 }
 }
 
-async function prune(sql: Sql): Promise<void> {
-  const result = await pruneNonAuthoritativeJurisdictions(sql, { apply: PRUNE_CONFIRMED })
-  if (result.staleGeoids.length === 0) return
+const PRUNE_UNCONFIRMED = "re-run with --yes to prune the rows counted above (nothing was changed)"
+
+function logStale(result: NonAuthoritativePrune): void {
   log(
     `${result.staleGeoids.length} non-authoritative (dev-seed) federal/tribal jurisdiction(s); ` +
       `rows pointing at them: ${JSON.stringify(result.affected)}`,
   )
-  if (!result.applied) {
-    throw new Error("re-run with --yes to prune the rows counted above (nothing was changed)")
-  }
+}
+
+// A full refresh writes boundaries long before it reaches the prune, so it asks for --yes up front:
+// refusing only at the prune would leave new boundaries without their backfill and vintage stamp.
+async function refuseUnconfirmedPrune(sql: Sql): Promise<void> {
+  if (PRUNE_CONFIRMED) return
+  const pending = await pruneNonAuthoritativeJurisdictions(sql, { apply: false })
+  if (pending.staleGeoids.length === 0) return
+  logStale(pending)
+  throw new Error(PRUNE_UNCONFIRMED)
+}
+
+async function prune(sql: Sql): Promise<void> {
+  const result = await pruneNonAuthoritativeJurisdictions(sql, { apply: PRUNE_CONFIRMED })
+  if (result.staleGeoids.length === 0) return
+  logStale(result)
+  if (!result.applied) throw new Error(PRUNE_UNCONFIRMED)
   log(`pruned; re-resolved in the same transaction: ${JSON.stringify(result.reresolved)}`)
   if (result.affected.gov_claims > 0 || result.affected.mail_threads > 0) {
     warn(
@@ -304,6 +319,7 @@ async function main(): Promise<void> {
           "no jurisdictions in the DB; run a full load first (this backfill will resolve nothing)",
         )
     } else {
+      await refuseUnconfirmedPrune(handle.sql)
       log(`vintage ${year}: ${boundaryManifest(year).length} layer job(s); work dir ${outDir}`)
       mkdirSync(join(outDir, "sources"), { recursive: true })
 
