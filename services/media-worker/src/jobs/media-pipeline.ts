@@ -4,12 +4,13 @@ import type { MediaKind, MediaStatus } from "@civfix/shared"
 import type { WorkerAbuseReason } from "@civfix/api/media-repo"
 import type { FindPhashDuplicateFn } from "@civfix/api/adapters/abuse-checks"
 import type { WorkerLimits } from "../config.js"
-import { ALLOWED_VIDEO_CODECS } from "../config.js"
+import { ALLOWED_VIDEO_CODECS, SERVED_VIDEO_MAX_EDGE, SERVED_VIDEO_MAX_FPS } from "../config.js"
 import type { ExifGps } from "../sandbox/image.js"
 import { processImageLane } from "../sandbox/image-lane.js"
 import { SandboxSpawnError } from "../sandbox/exec.js"
-import { probeBytes } from "../sandbox/ffprobe.js"
+import { probeBytes, type ProbeResult } from "../sandbox/ffprobe.js"
 import { grabFrameJpeg, remuxStripMetadata } from "../sandbox/ffmpeg-remux.js"
+import { transcodeToServedMp4 } from "../sandbox/ffmpeg-transcode.js"
 
 export interface PipelineFlag {
   reason: WorkerAbuseReason
@@ -181,6 +182,23 @@ function videoGeometryNote(
   return null
 }
 
+export type ServedVideoPlan = { transcode: false } | { transcode: true; capFps: boolean }
+
+// A clip already within the served spec is only remuxed: a second lossy pass would cost quality and
+// CPU for nothing. An unknown frame rate or bitrate cannot be shown to be within it, so it transcodes.
+export function servedVideoPlan(probe: ProbeResult, limits: WorkerLimits): ServedVideoPlan {
+  const capFps = probe.fps === null || probe.fps > SERVED_VIDEO_MAX_FPS
+  const withinSpec =
+    probe.codec?.toLowerCase() === "h264" &&
+    probe.width !== null &&
+    probe.height !== null &&
+    Math.max(probe.width, probe.height) <= SERVED_VIDEO_MAX_EDGE &&
+    !capFps &&
+    probe.bitrateBps !== null &&
+    probe.bitrateBps <= limits.servedVideoMaxBitrateBps
+  return withinSpec ? { transcode: false } : { transcode: true, capFps }
+}
+
 async function processVideoBytes(
   bytes: Uint8Array,
   deps: ProcessDeps,
@@ -208,12 +226,22 @@ async function processVideoBytes(
     return rejected(geometryNote)
   }
 
-  let remuxed: Buffer
+  const plan = servedVideoPlan(probe, deps.limits)
+  let served: Buffer
+  let servedWidth = probe.width
+  let servedHeight = probe.height
   try {
-    remuxed = await remuxStripMetadata(bytes, deps.limits)
+    if (plan.transcode) {
+      served = await transcodeToServedMp4(bytes, { capFps: plan.capFps }, deps.limits)
+      const servedProbe = await probeBytes(served, deps.limits)
+      servedWidth = servedProbe.width
+      servedHeight = servedProbe.height
+    } else {
+      served = await remuxStripMetadata(bytes, deps.limits)
+    }
   } catch (err) {
     if (err instanceof SandboxSpawnError) throw err
-    return rejected(errNote("remux failed", err))
+    return rejected(errNote(plan.transcode ? "transcode failed" : "remux failed", err))
   }
 
   let frameJpeg: Buffer | null = null
@@ -249,11 +277,11 @@ async function processVideoBytes(
 
   return {
     status: seam.status,
-    width: probe.width,
-    height: probe.height,
-    codec: probe.codec.toLowerCase(),
+    width: servedWidth,
+    height: servedHeight,
+    codec: "h264",
     phash: null,
-    processedBytes: remuxed,
+    processedBytes: served,
     processedContentType: "video/mp4",
     thumbnailBytes,
     thumbnailContentType,

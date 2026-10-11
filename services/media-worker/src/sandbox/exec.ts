@@ -17,6 +17,7 @@ export interface RunOptions {
   binaryStdout?: boolean
   cwd?: string
   identity?: SandboxIdentity | null
+  lowPriority?: boolean
 }
 
 export class SandboxSpawnError extends Error {
@@ -101,6 +102,21 @@ export function sandboxArgv(
   }
 }
 
+const NICE_BINARY = "/usr/bin/nice"
+const LOW_PRIORITY_NICENESS = 19
+
+// Lowering the child's priority once it runs as the sandbox uid would need CAP_SYS_NICE, which the
+// sandbox withholds, so nice lowers it before setpriv switches uid and the decoder inherits it.
+function lowPriorityArgv(spawned: { command: string; argv: string[] }): {
+  command: string
+  argv: string[]
+} {
+  return {
+    command: NICE_BINARY,
+    argv: ["-n", String(LOW_PRIORITY_NICENESS), spawned.command, ...spawned.argv],
+  }
+}
+
 let cachedIdentity: SandboxIdentity | null | undefined
 
 export function sandboxIdentity(source?: NodeJS.ProcessEnv): SandboxIdentity | null {
@@ -174,7 +190,8 @@ export async function runTool(
 ): Promise<RunResult> {
   const cwd = opts.cwd ?? tmpdir()
   const identity = opts.identity === undefined ? sandboxIdentity() : opts.identity
-  const spawned = sandboxArgv(binaryPath, args, identity, dropBoundingSet())
+  const sandboxed = sandboxArgv(binaryPath, args, identity, dropBoundingSet())
+  const spawned = opts.lowPriority === true ? lowPriorityArgv(sandboxed) : sandboxed
   const execaOpts: ExecaOptions = {
     timeout: opts.timeoutMs,
     killSignal: CHILD_KILL_SIGNAL,

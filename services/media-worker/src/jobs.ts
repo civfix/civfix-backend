@@ -171,7 +171,7 @@ export class PgBossWorkerJobs implements WorkerJobs {
     //
     // OPERATOR REQUIREMENT (different repo): the media-worker container's `stop_grace_period` in the
     // civfix-infra compose file must EXCEED this value, or the runtime SIGKILLs the process mid-job and the
-    // derivation buys nothing. At the default budget that is 125s, so the compose needs >= ~150s (Docker's
+    // derivation buys nothing. At the default budget that is 665s, so the compose needs >= 680s (Docker's
     // default is 10s). Raising MEDIA_JOB_TIMEOUT_MS raises this requirement with it.
     await this.boss.stop({ graceful: true, wait: true, timeout: this.stopGraceMs })
     this.boss = undefined

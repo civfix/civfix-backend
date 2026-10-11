@@ -26,7 +26,11 @@
 
 import sharp, { type Sharp } from "sharp"
 import exifr from "exifr"
-import type { WorkerLimits } from "../config.js"
+import {
+  SERVED_IMAGE_JPEG_QUALITY,
+  SERVED_IMAGE_MAX_EDGE,
+  type WorkerLimits,
+} from "../config.js"
 import { settleWithin } from "../timeout.js"
 
 // Predictable memory under the worker concurrency cap: no internal cache, single libvips thread.
@@ -48,9 +52,9 @@ export interface ImageMeta {
 
 export interface ProcessedImage {
   meta: ImageMeta
-  /** EXIF-stripped, auto-oriented re-encode of the full image. */
+  /** EXIF-stripped, auto-oriented JPEG re-encode, long edge capped at SERVED_IMAGE_MAX_EDGE. */
   strippedBytes: Buffer
-  /** Content-type for the stripped image (matches the chosen output encoder). */
+  /** Content-type for the stripped image (always JPEG). */
   strippedContentType: string
   /** ~thumbnailMaxEdge JPEG thumbnail (also metadata-free). */
   thumbnailBytes: Buffer
@@ -167,21 +171,6 @@ export function guardedSharp(bytes: Uint8Array, limits: WorkerLimits): Sharp {
   }).timeout({ seconds: Math.max(1, Math.ceil(limits.imageTimeoutMs / 1000)) })
 }
 
-/** Choose the stripped-image output encoder + content type from the detected (allowlisted) input format. */
-function chooseOutput(format: string): {
-  apply: (s: Sharp) => Sharp
-  contentType: string
-} {
-  switch (format) {
-    case "png":
-      return { apply: (s) => s.png({ compressionLevel: 9 }), contentType: "image/png" }
-    case "webp":
-      return { apply: (s) => s.webp({ quality: 90 }), contentType: "image/webp" }
-    default:
-      return { apply: (s) => s.jpeg({ quality: 90, mozjpeg: false }), contentType: "image/jpeg" }
-  }
-}
-
 /**
  * Read GPS from EXIF without decoding pixels. Never throws: a parse failure or missing GPS yields null
  * (absence of location is not an error). Returns null unless both lat/lng are finite.
@@ -249,11 +238,26 @@ export async function processImage(
   // worker). Instead build one guarded pipeline, bake the EXIF orientation into the pixels once
   // (`.rotate()` with no args), then `.clone()` per output so sharp shares the one decoded surface.
   // Neither output calls withMetadata(), so all EXIF/XMP/ICC metadata is dropped on re-encode.
-  const out = chooseOutput(meta.format)
-  const base = guardedSharp(bytes, limits).rotate()
-  const [strippedBytes, thumbnailBytes] = await Promise.all([
-    // Stripped full image: chosen output encoder, metadata-free.
-    withTimeout(out.apply(base.clone()).toBuffer(), limits.imageTimeoutMs, "strip"),
+  // JPEG has no alpha channel: transparency goes onto white rather than whatever colour the
+  // transparent pixels happen to hold.
+  const base = guardedSharp(bytes, limits)
+    .rotate()
+    .flatten({ background: { r: 255, g: 255, b: 255 } })
+  const [stripped, thumbnailBytes] = await Promise.all([
+    withTimeout(
+      base
+        .clone()
+        .resize({
+          width: SERVED_IMAGE_MAX_EDGE,
+          height: SERVED_IMAGE_MAX_EDGE,
+          fit: "inside",
+          withoutEnlargement: true,
+        })
+        .jpeg({ quality: SERVED_IMAGE_JPEG_QUALITY, mozjpeg: false })
+        .toBuffer({ resolveWithObject: true }),
+      limits.imageTimeoutMs,
+      "strip",
+    ),
     // Thumbnail: longest edge <= thumbnailMaxEdge, JPEG, metadata-free.
     withTimeout(
       base
@@ -272,9 +276,9 @@ export async function processImage(
   ])
 
   return {
-    meta: { width: meta.width, height: meta.height, format: meta.format },
-    strippedBytes,
-    strippedContentType: out.contentType,
+    meta: { width: stripped.info.width, height: stripped.info.height, format: meta.format },
+    strippedBytes: stripped.data,
+    strippedContentType: "image/jpeg",
     thumbnailBytes,
     thumbnailContentType: "image/jpeg",
     exifGps,

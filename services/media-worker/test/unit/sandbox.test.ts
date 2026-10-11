@@ -3,10 +3,11 @@ import { afterAll, beforeAll, describe, expect, it, vi } from "vitest"
 import { createServer, type Server } from "node:http"
 import type { AddressInfo } from "node:net"
 import sharp from "sharp"
-import { loadLimits } from "../../src/config.js"
+import { loadLimits, SERVED_IMAGE_JPEG_QUALITY } from "../../src/config.js"
 import { runTool, SandboxToolError } from "../../src/sandbox/exec.js"
 import { probeBytes } from "../../src/sandbox/ffprobe.js"
 import { grabFrameJpeg, remuxStripMetadata } from "../../src/sandbox/ffmpeg-remux.js"
+import { transcodeToServedMp4 } from "../../src/sandbox/ffmpeg-transcode.js"
 import {
   processImage,
   readExifGps,
@@ -18,7 +19,7 @@ import { resetMediaToolPaths } from "../../src/sandbox/binaries.js"
 import { assertVideoLaneRuns } from "../../src/sandbox/preflight.js"
 import exifr from "exifr"
 import * as fx from "../fixtures/make.js"
-import { readContainerTags, readStreamTags } from "../helpers/ffprobe-tags.js"
+import { readContainerTags, readStreamTags, topLevelBoxes } from "../helpers/ffprobe-tags.js"
 
 const limits = loadLimits({})
 
@@ -85,6 +86,15 @@ describe("sandbox/exec runTool", () => {
     }
     expect(caught).toBeInstanceOf(SandboxToolError)
     expect((caught as SandboxToolError).timedOut).toBe(false)
+  })
+
+  it("runs a lowPriority child at niceness 19", async () => {
+    const res = await runTool("niceness", "/usr/bin/nice", [], {
+      timeoutMs: 5_000,
+      maxStdoutBytes: 1024,
+      lowPriority: true,
+    })
+    expect(res.stdout).toBe("19")
   })
 
   it("returns stdout/stderr/exitCode for a child that stays within its limits", async () => {
@@ -156,6 +166,67 @@ describe("sandbox/image", () => {
     expect(Math.max(tmeta.width ?? 0, tmeta.height ?? 0)).toBeLessThanOrEqual(
       limits.thumbnailMaxEdge,
     )
+  })
+
+  it("re-encodes a transparent PNG as a JPEG on white, thumbnail included", async () => {
+    const png = await sharp({
+      create: { width: 64, height: 64, channels: 4, background: { r: 0, g: 0, b: 0, alpha: 0 } },
+    })
+      .png()
+      .toBuffer()
+
+    const out = await processImage(png, limits)
+
+    expect(out.strippedContentType).toBe("image/jpeg")
+    for (const bytes of [out.strippedBytes, out.thumbnailBytes]) {
+      const { data, info } = await sharp(bytes).raw().toBuffer({ resolveWithObject: true })
+      expect((await sharp(bytes).metadata()).format).toBe("jpeg")
+      expect(info.channels).toBe(3)
+      expect(Math.min(...data)).toBeGreaterThanOrEqual(250)
+    }
+  })
+
+  it("re-encodes a WebP as a JPEG", async () => {
+    const webp = await sharp({
+      create: { width: 32, height: 24, channels: 3, background: { r: 10, g: 120, b: 200 } },
+    })
+      .webp()
+      .toBuffer()
+
+    const out = await processImage(webp, limits)
+
+    expect(out.strippedContentType).toBe("image/jpeg")
+    expect((await sharp(out.strippedBytes).metadata()).format).toBe("jpeg")
+  })
+
+  it.each([
+    [3000, 2000, 1920, 1280],
+    [1500, 2400, 1200, 1920],
+    [800, 600, 800, 600],
+  ])("serves a %ix%i image at %ix%i (long edge <= 1920, never enlarged)", async (w, h, ow, oh) => {
+    const jpeg = await sharp({
+      create: { width: w, height: h, channels: 3, background: { r: 90, g: 90, b: 90 } },
+    })
+      .jpeg()
+      .toBuffer()
+
+    const out = await processImage(jpeg, limits)
+
+    const served = await sharp(out.strippedBytes).metadata()
+    expect([served.width, served.height]).toEqual([ow, oh])
+    expect([out.meta.width, out.meta.height]).toEqual([ow, oh])
+  })
+
+  it("encodes at JPEG quality 80", async () => {
+    const png = await fx.makeValidPng()
+
+    const out = await processImage(png, limits)
+
+    const expected = await sharp(png)
+      .flatten({ background: { r: 255, g: 255, b: 255 } })
+      .jpeg({ quality: SERVED_IMAGE_JPEG_QUALITY, mozjpeg: false })
+      .toBuffer()
+    expect(out.strippedBytes.equals(expected)).toBe(true)
   })
 
   it("rejects a pixel-bomb header via the decode guard", async () => {
@@ -397,8 +468,73 @@ describe("sandbox/image magic-byte container gate (L15)", () => {
   })
 })
 
+describe("sandbox/ffmpeg-transcode", () => {
+  function videoOf(streams: Awaited<ReturnType<typeof readStreamTags>>) {
+    const video = streams.find((st) => st.codecType === "video")
+    if (!video) throw new Error("no video stream")
+    return video
+  }
+
+  it("turns 1080p60 HEVC into a faststart 720p30 H.264 MP4, audio kept, location gone", async () => {
+    const input = await fx.makePhoneClip({
+      codec: "hevc",
+      width: 1920,
+      height: 1080,
+      fps: 60,
+      location: "+34.0500-118.2400/",
+    })
+    expect((await readContainerTags(input)).location).toBe("+34.0500-118.2400/")
+
+    const out = await transcodeToServedMp4(input, { capFps: true }, limits)
+
+    const streams = await readStreamTags(out)
+    expect(videoOf(streams)).toMatchObject({
+      codecName: "h264",
+      width: 1280,
+      height: 720,
+      avgFrameRate: "30/1",
+    })
+    expect(streams.find((st) => st.codecType === "audio")?.codecName).toBe("aac")
+    expect((await readContainerTags(out)).location).toBeUndefined()
+    const boxes = topLevelBoxes(out)
+    expect(boxes.indexOf("moov")).toBeGreaterThanOrEqual(0)
+    expect(boxes.indexOf("moov")).toBeLessThan(boxes.indexOf("mdat"))
+  })
+
+  it("bakes a phone's quarter-turn into upright 720x1280 pixels", async () => {
+    const input = await fx.makePhoneClip({
+      codec: "h264",
+      width: 1920,
+      height: 1080,
+      fps: 30,
+      rotation: 90,
+    })
+
+    const out = await transcodeToServedMp4(input, { capFps: false }, limits)
+
+    expect(videoOf(await readStreamTags(out))).toMatchObject({
+      width: 720,
+      height: 1280,
+      rotation: null,
+    })
+  })
+
+  it("never enlarges a clip already under the long-edge cap", async () => {
+    const input = await fx.makePhoneClip({ codec: "hevc", width: 640, height: 360, fps: 30 })
+
+    const out = await transcodeToServedMp4(input, { capFps: false }, limits)
+
+    expect(videoOf(await readStreamTags(out))).toMatchObject({
+      codecName: "h264",
+      width: 640,
+      height: 360,
+      avgFrameRate: "30/1",
+    })
+  })
+})
+
 describe("sandbox/preflight video lane", () => {
-  it("pushes the built-in h264 and hevc clips through probe, remux and the poster-frame grab", async () => {
+  it("pushes the built-in h264 and hevc clips through probe, remux, transcode and the frame grab", async () => {
     await expect(assertVideoLaneRuns()).resolves.toBeUndefined()
   })
 

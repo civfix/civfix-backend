@@ -31,12 +31,15 @@ export interface WorkerLimits {
   maxToolStdoutBytes: number
   ffprobeTimeoutMs: number
   ffmpegTimeoutMs: number
+  transcodeTimeoutMs: number
+  transcodeThreads: number
   imageTimeoutMs: number
   jobTimeoutMs: number
   maxVideoDurationSec: number
   maxVideoPixels: number
   maxVideoFps: number
   maxVideoBitrateBps: number
+  servedVideoMaxBitrateBps: number
   thumbnailMaxEdge: number
   nsfwHoldThreshold: number
   nsfwUnscoredPolicy: "flag" | "hold"
@@ -102,6 +105,13 @@ export function loadHttpsProxy(source: NodeJS.ProcessEnv = process.env): string 
 
 export const ALLOWED_VIDEO_CODECS: ReadonlySet<string> = new Set(["h264", "hevc"])
 
+// The served copy of every upload. The image numbers are the ones the mobile app already compresses
+// to, so a phone photo is re-encoded at the size it arrived in.
+export const SERVED_IMAGE_MAX_EDGE = 1920
+export const SERVED_IMAGE_JPEG_QUALITY = 80
+export const SERVED_VIDEO_MAX_EDGE = 1280
+export const SERVED_VIDEO_MAX_FPS = 30
+
 const ONE_MB = 1024 * 1024
 
 export function loadLimits(source: NodeJS.ProcessEnv = process.env): WorkerLimits {
@@ -113,12 +123,15 @@ export function loadLimits(source: NodeJS.ProcessEnv = process.env): WorkerLimit
     maxToolStdoutBytes: parsePosInt(source.MEDIA_MAX_TOOL_STDOUT_BYTES, ONE_MB),
     ffprobeTimeoutMs: parsePosInt(source.MEDIA_FFPROBE_TIMEOUT_MS, 10_000),
     ffmpegTimeoutMs: parsePosInt(source.MEDIA_FFMPEG_TIMEOUT_MS, 30_000),
+    transcodeTimeoutMs: parsePosInt(source.MEDIA_TRANSCODE_TIMEOUT_MS, 120_000),
+    transcodeThreads: parsePosInt(source.MEDIA_TRANSCODE_THREADS, 1),
     imageTimeoutMs: parsePosInt(source.MEDIA_IMAGE_TIMEOUT_MS, 15_000),
-    jobTimeoutMs: parsePosInt(source.MEDIA_JOB_TIMEOUT_MS, 90_000),
+    jobTimeoutMs: parsePosInt(source.MEDIA_JOB_TIMEOUT_MS, 330_000),
     maxVideoDurationSec: parsePosInt(source.MEDIA_MAX_VIDEO_DURATION_SEC, 30),
     maxVideoPixels: parsePosInt(source.MEDIA_VIDEO_MAX_PIXELS, 3840 * 2160),
     maxVideoFps: parsePosInt(source.MEDIA_VIDEO_MAX_FPS, 120),
     maxVideoBitrateBps: parsePosInt(source.MEDIA_VIDEO_MAX_BITRATE, 50_000_000),
+    servedVideoMaxBitrateBps: parsePosInt(source.MEDIA_VIDEO_SERVED_MAX_BITRATE, 4_000_000),
     thumbnailMaxEdge: parsePosInt(source.MEDIA_THUMBNAIL_MAX_EDGE, 400),
     nsfwHoldThreshold: clampUnit(source.MEDIA_NSFW_HOLD_THRESHOLD, 0.8),
     nsfwUnscoredPolicy: source.MEDIA_UNSCORED_POLICY?.trim().toLowerCase() === "hold" ? "hold" : "flag",
