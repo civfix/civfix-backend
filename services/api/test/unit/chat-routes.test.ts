@@ -246,15 +246,11 @@ describe("resolveWsUser (dual handshake auth)", () => {
 
   it("rejects (null) a bogus ?token even with the break-glass flag on", async () => {
     const { sessions } = await withSession()
-    const prev = process.env.WS_ALLOW_QUERY_TOKEN
-    process.env.WS_ALLOW_QUERY_TOKEN = "1"
-    try {
-      const req = fakeReq({ query: { token: "not-a-real-token" } })
-      expect(await resolveWsUser(req, sessions)).toBeNull()
-    } finally {
-      if (prev === undefined) delete process.env.WS_ALLOW_QUERY_TOKEN
-      else process.env.WS_ALLOW_QUERY_TOKEN = prev
-    }
+    const server = {
+      container: { env: { WS_ALLOW_QUERY_TOKEN: true } },
+    } as unknown as FastifyRequest["server"]
+    const req = fakeReq({ query: { token: "not-a-real-token" }, server })
+    expect(await resolveWsUser(req, sessions)).toBeNull()
   })
 })
 

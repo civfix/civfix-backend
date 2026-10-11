@@ -24,6 +24,11 @@ function memberOf(cleanupId: string, userId: string): Promise<boolean> {
   return Promise.resolve(cleanupId === ROOM && members.has(userId))
 }
 
+// The shape publishFrame puts on chat:<id>, the only payload the service forwards to a room's sockets.
+function roomEnvelope(marker: string): string {
+  return JSON.stringify({ frame: { type: "test", marker } })
+}
+
 let chat: WsChatService
 let pubsub: InMemoryChatPubSub
 let repo: InMemoryChatRepository
@@ -227,16 +232,19 @@ describe("two-device real-time chat (A -> B with ack + persistence)", () => {
     await handleClientFrame(aSession, JSON.stringify({ type: "join", cleanupId: ROOM }))
     expect(chat.roomSize(ROOM)).toBe(1)
     expect(pubsub.channelCount).toBe(2) // chat:<ROOM> + the co-consumer's channel
+    const framesWhileJoined = aConn.sent.length
+    await pubsub.publish(chatChannel(ROOM), roomEnvelope("while-joined"))
+    expect(aConn.sent).toHaveLength(framesWhileJoined + 1)
 
     await chat.close()
 
     // Rooms are dropped and REALLY unsubscribed (no leaked handle): only the co-consumer's channel is left,
-    // and a frame published on the room's channel now reaches nobody (a leaked subscription would pass this
-    // non-envelope payload straight through to A's socket).
+    // and a frame published on the room's channel now reaches nobody. The payload is a real envelope, which
+    // a leaked subscription would deliver to A's socket; the service drops anything else on its own.
     expect(chat.roomSize(ROOM)).toBe(0)
     expect(pubsub.channelCount).toBe(1)
     const framesBefore = aConn.sent.length
-    await pubsub.publish(chatChannel(ROOM), "post-close-frame")
+    await pubsub.publish(chatChannel(ROOM), roomEnvelope("post-close"))
     expect(aConn.sent).toHaveLength(framesBefore)
 
     // The injected layer itself is untouched: never closed, and the co-consumer still receives.
@@ -272,7 +280,7 @@ describe("two-device real-time chat (A -> B with ack + persistence)", () => {
     expect(chat.roomSize(ROOM)).toBe(0)
     expect(pubsub.channelCount).toBe(0)
     const framesBefore = aConn.sent.length
-    await pubsub.publish(chatChannel(ROOM), "post-shutdown-frame")
+    await pubsub.publish(chatChannel(ROOM), roomEnvelope("post-shutdown"))
     await pubsub.publish("user:co-consumer", "post-shutdown-signal")
     expect(aConn.sent).toHaveLength(framesBefore)
     expect(coConsumer).not.toHaveBeenCalled()
