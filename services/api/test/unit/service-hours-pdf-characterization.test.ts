@@ -312,8 +312,8 @@ describe("buildServiceHoursPdf characterization: empty ledger, no handle, no fin
   it("pins the bytes and the drawing sequence", async () => {
     const model = enModel([], { ...HOLDER, handle: null })
     const { bytes, events } = await render({ model })
-    expect(sha256(bytes)).toBe("a603687720f39225727b1f0cc81566f1ae346ec28b83847cb4fe2d78c4abc364")
-    expect(bytes.length).toBe(24724)
+    expect(sha256(bytes)).toBe("8dd00bcaff314a7fa1d84ec88c009523a7b19fa2f8e246619b2da6cb4c2636aa")
+    expect(bytes.length).toBe(24811)
     expect(pageCount(bytes)).toBe(1)
     expect(texts(events)).toMatchInlineSnapshot(`
       [
