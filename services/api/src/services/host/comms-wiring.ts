@@ -41,7 +41,7 @@ import {
 import { registerEventExportBuilders } from "./host-export-builders.js"
 import { requireCapability } from "./authz.js"
 
-export type CommsLogger = Pick<FastifyBaseLogger, "info" | "warn" | "error">
+export type CommsLogger = Pick<FastifyBaseLogger, "debug" | "info" | "warn" | "error">
 
 export interface CommsRuntime {
   repo: BroadcastRepository

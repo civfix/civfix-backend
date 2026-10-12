@@ -204,4 +204,32 @@ describe("hold-release self-healing sweep (P2-8)", () => {
     expect(result.published).toBe(0)
     expect(holdRepo.report.status).toBe("held")
   })
+
+  it("logs its summary only for a run that published, and an idle run only at debug", async () => {
+    const repo = new InMemoryWorkerRepo()
+    const reportId = "anon-report-summary"
+    repo.seed({ id: "m1", uploadId: "u1", kind: "image", r2Key: "k1", reportId, status: "ready" })
+    const holdRepo = new MemHoldRepo(heldReport(reportId), repo)
+    const run = async () => {
+      const logged: string[] = []
+      const debugged: string[] = []
+      await runHoldReleaseSweep({
+        repo: holdRepo,
+        abuseChecks: new FakeAbuseChecks(),
+        batchSize: 50,
+        log: (line) => logged.push(line),
+        debug: (line) => debugged.push(line),
+        report: () => {},
+      })
+      return { logged, debugged }
+    }
+
+    const working = await run()
+    expect(working.logged).toContain("anon.hold.release.sweep: done")
+    expect(working.debugged).toEqual([])
+
+    const idle = await run()
+    expect(idle.logged).toEqual([])
+    expect(idle.debugged).toEqual(["anon.hold.release.sweep: done"])
+  })
 })
