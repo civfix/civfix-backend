@@ -1,5 +1,6 @@
 import type { FastifyBaseLogger } from "fastify"
 import type { Sql } from "../../db/client.js"
+import { sweepLogLevel } from "../sweep-log.js"
 
 export interface RetentionLaneResult {
   lane: string
@@ -31,19 +32,25 @@ export function resetRetentionLanesForTests(): void {
 export async function runRetentionLanes(
   sql: Sql,
   now: Date,
-  logger?: Pick<FastifyBaseLogger, "info" | "warn">,
+  logger?: Pick<FastifyBaseLogger, "debug" | "info" | "warn">,
 ): Promise<RetentionLaneResult[]> {
   const results: RetentionLaneResult[] = []
+  let failed = 0
   for (const lane of lanes) {
     try {
       const processed = await lane.run(sql, now)
       results.push({ lane: lane.name, processed })
     } catch (err) {
       logger?.warn({ err, lane: lane.name }, "host retention: lane failed (other lanes continue)")
+      failed += 1
       results.push({ lane: lane.name, processed: 0 })
     }
   }
-  logger?.info({ evt: "host.retention.done", results }, "host retention sweep complete")
+  const processed = results.reduce((sum, result) => sum + result.processed, 0)
+  logger?.[sweepLogLevel({ processed, failed })](
+    { evt: "host.retention.done", results },
+    "host retention sweep complete",
+  )
   return results
 }
 
