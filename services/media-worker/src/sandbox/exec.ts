@@ -169,6 +169,19 @@ export function killAllSandboxChildren(): void {
   liveSandboxChildren.clear()
 }
 
+let sandboxStopped = false
+
+// Without the refusal, a job queued for the transcode slot would start a new encode the moment the
+// killed one released it.
+export function stopSandbox(): void {
+  sandboxStopped = true
+  killAllSandboxChildren()
+}
+
+export function resetSandboxStopped(): void {
+  sandboxStopped = false
+}
+
 function killProcessGroup(pid: number | undefined): void {
   if (pid === undefined || pid <= 0) return
   try {
@@ -188,6 +201,7 @@ export async function runTool(
   args: readonly string[],
   opts: RunOptions,
 ): Promise<RunResult> {
+  if (sandboxStopped) throw new SandboxSpawnError(name, new Error("the media worker is stopping"))
   const cwd = opts.cwd ?? tmpdir()
   const identity = opts.identity === undefined ? sandboxIdentity() : opts.identity
   const sandboxed = sandboxArgv(binaryPath, args, identity, dropBoundingSet())

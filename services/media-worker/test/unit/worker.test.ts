@@ -1,5 +1,5 @@
 
-import { describe, it, expect } from "vitest"
+import { afterEach, describe, it, expect, vi } from "vitest"
 import {
   buildWorker,
   ORPHAN_SWEEP_JOB,
@@ -9,7 +9,8 @@ import {
   RETENTION_SWEEP_JOB,
   MEDIA_STUCK_SWEEP_JOB,
 } from "../../src/worker.js"
-import { buildJobs, type ScheduleOptions } from "../../src/jobs.js"
+import { buildJobs, IN_FLIGHT_GRACE_MS, type JobsHandle, type ScheduleOptions } from "../../src/jobs.js"
+import { resetSandboxStopped, runTool, SandboxSpawnError } from "../../src/sandbox/exec.js"
 import { MEDIA_UPLOAD_REAP_JOB } from "../../src/jobs/upload-reap.js"
 import { buildSeams, type WorkerSeams } from "../../src/seams.js"
 import {
@@ -65,12 +66,7 @@ describe("media-worker wiring", () => {
     const handle = buildJobs()
     const calls: {
       name: string
-      options?: {
-        retryLimit?: number
-        retryBackoff?: boolean
-        policy?: string
-        expireInSeconds?: number
-      }
+      options?: { retryLimit?: number; retryBackoff?: boolean; policy?: string }
     }[] = []
     const original = handle.jobs.createQueue.bind(handle.jobs)
     handle.jobs.createQueue = (name, options) => {
@@ -82,12 +78,7 @@ describe("media-worker wiring", () => {
     await worker.start()
 
     const mediaQueue = calls.find((c) => c.name === MEDIA_CHECKS_JOB)
-    expect(mediaQueue?.options).toEqual({
-      policy: "short",
-      retryLimit: 5,
-      retryBackoff: true,
-      expireInSeconds: 30 * 60,
-    })
+    expect(mediaQueue?.options).toEqual({ policy: "short", retryLimit: 5, retryBackoff: true })
     expect(calls.find((c) => c.name === ANON_HOLD_RELEASE_JOB)?.options).toEqual({ policy: "short" })
     expect(calls.find((c) => c.name === ORPHAN_SWEEP_JOB)?.options).toEqual({ policy: "singleton" })
     expect(calls.find((c) => c.name === RETENTION_SWEEP_JOB)?.options).toEqual({ policy: "singleton" })
@@ -182,6 +173,57 @@ describe("media-worker wiring", () => {
     ])
 
     await worker.stop()
+  })
+})
+
+describe("stop(): jobs in flight get IN_FLIGHT_GRACE_MS, then the sandbox is stopped", () => {
+  afterEach(() => {
+    resetSandboxStopped()
+    vi.useRealTimers()
+  })
+
+  async function workerWithSlowStop(): Promise<{ stop: () => Promise<void>; release: () => void }> {
+    const base = buildJobs()
+    let release!: () => void
+    const handle: JobsHandle = {
+      jobs: base.jobs,
+      start: base.start,
+      stop: () =>
+        new Promise<void>((resolve) => {
+          release = resolve
+        }),
+    }
+    const worker = await buildWorker(handle, await buildSeams())
+    return { stop: () => worker.stop(), release: () => release() }
+  }
+
+  const probe = () =>
+    runTool("shell", "/bin/sh", ["-c", "exit 0"], { timeoutMs: 5_000, maxStdoutBytes: 1024 })
+
+  it("stops the sandbox when the jobs layer is still waiting at the end of the grace", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] })
+    const { stop, release } = await workerWithSlowStop()
+
+    const stopping = stop()
+    await vi.advanceTimersByTimeAsync(IN_FLIGHT_GRACE_MS)
+
+    await expect(probe()).rejects.toBeInstanceOf(SandboxSpawnError)
+    release()
+    await expect(stopping).resolves.toBeUndefined()
+  })
+
+  it("leaves the sandbox alone when the jobs finish within the grace", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] })
+    const { stop, release } = await workerWithSlowStop()
+
+    const stopping = stop()
+    await vi.advanceTimersByTimeAsync(IN_FLIGHT_GRACE_MS - 1)
+    release()
+    await stopping
+    await vi.advanceTimersByTimeAsync(IN_FLIGHT_GRACE_MS)
+    vi.useRealTimers()
+
+    await expect(probe()).resolves.toMatchObject({ exitCode: 0 })
   })
 })
 

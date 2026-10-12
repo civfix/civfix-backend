@@ -10,7 +10,7 @@ import type { FindPhashDuplicateFn } from "@civfix/api/adapters/abuse-checks"
 import type { WorkerLimits } from "../config.js"
 import { DownloadTooLargeError, type DownloadedObject, type DownloadFn } from "../download.js"
 import { settleWithin } from "../timeout.js"
-import { processBudgetMs } from "../jobs.js"
+import { JobInterruptedError } from "../jobs.js"
 import { resolveJobObs, type JobObsDeps, type JobLogFn, type JobReportFn } from "./obs.js"
 import { readEtag } from "@civfix/api/media-repo"
 import { SandboxSpawnError } from "../sandbox/exec.js"
@@ -59,6 +59,11 @@ export interface MediaChecksDeps extends JobObsDeps {
   download: DownloadFn
   findPhashDuplicate?: FindPhashDuplicateFn
   publicMediaBase?: string
+  /**
+   * Aborted when the worker interrupts in-flight jobs on stop; it also kills the sandbox children then.
+   * A job that sees it before persisting anything hands itself back instead of judging the upload.
+   */
+  stopSignal?: AbortSignal
 }
 
 export function publicMediaUrl(base: string, key: string): string {
@@ -150,13 +155,17 @@ async function processAsset(
 
   let downloaded: DownloadedObject
   const downloadAbort = new AbortController()
+  const downloadSignal = deps.stopSignal
+    ? AbortSignal.any([downloadAbort.signal, deps.stopSignal])
+    : downloadAbort.signal
   try {
     downloaded = await withJobTimeout(
-      deps.download(asset.r2Key, deps.limits.maxDownloadBytes, downloadAbort.signal),
+      deps.download(asset.r2Key, deps.limits.maxDownloadBytes, downloadSignal),
       deps.limits.jobTimeoutMs,
       () => downloadAbort.abort(),
     )
   } catch (err) {
+    throwIfStopping(asset, deps)
     if (err instanceof DownloadTooLargeError) {
       return persistRejection(asset, deps, errNote("download too large", err))
     }
@@ -185,9 +194,10 @@ async function processAsset(
           ...(deps.findPhashDuplicate ? { findPhashDuplicate: deps.findPhashDuplicate } : {}),
         },
       ),
-      processBudgetMs(asset.kind, deps.limits),
+      deps.limits.jobTimeoutMs,
     )
   } catch (err) {
+    throwIfStopping(asset, deps)
     if (err instanceof JobTimeoutError) {
       report(err, { job: "media.checks", phase: "process-timeout", mediaId: asset.id })
       log("media.checks: processing timed out, will retry", { mediaId: asset.id, err: String(err) })
@@ -203,6 +213,9 @@ async function processAsset(
     }
     return persistRejection(asset, deps, errNote("process failed", err))
   }
+  // The result may come from a tool the stop killed (a transcode reads as failed, a frame grab as
+  // missing), so it is no verdict on the upload; nothing has been written yet, the raw upload included.
+  throwIfStopping(asset, deps)
 
   const patch: MediaResultPatch = {
     status: result.status,
@@ -316,6 +329,14 @@ async function processAsset(
     }
   }
   return result.status
+}
+
+function throwIfStopping(asset: MediaWorkerAsset, deps: MediaChecksDeps): void {
+  if (deps.stopSignal?.aborted !== true) return
+  resolveJobObs(deps).log("media.checks: interrupted by the worker stopping, handing the job back", {
+    mediaId: asset.id,
+  })
+  throw new JobInterruptedError()
 }
 
 async function settleTerminalRace(

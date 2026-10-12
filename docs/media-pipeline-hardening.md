@@ -254,12 +254,15 @@ and `-analyzeduration`/`-probesize` are cut to 2s/5MB.
 
 ## 4. Video size caps (H16)
 
-Before any remux or frame decode, a video is rejected when its resolution
-exceeds `MEDIA_VIDEO_MAX_PIXELS` (default 3840x2160), its frame rate exceeds
-`MEDIA_VIDEO_MAX_FPS` (120), its bitrate exceeds `MEDIA_VIDEO_MAX_BITRATE`
-(50 Mbps), or ffprobe reports no usable resolution. The frame grab additionally
-runs with `-max_pixels` and `-threads 1`. All of these are `rejected` outcomes,
-never throws.
+Before any remux or frame decode, a video is rejected when its long edge
+exceeds `MEDIA_VIDEO_MAX_EDGE` (default 1920), its resolution exceeds
+`MEDIA_VIDEO_MAX_PIXELS` (1920x1080), its frame rate exceeds
+`MEDIA_VIDEO_MAX_FPS` (60), its bitrate exceeds `MEDIA_VIDEO_MAX_BITRATE`
+(20 Mbps), its length exceeds `MEDIA_MAX_VIDEO_DURATION_SEC` (10s), or ffprobe
+reports no usable resolution. Length and frame rate are compared by their
+nominal (rounded) value. The frame grab and the transcode additionally run with
+`-max_pixels` (the long-edge cap squared) and bounded threads. All of these are
+`rejected` outcomes, never throws.
 
 ---
 

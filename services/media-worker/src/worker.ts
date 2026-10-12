@@ -1,11 +1,11 @@
 
 import type { JobHandler } from "@civfix/shared/interfaces"
-import { MEDIA_CHECKS_EXPIRE_SECONDS, MEDIA_CHECKS_JOB } from "@civfix/api/media-repo"
+import { MEDIA_CHECKS_JOB } from "@civfix/api/media-repo"
 import { releaseAnonHoldIfReady, type HeldReportView } from "@civfix/api/anon-hold-release"
 import {
-  assertBudgetWithinExpiry,
   buildJobs,
-  stopGraceMsFor,
+  IN_FLIGHT_GRACE_MS,
+  STOP_GRACE_MS,
   type JobsHandle,
   type WorkerJobs,
 } from "./jobs.js"
@@ -32,7 +32,7 @@ import {
 } from "./jobs/upload-reap.js"
 import { sweepStaleScratchDirs } from "./sandbox/tmp.js"
 import { assertSandboxPreflight } from "./sandbox/preflight.js"
-import { killAllSandboxChildren } from "./sandbox/exec.js"
+import { killAllSandboxChildren, stopSandbox } from "./sandbox/exec.js"
 
 export const ORPHAN_SWEEP_JOB = "orphan.sweep"
 export const CHAT_PARTITION_JOB = "chat.partition.maintenance"
@@ -59,7 +59,11 @@ async function shouldEnqueueHoldRelease(seams: WorkerSeams, reportId: string): P
   return isAnonHeldReport(await seams.anonHoldRepo.findReport(reportId))
 }
 
-function makeMediaChecksHandler(jobs: WorkerJobs, seams: WorkerSeams): JobHandler {
+function makeMediaChecksHandler(
+  jobs: WorkerJobs,
+  seams: WorkerSeams,
+  stopSignal: AbortSignal,
+): JobHandler {
   return async (job) => {
     const payload = parsePayload(job.data)
     if (!payload) {
@@ -82,6 +86,7 @@ function makeMediaChecksHandler(jobs: WorkerJobs, seams: WorkerSeams): JobHandle
       ...(seams.findPhashDuplicate ? { findPhashDuplicate: seams.findPhashDuplicate } : {}),
       ...(seams.publicMediaBase ? { publicMediaBase: seams.publicMediaBase } : {}),
       report: seams.report,
+      stopSignal,
     })
 
     if (outcome.status !== "missing") {
@@ -255,13 +260,9 @@ async function registerHandlers(
   jobs: WorkerJobs,
   seams: WorkerSeams,
   limits: WorkerLimits,
+  stopSignal: AbortSignal,
 ): Promise<void> {
-  await jobs.createQueue(MEDIA_CHECKS_JOB, {
-    policy: "short",
-    retryLimit: 5,
-    retryBackoff: true,
-    expireInSeconds: MEDIA_CHECKS_EXPIRE_SECONDS,
-  })
+  await jobs.createQueue(MEDIA_CHECKS_JOB, { policy: "short", retryLimit: 5, retryBackoff: true })
   await jobs.createQueue(ORPHAN_SWEEP_JOB, { policy: "singleton" })
   await jobs.createQueue(CHAT_PARTITION_JOB, { policy: "singleton" })
   await jobs.createQueue(ANON_HOLD_RELEASE_JOB, { policy: "short" })
@@ -270,7 +271,7 @@ async function registerHandlers(
   await jobs.createQueue(MEDIA_STUCK_SWEEP_JOB, { policy: "singleton" })
   await jobs.createQueue(MEDIA_UPLOAD_REAP_JOB, { policy: "short", retryLimit: 3, retryBackoff: true })
 
-  await jobs.workWithSettings(MEDIA_CHECKS_JOB, makeMediaChecksHandler(jobs, seams), {
+  await jobs.workWithSettings(MEDIA_CHECKS_JOB, makeMediaChecksHandler(jobs, seams, stopSignal), {
     batchSize: limits.mediaChecksConcurrency,
   })
 
@@ -304,14 +305,11 @@ function cronSchedule(name: string): { expireInSeconds: number; singletonKey: st
   return { expireInSeconds: CRON_EXPIRE_SECONDS, singletonKey: name }
 }
 
-function logStopGraceRequirement(limits: WorkerLimits): void {
-  const graceMs = stopGraceMsFor(limits)
+function logStopGraceRequirement(): void {
   console.log("media-worker: graceful-stop budget", {
-    jobTimeoutMs: limits.jobTimeoutMs,
-    transcodeTimeoutMs: limits.transcodeTimeoutMs,
-    mediaChecksConcurrency: limits.mediaChecksConcurrency,
-    stopGraceMs: graceMs,
-    requiredComposeStopGracePeriodSec: Math.ceil(graceMs / 1000) + 15,
+    inFlightGraceMs: IN_FLIGHT_GRACE_MS,
+    stopGraceMs: STOP_GRACE_MS,
+    requiredComposeStopGracePeriodSec: Math.ceil(STOP_GRACE_MS / 1000) + 15,
   })
 }
 
@@ -332,23 +330,33 @@ export async function buildWorker(
   seams?: WorkerSeams,
 ): Promise<Worker> {
   const resolvedSeams = seams ?? (await buildSeams())
+  const inFlight = new AbortController()
   let started = false
 
   async function start(): Promise<void> {
     if (started) return
     installSandboxChildCleanup()
-    assertBudgetWithinExpiry(resolvedSeams.limits)
     await assertSandboxPreflight()
     await sweepStaleScratchDirs().catch(() => 0)
     await handle.start()
-    await registerHandlers(handle.jobs, resolvedSeams, resolvedSeams.limits)
-    logStopGraceRequirement(resolvedSeams.limits)
+    await registerHandlers(handle.jobs, resolvedSeams, resolvedSeams.limits, inFlight.signal)
+    logStopGraceRequirement()
     await runBootPartitionMaintenance(resolvedSeams)
     started = true
   }
 
   async function stop(): Promise<void> {
-    await handle.stop()
+    // The jobs layer stops fetching at once; a job still running after the grace is interrupted and
+    // handed back, so a deploy never waits out a whole transcode.
+    const interrupt = setTimeout(() => {
+      inFlight.abort()
+      stopSandbox()
+    }, IN_FLIGHT_GRACE_MS)
+    try {
+      await handle.stop()
+    } finally {
+      clearTimeout(interrupt)
+    }
     await resolvedSeams.close()
     started = false
   }

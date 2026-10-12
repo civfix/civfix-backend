@@ -156,6 +156,13 @@ async function processImageBytes(
   }
 }
 
+// Duration and frame rate are capped by their nominal value: a clip from a 10 s camera limit probes at
+// a few hundredths over 10 s once its audio priming is counted, and a 60 fps clip can average a hair
+// over 60.
+function nominal(value: number): number {
+  return Math.round(value)
+}
+
 function videoGeometryNote(
   probe: {
     width: number | null
@@ -169,11 +176,14 @@ function videoGeometryNote(
   if (width === null || height === null || width <= 0 || height <= 0) {
     return "video reports no usable resolution"
   }
+  if (Math.max(width, height) > limits.maxVideoEdge) {
+    return `resolution ${width}x${height} exceeds the long-edge cap of ${limits.maxVideoEdge}px`
+  }
   const pixels = width * height
   if (pixels > limits.maxVideoPixels) {
     return `resolution ${width}x${height} (${pixels}px) exceeds the cap of ${limits.maxVideoPixels}px`
   }
-  if (probe.fps !== null && probe.fps > limits.maxVideoFps) {
+  if (probe.fps !== null && nominal(probe.fps) > limits.maxVideoFps) {
     return `frame rate ${probe.fps.toFixed(2)}fps exceeds the cap of ${limits.maxVideoFps}fps`
   }
   if (probe.bitrateBps !== null && probe.bitrateBps > limits.maxVideoBitrateBps) {
@@ -231,9 +241,12 @@ async function processVideoBytes(
   if (probe.codec === null || !ALLOWED_VIDEO_CODECS.has(probe.codec.toLowerCase())) {
     return rejected(`unsupported codec: ${probe.codec ?? "unknown"}`)
   }
-  if (probe.durationSec <= 0 || probe.durationSec > deps.limits.maxVideoDurationSec) {
+  if (probe.durationSec <= 0) {
+    return rejected(`duration ${probe.durationSec}s is not positive`)
+  }
+  if (nominal(probe.durationSec) > deps.limits.maxVideoDurationSec) {
     return rejected(
-      `duration ${probe.durationSec}s outside (0, ${deps.limits.maxVideoDurationSec}]`,
+      `duration ${probe.durationSec}s exceeds the cap of ${deps.limits.maxVideoDurationSec}s`,
     )
   }
   const geometryNote = videoGeometryNote(probe, deps.limits)

@@ -1,7 +1,12 @@
 import { runTool, sandboxIdentity } from "./exec.js"
 import { mediaToolPath } from "./binaries.js"
 import { makeScratch, readScratchOutput } from "./tmp.js"
-import { SERVED_VIDEO_MAX_EDGE, SERVED_VIDEO_MAX_FPS, type WorkerLimits } from "../config.js"
+import {
+  SERVED_VIDEO_MAX_EDGE,
+  SERVED_VIDEO_MAX_FPS,
+  videoDecoderMaxPixels,
+  type WorkerLimits,
+} from "../config.js"
 
 const SAFE_INPUT_ARGS = ["-protocol_whitelist", "file", "-f", "mov"] as const
 
@@ -57,7 +62,7 @@ export async function transcodeToServedMp4(
         "1",
         ...SAFE_INPUT_ARGS,
         "-max_pixels",
-        String(limits.maxVideoPixels),
+        String(videoDecoderMaxPixels(limits)),
         "-threads",
         threads,
         "-i",

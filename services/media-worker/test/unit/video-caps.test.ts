@@ -76,8 +76,10 @@ const limits: WorkerLimits = loadLimits({})
 const deps = { abuseChecks: new FakeAbuseChecks(), limits }
 const BYTES = new Uint8Array([1, 2, 3, 4])
 
+const BASE_PROBE: StubProbe = { ...stub.probe }
+
 function withProbe(over: Partial<StubProbe>) {
-  stub.probe = { ...stub.probe, ...over }
+  stub.probe = { ...BASE_PROBE, ...over }
   stub.remuxCalls = 0
   stub.frameCalls = 0
   stub.transcodes = []
@@ -89,16 +91,69 @@ async function run() {
 }
 
 describe("video size caps reject BEFORE any decode", () => {
-  it("rejects a resolution over MEDIA_VIDEO_MAX_PIXELS without remuxing or grabbing a frame", async () => {
+  it("defaults to what the mobile app records: 10s, 1080p either way, 60fps, 20Mbps", () => {
+    expect(limits).toMatchObject({
+      maxVideoDurationSec: 10,
+      maxVideoEdge: 1920,
+      maxVideoPixels: 1920 * 1080,
+      maxVideoFps: 60,
+      maxVideoBitrateBps: 20_000_000,
+    })
+  })
+
+  it("rejects a resolution over MEDIA_VIDEO_MAX_EDGE without remuxing or grabbing a frame", async () => {
     withProbe({ width: 8192, height: 8192 })
 
     const result = await run()
 
     expect(result.status).toBe("rejected")
-    expect(result.note).toMatch(/8192x8192.*exceeds the cap/)
+    expect(result.note).toMatch(/8192x8192 exceeds the long-edge cap of 1920px/)
     expect(stub.remuxCalls).toBe(0)
     expect(stub.frameCalls).toBe(0)
     expect(stub.transcodes).toEqual([])
+  })
+
+  it.each([
+    [3840, 2160],
+    [2160, 3840],
+    [2560, 720],
+  ])("rejects %ix%i on its long edge", async (width, height) => {
+    withProbe({ width, height })
+
+    const result = await run()
+
+    expect(result.status).toBe("rejected")
+    expect(result.note).toBe(`resolution ${width}x${height} exceeds the long-edge cap of 1920px`)
+    expect(stub.transcodes).toEqual([])
+  })
+
+  it("rejects 1920x1440: within the long edge, over the 1080p pixel cap", async () => {
+    withProbe({ width: 1920, height: 1440 })
+
+    const result = await run()
+
+    expect(result.status).toBe("rejected")
+    expect(result.note).toBe("resolution 1920x1440 (2764800px) exceeds the cap of 2073600px")
+  })
+
+  it.each([
+    [10.04, "ready"],
+    [10.6, "rejected"],
+  ])("compares a %ss clip to the 10s cap by its nominal length", async (durationSec, status) => {
+    withProbe({ width: 1280, height: 720, fps: 30, durationSec })
+
+    const result = await run()
+
+    expect(result.status === "rejected" ? "rejected" : "ready").toBe(status)
+    if (status === "rejected") {
+      expect(result.note).toBe(`duration ${durationSec}s exceeds the cap of 10s`)
+    }
+  })
+
+  it("rejects a non-positive duration", async () => {
+    withProbe({ width: 1280, height: 720, fps: 30, durationSec: 0 })
+
+    expect((await run()).note).toBe("duration 0s is not positive")
   })
 
   it("rejects an absent or zero resolution (an un-evaluatable cap is not a cap)", async () => {
@@ -110,14 +165,20 @@ describe("video size caps reject BEFORE any decode", () => {
     expect(stub.remuxCalls).toBe(0)
   })
 
-  it("rejects a frame rate over MEDIA_VIDEO_MAX_FPS", async () => {
-    withProbe({ width: 1280, height: 720, fps: limits.maxVideoFps + 1 })
+  it.each([61, 120])("rejects %ifps, over MEDIA_VIDEO_MAX_FPS", async (fps) => {
+    withProbe({ width: 1280, height: 720, fps })
 
     const result = await run()
 
     expect(result.status).toBe("rejected")
-    expect(result.note).toMatch(/frame rate/)
+    expect(result.note).toBe(`frame rate ${fps.toFixed(2)}fps exceeds the cap of 60fps`)
     expect(stub.remuxCalls).toBe(0)
+  })
+
+  it("accepts a 60fps clip whose average runs a hair over 60", async () => {
+    withProbe({ width: 1280, height: 720, fps: 60.04 })
+
+    expect((await run()).status).not.toBe("rejected")
   })
 
   it("rejects a bitrate over MEDIA_VIDEO_MAX_BITRATE", async () => {
@@ -130,14 +191,23 @@ describe("video size caps reject BEFORE any decode", () => {
     expect(stub.remuxCalls).toBe(0)
   })
 
-  it("proceeds at exactly the pixel cap (4K), and with unknown fps/bitrate", async () => {
-    withProbe({ width: 3840, height: 2160, fps: null, bitrateBps: null })
+  it.each([
+    [1920, 1080],
+    [1080, 1920],
+  ])("proceeds at exactly %ix%i, and with unknown fps/bitrate", async (width, height) => {
+    withProbe({ width, height, fps: null, bitrateBps: null })
 
     const result = await run()
 
     expect(result.status).not.toBe("rejected")
     expect(stub.transcodes).toEqual([{ capFps: true }])
     expect(stub.frameCalls).toBe(1)
+  })
+
+  it("proceeds at every cap at once: 10s 1080p60 at 20Mbps", async () => {
+    withProbe({ width: 1920, height: 1080, fps: 60, durationSec: 10, bitrateBps: 20_000_000 })
+
+    expect((await run()).status).not.toBe("rejected")
   })
 
   it("never throws on any of these paths (the pipeline invariant)", async () => {

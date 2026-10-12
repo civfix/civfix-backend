@@ -520,6 +520,18 @@ describe("sandbox/ffmpeg-transcode", () => {
     })
   })
 
+  // ffmpeg checks -max_pixels against a stride-padded buffer (1088x1920 here), so a guard equal to the
+  // accepted 1920x1080 cap would fail every coded-portrait clip that validation lets through.
+  it("decodes a coded 1080x1920 portrait clip at the default caps", async () => {
+    const input = await fx.makePhoneClip({ codec: "h264", width: 1080, height: 1920, fps: 30 })
+
+    const out = await transcodeToServedMp4(input, { capFps: false }, limits)
+    const frame = await grabFrameJpeg(input, 0.5, limits)
+
+    expect(videoOf(await readStreamTags(out))).toMatchObject({ width: 720, height: 1280 })
+    expect(await sharp(frame).metadata()).toMatchObject({ width: 1080, height: 1920 })
+  })
+
   it("never enlarges a clip already under the long-edge cap", async () => {
     const input = await fx.makePhoneClip({ codec: "hevc", width: 640, height: 360, fps: 30 })
 

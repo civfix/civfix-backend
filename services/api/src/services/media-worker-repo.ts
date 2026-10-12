@@ -495,7 +495,7 @@ export function ensureDmPartitionWindow(
   return ensurePartitionWindow(sqlTag, "dm_messages", now, monthsAhead)
 }
 
-export { MEDIA_CHECKS_EXPIRE_SECONDS, MEDIA_CHECKS_JOB } from "./media-intake-service.js"
+export { MEDIA_CHECKS_JOB } from "./media-intake-service.js"
 export type { MediaChecksJob } from "./media-intake-service.js"
 
 export { and, eq, isNull, lt, ne, sql }

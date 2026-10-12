@@ -152,7 +152,7 @@ Sandboxing + limits (`services/media-worker/src/config.ts`, overridable by env):
 via `execa` with an ARGS ARRAY (no shell, no injection), a hard per-tool timeout, `killSignal`
 SIGKILL, and a `maxBuffer` output cap; sharp uses `limitInputPixels` + a wrapped wall-clock timeout.
 `media.checks` concurrency is capped (default 2; `MEDIA_CHECKS_CONCURRENCY`), per-phase job budget
-450s (`MEDIA_JOB_TIMEOUT_MS`, plus a video's wait for the one-at-a-time transcode slot; see
+260s (`MEDIA_JOB_TIMEOUT_MS`, which covers a video's wait for the one-at-a-time transcode slot; see
 `services/media-worker/.env.example`), download capped at `MAX_VIDEO_BYTES`. The infra compose
 additionally caps container CPU.
 
@@ -287,8 +287,9 @@ API drains first (`src/lifecycle.ts`), in three bounded phases:
 3. **Teardown (15s watchdog).** pg-boss, the chat pub/sub subscriber, Redis and the Postgres pool,
    plus the error-reporting flush — all INSIDE the watchdog, so nothing trails the budget — then
    exit. (Open WebSockets are not migrated: they stay on the retiring color and are cut when the
-   server closes, then reconnect to the new color.) The worker drains the queue then closes its DB
-   pool.
+   server closes, then reconnect to the new color.) The worker stops taking jobs and gives the ones in
+   flight 30s; it then kills their decoders and hands each back to the queue (it runs again after the
+   restart without spending a retry, and its upload is untouched), then closes its DB pool.
 
 `SHUTDOWN_DRAIN_MS` defaults to **0 — no drain — in every environment, deliberately**: a drain longer
 than the container's `stop_grace_period` gets SIGKILLed mid-teardown, which is worse than not draining

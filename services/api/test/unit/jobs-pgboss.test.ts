@@ -83,15 +83,6 @@ describe("PgBossJobs (API enqueue adapter)", () => {
       expect(lastBoss.createQueue).toHaveBeenCalledWith(name, expect.objectContaining({ policy: "short" }))
       expect(lastBoss.updateQueue).toHaveBeenCalledWith(name, expect.objectContaining({ policy: "short" }))
     }
-
-    // media.checks carries the expiry the media worker sizes its job budget under.
-    const mediaChecks = { name: "media.checks", policy: "short", expireInSeconds: 30 * 60 }
-    expect(lastBoss.createQueue).toHaveBeenCalledWith("media.checks", mediaChecks)
-    expect(lastBoss.updateQueue).toHaveBeenCalledWith("media.checks", mediaChecks)
-    expect(lastBoss.createQueue).toHaveBeenCalledWith("jurisdiction.discovery", {
-      name: "jurisdiction.discovery",
-      policy: "short",
-    })
   })
 
   it("start() is idempotent (a second call does not re-open pg-boss)", async () => {

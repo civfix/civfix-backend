@@ -122,14 +122,14 @@ describe("video duration bound (maxVideoDurationSec)", () => {
     const res = await processMedia({ bytes, kind: "video" }, deps)
 
     expect(res.status).toBe("rejected")
-    expect(res.note).toMatch(/^duration \d+(\.\d+)?s outside \(0, 1\]$/)
+    expect(res.note).toMatch(/^duration \d+(\.\d+)?s exceeds the cap of 1s$/)
     expect(res.processedBytes).toBeNull()
   })
 
-  it("ACCEPTS the SAME clip under the default 30s cap (proves the cap did the rejecting)", async () => {
+  it("ACCEPTS the SAME clip under the default 10s cap (proves the cap did the rejecting)", async () => {
     const bytes = await fx.makeH264Mp4OfSeconds(2)
     const { deps } = makeEnv()
-    expect(limits.maxVideoDurationSec).toBe(30)
+    expect(limits.maxVideoDurationSec).toBe(10)
 
     const res = await processMedia({ bytes, kind: "video" }, deps)
 

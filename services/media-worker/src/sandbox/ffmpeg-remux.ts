@@ -2,7 +2,7 @@
 import { runTool, sandboxIdentity } from "./exec.js"
 import { mediaToolPath } from "./binaries.js"
 import { makeScratch, readScratchOutput } from "./tmp.js"
-import type { WorkerLimits } from "../config.js"
+import { videoDecoderMaxPixels, type WorkerLimits } from "../config.js"
 
 const SAFE_INPUT_ARGS = ["-protocol_whitelist", "file", "-f", "mov"] as const
 
@@ -77,7 +77,7 @@ export async function grabFrameJpeg(
       "-nostdin",
       ...SAFE_INPUT_ARGS,
       "-max_pixels",
-      String(limits.maxVideoPixels),
+      String(videoDecoderMaxPixels(limits)),
       "-threads",
       "1",
       "-ss",

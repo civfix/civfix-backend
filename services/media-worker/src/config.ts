@@ -37,6 +37,7 @@ export interface WorkerLimits {
   jobTimeoutMs: number
   maxVideoDurationSec: number
   maxVideoPixels: number
+  maxVideoEdge: number
   maxVideoFps: number
   maxVideoBitrateBps: number
   servedVideoMaxBitrateBps: number
@@ -112,6 +113,13 @@ export const SERVED_IMAGE_JPEG_QUALITY = 80
 export const SERVED_VIDEO_MAX_EDGE = 1280
 export const SERVED_VIDEO_MAX_FPS = 30
 
+// The decoders' -max_pixels guard. ffmpeg checks it against the frame buffer, whose width is rounded up
+// to the SIMD stride (a 1080x1920 portrait clip allocates 1088x1920), so the accepted pixel cap itself
+// would refuse a clip that passed it. Any frame within the long-edge cap both ways fits.
+export function videoDecoderMaxPixels(limits: Pick<WorkerLimits, "maxVideoEdge">): number {
+  return limits.maxVideoEdge * limits.maxVideoEdge
+}
+
 const ONE_MB = 1024 * 1024
 
 export function loadLimits(source: NodeJS.ProcessEnv = process.env): WorkerLimits {
@@ -123,14 +131,15 @@ export function loadLimits(source: NodeJS.ProcessEnv = process.env): WorkerLimit
     maxToolStdoutBytes: parsePosInt(source.MEDIA_MAX_TOOL_STDOUT_BYTES, ONE_MB),
     ffprobeTimeoutMs: parsePosInt(source.MEDIA_FFPROBE_TIMEOUT_MS, 10_000),
     ffmpegTimeoutMs: parsePosInt(source.MEDIA_FFMPEG_TIMEOUT_MS, 30_000),
-    transcodeTimeoutMs: parsePosInt(source.MEDIA_TRANSCODE_TIMEOUT_MS, 360_000),
+    transcodeTimeoutMs: parsePosInt(source.MEDIA_TRANSCODE_TIMEOUT_MS, 90_000),
     transcodeThreads: parsePosInt(source.MEDIA_TRANSCODE_THREADS, 1),
     imageTimeoutMs: parsePosInt(source.MEDIA_IMAGE_TIMEOUT_MS, 15_000),
-    jobTimeoutMs: parsePosInt(source.MEDIA_JOB_TIMEOUT_MS, 450_000),
-    maxVideoDurationSec: parsePosInt(source.MEDIA_MAX_VIDEO_DURATION_SEC, 30),
-    maxVideoPixels: parsePosInt(source.MEDIA_VIDEO_MAX_PIXELS, 3840 * 2160),
-    maxVideoFps: parsePosInt(source.MEDIA_VIDEO_MAX_FPS, 120),
-    maxVideoBitrateBps: parsePosInt(source.MEDIA_VIDEO_MAX_BITRATE, 50_000_000),
+    jobTimeoutMs: parsePosInt(source.MEDIA_JOB_TIMEOUT_MS, 260_000),
+    maxVideoDurationSec: parsePosInt(source.MEDIA_MAX_VIDEO_DURATION_SEC, 10),
+    maxVideoPixels: parsePosInt(source.MEDIA_VIDEO_MAX_PIXELS, 1920 * 1080),
+    maxVideoEdge: parsePosInt(source.MEDIA_VIDEO_MAX_EDGE, 1920),
+    maxVideoFps: parsePosInt(source.MEDIA_VIDEO_MAX_FPS, 60),
+    maxVideoBitrateBps: parsePosInt(source.MEDIA_VIDEO_MAX_BITRATE, 20_000_000),
     servedVideoMaxBitrateBps: parsePosInt(source.MEDIA_VIDEO_SERVED_MAX_BITRATE, 4_000_000),
     thumbnailMaxEdge: parsePosInt(source.MEDIA_THUMBNAIL_MAX_EDGE, 400),
     nsfwHoldThreshold: clampUnit(source.MEDIA_NSFW_HOLD_THRESHOLD, 0.8),
