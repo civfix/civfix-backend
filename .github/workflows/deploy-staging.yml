@@ -1,6 +1,7 @@
 name: Deploy (staging)
 
-# Deploys the civfix backend to the STAGING VPS (193.122.142.107). TWO jobs, in order:
+# Deploys the civfix backend to the STAGING VPS (its address is the STAGING_DEPLOY_HOST repository
+# secret). TWO jobs, in order:
 #
 #   1. `images`  builds the api + media-worker images for this commit and pushes them to GHCR
 #                (build-images.yml). This is the ONLY build of this release — production is later
@@ -85,7 +86,7 @@ jobs:
       cancel-in-progress: false
     # No checkout: the VPS pulls the code itself; this job only needs to SSH in.
     env:
-      DEPLOY_HOST: 193.122.142.107
+      DEPLOY_HOST: ${{ secrets.STAGING_DEPLOY_HOST }}
       DEPLOY_USER: deployer
       LIVENESS_URL: https://api.civfix.dev/healthz
       # Longest public unavailability tolerated during a deploy, in seconds (sub-second resolution;
@@ -101,8 +102,9 @@ jobs:
           install -d -m 700 ~/.ssh
           printf '%s\n' "$DEPLOY_SSH_KEY" > ~/.ssh/deploy_key
           chmod 600 ~/.ssh/deploy_key
+          [ -n "$DEPLOY_HOST" ] || { echo "::error::the STAGING_DEPLOY_HOST secret is not set"; exit 1; }
           # Pin the staging VPS ed25519 host key so a changed/forged host is rejected.
-          printf '%s\n' "193.122.142.107 ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIP843TSCJte6yLyn3qWk1t9Gr5oDecExWJWEgdboX4FU" > ~/.ssh/known_hosts
+          printf '%s %s\n' "$DEPLOY_HOST" "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIGdvVbo2U+bi9bbaZXD8DIC31Q1QdxPVmiGNUvqQb0va" > ~/.ssh/known_hosts
           chmod 644 ~/.ssh/known_hosts
 
       - name: Deploy + continuous availability probe (the API must never go down)
