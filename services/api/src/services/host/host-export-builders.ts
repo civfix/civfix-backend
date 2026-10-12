@@ -3,7 +3,7 @@ import { registerHostExportBuilder, type HostExportContext } from "./export-buil
 import { makeDrizzleHostExportRowsRepository } from "./export-repository.drizzle.js"
 import type { HostExportRowsRepository } from "./export-repository.js"
 
-const EXPORT_PAGE_SIZE = 1000
+export const EXPORT_PAGE_SIZE = 1000
 const SHORT_REF_LENGTH = 8
 const ISO_DAY_LENGTH = 10
 const SHORT_REF_FALLBACK = "event"
@@ -78,10 +78,10 @@ export function registerEventExportBuilders(getSql: () => Sql): void {
 }
 
 async function* keysetPages<Row>(
-  fetchPage: (after: string) => Promise<readonly Row[]>,
+  fetchPage: (after: string | null) => Promise<readonly Row[]>,
   keyOf: (row: Row) => string,
 ): AsyncIterable<Row> {
-  let after = ""
+  let after: string | null = null
   for (;;) {
     const rows = await fetchPage(after)
     if (rows.length === 0) return

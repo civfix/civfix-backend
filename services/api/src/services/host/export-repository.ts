@@ -104,11 +104,19 @@ export interface HostExportAnswerRow {
 }
 
 export interface HostExportRowsRepository {
-  rosterPage(cleanupId: string | null, after: string, limit: number): Promise<HostExportRosterRow[]>
+  rosterPage(
+    cleanupId: string | null,
+    after: string | null,
+    limit: number,
+  ): Promise<HostExportRosterRow[]>
   checkinPage(
     cleanupId: string | null,
-    after: string,
+    after: string | null,
     limit: number,
   ): Promise<HostExportCheckinRow[]>
-  answerPage(cleanupId: string | null, after: string, limit: number): Promise<HostExportAnswerRow[]>
+  answerPage(
+    cleanupId: string | null,
+    after: string | null,
+    limit: number,
+  ): Promise<HostExportAnswerRow[]>
 }

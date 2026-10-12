@@ -232,7 +232,7 @@ export function makeDrizzleHostExportRowsRepository(sql: Sql): HostExportRowsRep
           LEFT JOIN cleanup_guests g ON g.id = r.guest_id
           LEFT JOIN users u ON u.id = r.user_id
          WHERE r.cleanup_id = ${cleanupId}
-           AND (${after} = '' OR r.id > ${after}::uuid)
+           ${after === null ? sql`` : sql`AND r.id > ${after}::uuid`}
          GROUP BY r.id, r.cleanup_id, r.user_id, r.status, r.registered_at,
                   g.name, u.display_name, t.name, g.email, g.phone
          ORDER BY r.id
@@ -252,7 +252,7 @@ export function makeDrizzleHostExportRowsRepository(sql: Sql): HostExportRowsRep
           LEFT JOIN cleanup_guests g ON g.id = r.guest_id
           LEFT JOIN users u ON u.id = r.user_id
          WHERE s.cleanup_id = ${cleanupId}
-           AND (${after} = '' OR s.id > ${after}::uuid)
+           ${after === null ? sql`` : sql`AND s.id > ${after}::uuid`}
          ORDER BY s.id
          LIMIT ${limit}`
     },
@@ -266,7 +266,7 @@ export function makeDrizzleHostExportRowsRepository(sql: Sql): HostExportRowsRep
           JOIN cleanup_registrations r ON r.id = a.registration_id
           JOIN cleanup_questions q ON q.id = a.question_id
          WHERE a.cleanup_id = ${cleanupId}
-           AND (${after} = '' OR a.id > ${after}::uuid)
+           ${after === null ? sql`` : sql`AND a.id > ${after}::uuid`}
          ORDER BY a.id
          LIMIT ${limit}`
     },
