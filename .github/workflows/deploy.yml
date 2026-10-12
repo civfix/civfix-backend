@@ -206,7 +206,7 @@ jobs:
     timeout-minutes: 20
     # No checkout: the VPS pulls the code itself; this job only needs to SSH in.
     env:
-      DEPLOY_HOST: 150.136.102.127
+      DEPLOY_HOST: ${{ secrets.PROD_DEPLOY_HOST }}
       DEPLOY_USER: deployer
       LIVENESS_URL: https://api.civfix.org/healthz
       # Longest public unavailability tolerated during a deploy, in seconds (sub-second resolution;
@@ -222,8 +222,9 @@ jobs:
           install -d -m 700 ~/.ssh
           printf '%s\n' "$DEPLOY_SSH_KEY" > ~/.ssh/deploy_key
           chmod 600 ~/.ssh/deploy_key
+          [ -n "$DEPLOY_HOST" ] || { echo "::error::the PROD_DEPLOY_HOST secret is not set"; exit 1; }
           # Pin the VPS ed25519 host key so a changed/forged host is rejected.
-          printf '%s\n' "150.136.102.127 ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIPnwBwOwSYiKv4aVjHxqXPGgETs1RytxrDNGRVEIzMaa" > ~/.ssh/known_hosts
+          printf '%s %s\n' "$DEPLOY_HOST" "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIPnwBwOwSYiKv4aVjHxqXPGgETs1RytxrDNGRVEIzMaa" > ~/.ssh/known_hosts
           chmod 644 ~/.ssh/known_hosts
 
       - name: Deploy + continuous availability probe (the API must never go down)
