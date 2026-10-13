@@ -69,8 +69,8 @@ importers:
         specifier: ^3.1147.0
         version: 3.1147.0
       '@civfix/shared':
-        specifier: ^0.58.0
-        version: 0.58.0
+        specifier: 0.58.0-b-feat-video-upload-limits.gc71ed25
+        version: 0.58.0-b-feat-video-upload-limits.gc71ed25
       '@fastify/cookie':
         specifier: ^11.1.2
         version: 11.1.2
@@ -376,6 +376,10 @@ packages:
 
   '@civfix/shared@0.58.0':
     resolution: {integrity: sha512-TCbW3KSw3tYb58m4MqcHDMY0sK1eIOwZ5zpfc9dEVVCwjLtmFnTpzfojtrFVrqt/wJbV2u4dhftWOIKWk1kTrQ==}
+    engines: {node: '>=20'}
+
+  '@civfix/shared@0.58.0-b-feat-video-upload-limits.gc71ed25':
+    resolution: {integrity: sha512-js4TfwQfIP0NdRiNMhgZzB0aeaueJy37sFtP7yx+NFCaH86FwcRgOwtxCaDx4lfz3tHexP2kZzeiq7uxrnVGDw==}
     engines: {node: '>=20'}
 
   '@derhuerst/http-basic@8.2.4':
@@ -4219,6 +4223,10 @@ snapshots:
   '@balena/dockerignore@1.0.2': {}
 
   '@civfix/shared@0.58.0':
+    dependencies:
+      zod: 3.25.76
+
+  '@civfix/shared@0.58.0-b-feat-video-upload-limits.gc71ed25':
     dependencies:
       zod: 3.25.76
 

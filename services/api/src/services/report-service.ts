@@ -123,6 +123,7 @@ export function makeReportService(deps: ReportServiceDeps): ReportService {
     flags: {
       mine: boolean
       mediaPending?: number
+      mediaRejected?: number
       linkedEvents?: LinkedEventRef[]
       discussionMeta?: ReportDiscussionMeta | null
       chatMeta?: ReportChatMeta | null
@@ -159,6 +160,7 @@ export function makeReportService(deps: ReportServiceDeps): ReportService {
       following: false,
       media: mediaDTOs,
       mediaPending: flags.mediaPending ?? 0,
+      mediaRejected: flags.mediaRejected ?? 0,
       timeline: timeline.map(toTimelineDTO),
       linkedEvents: flags.linkedEvents ?? [],
       ...(meta !== null
@@ -291,22 +293,25 @@ export function makeReportService(deps: ReportServiceDeps): ReportService {
         throw AppError.notFound("Report not found")
       }
 
-      const [media, timeline, validatingCount, linkedEvents, discussionMeta, chatMeta] =
+      const [media, timeline, mediaStates, linkedEvents, discussionMeta, chatMeta] =
         await Promise.all([
           deps.repo.findMediaForReport(record.id, mine),
           deps.repo.findTimelineForReport(record.id),
-          deps.repo.countValidatingMediaForReport(record.id),
+          deps.repo.countMediaStatesForReport(record.id),
           linkedEventsFor(record.id),
           discussionMetaFor(record.id),
           chatMetaFor(record.id, viewerId),
         ])
 
       const validatingShown = media.reduce((n, m) => (m.status === "validating" ? n + 1 : n), 0)
-      const mediaPending = Math.max(0, validatingCount - validatingShown)
+      const mediaPending = Math.max(0, mediaStates.validating - validatingShown)
 
       return toReportDTO(record, media, timeline, {
         mine,
         mediaPending,
+        // Only the reporter learns that an item was refused; held items are not counted, so
+        // automated flagging stays invisible even to them until a moderator decides.
+        mediaRejected: mine ? mediaStates.rejected : 0,
         linkedEvents,
         discussionMeta,
         chatMeta,

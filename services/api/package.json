@@ -60,7 +60,7 @@
   "dependencies": {
     "@aws-sdk/client-s3": "^3.1147.0",
     "@aws-sdk/s3-request-presigner": "^3.1147.0",
-    "@civfix/shared": "^0.58.0",
+    "@civfix/shared": "0.58.0-b-feat-video-upload-limits.gc71ed25",
     "@fastify/cookie": "^11.1.2",
     "@fastify/cors": "^10.1.0",
     "@fastify/helmet": "^12.0.1",
