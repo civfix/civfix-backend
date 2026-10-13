@@ -6301,6 +6301,7 @@ export const cases: TranscriptCase[] = [
     run: async (sql: any) =>
       (m89 as any).runRetentionLanes(sql, new Date("2026-03-04T05:06:07.000Z"), {
         info: () => undefined,
+        debug: () => undefined,
         warn: () => undefined,
       }),
   },
