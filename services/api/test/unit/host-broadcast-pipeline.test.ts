@@ -314,6 +314,22 @@ describe("broadcast chunk", () => {
     expect((await h.repo.findById(id))?.status).toBe("sent")
   })
 
+  it("counts a person once in sentCount however many channels reached them", async () => {
+    const h = harness({ members: 0 })
+    h.repo.seedMembers(EVENT, [{ userId: u(1) }, { userId: u(2), pushPref: false }])
+    const id = await draftSending(h, ["inapp", "push", "email"])
+    await h.pipeline.plan(id)
+    for (const chunk of [...h.chunks]) await h.pipeline.runChunk(id, chunk.chunkNo)
+    expect(h.repo.allDeliveries().filter((d) => d.status === "sent")).toHaveLength(5)
+    expect(await h.repo.findById(id)).toMatchObject({
+      status: "sent",
+      recipientCount: 2,
+      sentCount: 2,
+      failedCount: 0,
+      suppressedCount: 1,
+    })
+  })
+
   it("resumes after an interruption without sending a recipient twice", async () => {
     let failNext = true
     const flaky: Mailer = {
