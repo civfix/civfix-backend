@@ -5,6 +5,10 @@ name: CI
 on:
   pull_request:
     branches: [main]
+  # main's merge queue waits for the required checks on its own gh-readonly-queue/* commit; without this
+  # trigger they never report there and every queued PR times out.
+  merge_group:
+    types: [checks_requested]
 
 # Cancel superseded runs on the same ref.
 concurrency:
