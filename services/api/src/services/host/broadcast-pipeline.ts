@@ -27,7 +27,7 @@ import {
 export { KIND_NOTIFICATION_TYPE } from "./broadcast-inapp-sender.js"
 export { announcementPath, notificationLink } from "./broadcast-render.js"
 
-const CHUNK_STALE_MS = 10 * 60 * 1000
+export const CHUNK_STALE_MS = 10 * 60 * 1000
 const SENDING_STALE_MS = 5 * 60 * 1000
 export const AUTH_ABORT_BACKOFF_SEC = [60, 300, 900] as const
 const DELIVERY_INSERT_BATCH = 500

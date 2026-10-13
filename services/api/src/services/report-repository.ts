@@ -99,8 +99,7 @@ export interface CreateReportTxArgs {
 }
 
 export type CreateReportTxResult =
-  | { kind: "created"; snapshot: ReportDTO }
-  | { kind: "replayed"; snapshot: ReportDTO }
+  { kind: "created"; snapshot: ReportDTO } | { kind: "replayed"; snapshot: ReportDTO }
 
 export interface ReportRepository {
   findIdempotentSnapshot(

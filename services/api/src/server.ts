@@ -1,4 +1,12 @@
-import Fastify, { type FastifyInstance, type FastifyServerOptions } from "fastify"
+import Fastify, {
+  LogController,
+  type FastifyInstance,
+  type FastifyLoggerOptions,
+  type FastifyReply,
+  type FastifyRequest,
+  type FastifyServerOptions,
+  type LogLevel,
+} from "fastify"
 import { loadEnv, type Env } from "./env.js"
 import { assertRedisReachable, makeContainer, type Container } from "./di.js"
 import { makeErrorHandler, makeNotFoundHandler } from "./errors/http-mapper.js"
@@ -100,6 +108,8 @@ export interface MakeServerOptions {
   conversationRoutesOverrides?: ConversationRoutesOverrides
   moderationOverrides?: ModerationRouteOverrides
   contentSubjectGate?: ContentSubjectGate
+  /** Tests read the request log from here; a deployment logs to stdout at its NODE_ENV level. */
+  logCapture?: { level: LogLevel; stream: NonNullable<FastifyLoggerOptions["stream"]> }
 }
 
 const OVERRIDE_KEYS = [
@@ -151,9 +161,12 @@ export { loggedRequestUrl }
 
 type LoggerOptions = Exclude<NonNullable<FastifyServerOptions["logger"]>, boolean>
 
-export function loggerOptions(env: Env): LoggerOptions {
+export function loggerOptions(env: Env, capture?: MakeServerOptions["logCapture"]): LoggerOptions {
   return {
-    level: env.NODE_ENV === "test" ? "silent" : env.NODE_ENV === "production" ? "info" : "debug",
+    level:
+      capture?.level ??
+      (env.NODE_ENV === "test" ? "silent" : env.NODE_ENV === "production" ? "info" : "debug"),
+    ...(capture ? { stream: capture.stream } : {}),
     serializers: {
       req(request) {
         const acceptVersion = request.headers["accept-version"]
@@ -175,6 +188,61 @@ export function loggerOptions(env: Env): LoggerOptions {
   }
 }
 
+const HEALTH_PROBE_PATHS = new Set(["/healthz", "/readyz"])
+
+/**
+ * One request line per request, written when it completes, in place of Fastify's incoming/completed
+ * pair. The edge probes /healthz every 2 s from each site, so a passing probe writes nothing; a failing
+ * one (503 while draining, readiness down) is the line an operator needs and is kept. `res.statusCode`
+ * stays the field name: the Grafana overview counts errors with `res_statusCode >= 500`.
+ *
+ * Fastify only reports completion on the response's `finish`, which never comes for a WebSocket upgrade
+ * (the socket is handed to ws) or a request the client abandons, so those keep a line of their own: the
+ * upgrade at arrival, the abandoned request when its response closes unfinished.
+ */
+export class RequestLogController extends LogController {
+  override incomingRequest(request: FastifyRequest, reply: FastifyReply): void {
+    if (this.isLogDisabled(request)) return
+    if (request.headers.upgrade !== undefined) {
+      request.log.info({ req: request }, "incoming request")
+      return
+    }
+    request.log.debug({ req: request }, "incoming request")
+    let finished = false
+    reply.raw.once("finish", () => {
+      finished = true
+    })
+    reply.raw.once("close", () => {
+      if (finished) return
+      reply.log.info({ req: request, responseTime: reply.elapsedTime }, "request aborted")
+    })
+  }
+
+  override requestCompleted(
+    error: Error | null | undefined,
+    request: FastifyRequest,
+    reply: FastifyReply,
+  ): void {
+    if (this.isLogDisabled(request)) return
+    const fields = { req: request, res: reply, responseTime: reply.elapsedTime }
+    if (error) {
+      reply.log.error({ ...fields, err: error }, "request errored")
+      return
+    }
+    if (isPassingHealthProbe(request, reply)) return
+    reply.log.info(fields, "request completed")
+  }
+}
+
+function isPassingHealthProbe(request: FastifyRequest, reply: FastifyReply): boolean {
+  return (
+    request.method === "GET" &&
+    reply.statusCode >= 200 &&
+    reply.statusCode < 300 &&
+    HEALTH_PROBE_PATHS.has(loggedRequestUrl(request.url))
+  )
+}
+
 export async function makeServer(opts: MakeServerOptions = {}): Promise<FastifyInstance> {
   const env = opts.env ?? opts.container?.env ?? loadEnv()
   const container = opts.container ?? makeContainer(env)
@@ -187,7 +255,8 @@ export async function makeServer(opts: MakeServerOptions = {}): Promise<FastifyI
     forceCloseConnections: false,
     connectionTimeout: SOCKET_CONNECTION_TIMEOUT_MS,
     keepAliveTimeout: KEEP_ALIVE_TIMEOUT_MS,
-    logger: loggerOptions(env),
+    logController: new RequestLogController(),
+    logger: loggerOptions(env, opts.logCapture),
   })
 
   app.decorate("container", container)

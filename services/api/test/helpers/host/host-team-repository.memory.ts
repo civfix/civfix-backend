@@ -404,16 +404,14 @@ export class InMemoryHostTeamRepository implements HostTeamRepository {
       .sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime() || compareIds(b.id, a.id))
       .filter((i) => isBeforeTimeCursor(i.createdAt.getTime(), i.id, cursor))
       .slice(0, args.limit + 1)
-      .map(
-        (i): PendingInviteForUserRecord => ({
-          id: i.id,
-          role: i.role,
-          event: this.eventOf(i.cleanupId),
-          invitedBy: this.personOf(i.invitedBy),
-          createdAt: i.createdAt,
-          expiresAt: i.expiresAt,
-        }),
-      )
+      .map((i): PendingInviteForUserRecord => ({
+        id: i.id,
+        role: i.role,
+        event: this.eventOf(i.cleanupId),
+        invitedBy: this.personOf(i.invitedBy),
+        createdAt: i.createdAt,
+        expiresAt: i.expiresAt,
+      }))
     return Promise.resolve(
       pageWith(rows, args.limit, (last) => encodeTimeCursor({ at: last.createdAt, id: last.id })),
     )

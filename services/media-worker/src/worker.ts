@@ -36,6 +36,7 @@ import {
 } from "./jobs/media-checks.js"
 import { runOrphanSweep } from "./jobs/orphan-sweep.js"
 import { runHoldReleaseSweep } from "./jobs/hold-release-sweep.js"
+import { debugLog } from "./jobs/obs.js"
 import { runPartitionMaintenance } from "./jobs/partition-maintenance.js"
 import { runRetentionSweep } from "./jobs/retention-sweep.js"
 import { runStuckSweep } from "./jobs/stuck-sweep.js"
@@ -151,7 +152,7 @@ async function enqueueHoldReleaseIfAnonHeld(
     if (reportId && (await shouldEnqueueHoldRelease(seams, reportId))) {
       await jobs.enqueue(ANON_HOLD_RELEASE_JOB, { reportId }, { singletonKey: reportId })
     } else {
-      console.debug("media.checks: hold-release skipped (no row/reportId, or not anon-held)", {
+      debugLog("media.checks: hold-release skipped (no row/reportId, or not anon-held)", {
         uploadId: payload.uploadId,
         status: outcome.status,
       })

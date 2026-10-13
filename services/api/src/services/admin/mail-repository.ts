@@ -25,13 +25,7 @@ export interface MailThreadRecord {
 }
 
 export type MailMessageKind =
-  | "packet"
-  | "discussion"
-  | "followup"
-  | "digest"
-  | "compose"
-  | "reply"
-  | "resend"
+  "packet" | "discussion" | "followup" | "digest" | "compose" | "reply" | "resend"
 
 export function isPacketKind(kind: MailMessageKind | null): boolean {
   return (kind ?? "packet") === "packet"

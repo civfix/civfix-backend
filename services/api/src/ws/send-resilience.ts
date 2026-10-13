@@ -29,9 +29,7 @@ const SEND_DEDUPE_KEY_PREFIX = "chat:send:"
 const DEDUPE_LOG_COMPONENT = "chat-send-dedupe"
 
 export type SendReservation =
-  | { state: "reserved" }
-  | { state: "duplicate"; messageId: string }
-  | { state: "open" }
+  { state: "reserved" } | { state: "duplicate"; messageId: string } | { state: "open" }
 
 export interface SendDedupeStore {
   reserve(key: string): Promise<SendReservation>

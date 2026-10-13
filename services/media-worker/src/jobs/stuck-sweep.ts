@@ -26,7 +26,7 @@ export interface StuckSweepResult {
 }
 
 export async function runStuckSweep(deps: StuckSweepDeps): Promise<StuckSweepResult> {
-  const { log, report, now } = resolveJobObs(deps)
+  const { log, debug, report, now } = resolveJobObs(deps)
   const cutoff = new Date(now().getTime() - deps.limits.stuckMediaTtlMs)
   const maxAttempts = deps.limits.stuckSweepMaxAttempts
 
@@ -50,7 +50,8 @@ export async function runStuckSweep(deps: StuckSweepDeps): Promise<StuckSweepRes
     if (failed) errors++
   }
 
-  log("media.stuck.sweep: done", {
+  const summary = requeued > 0 || terminalized > 0 || errors > 0 ? log : debug
+  summary("media.stuck.sweep: done", {
     scanned: rows.length,
     requeued,
     terminalized,

@@ -284,10 +284,7 @@ export type AcceptOrganizationInviteOutcome =
   | { kind: "suspended" }
 
 export type AddOrganizationMemberOutcome =
-  | "added"
-  | "already_member"
-  | "user_not_found"
-  | "forbidden"
+  "added" | "already_member" | "user_not_found" | "forbidden"
 
 export type RemoveOrganizationMemberOutcome = "removed" | "not_member" | "owner" | "last_admin"
 

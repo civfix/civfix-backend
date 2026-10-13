@@ -112,13 +112,11 @@ export function toPanel(panel: DerivedPanel<DerivedBreakdownRow>, maxRows?: numb
   const rows = maxRows === undefined ? panel.rows : panel.rows.slice(0, maxRows)
   return {
     panelSuppressed: panel.panelSuppressed,
-    rows: rows.map(
-      (row): BreakdownRow => ({
-        key: row.key,
-        label: row.key,
-        value: row.value,
-        suppressed: row.suppressed,
-      }),
-    ),
+    rows: rows.map((row): BreakdownRow => ({
+      key: row.key,
+      label: row.key,
+      value: row.value,
+      suppressed: row.suppressed,
+    })),
   }
 }

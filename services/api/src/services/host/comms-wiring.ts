@@ -42,7 +42,7 @@ import { requireCapability } from "./authz.js"
 
 const BROADCAST_JOB_RETRY_LIMIT = 3
 
-export type CommsLogger = Pick<FastifyBaseLogger, "info" | "warn" | "error">
+export type CommsLogger = Pick<FastifyBaseLogger, "debug" | "info" | "warn" | "error">
 
 export interface CommsRuntime {
   repo: BroadcastRepository

@@ -3,8 +3,7 @@ import type { EventAnswerInput } from "@civfix/shared"
 import type { AnswerWrite, QuestionRecord } from "./registration-repository.js"
 
 export type AnswerValidation =
-  | { ok: true; writes: AnswerWrite[] }
-  | { ok: false; fields: Record<string, string> }
+  { ok: true; writes: AnswerWrite[] } | { ok: false; fields: Record<string, string> }
 
 function conditionSatisfied(
   question: QuestionRecord,

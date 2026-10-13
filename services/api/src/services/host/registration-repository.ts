@@ -22,8 +22,7 @@ import type {
 import type { CleanupStatus, EventVisibility } from "@civfix/shared"
 
 export type RegistrationSubject =
-  | { kind: "user"; userId: string }
-  | { kind: "guest"; guestId: string }
+  { kind: "user"; userId: string } | { kind: "guest"; guestId: string }
 
 export interface TicketTypeRecord {
   id: string
@@ -61,8 +60,7 @@ export interface TicketTypeWriteArgs {
 }
 
 export type TicketTypeCapacityFit =
-  | { ok: true }
-  | { ok: false; eventCapacity: number; used: number }
+  { ok: true } | { ok: false; eventCapacity: number; used: number }
 
 export type CreateTicketTypeOutcome =
   | { kind: "created"; record: TicketTypeRecord }
@@ -81,13 +79,10 @@ export type UpdateTicketTypeOutcome =
   | { kind: "not_found" }
 
 export type DeleteTicketTypeOutcome =
-  | { kind: "deleted" }
-  | { kind: "in_use" }
-  | { kind: "not_found" }
+  { kind: "deleted" } | { kind: "in_use" } | { kind: "not_found" }
 
 export type ReorderTicketTypesOutcome =
-  | { kind: "reordered"; items: TicketTypeRecord[] }
-  | { kind: "mismatch" }
+  { kind: "reordered"; items: TicketTypeRecord[] } | { kind: "mismatch" }
 
 export interface QuestionRecord {
   id: string
@@ -399,9 +394,7 @@ export type SavePageOutcome =
   | { kind: "not_found" }
 
 export type PublishPageOutcome =
-  | { kind: "published"; record: PageRecord }
-  | { kind: "flagged" }
-  | { kind: "not_found" }
+  { kind: "published"; record: PageRecord } | { kind: "flagged" } | { kind: "not_found" }
 
 export interface PublicPageRecord {
   page: PageRecord

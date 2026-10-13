@@ -20,9 +20,7 @@ function isSuspendedWrite(request: FastifyRequest): boolean {
 }
 
 export type SocketStatusCheck =
-  | { kind: "live"; status: AccountStatus }
-  | { kind: "revoked" }
-  | { kind: "unknown" }
+  { kind: "live"; status: AccountStatus } | { kind: "revoked" } | { kind: "unknown" }
 
 export type SocketWriteVerdict = "allow" | "suspended" | "revoked"
 

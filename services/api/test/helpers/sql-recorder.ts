@@ -18,8 +18,7 @@ export type Response = readonly unknown[] | Error
 export type Responder = (query: ExecutedQuery) => Response | undefined
 
 export type TranscriptEntry =
-  | { type: "query"; query: ExecutedQuery }
-  | { type: "boundary"; label: string }
+  { type: "query"; query: ExecutedQuery } | { type: "boundary"; label: string }
 
 export interface SqlRecorder {
   sql: Sql

@@ -25,11 +25,12 @@ a pull request that adds one.
 - Branch from a just-pulled `main` (`fix/<slug>`, `feat/<slug>`,
   `chore/<slug>`). `main` deploys staging on every merge; production ships
   from a `v*` release.
-- Open a pull request against `main`. CI must be green, and the branch must be
-  up to date with `main` before it can merge. Merges are squash merges.
+- Open a pull request against `main`. CI must be green before it can merge.
+  Merges are squash merges through the merge queue, which runs CI again on
+  top of the latest `main`, so a branch does not have to be kept up to date.
 - **Keep pull requests reviewable.** One logical change per PR: one bug fix,
-  one feature slice, one refactor. Aim for at most 200 changed lines of
-  hand-written code and never more than 400 (lockfiles, snapshots,
+  one feature slice, one refactor. Aim for at most 1000 changed lines of
+  hand-written code and never more than 2000 (lockfiles, snapshots,
   changesets, non-English locale catalogs, generated output and verbatim
   license texts do not count). Split larger work into slices that each leave
   `main` deployable: preparatory refactor first, then the contract change,

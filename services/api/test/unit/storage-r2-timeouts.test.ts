@@ -54,8 +54,7 @@ function storage() {
 
 async function resolvedHandlerConfig(): Promise<HandlerConfig | undefined> {
   const handler = clientConfigs[0]?.requestHandler as
-    | { configProvider?: Promise<HandlerConfig> }
-    | undefined
+    { configProvider?: Promise<HandlerConfig> } | undefined
   return handler?.configProvider
 }
 

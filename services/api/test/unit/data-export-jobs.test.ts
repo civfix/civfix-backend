@@ -123,9 +123,10 @@ describe("registerDataExportJobs (BE-TEST-049)", () => {
   } {
     const jobs = new FakeJobs()
     const exportData = vi.fn(async () => ({ ok: true as const, email: "jane@example.com" }))
-    const makeService = vi.fn(
-      (): DataExportService => ({ exportData, recordUndeliverable: vi.fn(async () => {}) }),
-    )
+    const makeService = vi.fn((): DataExportService => ({
+      exportData,
+      recordUndeliverable: vi.fn(async () => {}),
+    }))
     const container = { jobs } as unknown as Container
     return { jobs, makeService, exportData, container }
   }

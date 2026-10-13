@@ -178,8 +178,7 @@ function chooseOutput(format: string): {
 export async function readExifGps(bytes: Uint8Array): Promise<ExifGps | null> {
   try {
     const gps = (await exifr.gps(Buffer.from(bytes))) as
-      | { latitude?: number; longitude?: number }
-      | undefined
+      { latitude?: number; longitude?: number } | undefined
     if (
       gps &&
       typeof gps.latitude === "number" &&

@@ -24,8 +24,7 @@ export interface ReportChatSendDeps {
   mentions?: ReportChatMentionSeam | undefined
   notifyMembers?: ((reportId: string, message: ChatMessageDTO) => Promise<void>) | undefined
   forwardCityMention?:
-    | ((reportId: string, message: ChatMessageDTO, actorUserId: string) => Promise<void>)
-    | undefined
+    ((reportId: string, message: ChatMessageDTO, actorUserId: string) => Promise<void>) | undefined
 }
 
 export interface ReportChatSendInput {

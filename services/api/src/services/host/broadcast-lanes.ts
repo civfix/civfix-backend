@@ -6,6 +6,7 @@ import type { BroadcastCreateInput, EventBroadcastContext } from "./broadcast-ty
 import { verifiedReplyTo } from "./broadcast-render.js"
 import { eventWindowOf, hasEventEnded } from "../cleanup-rules.js"
 import { MS_PER_HOUR, MS_PER_SECOND } from "../../lib/time.js"
+import { sweepLogLevel } from "../sweep-log.js"
 
 export const DEFAULT_REMINDER_OFFSETS_MIN = [1440, 180] as const
 
@@ -52,7 +53,7 @@ export interface BroadcastLaneDeps {
   counters: CounterStore
   perEventPerHour: number
   enqueuePlan: (broadcastId: string) => Promise<void>
-  logger?: Pick<FastifyBaseLogger, "info" | "warn" | "error">
+  logger?: Pick<FastifyBaseLogger, "debug" | "info" | "warn" | "error">
   now?: () => Date
 }
 
@@ -185,7 +186,10 @@ export function makeBroadcastLanes(deps: BroadcastLaneDeps) {
         created += 1
         await deps.enqueuePlan(record.id)
       }
-      deps.logger?.info({ evt: "broadcast.reminders.done", created }, "reminder sweep complete")
+      deps.logger?.[sweepLogLevel({ created })](
+        { evt: "broadcast.reminders.done", created },
+        "reminder sweep complete",
+      )
       return { created }
     },
   }
