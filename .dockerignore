@@ -44,4 +44,6 @@ infra
 docs
 scripts
 services/api/scripts
+# build-images.yml runs this inside the built api image, so pnpm deploy must find it in the context.
+!services/api/scripts/image-smoke.mjs
 **/*.md
