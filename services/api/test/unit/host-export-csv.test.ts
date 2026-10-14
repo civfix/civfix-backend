@@ -2,10 +2,7 @@ import { readFileSync } from "node:fs"
 import { fileURLToPath } from "node:url"
 import { describe, expect, it } from "vitest"
 import { csvCell, csvProvenanceRow, csvRow } from "../../src/services/host/export-csv.js"
-import {
-  makeHostExportService,
-  toHostExportDTO,
-} from "../../src/services/host/export-service.js"
+import { makeHostExportService, toHostExportDTO } from "../../src/services/host/export-service.js"
 import {
   hostExportBuilder,
   registerHostExportBuilder,
@@ -15,7 +12,7 @@ import { registerEventExportBuilders } from "../../src/services/host/host-export
 import type {
   HostExportRecord,
   HostExportRepository,
-} from "../../src/services/host/export-repository.drizzle.js"
+} from "../../src/services/host/export-repository.js"
 
 describe("csv cells", () => {
   it("quotes commas, quotes and newlines", () => {
@@ -25,11 +22,16 @@ describe("csv cells", () => {
   })
 
   it("prefixes formula-injection cells", () => {
-    expect(csvCell("=HYPERLINK(\"https://evil.example\")")).toContain("'=")
-    expect(csvCell("+1")).toBe("'+1")
-    expect(csvCell("-1")).toBe("'-1")
-    expect(csvCell("@x")).toBe("'@x")
-    expect(csvCell("\tx")).toBe("'\tx")
+    expect(csvCell('=HYPERLINK("https://evil.example")')).toContain("'=")
+    expect(csvCell("+1")).toBe(`"'+1"`)
+    expect(csvCell("-1")).toBe(`"'-1"`)
+    expect(csvCell("@x")).toBe(`"'@x"`)
+    expect(csvCell("\tx")).toBe(`"'\tx"`)
+  })
+
+  it("prefixes a string minus sign but leaves a negative number numeric", () => {
+    expect(csvCell("-1")).toBe(`"'-1"`)
+    expect(csvCell(-1)).toBe(`"-1"`)
   })
 
   it("renders empty for null and undefined", () => {
@@ -38,8 +40,16 @@ describe("csv cells", () => {
   })
 
   it("writes rows and provenance lines", () => {
-    expect(csvRow(["a", "b"])).toBe("a,b\n")
-    expect(csvProvenanceRow("note")).toBe("# note\n")
+    expect(csvRow(["a", "b"])).toBe('"a","b"\n')
+    expect(csvProvenanceRow("note")).toBe('"# note"\n')
+  })
+
+  // With the lookbehind first, every position rescanned the run of spaces behind it: about 1.5 s here.
+  it("neutralizes a long run of spaces in linear time", () => {
+    const value = "x" + " ".repeat(31998) + "x"
+    const started = performance.now()
+    expect(csvCell(value)).toBe(`"${value}"`)
+    expect(performance.now() - started).toBeLessThan(50)
   })
 })
 
@@ -108,6 +118,13 @@ function harness(
       }
       return Promise.resolve(current)
     },
+    recordObjectKey: (_id, args) => {
+      if (current.status !== "running" || args.runToken !== current.runToken) {
+        return Promise.resolve(false)
+      }
+      current = { ...current, r2Key: args.r2Key }
+      return Promise.resolve(true)
+    },
     markReady: (_id, args) => {
       if (args.runToken !== current.runToken) return Promise.resolve(null)
       const { runToken: _ignored, ...fields } = args
@@ -116,13 +133,15 @@ function harness(
     },
     markFailed: (_id, errorCode) => {
       current = { ...current, status: "failed", errorCode }
-      return Promise.resolve()
+      return Promise.resolve(true)
     },
     listExpired: () => Promise.resolve(current.status === "ready" ? [current] : []),
     markExpired: () => {
       current = { ...current, status: "expired", r2Key: null }
       return Promise.resolve()
     },
+    listOrphaned: () => Promise.resolve([]),
+    releaseObject: () => Promise.resolve(false),
     deleteOlderThan: () => Promise.resolve(0),
   }
   const service = makeHostExportService({
@@ -143,9 +162,16 @@ function harness(
     ...(authorize !== undefined ? { authorize } : {}),
     now: () => new Date("2026-02-05T12:00:00Z"),
   })
-  return { service, puts, deletes, claims, current: () => current, setCurrent: (patch: Partial<HostExportRecord>) => {
-    current = { ...current, ...patch }
-  } }
+  return {
+    service,
+    puts,
+    deletes,
+    claims,
+    current: () => current,
+    setCurrent: (patch: Partial<HostExportRecord>) => {
+      current = { ...current, ...patch }
+    },
+  }
 }
 
 describe("host export build", () => {
@@ -156,16 +182,16 @@ describe("host export build", () => {
     ])
     expect(await h.service.run(EXPORT_ID)).toEqual({ status: "ready" })
     const put = h.puts[0]!
-    expect(put.key).toBe("exports/host/2026/02/00000000-0000-0000-0000-0000000000e1.csv")
+    expect(put.key).toBe("exports/host/2026/02/run-1/00000000-0000-0000-0000-0000000000e1.csv")
     expect(put.meta).toMatchObject({ contentType: "text/csv; charset=utf-8" })
-    expect(String(put.meta && (put.meta as { contentDisposition: string }).contentDisposition)).toContain(
-      "attachment;",
-    )
+    expect(
+      String(put.meta && (put.meta as { contentDisposition: string }).contentDisposition),
+    ).toContain("attachment;")
     const text = put.body.toString("utf8")
     expect(text).toContain("# member email is never included")
     expect(text).toContain("# k=5 note")
-    expect(text).toContain("a,b\n")
-    expect(text).toContain("1,Alex\n")
+    expect(text).toContain('"a","b"\n')
+    expect(text).toContain('"1","Alex"\n')
     expect(h.current().rowCount).toBe(2)
     expect(h.current().truncated).toBe(false)
   })
@@ -196,11 +222,30 @@ describe("host export build", () => {
     expect(h.puts[0]!.body.toString("utf8")).toContain("'=HYPERLINK")
   })
 
+  it("escapes a formula hidden behind an in-value separator", async () => {
+    const h = harness([["1", "Alex;=cmd|' /C calc'!A0"]])
+    await h.service.run(EXPORT_ID)
+    expect(h.puts[0]!.body.toString("utf8")).toContain("\"Alex;'=cmd|' /C calc'!A0\"")
+  })
+
   it("is idempotent: a second run does not re-claim", async () => {
     const h = harness([["1", "x"]])
     await h.service.run(EXPORT_ID)
     expect(await h.service.run(EXPORT_ID)).toEqual({ status: "skipped" })
     expect(h.puts).toHaveLength(1)
+  })
+
+  it("gives every run of one export its own object, so a superseded run cannot discard the winner's", async () => {
+    const h = harness([["1", "x"]])
+    await h.service.run(EXPORT_ID)
+    h.setCurrent({ status: "queued" })
+    await h.service.run(EXPORT_ID)
+
+    const [first, second] = h.puts.map((p) => p.key)
+    expect(first).not.toBe(second)
+    expect(first).toMatch(/^exports\/host\/2026\/02\/run-1\//)
+    expect(second).toMatch(/^exports\/host\/2026\/02\/run-2\//)
+    expect(h.current().r2Key).toBe(second)
   })
 
   it("mints a SHORT forceSigned download url", async () => {
@@ -235,7 +280,8 @@ describe("host export build", () => {
         ...({} as HostExportRepository),
         listExpired: () => Promise.resolve([h.current()]),
         markExpired: () => Promise.reject(new Error("should not be called")),
-      } as HostExportRepository,
+        listOrphaned: () => Promise.resolve([]),
+      },
       storage: {
         put: () => Promise.resolve(),
         presignGet: () => Promise.resolve("x"),
@@ -256,12 +302,14 @@ describe("host export build", () => {
 describe("roster export query source", () => {
   it("never names a member's email or phone column", () => {
     const source = readFileSync(
-      fileURLToPath(new URL("../../src/services/host/host-export-builders.ts", import.meta.url)),
+      fileURLToPath(
+        new URL("../../src/services/host/export-repository.drizzle.ts", import.meta.url),
+      ),
       "utf8",
     )
     const rosterQuery = source.slice(
-      source.indexOf("async function* rosterRows"),
-      source.indexOf("async function* checkinRows"),
+      source.indexOf("async rosterPage("),
+      source.indexOf("async checkinPage("),
     )
     expect(rosterQuery.length).toBeGreaterThan(100)
     expect(rosterQuery).not.toMatch(/u\.email/)
@@ -356,6 +404,7 @@ describe("host export claim token", () => {
     expect(await h.service.run(EXPORT_ID)).toEqual({ status: "skipped" })
     expect(h.current().status).toBe("running")
     expect(h.current().r2Key).toBeNull()
-    expect(h.deletes).toEqual([h.puts[0]!.key])
+    expect(h.puts).toHaveLength(0)
+    expect(h.deletes).toEqual([])
   })
 })

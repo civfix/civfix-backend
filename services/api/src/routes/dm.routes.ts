@@ -1,4 +1,3 @@
-
 import {
   OpenDmRequestSchema,
   DmHistoryQuerySchema,
@@ -22,13 +21,18 @@ import { makeDmService, type DmService, type DmUserLookup } from "../services/dm
 import { makeChatReactionService } from "../services/chat-reaction-service.js"
 import { makeChatEditService } from "../services/chat-edit-service.js"
 import { makeDmPeerOf } from "../services/dm-peer.js"
-import type { DmRepository } from "../services/dm-repository.drizzle.js"
-import type { BlocksRepository } from "../services/blocks-repository.drizzle.js"
+import type { DmRepository } from "../services/dm-repository.js"
+import type { BlocksRepository } from "../services/blocks-repository.js"
+import type { ConversationMutesRepository } from "../services/conversation-mutes-repository.js"
+import { makeConversationMutesRepository } from "../services/conversation-mutes-repository.drizzle.js"
 import {
-  makeConversationMutesRepository,
-  type ConversationMutesRepository,
-} from "../services/conversation-mutes-repository.drizzle.js"
-import { chatHistoryPayload, neutralizeChatViewerFields } from "./chat-route-helpers.js"
+  chatHistoryPayload,
+  clampChatHistoryLimit,
+  DELETE_MESSAGE_FORBIDDEN,
+  MESSAGE_ALREADY_DELETED,
+} from "./chat-route-helpers.js"
+import { neutralizeChatViewerFields } from "../services/chat-viewer-fields.js"
+import { chatMentionDeps, type ChatMentionSeam } from "./chat-gateway-wiring.js"
 
 const DmIdParamsSchema = z.object({ id: IdSchema }).strict()
 
@@ -41,8 +45,6 @@ export const DM_OPEN_RATE_LIMIT = perIdentity({ max: 20, timeWindow: "1 minute" 
 export const DM_REACTION_RATE_LIMIT = perIdentity({ max: 60, timeWindow: "1 minute" })
 export const DM_MESSAGE_MUTATION_RATE_LIMIT = perIdentity({ max: 30, timeWindow: "1 minute" })
 
-const DM_HISTORY_DEFAULT_LIMIT = 30
-
 export async function registerDmRoutes(app: FastifyInstance, container: Container): Promise<void> {
   const csrfProtect = container.csrf.protect
 
@@ -54,6 +56,10 @@ export async function registerDmRoutes(app: FastifyInstance, container: Containe
   }
 
   const peerOf = makeDmPeerOf({ getThread: (threadId) => dmRepo().getThread(threadId) })
+
+  const chatMentions: ChatMentionSeam | undefined =
+    app.chatOverrides?.chatMentions ??
+    (container.env.USE_FAKE_CHAT ? undefined : chatMentionDeps(app, container))
 
   const loadUser: DmUserLookup = async (userId) => {
     const store = app.authServices?.users
@@ -116,7 +122,7 @@ export async function registerDmRoutes(app: FastifyInstance, container: Containe
     const q = parse(DmHistoryQuerySchema, request.query)
     await authorizePeer(id, userId, "You can't view this conversation.")
 
-    const limit = q.limit ?? DM_HISTORY_DEFAULT_LIMIT
+    const limit = clampChatHistoryLimit(q.limit)
     const payload: ChatHistoryResponse = await chatHistoryPayload(
       {
         history: (before, pageLimit, around) =>
@@ -136,12 +142,17 @@ export async function registerDmRoutes(app: FastifyInstance, container: Containe
     async (request, reply) => {
       const userId = requireAuth(request)
       const { threadId, messageId } = parse(ThreadMessageParamsSchema, request.params)
-      const body = parse(EditDmMessageBodySchema, { ...(request.body as object), threadId, messageId })
+      const body = parse(EditDmMessageBodySchema, {
+        ...(request.body as object),
+        threadId,
+        messageId,
+      })
 
       const edits = makeChatEditService({
         dm: dmRepo(),
         dmPeerOf: peerOf,
         isBlockedEitherWay: (a, b) => blocksRepo().isBlockedEitherWay(a, b),
+        ...(chatMentions ? { chatMentions } : {}),
         broadcastEvent: (roomKey, frame) => container.chatService.broadcastEvent?.(roomKey, frame),
       })
       const updated = await edits.editMessage({
@@ -201,9 +212,13 @@ export async function registerDmRoutes(app: FastifyInstance, container: Containe
     async (request, reply) => {
       const userId = requireAuth(request)
       const { threadId, messageId } = parse(ThreadMessageParamsSchema, request.params)
-      await authorizePeer(threadId, userId, "You can't delete this message.")
+      await authorizePeer(threadId, userId, DELETE_MESSAGE_FORBIDDEN)
 
-      const tombstone: ChatMessageDTO | null = await dmRepo().softDelete(threadId, messageId, userId)
+      const tombstone: ChatMessageDTO | null = await dmRepo().softDelete(
+        threadId,
+        messageId,
+        userId,
+      )
       if (tombstone === null) {
         const meta = await dmRepo().findMessageMeta(messageId)
         if (
@@ -212,9 +227,9 @@ export async function registerDmRoutes(app: FastifyInstance, container: Containe
           meta.deletedAt !== null &&
           meta.senderId === userId
         ) {
-          throw AppError.conflict("This message was already deleted.")
+          throw AppError.conflict(MESSAGE_ALREADY_DELETED)
         }
-        throw AppError.forbidden("You can't delete this message.")
+        throw AppError.forbidden(DELETE_MESSAGE_FORBIDDEN)
       }
 
       const roomView = neutralizeChatViewerFields(tombstone)

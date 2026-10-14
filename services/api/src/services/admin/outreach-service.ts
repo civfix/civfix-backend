@@ -1,39 +1,22 @@
-
 import { REPORT_CATEGORY_LABELS } from "@civfix/shared"
 import type { ReportCategory } from "@civfix/shared"
 import { ADMIN_CATEGORIES } from "./category-counts.js"
+import { MS_PER_DAY } from "../../lib/time.js"
 import type { MailRepository } from "./mail-repository.drizzle.js"
-import type { OutboundMailService } from "./outbound-mail-service.js"
+import {
+  isOutboundSendDeadlineError,
+  type OutboundMailLogger,
+  type OutboundMailService,
+} from "./outbound-mail-service.js"
+import type { OutreachDigest, OutreachRepository } from "./outreach-repository.js"
 
-export interface OutreachDigest {
-  geoid: string
-  org: string | null
-  toAddr: string
-  perCategory: Partial<Record<ReportCategory, number>>
-  total: number
-  oldestWaitingAt: Date | null
-}
-
-export interface OutreachRepository {
-  loadDigest(geoid: string): Promise<OutreachDigest | null>
-  listCandidateGeoids(limit?: number): Promise<string[]>
-  claimOutreachWindow?(
-    geoid: string,
-    window: { at: Date; windowStart: Date },
-  ): Promise<boolean>
-}
-
-export const OUTREACH_SWEEP_BATCH_SIZE = 200
+const OUTREACH_SWEEP_BATCH_SIZE = 200
 
 export const OUTREACH_CATEGORIES: readonly ReportCategory[] = ADMIN_CATEGORIES
 
-export function isThrottled(
-  lastOutreachAt: Date | null,
-  now: Date,
-  throttleDays: number,
-): boolean {
+export function isThrottled(lastOutreachAt: Date | null, now: Date, throttleDays: number): boolean {
   if (lastOutreachAt === null) return false
-  const windowMs = throttleDays * 24 * 60 * 60 * 1000
+  const windowMs = throttleDays * MS_PER_DAY
   return now.getTime() - lastOutreachAt.getTime() < windowMs
 }
 
@@ -78,6 +61,7 @@ export interface OutreachServiceDeps {
   throttleDays: number
   now?: () => Date
   sweepBatchSize?: number
+  logger?: OutboundMailLogger
 }
 
 export interface OutreachService {
@@ -127,7 +111,7 @@ export function makeOutreachService(deps: OutreachServiceDeps): OutreachService 
     const at = now()
     const claim = deps.outreachRepo.claimOutreachWindow
     if (claim) {
-      const windowStart = new Date(at.getTime() - deps.throttleDays * 24 * 60 * 60 * 1000)
+      const windowStart = new Date(at.getTime() - deps.throttleDays * MS_PER_DAY)
       const won = await claim(geoid, { at, windowStart })
       if (!won) {
         return { geoid, sent: false, skipped: "throttled", reportCount: 0 }
@@ -136,10 +120,17 @@ export function makeOutreachService(deps: OutreachServiceDeps): OutreachService 
         const threadId = await sendDigest(digest)
         return { geoid, sent: true, reportCount: digest.total, threadId }
       } catch (err) {
-        if (!isDeliveredError(err)) {
+        // A deadline is an unknown outcome, not a non-delivery: releasing the window would let the next
+        // sweep put a second digest in front of the same city contact.
+        if (!isDeliveredError(err) && !isOutboundSendDeadlineError(err)) {
           await deps.mailRepo
             .setOutreachState(geoid, { lastOutreachAt: state?.lastOutreachAt ?? null })
-            .catch(() => {})
+            .catch((releaseErr: unknown) => {
+              deps.logger?.warn(
+                { err: releaseErr, geoid },
+                "outreach: releasing the digest window after a failed send failed",
+              )
+            })
         }
         throw err
       }

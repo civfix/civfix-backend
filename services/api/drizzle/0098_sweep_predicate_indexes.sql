@@ -3,7 +3,7 @@
 -- -----------------------------------------------------------------------------
 -- FINDING H13 (supporting index) + the audit's "sweep predicates have no index"
 -- medium: the hourly orphan sweep (findOrphans / deleteOrphan in
--- services/media-worker-repo.ts) scans media_assets for rows with NO binding
+-- services/media-worker-repository.drizzle.ts) scans media_assets for rows with NO binding
 -- older than the orphan TTL, and the nightly retention sweep scans email_otps
 -- for consumed/expired rows. Neither predicate had a supporting index, so both
 -- ran a sequential scan every run.
@@ -24,7 +24,7 @@
 -- docs/out-of-band-indexes.md carries the same command plus the verification
 -- steps; re-running this migration afterwards simply stops warning.
 --
--- The index predicate is the STABLE part of the orphan predicate — the two
+-- The index predicate is the STABLE part of the orphan predicate; the two
 -- avatar NOT EXISTS probes and the `created_at < cutoff` bound are evaluated on
 -- the (now much smaller) candidate set; created_at is the index key so the age
 -- bound is served from the index tuple.

@@ -1,4 +1,3 @@
-
 import { index, pgTable, primaryKey, timestamp, uuid } from "drizzle-orm/pg-core"
 import { users } from "./users.js"
 
@@ -20,6 +19,11 @@ export const followsPeople = pgTable(
       t.followerId,
       t.createdAt.desc(),
       t.followeeId.desc(),
+    ),
+    index("follows_people_followee_created_idx").on(
+      t.followeeId,
+      t.createdAt.desc(),
+      t.followerId.desc(),
     ),
   ],
 )

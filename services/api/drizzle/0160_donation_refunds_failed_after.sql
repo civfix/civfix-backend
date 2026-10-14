@@ -11,7 +11,7 @@
 -- alerted on rather than silently reversed: the money is recovered by hand.
 --
 -- 'failed_after' is deliberately OUTSIDE donation_refunds_app_fee_pending_idx's
--- ('pending','failed') predicate — it is terminal and must never be retried.
+-- ('pending','failed') predicate; it is terminal and must never be retried.
 --
 -- Rewrites one CHECK constraint on a table that is empty on every environment
 -- at this point in the change set; the drop/add pair takes an ACCESS EXCLUSIVE

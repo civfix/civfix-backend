@@ -7,6 +7,7 @@ import type {
   DeliveryStatus,
   DeliverySuppressionReason,
 } from "@civfix/shared"
+import type { KeysetCursor } from "../../db/cursor-helpers.js"
 
 export type BroadcastRecipientKind = "member" | "guest"
 
@@ -53,6 +54,7 @@ export interface BroadcastCreateInput {
   replyTo?: string | null
   status?: BroadcastStatus
   scheduledAt?: Date | null
+  startedAt?: Date | null
   chunkSize?: number
 }
 
@@ -168,16 +170,20 @@ export interface AdminHostRow {
   suppressedCount: number
   eventsMessaged: number
   lastBroadcastAt: Date | null
-  sortAt: Date
 }
 
 export interface AdminHostListParams {
   q?: string
   suspended?: boolean
   windowStart: Date
-  cursor: { at: Date; id: string } | null
+  cursor: KeysetCursor | null
   limit: number
 }
+
+// Matches the broadcasts.chunk_size column default, which createIfAbsent relies on.
+export const DEFAULT_BROADCAST_CHUNK_SIZE = 200
+
+export const MAX_DELIVERY_ATTEMPTS = 3
 
 export const CRITICAL_BROADCAST_KINDS: ReadonlySet<BroadcastKind> = new Set<BroadcastKind>([
   "event_updated",

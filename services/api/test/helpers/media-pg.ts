@@ -19,6 +19,7 @@ export interface SeedMediaOptions {
   kind?: SeedMediaKind
   status?: SeedMediaStatus
   purpose?: string
+  uploader?: string | null
   byteSize?: number | null
   width?: number | null
   height?: number | null
@@ -50,12 +51,12 @@ export async function seedMediaAsset(
 
   const [row] = await sql<{ id: string }[]>`
     INSERT INTO media_assets (
-      id, upload_id, kind, r2_key, served_key, thumb_key, status, purpose,
+      id, upload_id, kind, r2_key, served_key, thumb_key, status, purpose, uploader,
       byte_size, width, height, report_id, post_id, chat_message_id, finalized_at, created_at
     )
     VALUES (
       ${over.id ?? randomUUID()}, ${uploadId}, ${over.kind ?? "image"}, ${r2Key}, ${servedKey},
-      ${thumbKey}, ${status}, ${over.purpose ?? "report"},
+      ${thumbKey}, ${status}, ${over.purpose ?? "report"}, ${over.uploader ?? null},
       ${over.byteSize ?? null}, ${over.width ?? null}, ${over.height ?? null},
       ${over.reportId ?? null}, ${over.postId ?? null}, ${over.chatMessageId ?? null},
       ${over.finalizedAt ?? null}, ${over.createdAt ?? new Date()}

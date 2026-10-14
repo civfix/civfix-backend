@@ -1,8 +1,6 @@
 /**
- * Task D-B2: three new tables backing report-chat membership (Join), per-conversation mute, and
- * the @city forward audit. This task ONLY defines the Drizzle mirrors + migrations — nothing
- * reads/writes them yet (consumers land in D-C1 membership repo, D-E1 mute repo, D-C4 forward
- * audit). No database needed: this only inspects the Drizzle table configs.
+ * The Drizzle mirrors of the report-chat membership, per-conversation mute and @city forward audit
+ * tables. No database needed: this only inspects the Drizzle table configs.
  */
 
 import { describe, expect, it } from "vitest"
@@ -12,7 +10,6 @@ import { reportChatMembers } from "../../src/db/schema/report_chat_members.js"
 import { conversationMutes } from "../../src/db/schema/conversation_mutes.js"
 import { reportMessageForwards } from "../../src/db/schema/report_message_forwards.js"
 
-/** Extracts the composite primary-key column names (in declaration order) from a pgTable's config. */
 function primaryKeyColumnNames(table: Parameters<typeof getTableConfig>[0]): string[] {
   const config = getTableConfig(table)
   const pk = config.primaryKeys[0]

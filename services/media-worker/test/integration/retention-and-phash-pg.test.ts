@@ -2,17 +2,18 @@
  * The worker's RAW SQL against the canonical migrated schema (Docker-gated; SKIPS without Docker).
  *
  * Two pieces of the worker talk to Postgres in hand-written SQL and were only ever exercised against
- * fakes: runRetentionSweep (six paged DELETE ... RETURNING statements plus the inbound-email lane, spy-
- * tested as STRINGS, so a wrong column or table name was invisible) and makePhashDuplicateLookup (replaced
- * by an injected stub in every unit test, and its interpolated `AND id <> $1` / `AND report_id IS DISTINCT
- * FROM $2` fragments plus ORDER BY created_at are exactly the kind of thing a string spy cannot check).
+ * fakes: runRetentionSweep (six paged DELETE ... RETURNING statements in the api's retention repository
+ * plus the inbound-email lane, spy-tested as STRINGS, so a wrong column or table name was invisible) and
+ * the pHash duplicate lookup (the worker repository's findPhashDuplicate, replaced by an injected stub in
+ * every unit test, and its interpolated `AND id <> $1` / `AND report_id IS DISTINCT FROM $2` fragments
+ * plus ORDER BY created_at are exactly the kind of thing a string spy cannot check).
  * The idempotency_keys lane pages by ctid rather than by `key`: 0078/0079 dropped the key-only PK, so
  * `key` alone is NOT unique any more and a key-keyed subquery deleted unrelated live rows.
  * Both are also failure-tolerant in production - the retention sweep counts and continues, the dedupe
  * error is downgraded to a note - so drift would surface as silently-doing-nothing, not as an incident.
  *
- * The phash lookup is reached through buildSeams(), i.e. the real production wiring, because the function
- * itself is private to seams.ts (and how it gets wired is part of what should not break).
+ * The phash lookup is reached through makeSeams(), i.e. the real production wiring, because how seams.ts
+ * wires it (only when DATABASE_URL is set) is part of what should not break.
  */
 
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest"
@@ -20,7 +21,7 @@ import { randomUUID } from "node:crypto"
 import { FakeStorage } from "@civfix/shared/fakes"
 import { GEOCODE_CACHE_TTL_MS } from "@civfix/api/geocode-cache"
 import { runRetentionSweep } from "../../src/jobs/retention-sweep.js"
-import { buildSeams, type WorkerSeams } from "../../src/seams.js"
+import { makeSeams, type WorkerSeams } from "../../src/seams.js"
 import { withWorkerPg, type WorkerPgHarness } from "../helpers/pg.js"
 
 const pg = await withWorkerPg()
@@ -42,14 +43,14 @@ beforeAll(async () => {
     RETURNING id
   `
   userId = user!.id
-  // The REAL production wiring: a DATABASE_URL is what makes buildSeams construct the phash lookup at all.
-  seams = await buildSeams({
+  // The REAL production wiring: a DATABASE_URL is what makes makeSeams construct the phash lookup at all.
+  seams = await makeSeams({
     NODE_ENV: "test",
     DATABASE_URL: h.uri,
     USE_FAKE_STORAGE: "1",
     USE_FAKE_ABUSE_NSFW: "1",
     USE_FAKE_JOBS: "1",
-  } as NodeJS.ProcessEnv)
+  })
 })
 
 afterAll(async () => {
@@ -236,9 +237,7 @@ describe.skipIf(!pg)("retention.sweep against the real schema", () => {
     expect(points.map((r) => r.point_key)).not.toContain(staleGeocode)
 
     const emails = await h.sql<{ id: string }[]>`SELECT id FROM inbound_emails`
-    expect(emails.map((r) => r.id).sort()).toEqual(
-      [recentlyArchivedEmail, unarchivedEmail].sort(),
-    )
+    expect(emails.map((r) => r.id).sort()).toEqual([recentlyArchivedEmail, unarchivedEmail].sort())
     expect(emails.map((r) => r.id)).not.toContain(archivedEmail)
     expect(storage.get(attachmentKey)).toBeNull()
   })
@@ -264,7 +263,7 @@ describe.skipIf(!pg)("retention.sweep against the real schema", () => {
   })
 
   /**
-   * M10 for retention: the sweep used to delete ONE fixed batch per table per DAY, so any table whose daily
+   * The sweep used to delete ONE fixed batch per table per DAY, so any table whose daily
    * expiry churn exceeded the batch grew a backlog forever. Real SQL, real LIMIT: five doomed rows against a
    * page size of two must all be gone in one run.
    */
@@ -322,7 +321,7 @@ describe.skipIf(!pg)("retention.sweep against the real schema", () => {
    * (key, scope, COALESCE(user_or_anon, '')), so ONE key value can legitimately name several live rows.
    * The lane used to page with `WHERE key IN (SELECT key ... WHERE created_at < cutoff LIMIT n)`, which
    * re-expands each aged key back over its whole family: a younger row in another scope/owner was
-   * deleted with it — silently voiding a still-live idempotency guarantee — and a single page could
+   * deleted with it (silently voiding a still-live idempotency guarantee), and a single page could
    * delete more rows than the batch limit it was handed. Paging by ctid deletes exactly the rows the age
    * predicate selected.
    */
@@ -348,7 +347,11 @@ describe.skipIf(!pg)("retention.sweep against the real schema", () => {
   it("never deletes more aged rows than the batch limit in a single page", async () => {
     const key = randomUUID()
     for (let i = 0; i < 5; i++) {
-      await insertIdempotencyKey(at(-72 * HOUR), { key, scope: `report.create.${i}`, owner: "user-a" })
+      await insertIdempotencyKey(at(-72 * HOUR), {
+        key,
+        scope: `report.create.${i}`,
+        owner: "user-a",
+      })
     }
 
     const res = await runRetentionSweep({
@@ -366,13 +369,13 @@ describe.skipIf(!pg)("retention.sweep against the real schema", () => {
 })
 
 describe.skipIf(!pg)("phash near-duplicate lookup against the real media_assets", () => {
-  /** The lookup buildSeams wired; asserted present because `undefined` here would skip every case. */
+  /** The lookup makeSeams wired; asserted present because `undefined` here would skip every case. */
   function lookup(
     hash: string,
     opts?: { excludeAssetId?: string; excludeReportId?: string },
   ): Promise<{ dup: boolean; ofReportId?: string | null }> {
     const fn = seams?.findPhashDuplicate
-    expect(fn, "buildSeams must wire findPhashDuplicate when DATABASE_URL is set").toBeDefined()
+    expect(fn, "makeSeams must wire findPhashDuplicate when DATABASE_URL is set").toBeDefined()
     return fn!(hash, opts)
   }
 
@@ -445,7 +448,11 @@ describe.skipIf(!pg)("phash near-duplicate lookup against the real media_assets"
   it("#43: a SIBLING in the same report is not a duplicate, but a third report still is", async () => {
     const shared = await insertReport()
     await insertMedia({ phash: HASH, reportId: shared, createdAt: "2026-06-02T00:00:00Z" })
-    const sibling = await insertMedia({ phash: HASH, reportId: shared, createdAt: "2026-06-03T00:00:00Z" })
+    const sibling = await insertMedia({
+      phash: HASH,
+      reportId: shared,
+      createdAt: "2026-06-03T00:00:00Z",
+    })
 
     await expect(
       lookup(HASH, { excludeAssetId: sibling, excludeReportId: shared }),

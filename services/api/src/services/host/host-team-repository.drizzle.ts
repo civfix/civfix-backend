@@ -1,5 +1,6 @@
 import {
   AppError,
+  MAX_TEAM_INVITES_PER_EVENT,
   type CleanupMemberRole,
   type CleanupStatus,
   type EventTeamInviteStatus,
@@ -7,11 +8,16 @@ import {
   type EventVisibility,
 } from "@civfix/shared"
 import type { Queryable, Sql } from "../../db/client.js"
-import { encodeTimeCursor, pageWith, parseTimeCursor } from "../../db/cursor-helpers.js"
-import { servedKeyExpr } from "../media-served-key.js"
+import {
+  keysetInstant,
+  keysetPredicate,
+  paginateKeyset,
+  parseKeysetCursor,
+} from "../../db/cursor-helpers.js"
+import { publicServedKeyExpr } from "../media-served-key.js"
 import { cleanupStatusExpr } from "../cleanup-sql.js"
 import { writeHostAudit } from "./host-audit.js"
-import { isUniqueViolationOn } from "./registration-sql.js"
+import { isUniqueViolationOn } from "../../db/pg-errors.js"
 import type {
   AcceptTeamInviteByIdOutcome,
   AcceptTeamInviteOutcome,
@@ -25,7 +31,14 @@ import type {
   OpenTeamInviteQuery,
   PendingInviteForUserRecord,
   RevokeTeamInviteOutcome,
-} from "./host-team-repository.types.js"
+} from "./host-team-repository.js"
+import { TEAM_INVITE_CAP_MESSAGE } from "./host-team-rules.js"
+import { personViewOf, UNKNOWN_PERSON_NAME } from "./organization-repository-rows.drizzle.js"
+
+const TEAM_INVITE_PENDING_CONSTRAINTS = [
+  "cleanup_team_invites_pending_user_uidx",
+  "cleanup_team_invites_pending_email_uidx",
+]
 
 interface InviteRowSelect {
   id: string
@@ -73,27 +86,27 @@ function toInviteRecord(row: InviteRowSelect): EventTeamInviteRecord {
     cleanupId: row.cleanup_id,
     role: row.role,
     status: row.status,
-    invitee:
-      row.invitee_id === null
-        ? null
-        : {
-            id: row.invitee_id,
-            displayName: row.invitee_name ?? "Unknown",
-            handle: row.invitee_handle,
-            bio: null,
-            avatarUrl: row.invitee_avatar_url,
-          },
+    invitee: personViewOf(
+      {
+        id: row.invitee_id,
+        name: row.invitee_name,
+        handle: row.invitee_handle,
+        bio: null,
+        avatarUrl: row.invitee_avatar_url,
+      },
+      UNKNOWN_PERSON_NAME,
+    ),
     invitedEmail: row.invited_email,
-    invitedBy:
-      row.inviter_id === null
-        ? null
-        : {
-            id: row.inviter_id,
-            displayName: row.inviter_name ?? "Unknown",
-            handle: row.inviter_handle,
-            bio: null,
-            avatarUrl: row.inviter_avatar_url,
-          },
+    invitedBy: personViewOf(
+      {
+        id: row.inviter_id,
+        name: row.inviter_name,
+        handle: row.inviter_handle,
+        bio: null,
+        avatarUrl: row.inviter_avatar_url,
+      },
+      UNKNOWN_PERSON_NAME,
+    ),
     createdAt: row.created_at,
     expiresAt: row.expires_at,
     acceptedAt: row.accepted_at,
@@ -133,25 +146,20 @@ function toPendingInviteForUser(row: PendingInviteForUserRowSelect): PendingInvi
       coverKey: row.cover_key,
       address: row.address,
     },
-    invitedBy:
-      row.inviter_id === null
-        ? null
-        : {
-            id: row.inviter_id,
-            displayName: row.inviter_name ?? "Unknown",
-            handle: row.inviter_handle,
-            bio: null,
-            avatarUrl: row.inviter_avatar_url,
-          },
+    invitedBy: personViewOf(
+      {
+        id: row.inviter_id,
+        name: row.inviter_name,
+        handle: row.inviter_handle,
+        bio: null,
+        avatarUrl: row.inviter_avatar_url,
+      },
+      UNKNOWN_PERSON_NAME,
+    ),
     createdAt: row.created_at,
     expiresAt: row.expires_at,
   }
 }
-
-const TEAM_INVITE_PENDING_CONSTRAINTS = [
-  "cleanup_team_invites_pending_user_uidx",
-  "cleanup_team_invites_pending_email_uidx",
-]
 
 async function readOpenInvite(
   tag: Queryable,
@@ -197,7 +205,10 @@ async function reofferOpenInvite(
   return { kind: "updated", invite: { ...open, role: args.role } }
 }
 
-async function eventOpenInTx(tx: Queryable, cleanupId: string): Promise<"open" | "closed" | "gone"> {
+async function eventOpenInTx(
+  tx: Queryable,
+  cleanupId: string,
+): Promise<"open" | "closed" | "gone"> {
   const rows = await tx<{ closed: boolean }[]>`
     SELECT (status = 'cancelled' OR ends_at <= now()) AS closed
     FROM cleanups WHERE id = ${cleanupId} LIMIT 1 FOR SHARE
@@ -242,7 +253,7 @@ async function seatTeamMemberInTx(
   tx: Queryable,
   args: { cleanupId: string; userId: string; role: EventTeamRole; now: Date },
 ): Promise<CleanupMemberRole> {
-  await tx`
+  const seated = await tx<{ role: CleanupMemberRole }[]>`
     INSERT INTO cleanup_members (cleanup_id, user_id, role, joined_at)
     VALUES (${args.cleanupId}, ${args.userId}, ${args.role}, ${args.now})
     ON CONFLICT (cleanup_id, user_id)
@@ -257,13 +268,31 @@ async function seatTeamMemberInTx(
       ELSE EXCLUDED.role
     END
     WHERE cleanup_members.role <> 'organizer'
+    RETURNING role
   `
+  if (seated[0] !== undefined) return seated[0].role
+  // No row back means the organizer guard skipped the update; ON CONFLICT has already locked that row.
   return (await heldRoleInTx(tx, args.cleanupId, args.userId)) ?? args.role
+}
+
+async function expireTeamInviteInTx(tx: Queryable, inviteId: string): Promise<void> {
+  await tx`
+    UPDATE cleanup_team_invites
+    SET status = 'expired', invited_email = NULL, email_scrubbed_at = now()
+    WHERE id = ${inviteId}
+  `
 }
 
 async function closeAcceptedInviteInTx(
   tx: Queryable,
-  args: { inviteId: string; cleanupId: string; userId: string; role: EventTeamRole; now: Date; from: CleanupMemberRole | null },
+  args: {
+    inviteId: string
+    cleanupId: string
+    userId: string
+    role: EventTeamRole
+    now: Date
+    from: CleanupMemberRole | null
+  },
 ): Promise<void> {
   await tx`
     UPDATE cleanup_team_invites
@@ -285,6 +314,18 @@ async function closeAcceptedInviteInTx(
       to: args.role,
     },
   })
+}
+
+/** The shared tail of both accept paths: a banned account is refused, anyone else is seated. */
+async function seatFromInviteInTx(
+  tx: Queryable,
+  args: { inviteId: string; cleanupId: string; userId: string; role: EventTeamRole; now: Date },
+): Promise<CleanupMemberRole | "banned"> {
+  if (await isBannedInTx(tx, args.cleanupId, args.userId)) return "banned"
+  const held = await heldRoleInTx(tx, args.cleanupId, args.userId)
+  const role = await seatTeamMemberInTx(tx, args)
+  await closeAcceptedInviteInTx(tx, { ...args, from: held })
+  return role
 }
 
 export function makeDrizzleHostTeamRepository(sql: Sql): HostTeamRepository {
@@ -354,8 +395,10 @@ export function makeDrizzleHostTeamRepository(sql: Sql): HostTeamRepository {
     async resolveUserByHandle(
       handle: string,
     ): Promise<{ userId: string; email: string | null } | null> {
+      // A handle invite mails its accept link, so only an address the account proved it owns may
+      // receive it; the in-app notice still reaches the account either way.
       const rows = await sql<{ id: string; email: string | null }[]>`
-        SELECT id, email FROM users
+        SELECT id, CASE WHEN email_verified THEN email END AS email FROM users
         WHERE handle = ${handle} AND deleted_at IS NULL
         LIMIT 1
       `
@@ -378,6 +421,15 @@ export function makeDrizzleHostTeamRepository(sql: Sql): HostTeamRepository {
           }
           const open = await reofferOpenInvite(tx, args)
           if (open !== null) return open
+          // Serializes concurrent inviters on one event so the cap is counted, not raced.
+          await tx`SELECT pg_advisory_xact_lock(hashtext('team_invites:' || ${args.cleanupId}))`
+          const pending = await tx<{ count: number }[]>`
+            SELECT count(*)::int AS count FROM cleanup_team_invites
+            WHERE cleanup_id = ${args.cleanupId} AND status = 'pending'
+          `
+          if ((pending[0]?.count ?? 0) >= MAX_TEAM_INVITES_PER_EVENT) {
+            throw AppError.conflict(TEAM_INVITE_CAP_MESSAGE)
+          }
           const inserted = await tx<InviteRowSelect[]>`
             WITH ins AS (
               INSERT INTO cleanup_team_invites (
@@ -481,11 +533,7 @@ export function makeDrizzleHostTeamRepository(sql: Sql): HostTeamRepository {
         if (invite === undefined || invite.status !== "pending") return { kind: "invalid" }
         if (invite.invited_by === args.userId) return { kind: "wrong_recipient" }
         if (invite.expires_at.getTime() <= args.now.getTime()) {
-          await tx`
-            UPDATE cleanup_team_invites
-            SET status = 'expired', invited_email = NULL, email_scrubbed_at = now()
-            WHERE id = ${invite.id}
-          `
+          await expireTeamInviteInTx(tx, invite.id)
           return { kind: "expired" }
         }
         if (invite.invited_user_id !== null && invite.invited_user_id !== args.userId) {
@@ -502,37 +550,29 @@ export function makeDrizzleHostTeamRepository(sql: Sql): HostTeamRepository {
           `
           if (match.length === 0) return { kind: "wrong_recipient" }
         }
-        if (await isBannedInTx(tx, args.cleanupId, args.userId)) return { kind: "banned" }
-        const held = await heldRoleInTx(tx, args.cleanupId, args.userId)
-        const role = await seatTeamMemberInTx(tx, {
-          cleanupId: args.cleanupId,
-          userId: args.userId,
-          role: invite.role,
-          now: args.now,
-        })
-        await closeAcceptedInviteInTx(tx, {
+        const role = await seatFromInviteInTx(tx, {
           inviteId: invite.id,
           cleanupId: args.cleanupId,
           userId: args.userId,
           role: invite.role,
           now: args.now,
-          from: held,
         })
-        return { kind: "accepted", role }
+        return role === "banned" ? { kind: "banned" } : { kind: "accepted", role }
       })
     },
 
     async listInvitesForUser(
       args: ListInvitesForUserArgs,
     ): Promise<{ items: PendingInviteForUserRecord[]; nextCursor: string | null }> {
-      const cursor = parseTimeCursor(args.cursor)
+      const cursor = parseKeysetCursor(args.cursor)
       const cursorFilter =
         cursor !== null
-          ? sql`AND (i.created_at, i.id) < (${cursor.at}, ${cursor.id}::uuid)`
+          ? sql`AND ${keysetPredicate(sql, sql`i.created_at`, sql`i.id`, cursor)}`
           : sql``
-      const rows = await sql<PendingInviteForUserRowSelect[]>`
+      const rows = await sql<(PendingInviteForUserRowSelect & { cursor_at: string })[]>`
         SELECT
           i.id,
+          ${keysetInstant(sql, sql`i.created_at`)} AS cursor_at,
           i.role,
           i.created_at,
           i.expires_at,
@@ -543,7 +583,7 @@ export function makeDrizzleHostTeamRepository(sql: Sql): HostTeamRepository {
           ${cleanupStatusExpr(sql)} AS event_status,
           c.visibility,
           c.address,
-          ${servedKeyExpr(sql, "ma")} AS cover_key,
+          ${publicServedKeyExpr(sql, "ma")} AS cover_key,
           bu.id AS inviter_id,
           bu.display_name AS inviter_name,
           bu.handle AS inviter_handle,
@@ -560,9 +600,11 @@ export function makeDrizzleHostTeamRepository(sql: Sql): HostTeamRepository {
         ORDER BY i.created_at DESC, i.id DESC
         LIMIT ${args.limit + 1}
       `
-      return pageWith(rows.map(toPendingInviteForUser), args.limit, (last) =>
-        encodeTimeCursor({ at: last.createdAt, id: last.id }),
-      )
+      const page = paginateKeyset(rows, args.limit, (last) => ({
+        atText: last.cursor_at,
+        id: last.id,
+      }))
+      return { items: page.items.map(toPendingInviteForUser), nextCursor: page.nextCursor }
     },
 
     async acceptInviteByIdTx(args: {
@@ -598,30 +640,17 @@ export function makeDrizzleHostTeamRepository(sql: Sql): HostTeamRepository {
         if (invite.status === "accepted") return alreadySeatedOutcome(tx, cleanupId, args.userId)
         if (invite.status !== "pending") return { kind: "not_open" }
         if (invite.expires_at.getTime() <= args.now.getTime()) {
-          await tx`
-            UPDATE cleanup_team_invites
-            SET status = 'expired', invited_email = NULL, email_scrubbed_at = now()
-            WHERE id = ${invite.id}
-          `
+          await expireTeamInviteInTx(tx, invite.id)
           return { kind: "expired" }
         }
-        if (await isBannedInTx(tx, cleanupId, args.userId)) return { kind: "banned" }
-        const held = await heldRoleInTx(tx, cleanupId, args.userId)
-        const role = await seatTeamMemberInTx(tx, {
-          cleanupId,
-          userId: args.userId,
-          role: invite.role,
-          now: args.now,
-        })
-        await closeAcceptedInviteInTx(tx, {
+        const role = await seatFromInviteInTx(tx, {
           inviteId: invite.id,
           cleanupId,
           userId: args.userId,
           role: invite.role,
           now: args.now,
-          from: held,
         })
-        return { kind: "accepted", cleanupId, role }
+        return role === "banned" ? { kind: "banned" } : { kind: "accepted", cleanupId, role }
       })
     },
 
@@ -631,9 +660,7 @@ export function makeDrizzleHostTeamRepository(sql: Sql): HostTeamRepository {
       now: Date
     }): Promise<DeclineTeamInviteOutcome> {
       return sql.begin(async (tx): Promise<DeclineTeamInviteOutcome> => {
-        const rows = await tx<
-          { id: string; cleanup_id: string; status: EventTeamInviteStatus }[]
-        >`
+        const rows = await tx<{ id: string; cleanup_id: string; status: EventTeamInviteStatus }[]>`
           SELECT id, cleanup_id, status FROM cleanup_team_invites
           WHERE id = ${args.inviteId} AND invited_user_id = ${args.userId}
           LIMIT 1
@@ -685,6 +712,24 @@ export function makeDrizzleHostTeamRepository(sql: Sql): HostTeamRepository {
         RETURNING id
       `
       return rows.length
+    },
+
+    async listTeamUserIds(cleanupId: string, limit: number): Promise<string[]> {
+      const rows = await sql<{ user_id: string }[]>`
+        SELECT user_id FROM cleanup_members
+         WHERE cleanup_id = ${cleanupId}
+           AND role IN ('organizer', 'cohost', 'coordinator', 'staff')
+         ORDER BY joined_at
+         LIMIT ${limit}
+      `
+      return rows.map((r) => r.user_id)
+    },
+
+    async eventTitleOf(cleanupId: string): Promise<string | null> {
+      const rows = await sql<{ title: string }[]>`
+        SELECT title FROM cleanups WHERE id = ${cleanupId} LIMIT 1
+      `
+      return rows[0]?.title ?? null
     },
   }
 }

@@ -12,7 +12,7 @@
 -- (like|heart|celebrate|support|insightful|concerned), NOT a raw glyph; the
 -- allowed set is enforced in the application layer (REACTION_EMOJIS).
 --
--- IMPORTANT — NO FK TO THE MESSAGE TABLES. chat_messages and dm_messages are
+-- IMPORTANT: NO FK TO THE MESSAGE TABLES. chat_messages and dm_messages are
 -- DECLARATIVELY PARTITIONED BY RANGE(created_at) with COMPOSITE PKs
 -- (id, created_at) (see 0002_chat_partitioning.sql / 0009_dm_and_privacy.sql), so
 -- there is no single-column key to reference: a FK on message_id alone is

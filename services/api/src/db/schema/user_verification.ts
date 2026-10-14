@@ -1,33 +1,19 @@
 /**
- * user_verification: document-verification ("verified neighbor") queue. 1:1 with users via the PK so
- * the core `users` row stays lean — mirrors the user_moderation side-table pattern, but models the
- * gov_claims application-review lifecycle (pending -> verified|rejected) for a single per-user
- * verification rather than the abuse/risk signals.
- *
- * A row exists once the user applies (ABSENCE of a row = "unverified"). `status='verified'` is the
- * only state that lights the verified mark; approval changes NO role (it is a cosmetic trust signal).
- * `documents` jsonb: array of { mediaId, status?, note? } referencing media_assets rows tagged
- * purpose='verification'. All transitions audited via writeAudit.
- *
- * CANONICAL DDL: drizzle/0016_user_verification.sql. This mirror exists for typed queries / diff
- * inspection.
+ * Document-verification ("verified neighbor") queue, a 1:1 side table so the core users row stays lean.
+ * A row exists once the user applies; its absence means "unverified". Approval changes no role: the
+ * verified mark is a cosmetic trust signal only.
  */
 
 import { index, jsonb, pgTable, text, timestamp, uuid } from "drizzle-orm/pg-core"
 import { users } from "./users.js"
 import type { VERIFICATION_STATUS_VALUES } from "./types.js"
 
-/**
- * The STORED status subset. 'unverified' (in the shared VerificationStatus enum) is represented by the
- * ABSENCE of a row, so it is never written to this column — the CHECK constraint in the canonical SQL
- * allows only pending|verified|rejected.
- */
+/** 'unverified' is the absence of a row, so the column's CHECK never admits it. */
 export type VerificationStoredStatus = Exclude<
   (typeof VERIFICATION_STATUS_VALUES)[number],
   "unverified"
 >
 
-/** One uploaded verification document: a media_assets id (purpose='verification') + optional per-doc state. */
 export interface VerificationDocument {
   mediaId: string
   status?: VerificationStoredStatus

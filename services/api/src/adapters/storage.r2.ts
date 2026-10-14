@@ -1,4 +1,3 @@
-
 import { AppError, ErrorCode } from "@civfix/shared"
 import type {
   Storage,
@@ -10,6 +9,7 @@ import type {
 } from "@civfix/shared/interfaces"
 import { normalizeEtag, type StorageHeadWithEtag } from "../services/media-etag.js"
 import { readProxySettings, shouldProxyHost } from "./proxy-egress.js"
+import { stripTrailingSlashes } from "../lib/base-url.js"
 import type { S3Client, S3ClientConfig } from "@aws-sdk/client-s3"
 
 export interface R2StorageConfig {
@@ -20,8 +20,26 @@ export interface R2StorageConfig {
   publicBase?: string
 }
 
-export const R2_DEFAULT_GET_TTL_SEC = 15 * 60
+const R2_DEFAULT_GET_TTL_SEC = 15 * 60
 export const R2_PUT_TTL_SEC = 15 * 60
+
+const R2_CONNECT_TIMEOUT_MS = 5_000
+const R2_SOCKET_IDLE_TIMEOUT_MS = 30_000
+export const R2_RESPONSE_TIMEOUT_MS = 30_000
+const R2_MAX_ATTEMPTS = 3
+// The handler's timers stop once response headers arrive, so only an abort signal bounds a body
+// that stalls mid-stream. Metadata calls sit on request paths; transfers move objects up to tens of MB.
+const R2_METADATA_OPERATION_TIMEOUT_MS = 15_000
+export const R2_TRANSFER_OPERATION_TIMEOUT_MS = 120_000
+
+const R2_REGION = "auto"
+const R2_ENDPOINT_DOMAIN = "r2.cloudflarestorage.com"
+const DEFAULT_CONTENT_TYPE = "application/octet-stream"
+const HTTP_NOT_FOUND = 404
+const NOT_FOUND_ERROR_NAMES: ReadonlySet<string> = new Set(["NotFound", "NoSuchKey"])
+
+const LEADING_SLASHES_RE = /^\/+/
+const HTTP_SCHEME_RE = /^https?:\/\//i
 
 export class R2Storage implements Storage {
   private readonly config: R2StorageConfig
@@ -83,11 +101,12 @@ export class R2Storage implements Storage {
     try {
       const res = await client.send(
         new HeadObjectCommand({ Bucket: this.config.bucket, Key: key }),
+        metadataDeadline(),
       )
       const etag = normalizeEtag(res.ETag)
       return {
         size: typeof res.ContentLength === "number" ? res.ContentLength : 0,
-        contentType: res.ContentType ?? "application/octet-stream",
+        contentType: res.ContentType ?? DEFAULT_CONTENT_TYPE,
         ...(typeof res.ContentDisposition === "string"
           ? { contentDisposition: res.ContentDisposition }
           : {}),
@@ -103,7 +122,10 @@ export class R2Storage implements Storage {
     const { DeleteObjectCommand } = await import("@aws-sdk/client-s3")
     const client = await this.getClient()
     try {
-      await client.send(new DeleteObjectCommand({ Bucket: this.config.bucket, Key: key }))
+      await client.send(
+        new DeleteObjectCommand({ Bucket: this.config.bucket, Key: key }),
+        metadataDeadline(),
+      )
     } catch (err) {
       throw new AppError(ErrorCode.INTERNAL, "R2 delete failed", { cause: err })
     }
@@ -123,6 +145,7 @@ export class R2Storage implements Storage {
             ? { ContentDisposition: meta.contentDisposition }
             : {}),
         }),
+        transferDeadline(),
       )
     } catch (err) {
       throw new AppError(ErrorCode.INTERNAL, "R2 put failed", { cause: err })
@@ -140,6 +163,7 @@ export class R2Storage implements Storage {
           ...(opts?.cursor ? { ContinuationToken: opts.cursor } : {}),
           ...(opts?.limit && opts.limit > 0 ? { MaxKeys: opts.limit } : {}),
         }),
+        metadataDeadline(),
       )
       const keys = (res.Contents ?? [])
         .map((o) => o.Key)
@@ -158,6 +182,7 @@ export class R2Storage implements Storage {
     try {
       const res = await client.send(
         new GetObjectCommand({ Bucket: this.config.bucket, Key: key }),
+        transferDeadline(),
       )
       if (!res.Body) return null
       const bytes = await res.Body.transformToByteArray()
@@ -171,11 +196,12 @@ export class R2Storage implements Storage {
   private async getClient(): Promise<S3Client> {
     if (!this.client) {
       const { S3Client: S3ClientCtor } = await import("@aws-sdk/client-s3")
-      const endpointHost = `${this.config.accountId}.r2.cloudflarestorage.com`
+      const endpointHost = `${this.config.accountId}.${R2_ENDPOINT_DOMAIN}`
       this.client = new S3ClientCtor({
-        region: "auto",
+        region: R2_REGION,
         endpoint: `https://${endpointHost}`,
-        ...(await proxyRequestHandler(endpointHost)),
+        requestHandler: await boundedRequestHandler(endpointHost),
+        maxAttempts: R2_MAX_ATTEMPTS,
         forcePathStyle: true,
         requestChecksumCalculation: "WHEN_REQUIRED",
         credentials: {
@@ -188,26 +214,44 @@ export class R2Storage implements Storage {
   }
 }
 
-async function proxyRequestHandler(
-  host: string,
-): Promise<Pick<S3ClientConfig, "requestHandler">> {
+function metadataDeadline(): { abortSignal: AbortSignal } {
+  return { abortSignal: AbortSignal.timeout(R2_METADATA_OPERATION_TIMEOUT_MS) }
+}
+
+// The handler's requestTimeout runs from before the body is written until the response arrives, so
+// the default response wait would cap a large upload at R2_RESPONSE_TIMEOUT_MS per attempt.
+function transferDeadline(): { abortSignal: AbortSignal; requestTimeout: number } {
+  return {
+    abortSignal: AbortSignal.timeout(R2_TRANSFER_OPERATION_TIMEOUT_MS),
+    requestTimeout: R2_TRANSFER_OPERATION_TIMEOUT_MS,
+  }
+}
+
+async function boundedRequestHandler(host: string): Promise<S3ClientConfig["requestHandler"]> {
+  const { NodeHttpHandler } = await import("@smithy/node-http-handler")
   const settings = readProxySettings()
-  if (settings === null || !shouldProxyHost(host, settings)) return {}
-  const [{ NodeHttpHandler }, { HttpsProxyAgent }] = await Promise.all([
-    import("@smithy/node-http-handler"),
-    import("https-proxy-agent"),
-  ])
-  return { requestHandler: new NodeHttpHandler({ httpsAgent: new HttpsProxyAgent(settings.url) }) }
+  const httpsAgent =
+    settings !== null && shouldProxyHost(host, settings)
+      ? new (await import("https-proxy-agent")).HttpsProxyAgent(settings.url)
+      : undefined
+  // Without throwOnRequestTimeout the SDK only logs a warning when requestTimeout elapses.
+  return new NodeHttpHandler({
+    connectionTimeout: R2_CONNECT_TIMEOUT_MS,
+    socketTimeout: R2_SOCKET_IDLE_TIMEOUT_MS,
+    requestTimeout: R2_RESPONSE_TIMEOUT_MS,
+    throwOnRequestTimeout: true,
+    ...(httpsAgent !== undefined ? { httpsAgent } : {}),
+  })
 }
 
 function joinUrl(base: string, key: string): string {
-  const trimmedBase = base.replace(/\/+$/, "")
-  const trimmedKey = key.replace(/^\/+/, "")
+  const trimmedBase = stripTrailingSlashes(base)
+  const trimmedKey = key.replace(LEADING_SLASHES_RE, "")
   return `${trimmedBase}/${trimmedKey}`
 }
 
 function ensureScheme(base: string): string {
-  return /^https?:\/\//i.test(base) ? base : `https://${base.replace(/^\/+/, "")}`
+  return HTTP_SCHEME_RE.test(base) ? base : `https://${base.replace(LEADING_SLASHES_RE, "")}`
 }
 
 function isNotFound(err: unknown): boolean {
@@ -217,6 +261,7 @@ function isNotFound(err: unknown): boolean {
     Code?: string
     $metadata?: { httpStatusCode?: number }
   }
-  if (e.name === "NotFound" || e.name === "NoSuchKey" || e.Code === "NoSuchKey") return true
-  return e.$metadata?.httpStatusCode === 404
+  if ((e.name !== undefined && NOT_FOUND_ERROR_NAMES.has(e.name)) || e.Code === "NoSuchKey")
+    return true
+  return e.$metadata?.httpStatusCode === HTTP_NOT_FOUND
 }

@@ -1,4 +1,3 @@
-
 import { sql } from "drizzle-orm"
 import {
   bigint,
@@ -37,11 +36,13 @@ export const mediaAssets = pgTable(
     thumbKey: text("thumb_key"),
     status: text("status").$type<MediaStatus>().notNull(),
     purpose: text("purpose").$type<MediaPurpose>().notNull().default("report"),
+    uploader: text("uploader"),
     width: integer("width"),
     height: integer("height"),
     byteSize: bigint("byte_size", { mode: "number" }),
     phash: text("phash"),
     finalizedAt: timestamp("finalized_at", { withTimezone: true }),
+    uploadEtag: text("upload_etag"),
     stuckCheckedAt: timestamp("stuck_checked_at", { withTimezone: true }),
     stuckCheckCount: integer("stuck_check_count").notNull().default(0),
     createdAt: timestamp("created_at", { withTimezone: true }).defaultNow(),

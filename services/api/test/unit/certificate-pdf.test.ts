@@ -1,12 +1,9 @@
 /**
- * PDF structure (DP §8.3/§8.4).
- *
  * NO BYTE SNAPSHOTS. A snapshot of a PDF churns on every pdfkit patch, every font re-instancing and
  * every copy edit, and no reviewer can read the diff. The assertions below are structural: the header
  * and trailer, the page count the pure planner predicts, a byte-size band that catches both "the fonts
- * failed to embed" and "subsetting is off", and the Info dictionary — which is the only reliable TEXT
- * hook, because body text is written with subset glyph ids and grepping the content streams for a name
- * would fail.
+ * failed to embed" and "subsetting is off", and the Info dictionary, which is the only reliable TEXT
+ * hook because body text is written with subset glyph ids.
  */
 
 import { describe, expect, it } from "vitest"
@@ -23,11 +20,11 @@ const CODE = "A1B2C3D4E5F6"
 const DISPLAY_CODE = "CFX-A1B2-C3D4-E5F6"
 const ISSUED_AT = new Date("2026-07-27T18:22:04.000Z")
 
-/** English-shaped fixture copy, so the assertions do not depend on the catalog landing (WP21). */
+/** English-shaped fixture copy, so the assertions do not depend on the locale catalog. */
 const t: CertificateTranslator = (key, vars) => {
   switch (key) {
     case "certificate.doc.pdf_title":
-      return `civfix service hours — ${String(vars?.name)} — ${String(vars?.code)}`
+      return `civfix service hours: ${String(vars?.name)}, ${String(vars?.code)}`
     case "certificate.doc.title":
       return "Record of Volunteer Service"
     case "certificate.attestation.body":
@@ -150,7 +147,7 @@ describe("buildServiceHoursPdf", () => {
     // /Keywords
     expect(buf.includes(pdfString(DISPLAY_CODE))).toBe(true)
     // /Title
-    expect(buf.includes(pdfString(`civfix service hours — Jane Doe — ${DISPLAY_CODE}`))).toBe(true)
+    expect(buf.includes(pdfString(`civfix service hours: Jane Doe, ${DISPLAY_CODE}`))).toBe(true)
   })
 
   it("writes a non-ASCII Title as UTF-16BE behind a BOM", async () => {
@@ -166,7 +163,7 @@ describe("buildServiceHoursPdf", () => {
     })
     const bytes = await buildServiceHoursPdf({ model, code: CODE, issuedAt: ISSUED_AT, t })
     const buf = Buffer.from(bytes)
-    expect(buf.includes(pdfString(`civfix service hours — 홍길동 — ${DISPLAY_CODE}`))).toBe(true)
+    expect(buf.includes(pdfString(`civfix service hours: 홍길동, ${DISPLAY_CODE}`))).toBe(true)
   })
 
   it("renders a Hangul transcript without throwing (the lazy CJK registration path)", async () => {
@@ -203,7 +200,7 @@ describe("buildServiceHoursPdf", () => {
   })
 
   /**
-   * DP §8.4. `CreationDate`/`ModDate` are pinned to `issuedAt`, and the renderer takes no clock, so the
+   * `CreationDate`/`ModDate` are pinned to `issuedAt`, and the renderer takes no clock, so the
    * same snapshot must produce the same bytes. If this ever fails on a pdfkit upgrade: delete it, and
    * redefine `document_sha256` as "the hash of the bytes currently stored". Do not fight pdfkit.
    */

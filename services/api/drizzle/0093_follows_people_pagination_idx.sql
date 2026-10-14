@@ -4,10 +4,10 @@
 -- FINDING F158: the "following" list (a user's outbound follows) pages by
 -- follower_id newest-first with the house keyset cursor. follows_people has
 -- PK(follower_id, followee_id) and an index on followee_id ("who follows me"), but
--- NOTHING keyed for (follower_id, created_at DESC) — verified against the schema:
--- the pagination support is genuinely MISSING — so the list sorts at scan time.
+-- NOTHING keyed for (follower_id, created_at DESC), verified against the schema:
+-- the pagination support is genuinely MISSING, so the list sorts at scan time.
 -- Add the keyset index; social sorts by display name WITHIN a fetched page (no
--- users(display_name) index — deliberately out of scope).
+-- users(display_name) index, deliberately out of scope).
 --
 -- CANONICAL DDL: hand-authored source of truth. Mirror: schema/follows.ts.
 --

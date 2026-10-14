@@ -4,7 +4,7 @@
 -- The report lifecycle is enforced in the service layer (the shared contract's
 -- ADMIN_REPORT_STATUS_TRANSITIONS / canTransitionReportStatus), but nothing at
 -- the DB level stopped a typo or a future writer from parking a report on a
--- status no reader understands — the admin list buckets, the citizen map filter
+-- status no reader understands: the admin list buckets, the citizen map filter
 -- and the timeline icon mapper all switch on this column and silently drop a
 -- value they do not know. Pin the VALUE SET here; the transition graph stays in
 -- code, where the actor and the reason live.

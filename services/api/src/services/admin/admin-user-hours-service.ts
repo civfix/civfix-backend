@@ -14,8 +14,8 @@ import {
   assertTargetIsNotOperatorRole,
   isOperatorRole,
 } from "../../auth/operator-target.js"
-import { parseTimeCursor } from "../../db/cursor-helpers.js"
-import type { CertificateRepository } from "../certificate-service.js"
+import { parseKeysetCursor } from "../../db/cursor-helpers.js"
+import type { CertificateRepository } from "../certificate-repository.js"
 import { eventDayKey } from "../host/event-day.js"
 import { DEFAULT_EVENT_TIME_ZONE } from "../host/event-fields.js"
 import type { InsightsInvalidator } from "../host/host-analytics-cache.js"
@@ -26,10 +26,12 @@ import {
   HOURS_ENTRIES_DEFAULT_LIMIT,
   notifyHoursCredited,
   type CleanupHoursLookup,
-  type OperatorLedgerEntryView,
-  type VolunteerHoursRepository,
 } from "../volunteer-hours-service.js"
-import type { AdminAccountTarget, AdminUserRepository } from "./admin-user-service.js"
+import type {
+  OperatorLedgerEntryView,
+  VolunteerHoursRepository,
+} from "../volunteer-hours-repository.js"
+import type { AdminAccountTarget, AdminUserRepository } from "./admin-user-repository.js"
 
 // A credited user who is not on the event roster cannot open the event page, so both bells link to
 // the profile, where the Hours tab lists the new entry.
@@ -62,7 +64,7 @@ function round2(n: number): number {
   return Math.round(n * 100) / 100
 }
 
-export function toAdminUserHoursEntryDTO(
+function toAdminUserHoursEntryDTO(
   view: OperatorLedgerEntryView,
   accountAllowsVoid: boolean,
 ): AdminUserHoursEntryDTO {
@@ -195,7 +197,7 @@ export function makeAdminUserHoursService(deps: AdminUserHoursServiceDeps): Admi
       const [page, totals] = await Promise.all([
         deps.hours.listOperatorLedger({
           userId: query.id,
-          cursor: parseTimeCursor(query.cursor),
+          cursor: parseKeysetCursor(query.cursor),
           limit: query.limit ?? HOURS_ENTRIES_DEFAULT_LIMIT,
         }),
         deps.hours.operatorLedgerTotals(query.id),

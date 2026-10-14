@@ -12,40 +12,40 @@
 #     docker build -f services/media-worker/Dockerfile -t civfix/media-worker:latest .
 #
 # FFMPEG / SHARP IN-CONTAINER (the key correctness point):
-#   * FFMPEG IS BUILT HERE FROM THE OFFICIAL SOURCE RELEASE, not taken from npm (audit H8) or from a
-#     third-party binary build. ffprobe-static@3.1.0 ships an FFmpeg 4.0.2 binary from 2018 — the tool
-#     that must interpret untrusted container bytes — with no channel for the demuxer memory-safety
-#     fixes released since. FFmpeg publishes no binaries of its own, and the dated third-party builds
-#     this stage used to download are pruned after about two weeks, which broke every build that still
-#     pinned one. The `ffmpeg` stage downloads the ffmpeg.org release tarball, checks it against
-#     FFMPEG_SHA256 AND requires a signature by FFmpeg's release signing key, pinned by its fingerprint
-#     FFMPEG_KEY_FPR, then compiles ONLY what src/sandbox uses: the mov demuxer, the mp4 + image2
-#     muxers, the h264/hevc decoders, the mjpeg encoder for the poster frame and the file protocol
-#     (configure adds the filters the ffmpeg CLI inserts itself). Every other demuxer and decoder, the
-#     IAMF audio parser the mov demuxer would otherwise pull in, the network stack and all autodetected
-#     external libraries are left out, so a hostile upload only reaches the mov demuxer (with its ISO
-#     media and RIFF helpers) and the h264/hevc parsers and decoders. The runtime stage exports
-#     FFMPEG_PATH/FFPROBE_PATH, which sandbox/binaries.ts REQUIRES in production (the npm static
-#     packages are devDependencies and are pruned out of this image by `pnpm --prod deploy`, so there is
-#     no silent fallback to the 2018 build), and the boot preflight pushes an h264 and an hevc clip
-#     through the real video lane, so a build missing a component fails the CI smoke job.
+#   * FFMPEG IS BUILT HERE FROM THE OFFICIAL SOURCE RELEASE, not taken from npm or from a third-party
+#     binary build. ffprobe-static@3.1.0 ships an FFmpeg 4.0.2 binary from 2018 (the tool that must
+#     interpret untrusted container bytes) with no channel for the demuxer memory-safety fixes released
+#     since. FFmpeg publishes no binaries of its own, and the dated third-party builds this stage used to
+#     download are pruned after about two weeks, which broke every build that still pinned one. The
+#     `ffmpeg` stage downloads the ffmpeg.org release tarball, checks it against FFMPEG_SHA256 AND
+#     requires a signature by FFmpeg's release signing key, pinned by its fingerprint FFMPEG_KEY_FPR,
+#     then compiles ONLY what src/sandbox uses: the mov demuxer, the mp4 + image2 muxers, the h264/hevc
+#     decoders, the mjpeg encoder for the poster frame and the file protocol (configure adds the filters
+#     the ffmpeg CLI inserts itself). Every other demuxer and decoder, the IAMF audio parser the mov
+#     demuxer would otherwise pull in, the network stack and all autodetected external libraries are
+#     left out, so a hostile upload only reaches the mov demuxer (with its ISO media and RIFF helpers)
+#     and the h264/hevc parsers and decoders. The runtime stage exports FFMPEG_PATH/FFPROBE_PATH, which
+#     sandbox/binaries.ts REQUIRES in production (the npm static packages are devDependencies and are
+#     pruned out of this image by `pnpm --prod deploy`, so there is no silent fallback to the 2018
+#     build), and the boot preflight pushes an h264 and an hevc clip through the real video lane, so a
+#     build missing a component fails the CI smoke job.
 #     BUMPING IT: set FFMPEG_VERSION to a newer release from https://ffmpeg.org/releases/, verify its
 #     .asc against https://ffmpeg.org/ffmpeg-devel.asc (`gpg --verify`), and set FFMPEG_SHA256 to the
 #     `sha256sum` of the tarball. A new sandbox feature that needs another format or codec adds it to
 #     the configure line.
-#   * sharp 0.33.x ships prebuilt linux-x64 binaries (@img/sharp-linux-x64) that run on glibc, which the
+#   * sharp 0.33.x ships prebuilt linux binaries (@img/sharp-linux-*) that run on glibc, which the
 #     Debian bookworm base provides. No build toolchain or libvips apt package is required.
 #   Both are installed INSIDE this linux image (never copied from the host), so the platform is correct.
 #
-# DECODER PRIVILEGE SEPARATION (audit H7): the runtime stage provisions a SECOND, credential-less user
+# DECODER PRIVILEGE SEPARATION: the runtime stage provisions a SECOND, credential-less user
 # (mediatools, uid/gid 1001) and puts `node` in its group. Node holds DATABASE_URL and the R2 keys; every
-# untrusted-byte parser — ffmpeg, ffprobe AND the sharp/libvips image lane (dist/image-lane.js) — runs as
+# untrusted-byte parser (ffmpeg, ffprobe AND the sharp/libvips image lane, dist/image-lane.js) runs as
 # uid 1001 with an empty environment (src/sandbox/exec.ts), so a decoder RCE can read neither the Node
 # process's /proc/<pid>/environ nor its descriptors.
 #
 # The uid switch is done by /usr/bin/setpriv (util-linux, installed below), NOT by spawn's uid/gid: this
 # process must hold ambient CAP_SETUID/CAP_SETGID to change a child's uid at all, and ambient caps
-# survive execve — a plain uid-1000-to-1001 spawn would leave CAP_SETUID in the decoder, which could then
+# survive execve: a plain uid-1000-to-1001 spawn would leave CAP_SETUID in the decoder, which could then
 # setuid() back to `node`. setpriv switches, then clears the ambient + inheritable sets and sets
 # no_new_privs before exec'ing, so the decoder has no capabilities at all. The container therefore starts
 # as root ONLY to run docker-entrypoint.sh, which setpriv's to `node` keeping exactly those two caps
@@ -61,7 +61,6 @@
 #           entrypoint, run the worker. (No port / no HTTP healthcheck: the worker is a queue consumer;
 #           liveness is observed via pg-boss + logs. Docker restarts it on exit.)
 
-# ----------------------------------------------------------------------------------------------------
 FROM node:22-bookworm-slim AS base
 ENV PNPM_HOME="/pnpm" \
     PATH="/pnpm:$PATH" \
@@ -69,7 +68,6 @@ ENV PNPM_HOME="/pnpm" \
 RUN corepack enable && corepack prepare pnpm@9.12.0 --activate
 WORKDIR /app
 
-# ----------------------------------------------------------------------------------------------------
 FROM base AS ffmpeg
 ARG FFMPEG_VERSION=8.1.3
 ARG FFMPEG_SHA256=7138d28c96d9d3e3af4ee3d8cad72741f8ffb40da90c1112235dea3ecd3178a3
@@ -110,7 +108,6 @@ RUN curl -fsSL --retry 5 --retry-all-errors -O "https://ffmpeg.org/releases/ffmp
  && /opt/ffmpeg/bin/ffprobe -version | head -n 1 | grep -q "version ${FFMPEG_VERSION} " \
  && /opt/ffmpeg/bin/ffmpeg -version | head -n 1 | grep -q "version ${FFMPEG_VERSION} "
 
-# ----------------------------------------------------------------------------------------------------
 FROM base AS build
 COPY . .
 RUN --mount=type=cache,id=pnpm-store,target=/pnpm/store \
@@ -119,13 +116,12 @@ RUN --mount=type=cache,id=pnpm-store,target=/pnpm/store \
 # selects the worker AND its workspace dependencies, built in order.
 RUN pnpm --filter @civfix/media-worker... build
 # Production-pruned, self-contained deployment of just the worker at /out. The native/external deps
-# (sharp, ...) are installed here for linux-x64 and carried into runtime. ffmpeg-static/ffprobe-static
-# are devDependencies and are pruned out on purpose (H8): the runtime ffmpeg is the pinned, checksummed
-# one from the `ffmpeg` stage.
+# (sharp, ...) are installed here for the target platform and carried into runtime.
+# ffmpeg-static/ffprobe-static are devDependencies and are pruned out on purpose: the runtime ffmpeg
+# is the pinned, checksummed one from the `ffmpeg` stage.
 RUN --mount=type=cache,id=pnpm-store,target=/pnpm/store \
     pnpm --filter @civfix/media-worker --prod deploy /out
 
-# ----------------------------------------------------------------------------------------------------
 FROM base AS runtime
 # Same contract as the api image: the release identity is a property of the promoted artifact, not of the
 # deploy that placed it. Read by src/seams.ts as the GlitchTip `release`.

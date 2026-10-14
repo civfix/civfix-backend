@@ -1,5 +1,9 @@
-import { describe, expect, it } from "vitest"
-import { TwilioSmsSender, classifyTwilioError } from "../../src/adapters/sms-twilio.js"
+import { afterEach, describe, expect, it, vi } from "vitest"
+import {
+  SMS_SEND_TIMEOUT_MS,
+  TwilioSmsSender,
+  classifyTwilioError,
+} from "../../src/adapters/sms-twilio.js"
 import { smsFailureKind } from "../../src/errors/sms-failure.js"
 
 interface Recorded {
@@ -14,9 +18,10 @@ function jsonResponse(status: number, body: unknown): Response {
   })
 }
 
-function senderWith(
-  respond: (recorded: Recorded) => Response | Promise<Response>,
-): { sender: TwilioSmsSender; calls: Recorded[] } {
+function senderWith(respond: (recorded: Recorded) => Response | Promise<Response>): {
+  sender: TwilioSmsSender
+  calls: Recorded[]
+} {
   const calls: Recorded[] = []
   const fetchImpl = ((url: string, init: RequestInit) => {
     const recorded = { url, init }
@@ -34,22 +39,23 @@ function senderWith(
 
 describe("TwilioSmsSender", () => {
   it("posts a form-encoded message with basic auth and returns the provider message id", async () => {
-    const { sender, calls } = senderWith(() => jsonResponse(201, { sid: "SM123", status: "queued" }))
+    const { sender, calls } = senderWith(() =>
+      jsonResponse(201, { sid: "SM123", status: "queued" }),
+    )
 
     await expect(sender.send("+15552223333", "your code is 424242")).resolves.toEqual({
       id: "SM123",
     })
 
     const call = calls[0]
-    expect(call?.url).toBe(
-      "https://api.twilio.com/2010-04-01/Accounts/AC0123456789/Messages.json",
-    )
+    expect(call?.url).toBe("https://api.twilio.com/2010-04-01/Accounts/AC0123456789/Messages.json")
     expect(call?.init.method).toBe("POST")
     const headers = call?.init.headers as Record<string, string>
     const expected = Buffer.from("AC0123456789:super-secret-token", "utf8").toString("base64")
     expect(headers.authorization).toBe(`Basic ${expected}`)
     expect(headers["content-type"]).toBe("application/x-www-form-urlencoded")
 
+    // eslint-disable-next-line @typescript-eslint/no-base-to-string -- the adapter posts a string form body
     const form = new URLSearchParams(String(call?.init.body))
     expect(form.get("To")).toBe("+15552223333")
     expect(form.get("From")).toBe("+15550001111")
@@ -136,5 +142,48 @@ describe("TwilioSmsSender", () => {
     const err = await sender.send("+15552223333", "x").catch((e: unknown) => e)
     expect(String((err as Error).message)).not.toContain("+15552223333")
     expect(String((err as Error).message)).toContain("provider code 21211")
+  })
+
+  describe("response body", () => {
+    afterEach(() => {
+      vi.useRealTimers()
+    })
+
+    it("keeps the send deadline running while the body is read, and does not retry an accepted send", async () => {
+      vi.useFakeTimers()
+      const { sender } = senderWith(
+        () => new Response(new ReadableStream<Uint8Array>({ start() {} }), { status: 201 }),
+      )
+
+      const outcome = sender.send("+15552223333", "x").catch((e: unknown) => e)
+      await vi.advanceTimersByTimeAsync(SMS_SEND_TIMEOUT_MS + 1)
+
+      const settled = await Promise.race([outcome, Promise.resolve("still pending")])
+      expect(settled).not.toBe("still pending")
+      expect(smsFailureKind(settled)).toBe("permanent")
+    })
+
+    it("stops reading an error body without content-length once it passes the size cap", async () => {
+      const chunk = new Uint8Array(16 * 1024)
+      const maxChunks = 128
+      let pulled = 0
+      const { sender } = senderWith(
+        () =>
+          new Response(
+            new ReadableStream<Uint8Array>({
+              pull(controller) {
+                pulled += 1
+                if (pulled > maxChunks) controller.close()
+                else controller.enqueue(chunk)
+              },
+            }),
+            { status: 400 },
+          ),
+      )
+
+      const err = await sender.send("+15552223333", "x").catch((e: unknown) => e)
+      expect(smsFailureKind(err)).toBe("permanent")
+      expect(pulled).toBeLessThan(maxChunks / 2)
+    })
   })
 })

@@ -1,7 +1,7 @@
 import { describe, it, expect } from "vitest"
 import type { MailThreadDTO } from "@civfix/shared"
 import type { Storage } from "@civfix/shared/interfaces"
-import { InMemoryMailRepository } from "../../src/services/admin/mail-repository.memory.js"
+import { InMemoryMailRepository } from "../helpers/admin/mail-repository.memory.js"
 import { presignThreadAttachments } from "../../src/routes/admin/mail.routes.js"
 import {
   buildMailStats,
@@ -12,7 +12,6 @@ import {
   type MailThreadRecord,
 } from "../../src/services/admin/mail-repository.drizzle.js"
 import { normalizeAuthVerdict } from "../../src/services/admin/mail-mappers.js"
-
 
 describe("mintThreadToken", () => {
   it("produces a 12-char lowercase base32 token, distinct per call", () => {
@@ -452,12 +451,22 @@ describe("InMemoryMailRepository: outbound snapshot + failure recording", () => 
   it("records a send failure as one event + needs_action + an audit row", async () => {
     const repo = new InMemoryMailRepository()
     const t = await repo.createThread({ subject: "Pothole", status: "sent" })
-    const m = await repo.insertMessage({ threadId: t.id, direction: "out", toAddr: "clerk@city.gov", body: "packet" })
+    const m = await repo.insertMessage({
+      threadId: t.id,
+      direction: "out",
+      toAddr: "clerk@city.gov",
+      body: "packet",
+    })
     await repo.recordSendFailure({
       threadId: t.id,
       messageId: m?.id ?? "",
       meta: { to: "clerk@city.gov", error: "smtp down" },
-      audit: { actorId: null, action: "mail.send_failed", target: "report:rep-1", meta: { reportId: "rep-1" } },
+      audit: {
+        actorId: null,
+        action: "mail.send_failed",
+        target: "report:rep-1",
+        meta: { reportId: "rep-1" },
+      },
     })
     expect(repo.events.map((e) => e.type)).toEqual(["failed"])
     expect((await repo.getThreadRecord(t.id))?.status).toBe("needs_action")
@@ -467,8 +476,18 @@ describe("InMemoryMailRepository: outbound snapshot + failure recording", () => 
   it("re-reads the latest outbound message whole, and only outbound ones", async () => {
     const repo = new InMemoryMailRepository()
     const t = await repo.createThread({ subject: "Pothole" })
-    await repo.insertMessage({ threadId: t.id, direction: "out", toAddr: "clerk@city.gov", body: "first" })
-    const inbound = await repo.insertMessage({ threadId: t.id, direction: "in", fromAddr: "clerk@city.gov", body: "re" })
+    await repo.insertMessage({
+      threadId: t.id,
+      direction: "out",
+      toAddr: "clerk@city.gov",
+      body: "first",
+    })
+    const inbound = await repo.insertMessage({
+      threadId: t.id,
+      direction: "in",
+      fromAddr: "clerk@city.gov",
+      body: "re",
+    })
     const last = await repo.insertMessage({
       threadId: t.id,
       direction: "out",

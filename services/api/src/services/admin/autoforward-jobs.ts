@@ -1,6 +1,7 @@
 import { AppError, ErrorCode } from "@civfix/shared"
 import type { Container } from "../../di.js"
-import { REPORT_AUTOFORWARD_JOB, type ReportAutoForwardJob } from "../report-service.types.js"
+import type { ReportAutoForwardJob } from "../report-types.js"
+import { REPORT_AUTOFORWARD_JOB } from "../../lib/queue-names.js"
 import {
   isAlreadyRoutedConflict,
   makeAdminReportService,
@@ -14,8 +15,6 @@ import {
 } from "./outbound-mail-service.js"
 import { makePacketMediaPresigner, makePrivateMediaPresigner } from "../media-presign.js"
 import { makeContainerReportChatEmitter } from "../report-chat-emitter.js"
-
-export { REPORT_AUTOFORWARD_JOB }
 
 export interface AutoForwardLogger {
   info: (obj: unknown, msg?: string) => void
@@ -37,7 +36,7 @@ export async function registerAutoForwardJobs(
   })
 }
 
-export async function runAutoForward(
+async function runAutoForward(
   container: Container,
   reportId: string,
   logger?: AutoForwardJobLogger,
@@ -85,22 +84,22 @@ function isTransientInfraError(err: unknown): boolean {
   return true
 }
 
+// Reporter notifications and linked events are left out on purpose: the job only reads the routing
+// contact and routes, and neither path uses them.
 function makeAutoForwardService(
   container: Container,
   logger: AutoForwardJobLogger | undefined,
 ): AdminReportService {
   const sql = container.getDb().sql
-  const outboundMail = makeContainerOutboundMailService(
-    container,
-    logger === undefined ? {} : { logger },
-  )
+  const withLogger = logger !== undefined ? { logger } : {}
   return makeAdminReportService({
-    repo: makeDrizzleAdminReportRepository(sql),
-    outboundMail,
+    repo: makeDrizzleAdminReportRepository(sql, withLogger),
+    outboundMail: makeContainerOutboundMailService(container, withLogger),
     presignMedia: makePrivateMediaPresigner(container.storage),
     presignPacketMedia: makePacketMediaPresigner(container.storage),
     reportChatEmitter: makeContainerReportChatEmitter(container, logger),
     forwardTemplates: makeDrizzleForwardTemplateRepository(sql),
+    ...withLogger,
   })
 }
 

@@ -1,9 +1,11 @@
-
-import { ensureChatPartitionWindow, ensureDmPartitionWindow } from "@civfix/api/media-repo"
+import {
+  ensureChatPartitionWindow,
+  ensureDmPartitionWindow,
+  PARTITION_MONTHS_AHEAD,
+} from "@civfix/api/media-repo"
 import type { Sql } from "@civfix/api/db"
+import { CHAT_PARTITION_JOB } from "@civfix/api/queue-names"
 import { resolveJobObs, type JobObsDeps } from "./obs.js"
-
-export const PARTITION_MONTHS_AHEAD = 2
 
 export interface PartitionMaintenanceDeps extends JobObsDeps {
   sql: Sql
@@ -27,7 +29,7 @@ export async function runPartitionMaintenance(
     log("chat.partition.maintenance: ensured", { chat, dm })
     return { chat, dm }
   } catch (err) {
-    report(err, { job: "chat.partition.maintenance" })
+    report(err, { job: CHAT_PARTITION_JOB })
     log("chat.partition.maintenance: failed", { err: String(err) })
     throw err
   }

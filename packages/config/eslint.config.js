@@ -2,17 +2,35 @@ import eslint from "@eslint/js"
 import tseslint from "typescript-eslint"
 import globals from "globals"
 
-/**
- * Shared ESLint flat-config preset for civfix backend services.
- *
- * Services extend it like:
- *   import { config } from "@civfix/config/eslint"
- *   export default config()
- *
- * `config()` returns a flat-config array. Pass extra config objects to append service-specific
- * overrides. Type-aware rules are enabled per service by setting `parserOptions.projectService`
- * in the service eslint.config.js; this preset stays project-agnostic so it works everywhere.
- */
+// Type-aware rules need a TypeScript program, which only the consuming service can locate, so each
+// service passes its own parserOptions (projectService + tsconfigRootDir) through `typed()`.
+export function typed(parserOptions) {
+  return {
+    files: ["**/*.ts"],
+    languageOptions: { parserOptions },
+    rules: {
+      "@typescript-eslint/no-floating-promises": "error",
+      "@typescript-eslint/no-misused-promises": "error",
+      "@typescript-eslint/await-thenable": "error",
+      "@typescript-eslint/no-for-in-array": "error",
+      "@typescript-eslint/no-implied-eval": "error",
+      "@typescript-eslint/only-throw-error": "error",
+      "@typescript-eslint/prefer-promise-reject-errors": "error",
+      "@typescript-eslint/restrict-template-expressions": [
+        "error",
+        { allowNumber: true, allowBoolean: true },
+      ],
+      "@typescript-eslint/no-base-to-string": "error",
+      "@typescript-eslint/no-redundant-type-constituents": "error",
+      "@typescript-eslint/switch-exhaustiveness-check": [
+        "error",
+        { considerDefaultExhaustiveForUnions: true },
+      ],
+      "@typescript-eslint/no-unnecessary-type-assertion": "error",
+    },
+  }
+}
+
 export function config(...extra) {
   return tseslint.config(
     {

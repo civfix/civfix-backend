@@ -17,21 +17,19 @@ import {
   type ListEventBroadcastsResponse,
   type SetEventBroadcastMuteResponse,
 } from "@civfix/shared"
-import type { FastifyInstance, FastifyRequest } from "fastify"
+import type { FastifyInstance } from "fastify"
 import type { Container } from "../../di.js"
 import { requireAuth } from "../../auth/context.js"
 import { perIdentity } from "../../plugins/rate-limit.js"
 import { route } from "../../versioning/route.js"
-import { parse } from "../_validate.js"
+import { parse, paramsOverBody, paramsOverQuery } from "../_validate.js"
 import { requireCapability, resolveVisibleStanding } from "../../services/host/authz.js"
-import { writeAudit } from "../../services/admin/audit.js"
 import {
-  BroadcastCapError,
-  capError,
   emailHashOf,
+  withCaps,
   type BroadcastService,
 } from "../../services/host/broadcast-service.js"
-import { makeCommsRuntime } from "../../services/host/comms-wiring.js"
+import { auditBestEffort, makeCommsRuntime } from "../../services/host/comms-wiring.js"
 import type { CommsRuntime } from "../../services/host/comms-wiring.js"
 
 export const BROADCAST_WRITE_RATE_LIMIT = perIdentity({ max: 30, timeWindow: "1 minute" })
@@ -46,18 +44,6 @@ declare module "fastify" {
   interface FastifyInstance {
     broadcastOverrides?: BroadcastOverrides
   }
-}
-
-function mergeParams(request: FastifyRequest): Record<string, unknown> {
-  const params = (request.params ?? {}) as Record<string, unknown>
-  const body = (request.body ?? {}) as Record<string, unknown>
-  return { ...body, ...params }
-}
-
-function mergeQuery(request: FastifyRequest): Record<string, unknown> {
-  const params = (request.params ?? {}) as Record<string, unknown>
-  const query = (request.query ?? {}) as Record<string, unknown>
-  return { ...query, ...params }
 }
 
 export async function registerHostBroadcastRoutes(
@@ -77,22 +63,13 @@ export async function registerHostBroadcastRoutes(
     return runtime().broadcasts
   }
 
-  async function withCaps<T>(fn: () => Promise<T>): Promise<T> {
-    try {
-      return await fn()
-    } catch (err) {
-      if (err instanceof BroadcastCapError) throw capError(err.kind)
-      throw err
-    }
-  }
-
   route(
     app,
     "listEventBroadcasts",
     { config: { rateLimit: BROADCAST_READ_RATE_LIMIT } },
     async (request, reply) => {
       const userId = requireAuth(request)
-      const query = parse(ListEventBroadcastsRequestSchema, mergeQuery(request))
+      const query = parse(ListEventBroadcastsRequestSchema, paramsOverQuery(request))
       await requireCapability(container.getDb().sql, query.id, userId, "broadcast")
       const payload: ListEventBroadcastsResponse = await service().list(query.id, query)
       reply.status(200).send(payload)
@@ -105,7 +82,7 @@ export async function registerHostBroadcastRoutes(
     { config: { rateLimit: BROADCAST_READ_RATE_LIMIT } },
     async (request, reply) => {
       const userId = requireAuth(request)
-      const params = parse(GetEventBroadcastRequestSchema, mergeParams(request))
+      const params = parse(GetEventBroadcastRequestSchema, paramsOverBody(request))
       await requireCapability(container.getDb().sql, params.id, userId, "broadcast")
       const payload: BroadcastDTO = await service().get(params.id, params.broadcastId)
       reply.status(200).send(payload)
@@ -118,7 +95,7 @@ export async function registerHostBroadcastRoutes(
     { preHandler: csrfProtect, config: { rateLimit: BROADCAST_WRITE_RATE_LIMIT } },
     async (request, reply) => {
       const userId = requireAuth(request)
-      const body = parse(CreateEventBroadcastRequestSchema, mergeParams(request))
+      const body = parse(CreateEventBroadcastRequestSchema, paramsOverBody(request))
       await requireCapability(container.getDb().sql, body.id, userId, "broadcast")
       const payload = await withCaps(() => service().create(body.id, userId, body))
       reply.status(200).send(payload)
@@ -131,7 +108,7 @@ export async function registerHostBroadcastRoutes(
     { preHandler: csrfProtect, config: { rateLimit: BROADCAST_WRITE_RATE_LIMIT } },
     async (request, reply) => {
       const userId = requireAuth(request)
-      const body = parse(UpdateEventBroadcastRequestSchema, mergeParams(request))
+      const body = parse(UpdateEventBroadcastRequestSchema, paramsOverBody(request))
       await requireCapability(container.getDb().sql, body.id, userId, "broadcast")
       const payload = await withCaps(() => service().update(body.id, userId, body))
       reply.status(200).send(payload)
@@ -144,7 +121,7 @@ export async function registerHostBroadcastRoutes(
     { preHandler: csrfProtect, config: { rateLimit: BROADCAST_WRITE_RATE_LIMIT } },
     async (request, reply) => {
       const userId = requireAuth(request)
-      const params = parse(DeleteEventBroadcastRequestSchema, mergeParams(request))
+      const params = parse(DeleteEventBroadcastRequestSchema, paramsOverBody(request))
       await requireCapability(container.getDb().sql, params.id, userId, "broadcast")
       reply.status(200).send(await service().remove(params.id, params.broadcastId))
     },
@@ -156,7 +133,7 @@ export async function registerHostBroadcastRoutes(
     { preHandler: csrfProtect, config: { rateLimit: BROADCAST_WRITE_RATE_LIMIT } },
     async (request, reply) => {
       const userId = requireAuth(request)
-      const body = parse(PreviewEventBroadcastRequestSchema, mergeParams(request))
+      const body = parse(PreviewEventBroadcastRequestSchema, paramsOverBody(request))
       await requireCapability(container.getDb().sql, body.id, userId, "broadcast")
       const payload: BroadcastPreviewDTO = await withCaps(() =>
         service().preview(body.id, userId, body),
@@ -171,14 +148,21 @@ export async function registerHostBroadcastRoutes(
     { preHandler: csrfProtect, config: { rateLimit: BROADCAST_SEND_RATE_LIMIT } },
     async (request, reply) => {
       const userId = requireAuth(request)
-      const params = parse(TestSendEventBroadcastRequestSchema, mergeParams(request))
+      const params = parse(TestSendEventBroadcastRequestSchema, paramsOverBody(request))
       await requireCapability(container.getDb().sql, params.id, userId, "broadcast")
       const payload = await withCaps(() =>
         service().testSend(params.id, userId, params.broadcastId),
       )
-      await audit(container, "event.broadcast_test_sent", userId, params.broadcastId, {
-        cleanupId: params.id,
-      })
+      await auditBestEffort(
+        container.getDb().sql,
+        {
+          action: "event.broadcast_test_sent",
+          actorId: userId,
+          target: `broadcast:${params.broadcastId}`,
+          meta: { cleanupId: params.id },
+        },
+        request.log,
+      )
       reply.status(200).send(payload)
     },
   )
@@ -189,18 +173,27 @@ export async function registerHostBroadcastRoutes(
     { preHandler: csrfProtect, config: { rateLimit: BROADCAST_SEND_RATE_LIMIT } },
     async (request, reply) => {
       const userId = requireAuth(request)
-      const params = parse(SendEventBroadcastRequestSchema, mergeParams(request))
+      const params = parse(SendEventBroadcastRequestSchema, paramsOverBody(request))
       await requireCapability(container.getDb().sql, params.id, userId, "broadcast")
       const payload = await withCaps(() => service().send(params.id, userId, params.broadcastId))
-      await audit(container, "event.broadcast_sent", userId, params.broadcastId, {
-        cleanupId: params.id,
-        segment: payload.segment?.kind ?? null,
-        channels: payload.channels,
-        subjectHash:
-          payload.subject === null || payload.subject === undefined
-            ? null
-            : emailHashOf(payload.subject),
-      })
+      await auditBestEffort(
+        container.getDb().sql,
+        {
+          action: "event.broadcast_sent",
+          actorId: userId,
+          target: `broadcast:${params.broadcastId}`,
+          meta: {
+            cleanupId: params.id,
+            segment: payload.segment?.kind ?? null,
+            channels: payload.channels,
+            subjectHash:
+              payload.subject === null || payload.subject === undefined
+                ? null
+                : emailHashOf(payload.subject),
+          },
+        },
+        request.log,
+      )
       reply.status(200).send(payload)
     },
   )
@@ -211,7 +204,7 @@ export async function registerHostBroadcastRoutes(
     { preHandler: csrfProtect, config: { rateLimit: BROADCAST_SEND_RATE_LIMIT } },
     async (request, reply) => {
       const userId = requireAuth(request)
-      const body = parse(ScheduleEventBroadcastRequestSchema, mergeParams(request))
+      const body = parse(ScheduleEventBroadcastRequestSchema, paramsOverBody(request))
       await requireCapability(container.getDb().sql, body.id, userId, "broadcast")
       const payload = await withCaps(() =>
         service().schedule(body.id, userId, body.broadcastId, new Date(body.scheduledAt)),
@@ -226,7 +219,7 @@ export async function registerHostBroadcastRoutes(
     { preHandler: csrfProtect, config: { rateLimit: BROADCAST_SEND_RATE_LIMIT } },
     async (request, reply) => {
       const userId = requireAuth(request)
-      const params = parse(CancelEventBroadcastRequestSchema, mergeParams(request))
+      const params = parse(CancelEventBroadcastRequestSchema, paramsOverBody(request))
       await requireCapability(container.getDb().sql, params.id, userId, "broadcast")
       reply.status(200).send(await service().cancel(params.id, params.broadcastId))
     },
@@ -238,7 +231,7 @@ export async function registerHostBroadcastRoutes(
     { config: { rateLimit: BROADCAST_READ_RATE_LIMIT } },
     async (request, reply) => {
       const userId = requireAuth(request)
-      const query = parse(ListBroadcastDeliveriesRequestSchema, mergeQuery(request))
+      const query = parse(ListBroadcastDeliveriesRequestSchema, paramsOverQuery(request))
       await requireCapability(container.getDb().sql, query.id, userId, "broadcast")
       const payload: ListBroadcastDeliveriesResponse = await service().listDeliveries(
         query.id,
@@ -254,7 +247,7 @@ export async function registerHostBroadcastRoutes(
     { preHandler: csrfProtect, config: { rateLimit: BROADCAST_WRITE_RATE_LIMIT } },
     async (request, reply) => {
       const userId = requireAuth(request)
-      const body = parse(SetEventBroadcastMuteRequestSchema, mergeParams(request))
+      const body = parse(SetEventBroadcastMuteRequestSchema, paramsOverBody(request))
       await resolveVisibleStanding(container.getDb().sql, body.id, userId)
       const payload: SetEventBroadcastMuteResponse = await service().setMute(
         body.id,
@@ -264,23 +257,4 @@ export async function registerHostBroadcastRoutes(
       reply.status(200).send(payload)
     },
   )
-}
-
-async function audit(
-  container: Container,
-  action: string,
-  actorId: string,
-  broadcastId: string,
-  meta: Record<string, unknown>,
-): Promise<void> {
-  try {
-    await writeAudit(container.getDb().sql, {
-      action,
-      actorId,
-      target: `broadcast:${broadcastId}`,
-      meta,
-    })
-  } catch {
-    return
-  }
 }

@@ -66,8 +66,8 @@ describe("feed ranking: each weight term in isolation", () => {
 
   for (const [flag, weight] of flags) {
     it(`adds exactly ${weight} when ${flag} is set`, () => {
-      const score = rawScore(candidate({ [flag]: true } as Partial<FeedCandidate>), CFG)
-      expect(score - base).toBeCloseTo(CFG[weight] as number, 10)
+      const score = rawScore(candidate({ [flag]: true }), CFG)
+      expect(score - base).toBeCloseTo(CFG[weight], 10)
     })
   }
 
@@ -313,7 +313,12 @@ describe("feed ranking: ordering", () => {
 
   it("never emits a negative score", () => {
     const hostile: FeedRankingConfig = { ...CFG, baseWeight: 0 }
-    const score = scoreCandidate(candidate({ createdAtMs: NOW - 24 * 365 * HOUR }), hostile, NOW, SEED)
+    const score = scoreCandidate(
+      candidate({ createdAtMs: NOW - 24 * 365 * HOUR }),
+      hostile,
+      NOW,
+      SEED,
+    )
     expect(score).toBeGreaterThanOrEqual(0)
   })
 })
@@ -400,7 +405,10 @@ describe("feed ranking: the global half is viewer-independent by construction", 
     expect(viewerScore(candidate(), CFG)).toBe(0)
     expect(viewerScore(candidate({ authorFollowed: true }), CFG)).toBeCloseTo(CFG.followWeight, 10)
     expect(viewerScore(candidate({ authorIsViewer: true }), CFG)).toBeCloseTo(CFG.selfWeight, 10)
-    expect(viewerScore(candidate({ viewerMentioned: true }), CFG)).toBeCloseTo(CFG.mentionWeight, 10)
+    expect(viewerScore(candidate({ viewerMentioned: true }), CFG)).toBeCloseTo(
+      CFG.mentionWeight,
+      10,
+    )
     expect(viewerScore(candidate({ distanceKm: 0 }), CFG)).toBeCloseTo(CFG.nearbyWeight, 10)
   })
 

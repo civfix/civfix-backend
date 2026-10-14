@@ -1,4 +1,3 @@
-
 import type { Queryable } from "../client.js"
 
 export async function touchUserActivity(

@@ -1,8 +1,11 @@
 import { AppError, MAX_EVENT_HOURS, MIN_EVENT_HOURS } from "@civfix/shared"
 import type { CleanupStatus } from "@civfix/shared"
+import { MS_PER_HOUR, MS_PER_MINUTE } from "../lib/time.js"
 import { MIN_EVENT_DURATION_MS, eventWindowOf, hasEventEnded } from "./cleanup-rules.js"
 
-export const EVENT_WINDOW_GRACE_MS = 60 * 60 * 1000
+const EVENT_WINDOW_GRACE_MS = MS_PER_HOUR
+
+const HOURS_ROUNDING_FACTOR = 100
 
 export interface EventHoursWindow {
   scheduledAt: Date
@@ -20,10 +23,10 @@ export interface EventCreditLimits {
 }
 
 function round2(n: number): number {
-  return Math.round(n * 100) / 100
+  return Math.round(n * HOURS_ROUNDING_FACTOR) / HOURS_ROUNDING_FACTOR
 }
 
-export function eventDurationMs(cleanup: EventHoursWindow): number {
+function eventDurationMs(cleanup: EventHoursWindow): number {
   const end = cleanup.completedAt ?? cleanup.endsAt
   return end.getTime() - cleanup.scheduledAt.getTime()
 }
@@ -31,8 +34,8 @@ export function eventDurationMs(cleanup: EventHoursWindow): number {
 export function creditableHoursForEvent(cleanup: EventHoursWindow): number {
   const windowMs = eventDurationMs(cleanup)
   if (windowMs <= 0) return 0
-  const hours = (windowMs + EVENT_WINDOW_GRACE_MS) / (60 * 60 * 1000)
-  return Math.min(MAX_EVENT_HOURS, Math.round(hours * 100) / 100)
+  const hours = (windowMs + EVENT_WINDOW_GRACE_MS) / MS_PER_HOUR
+  return Math.min(MAX_EVENT_HOURS, round2(hours))
 }
 
 export function assertEventCreditable(cleanup: CreditableEvent, nowMs: number): EventCreditLimits {
@@ -45,7 +48,7 @@ export function assertEventCreditable(cleanup: CreditableEvent, nowMs: number): 
   const durationMs = eventDurationMs(cleanup)
   if (durationMs < MIN_EVENT_DURATION_MS) {
     throw AppError.conflict(
-      `This event ran for less than ${MIN_EVENT_DURATION_MS / 60_000} minutes, so no volunteer hours can be logged against it.`,
+      `This event ran for less than ${MIN_EVENT_DURATION_MS / MS_PER_MINUTE} minutes, so no volunteer hours can be logged against it.`,
     )
   }
   return { durationMs, windowCap: creditableHoursForEvent(cleanup) }
@@ -63,7 +66,7 @@ export function assertCreditableEventHours(
   }
   if (hours > limits.windowCap) {
     throw AppError.validation({
-      [field]: `this event ran for ${round2(limits.durationMs / 3_600_000)} h, so at most ${limits.windowCap} h may be credited per attendee`,
+      [field]: `this event ran for ${round2(limits.durationMs / MS_PER_HOUR)} h, so at most ${limits.windowCap} h may be credited per attendee`,
     })
   }
 }

@@ -1,6 +1,6 @@
 /**
  * Tests for the shared offline auth harness itself (test/helpers/auth.ts): the OTP `signIn` primitive and
- * `makeAuthHarness`'s pass-through of buildServer overrides.
+ * `makeAuthHarness`'s pass-through of makeServer overrides.
  *
  * ~10 unit suites each hand-rolled this sign-in and its server boot. Before those adopt the shared
  * versions, the shared versions need their own coverage: that the token really authenticates, that a
@@ -13,7 +13,7 @@ import type { FastifyInstance } from "fastify"
 import type { FakeChatService } from "@civfix/shared/fakes"
 import { bearer, makeAuthHarness, signIn, type AuthHarness } from "./auth.js"
 import { InMemoryNotificationRepository } from "./notifications.js"
-import { buildContainer } from "../../src/di.js"
+import { makeContainer } from "../../src/di.js"
 import { loadEnv } from "../../src/env.js"
 
 let open: FastifyInstance | undefined
@@ -23,9 +23,7 @@ afterEach(async () => {
   open = undefined
 })
 
-async function harness(
-  opts: Parameters<typeof makeAuthHarness>[0] = {},
-): Promise<AuthHarness> {
+async function harness(opts: Parameters<typeof makeAuthHarness>[0] = {}): Promise<AuthHarness> {
   const h = await makeAuthHarness(opts)
   open = h.app
   return h
@@ -102,13 +100,13 @@ describe("signIn (shared OTP sign-in)", () => {
   })
 })
 
-describe("makeAuthHarness (buildServer override pass-through)", () => {
+describe("makeAuthHarness (makeServer override pass-through)", () => {
   it("passes route-service overrides to the app (the injected repo serves the request)", async () => {
     const repo = new InMemoryNotificationRepository()
     const h = await harness({ server: { notificationOverrides: { repo } } })
     const { token, userId } = await h.signIn("notif-harness@example.com")
 
-    // Seeded straight into the injected repo: if the override had not reached buildServer, the route
+    // Seeded straight into the injected repo: if the override had not reached makeServer, the route
     // would be reading the (absent) database instead.
     await repo.insertNotification({
       userId,
@@ -133,14 +131,14 @@ describe("makeAuthHarness (buildServer override pass-through)", () => {
     const h = await harness()
     expect(h.container.env.NODE_ENV).toBe("test")
     // USE_FAKE_CHAT is on for the test env, so the chat seam is the in-memory fake a suite can assert on.
-    // roomSize is the fake's own test helper — the real WS adapter has no such method.
+    // roomSize is the fake's own test helper: the real WS adapter has no such method.
     const chat = h.container.chatService as FakeChatService
     expect(typeof chat.persist).toBe("function")
     expect(chat.roomSize("no-such-room")).toBe(0)
   })
 
   it("uses a caller-supplied container rather than building its own", async () => {
-    const container = buildContainer(loadEnv({ NODE_ENV: "test" }))
+    const container = makeContainer(loadEnv({ NODE_ENV: "test" }))
     const h = await harness({ server: { container } })
     expect(h.container).toBe(container)
   })
@@ -157,7 +155,7 @@ describe("makeAuthHarness (buildServer override pass-through)", () => {
   /**
    * The isolation claim has to hold on the DEFAULT path, not only when an override forces an explicit
    * source. It previously did not: with no options the harness passed loadEnv(undefined), so the ambient
-   * environment — a developer's real DATABASE_URL among it — became the offline app's config.
+   * environment (a developer's real DATABASE_URL among it) became the offline app's config.
    */
   it("ignores the ambient environment even with NO options passed", async () => {
     // Real infrastructure in the developer's shell, and a flag that would swap a fake for a live adapter.

@@ -1,5 +1,5 @@
 /**
- * DECISIONS §44 — a sign-up on a NON-ticketed event is a free registration.
+ * DECISIONS §44: a sign-up on a NON-ticketed event is a free registration.
  *
  * Before this, a slot-based event's host saw an empty "Attendees" list and zero check-in counters:
  * joining wrote `cleanup_members` (+ a slot claim) and nothing on the registration side, while the
@@ -19,13 +19,10 @@ import { TEST_TICKET_SIGNER } from "../../helpers/ticket-signer.js"
 import { randomUUID } from "node:crypto"
 import { beforeEach, describe, expect, it } from "vitest"
 import { InMemoryCounterStore } from "../../../src/abuse/counter-store.js"
-import {
-  makeCleanupService,
-  type CleanupService,
-} from "../../../src/services/cleanup-service.js"
+import { makeCleanupService, type CleanupService } from "../../../src/services/cleanup-service.js"
 import { InMemoryCleanupRepository } from "../../helpers/cleanups.js"
-import { InMemoryHostRegistrationRepository } from "../../../src/services/host/registration-repository.memory.js"
-import type { TicketTypeRecord } from "../../../src/services/host/registration-repository.types.js"
+import { InMemoryHostRegistrationRepository } from "../../helpers/host/registration-repository.memory.js"
+import type { TicketTypeRecord } from "../../../src/services/host/registration-repository.js"
 import {
   makeCheckinService,
   type CheckinService,
@@ -186,7 +183,7 @@ describe("signing up for a non-ticketed event", () => {
 })
 
 describe("a ticketed event", () => {
-  it("gets no auto-registration — registerIn owns that path", async () => {
+  it("gets no auto-registration; registerIn owns that path", async () => {
     const id = seedEvent()
     seedTicketType(id)
     const slot = repo.seedSlot({ cleanupId: id, title: "Grill" })
@@ -224,6 +221,38 @@ describe("a ticketed event", () => {
     expect(mine).toHaveLength(1)
     expect(mine[0]?.ticketTypeId).toBe(type.id)
     expect(mine[0]?.seats.map((seat) => seat.status)).toEqual(["active"])
+  })
+})
+
+describe("a host removing an attendee who holds a ticket", () => {
+  it("cancels the ticketed registration, releases its seats and kills the ticket", async () => {
+    const id = seedEvent()
+    const type = seedTicketType(id)
+    const seatId = randomUUID()
+    const registered = await registrations.registerTx({
+      cleanupId: id,
+      subject: { kind: "user", userId: MEMBER },
+      ticketTypeId: type.id,
+      seats: [{ id: seatId, attendeeName: null, tokenHash: TEST_TICKET_SIGNER.hashFor(seatId) }],
+      accessCodeHash: null,
+      answers: [],
+      consent: null,
+      slotId: null,
+      source: "self",
+      idempotencyKey: "ticketed-ban",
+      waitlistId: null,
+      now: new Date(),
+    })
+    expect(registered.kind).toBe("registered")
+    repo.seedMember(id, MEMBER, "member")
+
+    await service.removeMember(id, ORG, MEMBER)
+
+    expect(activeRegistrationsOf(id, MEMBER)).toHaveLength(0)
+    expect(registrations.ticketTypes.get(type.id)?.reservedSeats).toBe(0)
+    expect(await rosterUserIds(id)).toEqual([])
+    const scanned = await checkin.scan({ id, token: TEST_TICKET_SIGNER.tokenFor(seatId) }, ORG)
+    expect(scanned.outcome).toBe("cancelled")
   })
 })
 

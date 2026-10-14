@@ -1,4 +1,3 @@
-
 import { describe, it, expect } from "vitest"
 import {
   CURSOR_UUID_RE,
@@ -6,19 +5,20 @@ import {
   MIN_UUID,
   encodeNameCursor,
   encodeNearCursor,
+  encodeKeysetCursor,
   encodeTimeCursor,
   isUuid,
   pageWith,
   paginate,
   parseNameCursor,
   parseNearCursor,
+  parseKeysetCursor,
   parseTimeCursor,
 } from "../../src/db/cursor-helpers.js"
 
 const UUID = "3f2504e0-4f89-11d3-9a0c-0305e82c3301"
 const UUID_2 = "9c858901-8a57-4791-81fe-4c455b099bc9"
 const ISO = "2026-07-24T12:34:56.789Z"
-const INSTANT = "2026-07-24T12:34:56.789000Z"
 
 describe("isUuid / CURSOR_UUID_RE", () => {
   it("accepts a canonical uuid in either case and rejects near-misses", () => {
@@ -55,22 +55,22 @@ describe("parseTimeCursor", () => {
   })
 
   it("keeps the cursor's microseconds as the instant the database compares against", () => {
-    const parsed = parseTimeCursor(`2026-07-24T12:34:56.789123Z|${UUID}`)
+    const parsed = parseKeysetCursor(`2026-07-24T12:34:56.789123Z|${UUID}`)
     expect(parsed?.at.toISOString()).toBe(ISO)
-    expect(parsed?.instant).toBe("2026-07-24T12:34:56.789123Z")
-    expect(parseTimeCursor(`2026-07-24T14:34:56.7+02:00|${UUID}`)?.instant).toBe(
-      "2026-07-24T12:34:56.700000Z",
+    expect(parsed?.atText).toBe("2026-07-24T12:34:56.789123Z")
+    expect(parseKeysetCursor(`2026-07-24T14:34:56.7+02:00|${UUID}`)?.atText).toBe(
+      "2026-07-24T12:34:56.7Z",
     )
   })
 
   it("encodes a database instant verbatim, so its microseconds survive the round trip", () => {
-    const encoded = encodeTimeCursor({ at: "2026-07-24T12:34:56.789123Z", id: UUID })
+    const encoded = encodeKeysetCursor("2026-07-24T12:34:56.789123Z", UUID)
     expect(encoded).toBe(`2026-07-24T12:34:56.789123Z|${UUID}`)
-    expect(parseTimeCursor(encoded)?.instant).toBe("2026-07-24T12:34:56.789123Z")
+    expect(parseKeysetCursor(encoded)?.atText).toBe("2026-07-24T12:34:56.789123Z")
   })
 
   it("anchors a legacy timestamp-only cursor with a DIRECTION-AWARE sentinel so no boundary row is skipped", () => {
-    const anchor = { at: new Date(ISO), instant: INSTANT }
+    const anchor = { at: new Date(ISO) }
     expect(parseTimeCursor(ISO)).toEqual({ ...anchor, id: MAX_UUID })
     expect(parseTimeCursor(ISO, { direction: "desc" })).toEqual({ ...anchor, id: MAX_UUID })
     expect(parseTimeCursor(ISO, { direction: "asc" })).toEqual({ ...anchor, id: MIN_UUID })
@@ -103,14 +103,16 @@ describe("parseTimeCursor", () => {
 
   it("with requireUuid:false accepts a non-uuid id, but still rejects an EMPTY one", () => {
     const parsed = parseTimeCursor(`${ISO}|room-42`, { requireUuid: false })
-    expect(parsed).toEqual({ at: new Date(ISO), instant: INSTANT, id: "room-42" })
+    expect(parsed).toEqual({ at: new Date(ISO), id: "room-42" })
     expect(parseTimeCursor(`${ISO}|`, { requireUuid: false })).toBeNull()
     expect(parseTimeCursor("nope|room-42", { requireUuid: false })).toBeNull()
   })
 
   it("splits on the FIRST '|' (unlike parseNameCursor, which splits on the last)", () => {
     expect(parseTimeCursor(`${ISO}|${UUID}|extra`)).toBeNull()
-    expect(parseTimeCursor(`${ISO}|${UUID}|extra`, { requireUuid: false })!.id).toBe(`${UUID}|extra`)
+    expect(parseTimeCursor(`${ISO}|${UUID}|extra`, { requireUuid: false })!.id).toBe(
+      `${UUID}|extra`,
+    )
   })
 
   it("rejects a forged out-of-range timestamp that JS parses but Postgres would 22008 on", () => {
@@ -175,7 +177,7 @@ describe("parseNearCursor / encodeNearCursor", () => {
     expect(parseNearCursor(encoded)).toEqual({ dist: 1234.5, id: UUID })
   })
 
-  it("parses a zero distance and exponent notation (a 0 anchor is legitimate — you are AT the point)", () => {
+  it("parses a zero distance and exponent notation (a 0 anchor is legitimate: you are AT the point)", () => {
     expect(parseNearCursor(`0|${UUID}`)).toEqual({ dist: 0, id: UUID })
     expect(parseNearCursor(`0.0|${UUID}`)).toEqual({ dist: 0, id: UUID })
     expect(parseNearCursor(`1e3|${UUID}`)).toEqual({ dist: 1000, id: UUID })
@@ -249,15 +251,14 @@ describe("paginate", () => {
     const page = paginate(rows, 1, (r) => ({ at: r.at, id: r.id }))
     expect(page.items).toEqual([rows[0]])
     expect(page.nextCursor).toBe(`${ISO}|${UUID}`)
-    expect(parseTimeCursor(page.nextCursor)).toEqual({
-      at: new Date(ISO),
-      instant: INSTANT,
-      id: UUID,
-    })
+    expect(parseTimeCursor(page.nextCursor)).toEqual({ at: new Date(ISO), id: UUID })
   })
 
   it("falls back to `createdAt` when the anchor has no `at`", () => {
-    const rows = [{ id: UUID, createdAt: new Date(ISO) }, { id: UUID_2, createdAt: new Date(ISO) }]
+    const rows = [
+      { id: UUID, createdAt: new Date(ISO) },
+      { id: UUID_2, createdAt: new Date(ISO) },
+    ]
     const page = paginate(rows, 1, (r) => ({ createdAt: r.createdAt, id: r.id }))
     expect(page.nextCursor).toBe(`${ISO}|${UUID}`)
   })

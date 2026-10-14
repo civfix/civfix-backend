@@ -1,54 +1,37 @@
-import type postgres from "postgres"
 import type { KeyCount } from "@civfix/shared/host"
-import type { Sql } from "../../db/client.js"
+import type { Sql, SqlFragment } from "../../db/client.js"
+import type {
+  EventAnalyticsFacts,
+  EventAnalyticsRepository,
+  EventComparisonMedians,
+} from "./event-analytics-repository.js"
 
-type Fragment = postgres.Fragment
+const EVENT_ANALYTICS_SLOT_ROW_LIMIT = 50
 
-export const EVENT_ANALYTICS_SLOT_ROW_LIMIT = 50
-
-export interface EventAnalyticsFacts {
-  walkUps: number
-  reportsLinked: number
-  reportsResolved: number
-  postsCreated: number
-}
-
-export const ZERO_EVENT_ANALYTICS_FACTS: EventAnalyticsFacts = Object.freeze({
+const ZERO_EVENT_ANALYTICS_FACTS: EventAnalyticsFacts = Object.freeze({
   walkUps: 0,
   reportsLinked: 0,
   reportsResolved: 0,
   postsCreated: 0,
 })
 
-export interface EventComparisonMedians {
-  sampleSize: number
-  signups: number | null
-  checkInRate: number | null
-  hoursPerVolunteer: number | null
-  fillRate: number | null
-}
+const EMPTY_COMPARISON_MEDIANS: EventComparisonMedians = Object.freeze({
+  sampleSize: 0,
+  signups: null,
+  checkInRate: null,
+  hoursPerVolunteer: null,
+  fillRate: null,
+})
 
-export interface EventAnalyticsRepository {
-  previousCompletedEventIds(args: {
-    userId: string
-    organizationId: string | null
-    excludeCleanupId: string
-    limit: number
-  }): Promise<string[]>
-  facts(cleanupId: string): Promise<EventAnalyticsFacts>
-  registrationsBySlot(cleanupId: string): Promise<KeyCount[]>
-  reportStatuses(cleanupId: string): Promise<KeyCount[]>
-  hoursBuckets(cleanupId: string): Promise<KeyCount[]>
-  comparisonMedians(cleanupIds: readonly string[]): Promise<EventComparisonMedians>
+function keyCounts(rows: { key: string; n: number }[]): KeyCount[] {
+  return rows.map((row) => ({ key: row.key, count: row.n }))
 }
 
 export function makeDrizzleEventAnalyticsRepository(sql: Sql): EventAnalyticsRepository {
   return {
     async previousCompletedEventIds(args) {
-      const orgFilter = (): Fragment =>
-        args.organizationId !== null
-          ? sql`AND c.organization_id = ${args.organizationId}`
-          : sql``
+      const orgFilter = (): SqlFragment =>
+        args.organizationId !== null ? sql`AND c.organization_id = ${args.organizationId}` : sql``
       const rows = await sql<{ id: string }[]>`
         WITH hosted AS (
           SELECT c.id, c.completed_at
@@ -125,7 +108,7 @@ export function makeDrizzleEventAnalyticsRepository(sql: Sql): EventAnalyticsRep
          GROUP BY sl.title
          ORDER BY count(*) DESC, sl.title ASC
          LIMIT ${EVENT_ANALYTICS_SLOT_ROW_LIMIT}`
-      return rows.map((row) => ({ key: row.key, count: row.n }))
+      return keyCounts(rows)
     },
 
     async reportStatuses(cleanupId) {
@@ -137,7 +120,7 @@ export function makeDrizzleEventAnalyticsRepository(sql: Sql): EventAnalyticsRep
          GROUP BY rep.status
          ORDER BY count(*) DESC, rep.status ASC
          LIMIT ${EVENT_ANALYTICS_SLOT_ROW_LIMIT}`
-      return rows.map((row) => ({ key: row.key, count: row.n }))
+      return keyCounts(rows)
     },
 
     async hoursBuckets(cleanupId) {
@@ -159,19 +142,11 @@ export function makeDrizzleEventAnalyticsRepository(sql: Sql): EventAnalyticsRep
                count(*)::int AS n
           FROM per_person
          GROUP BY 1`
-      return rows.map((row) => ({ key: row.key, count: row.n }))
+      return keyCounts(rows)
     },
 
     async comparisonMedians(cleanupIds) {
-      if (cleanupIds.length === 0) {
-        return {
-          sampleSize: 0,
-          signups: null,
-          checkInRate: null,
-          hoursPerVolunteer: null,
-          fillRate: null,
-        }
-      }
+      if (cleanupIds.length === 0) return { ...EMPTY_COMPARISON_MEDIANS }
       const rows = await sql<
         {
           sample_size: number

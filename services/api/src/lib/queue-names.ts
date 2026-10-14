@@ -1,0 +1,35 @@
+export const MEDIA_CHECKS_JOB = "media.checks"
+export const ANON_HOLD_RELEASE_JOB = "anon.hold.release"
+
+// The API and the media worker both create media.checks and anon.hold.release with this policy. pg-boss
+// keeps the last createQueue/updateQueue policy, so a mismatch silently breaks singletonKey dedup on
+// those queues.
+export const SHARED_QUEUE_POLICY = "short"
+
+export const JURISDICTION_DISCOVERY_JOB = "jurisdiction.discovery"
+export const OUTREACH_DIGEST_JOB = "outreach.digest"
+export const INBOUND_SWEEP_JOB = "inbound.sweep"
+export const REPORT_AUTOFORWARD_JOB = "report.autoforward"
+export const DATA_EXPORT_JOB = "data.export"
+export const CLEANUP_CANCEL_FANOUT_JOB = "cleanup.cancel.fanout"
+export const CLEANUP_GUEST_UPDATE_FANOUT_JOB = "cleanup.guest.update.fanout"
+export const GUEST_RETENTION_SWEEP_JOB = "guest.retention.sweep"
+export const CHAT_ROOM_FANOUT_JOB = "chat.room.fanout"
+export const WAITLIST_PROMOTE_JOB = "waitlist.promote"
+export const WAITLIST_EXPIRE_SWEEP_JOB = "waitlist.expire.sweep"
+export const CHECKIN_NOSHOW_SWEEP_JOB = "checkin.noshow.sweep"
+export const BROADCAST_PLAN_JOB = "broadcast.plan"
+export const BROADCAST_CHUNK_JOB = "broadcast.chunk"
+export const BROADCAST_SCHEDULE_SWEEP_JOB = "broadcast.schedule.sweep"
+export const EVENT_REMINDERS_SWEEP_JOB = "event.reminders.sweep"
+export const EVENT_METRICS_ROLLUP_JOB = "event.metrics.rollup"
+export const HOST_EXPORT_JOB = "host.export"
+export const HOST_EXPORT_REAP_JOB = "host.export.reap"
+export const HOST_RETENTION_SWEEP_JOB = "host.retention.sweep"
+
+export const ORPHAN_SWEEP_JOB = "orphan.sweep"
+export const CHAT_PARTITION_JOB = "chat.partition.maintenance"
+export const ANON_HOLD_RELEASE_SWEEP_JOB = "anon.hold.release.sweep"
+export const RETENTION_SWEEP_JOB = "retention.sweep"
+export const MEDIA_STUCK_SWEEP_JOB = "media.stuck.sweep"
+export const MEDIA_UPLOAD_REAP_JOB = "media.upload.reap"

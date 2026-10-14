@@ -20,7 +20,7 @@ export default defineConfig({
     //   sequence: it is a manually-invoked one-off (default run is a rehearsal that rolls back), and
     //   it refuses to run twice (purge first). Same operational stance as backfill-reference-codes.
     "src/db/seed-demo-la.ts",
-    // db/demo-join-event.ts: companion one-off — RSVPs a subset of the seeded demo users onto one
+    // db/demo-join-event.ts: companion one-off that RSVPs a subset of the seeded demo users onto one
     //   existing event (by EVENT reference code or uuid), mirroring joinCleanupTx semantics. Same
     //   manual, rehearse-by-default stance as seed-demo-la; never part of the deploy sequence.
     "src/db/demo-join-event.ts",

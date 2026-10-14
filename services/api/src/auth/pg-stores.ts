@@ -1,25 +1,46 @@
-
 import { randomUUID } from "node:crypto"
-import { and, desc, eq, gt, inArray, isNull, ne, sql } from "drizzle-orm"
+import { and, desc, eq, gt, isNull, ne, sql } from "drizzle-orm"
 import type { Db } from "../db/client.js"
 import {
   cleanups,
   emailOtps,
+  notifications,
   oauthIdentities,
   posts,
+  pushTokens,
   reports,
   serviceHoursCertificates,
   sessions,
   userModeration,
   users,
 } from "../db/schema/index.js"
-import { AppError, DELETED_USER_LABEL, SOCIAL_PLATFORMS, type Role, type SocialLinks } from "@civfix/shared"
+import {
+  AppError,
+  DELETED_USER_LABEL,
+  SOCIAL_PLATFORMS,
+  type Role,
+  type SocialLinks,
+} from "@civfix/shared"
 import type { Jobs } from "@civfix/shared/interfaces"
 import { decideHandleWrite, handleChanged } from "./handle-policy.js"
-import { resolveAvatarMediaOrThrow } from "../services/avatar-media.js"
+import { avatarMediaRefOrThrow } from "../services/avatar-media.js"
+import {
+  avatarClaimQuery,
+  type AvatarMediaRow,
+} from "../services/media-claim-repository.drizzle.js"
+import { userUploader } from "../services/media-uploader.js"
 import { enqueueWaitlistPromotion } from "../services/host/waitlist-promotion.js"
+import { makeDrizzleOrganizationMembershipRepository } from "../services/host/organization-membership-repository.drizzle.js"
+import type { OrganizationMembershipRepository } from "../services/host/organization-membership-repository.js"
+import type {
+  DbTransaction,
+  ErasureRepository,
+  TransferredEvent,
+} from "../services/erasure-repository.js"
+import { makeDrizzleErasureRepository } from "../services/erasure-repository.drizzle.js"
 import type { NotificationService } from "../services/notification-service.js"
 import {
+  EmailTakenError,
   generatePlaceholderHandle,
   generateTombstoneHandle,
   type AccountStatus,
@@ -39,14 +60,17 @@ import {
   type UserRecord,
   type UserStore,
 } from "./stores.js"
+import { isUniqueViolation } from "../db/pg-errors.js"
+import { mapWithLimit } from "../lib/concurrency.js"
 
-type DbTransaction = Parameters<Parameters<Db["transaction"]>[0]>[0]
+const ERASURE_HANDLE_RETRIES = 5
 
-interface TransferredEvent extends Record<string, unknown> {
-  cleanup_id: string
-  new_organizer: string
-  title: string
-}
+// Bounds the post-commit fan-out on the DELETE /me response path; each item's failure stays isolated.
+const ERASURE_SIDE_EFFECT_CONCURRENCY = 4
+
+const HOST_TRANSFER_TITLE_KEY = "notification.cleanup_role.promoted.title"
+
+const HOST_TRANSFER_BODY_KEY = "notification.cleanup_role.promoted.body"
 
 export class PgSessionStore implements SessionStore {
   constructor(private readonly db: Db) {}
@@ -76,7 +100,7 @@ export class PgSessionStore implements SessionStore {
         ip: sessions.ip,
       })
       .from(sessions)
-      .innerJoin(users, eq(users.id, sessions.userId))
+      .innerJoin(users, and(eq(users.id, sessions.userId), isNull(users.deletedAt)))
       .leftJoin(userModeration, eq(userModeration.userId, sessions.userId))
       .where(eq(sessions.id, hash))
       .limit(1)
@@ -140,6 +164,8 @@ export class PgUserStore implements UserStore {
   private readonly logger: ErasureLogger | undefined
   private readonly notifier: ErasureNotifier | undefined
   private readonly jobs: Jobs | undefined
+  private readonly organizations: OrganizationMembershipRepository
+  private readonly erasure: ErasureRepository
 
   constructor(
     private readonly db: Db,
@@ -150,6 +176,8 @@ export class PgUserStore implements UserStore {
     this.logger = opts.logger
     this.notifier = opts.notifier
     this.jobs = opts.jobs
+    this.organizations = makeDrizzleOrganizationMembershipRepository(db)
+    this.erasure = makeDrizzleErasureRepository()
   }
 
   async findById(id: string): Promise<UserRecord | null> {
@@ -188,6 +216,9 @@ export class PgUserStore implements UserStore {
     const row = inserted[0]
     if (row) return toUserRecord(row)
 
+    if (normalizedEmail !== null && input.onEmailConflict === "reject") {
+      throw new EmailTakenError()
+    }
     if (normalizedEmail !== null) {
       const existing = await this.findByEmail(normalizedEmail)
       if (existing) return existing
@@ -201,7 +232,15 @@ export class PgUserStore implements UserStore {
     return r ? toUserRecord(r) : null
   }
 
-  async updateProfile(id: string, input: UpdateProfileInput): Promise<UserRecord> {
+  updateProfile(id: string, input: UpdateProfileInput): Promise<UserRecord> {
+    return this.writeProfile(id, input, true)
+  }
+
+  private async writeProfile(
+    id: string,
+    input: UpdateProfileInput,
+    retryOnLostRename: boolean,
+  ): Promise<UserRecord> {
     const current = await this.findById(id)
     if (!current) throw AppError.notFound("User not found.")
 
@@ -227,15 +266,6 @@ export class PgUserStore implements UserStore {
     if (input.donationUrl !== undefined) {
       set.donationUrl = input.donationUrl === "" ? null : input.donationUrl
     }
-    if (input.avatarUploadId !== undefined) {
-      const media = await resolveAvatarMediaOrThrow(this.db.$client, input.avatarUploadId, {
-        userId: id,
-      })
-      set.avatarMediaId = media.id
-      if (input.presignAvatar && media.servedKey !== null) {
-        set.avatarUrl = await input.presignAvatar(media.servedKey)
-      }
-    }
     if (input.socialLinks !== undefined) {
       const links = input.socialLinks
       const clean: SocialLinks = {}
@@ -247,19 +277,44 @@ export class PgUserStore implements UserStore {
       }
       set.socialLinks = Object.keys(clean).length > 0 ? clean : null
     }
+    // The cooldown was decided on the handle read above; pinning the write to that handle means a
+    // concurrent rename that landed first makes this one miss, and the retry re-decides on fresh state.
+    const renameGuard =
+      set.handle === undefined
+        ? undefined
+        : current.handle === null
+          ? isNull(users.handle)
+          : eq(users.handle, current.handle)
+    const avatarUploadId = input.avatarUploadId
     let updated: (typeof users.$inferSelect)[]
     try {
-      updated = await this.db
-        .update(users)
-        .set(set)
-        .where(and(eq(users.id, id), isNull(users.deletedAt)))
-        .returning()
+      updated = await this.db.transaction(async (tx) => {
+        if (avatarUploadId !== undefined) {
+          const media = avatarMediaRefOrThrow(
+            await tx.execute<AvatarMediaRow>(
+              avatarClaimQuery(sql, avatarUploadId, { uploader: userUploader(id), userId: id }),
+            ),
+          )
+          set.avatarMediaId = media.id
+          if (input.presignAvatar && media.servedKey !== null) {
+            set.avatarUrl = await input.presignAvatar(media.servedKey)
+          }
+        }
+        return tx
+          .update(users)
+          .set(set)
+          .where(and(eq(users.id, id), isNull(users.deletedAt), renameGuard))
+          .returning()
+      })
     } catch (err) {
       if (isUniqueViolation(err)) throw AppError.conflict("That username is taken.")
       throw err
     }
     const r = updated[0]
-    if (!r) throw AppError.notFound("User not found.")
+    if (!r) {
+      if (renameGuard !== undefined && retryOnLostRename) return this.writeProfile(id, input, false)
+      throw AppError.notFound("User not found.")
+    }
     return toUserRecord(r)
   }
 
@@ -277,17 +332,7 @@ export class PgUserStore implements UserStore {
     if (input.showVolunteerHours !== undefined) set.showVolunteerHours = input.showVolunteerHours
     if (input.primaryOrganizationId !== undefined) {
       if (input.primaryOrganizationId !== null) {
-        const member = await this.db.execute<{ one: number }>(sql`
-          SELECT 1 AS one
-          FROM organization_members m
-          JOIN organizations o ON o.id = m.organization_id
-          WHERE m.user_id = ${id}
-            AND m.organization_id = ${input.primaryOrganizationId}
-            AND o.deleted_at IS NULL
-            AND o.suspended_at IS NULL
-          LIMIT 1
-        `)
-        if (member.length === 0) {
+        if (!(await this.organizations.isActiveMember(id, input.primaryOrganizationId))) {
           throw AppError.validation({
             primaryOrganizationId: PRIMARY_ORGANIZATION_NOT_A_MEMBER,
           })
@@ -330,330 +375,127 @@ export class PgUserStore implements UserStore {
     }
   }
 
-  private async transferHostedEvents(tx: DbTransaction, id: string): Promise<TransferredEvent[]> {
-    const toOrgOwner = await tx.execute<TransferredEvent>(sql`
-      WITH candidate AS (
-        SELECT c.id AS cleanup_id, om.user_id AS new_organizer
-        FROM cleanups c
-        JOIN organization_members om
-          ON om.organization_id = c.organization_id AND om.role = 'owner'
-        JOIN organizations o ON o.id = om.organization_id AND o.deleted_at IS NULL
-        JOIN users u ON u.id = om.user_id AND u.deleted_at IS NULL
-        WHERE c.organizer_user_id = ${id}
-          AND c.status <> 'cancelled' AND c.ends_at > now()
-          AND om.user_id <> ${id}
-      ), moved AS (
-        UPDATE cleanups c SET organizer_user_id = candidate.new_organizer
-        FROM candidate WHERE c.id = candidate.cleanup_id
-        RETURNING c.id AS cleanup_id, candidate.new_organizer
-      ), seated AS (
-        INSERT INTO cleanup_members (cleanup_id, user_id, role)
-        SELECT cleanup_id, new_organizer, 'organizer' FROM moved
-        ON CONFLICT (cleanup_id, user_id) DO UPDATE SET role = 'organizer'
-        RETURNING cleanup_id
-      )
-      SELECT m.cleanup_id, m.new_organizer, c.title
-      FROM moved m JOIN cleanups c ON c.id = m.cleanup_id
-    `)
-
-    const toCohost = await tx.execute<TransferredEvent>(sql`
-      WITH candidate AS (
-        SELECT DISTINCT ON (c.id) c.id AS cleanup_id, m.user_id AS new_organizer
-        FROM cleanups c
-        JOIN cleanup_members m ON m.cleanup_id = c.id AND m.role = 'cohost'
-        JOIN users u ON u.id = m.user_id AND u.deleted_at IS NULL
-        WHERE c.organizer_user_id = ${id} AND c.status <> 'cancelled' AND c.ends_at > now()
-        ORDER BY c.id, m.joined_at ASC NULLS LAST, m.user_id ASC
-      ), moved AS (
-        UPDATE cleanups c SET organizer_user_id = candidate.new_organizer
-        FROM candidate WHERE c.id = candidate.cleanup_id
-        RETURNING c.id AS cleanup_id, candidate.new_organizer
-      ), seated AS (
-        UPDATE cleanup_members m SET role = 'organizer'
-        FROM moved
-        WHERE m.cleanup_id = moved.cleanup_id AND m.user_id = moved.new_organizer
-        RETURNING m.cleanup_id
-      )
-      SELECT m.cleanup_id, m.new_organizer, c.title
-      FROM moved m JOIN cleanups c ON c.id = m.cleanup_id
-    `)
-
-    const moved = [...toOrgOwner, ...toCohost]
-    for (const row of moved) {
-      await tx.execute(sql`
-        INSERT INTO audit_log (actor_id, action, target, meta)
-        VALUES (
-          ${id},
-          'event.host_transferred',
-          ${`cleanup:${row.cleanup_id}`},
-          jsonb_build_object('newOrganizerId', ${row.new_organizer}::text)
-        )
-      `)
-    }
-
-    await tx.execute(sql`
-      UPDATE cleanup_members SET role = 'member'
-      WHERE user_id = ${id} AND role = 'organizer'
-        AND cleanup_id IN (SELECT id FROM cleanups WHERE organizer_user_id <> ${id})
-    `)
-
-    await tx.execute(sql`
-      WITH held AS (
-        SELECT cleanup_id, role FROM cleanup_members
-        WHERE user_id = ${id} AND role IN ('cohost', 'staff', 'coordinator')
-      ), demoted AS (
-        UPDATE cleanup_members m SET role = 'member'
-        FROM held h
-        WHERE m.cleanup_id = h.cleanup_id AND m.user_id = ${id}
-        RETURNING m.cleanup_id
-      )
-      INSERT INTO audit_log (actor_id, action, target, meta)
-      SELECT NULL::uuid,
-             'event.team_role_changed',
-             'cleanup:' || h.cleanup_id,
-             jsonb_build_object('targetUserId', ${id}::text, 'from', h.role, 'to', 'member')
-      FROM held h
-    `)
-    return moved
-  }
-
-  private async releaseOrganizations(tx: DbTransaction, id: string): Promise<void> {
-    await tx.execute(sql`
-      SELECT o.id FROM organizations o
-      WHERE EXISTS (
-        SELECT 1 FROM organization_members om
-        WHERE om.organization_id = o.id AND om.user_id = ${id} AND om.role = 'owner'
-      )
-      ORDER BY o.id
-      FOR UPDATE
-    `)
-    const owned = await tx.execute<{ organization_id: string }>(sql`
-      UPDATE organization_members SET role = 'admin'
-      WHERE user_id = ${id} AND role = 'owner'
-      RETURNING organization_id
-    `)
-    const ownedOrgIds = owned.map((row) => row.organization_id)
-    if (ownedOrgIds.length > 0) {
-      await tx.execute(sql`
-        UPDATE organization_members t SET role = 'owner'
-        FROM (
-          SELECT DISTINCT ON (om.organization_id) om.organization_id, om.user_id
-          FROM organization_members om
-          JOIN users u ON u.id = om.user_id AND u.deleted_at IS NULL
-          WHERE ${inArray(sql`om.organization_id`, ownedOrgIds)}
-            AND om.role = 'admin' AND om.user_id <> ${id}
-          ORDER BY om.organization_id, om.joined_at ASC, om.user_id ASC
-        ) pick
-        WHERE t.organization_id = pick.organization_id AND t.user_id = pick.user_id
-      `)
-    }
-    await tx.execute(sql`DELETE FROM organization_members WHERE user_id = ${id}`)
-    if (ownedOrgIds.length > 0) {
-      const orphaned = await tx.execute<{ id: string }>(sql`
-        UPDATE organizations SET deleted_at = now(), updated_at = now()
-        WHERE ${inArray(sql`id`, ownedOrgIds)} AND deleted_at IS NULL
-          AND NOT EXISTS (
-            SELECT 1 FROM organization_members ow
-            WHERE ow.organization_id = organizations.id AND ow.role = 'owner'
-          )
-        RETURNING id
-      `)
-      const orphanedOrgIds = orphaned.map((row) => row.id)
-      if (orphanedOrgIds.length > 0) {
-        await tx.execute(sql`
-          UPDATE cleanups SET organization_id = NULL
-          WHERE ${inArray(sql`organization_id`, orphanedOrgIds)}
-        `)
-      }
-    }
-    await tx.execute(sql`
-      UPDATE cleanup_team_invites
-      SET status = 'revoked', invited_email = NULL, email_scrubbed_at = now()
-      WHERE status = 'pending' AND (invited_user_id = ${id} OR invited_by = ${id})
-    `)
-  }
-
-  private async scrubAttendeeContributions(tx: DbTransaction, id: string): Promise<string[]> {
-    await tx.execute(sql`
-      UPDATE cleanup_registrations SET host_note = NULL
-       WHERE user_id = ${id} AND host_note IS NOT NULL
-    `)
-    await tx.execute(sql`
-      UPDATE cleanup_registration_seats s
-         SET attendee_name = NULL
-        FROM cleanup_registrations r
-       WHERE s.registration_id = r.id AND r.user_id = ${id} AND s.attendee_name IS NOT NULL
-    `)
-    await tx.execute(sql`
-      UPDATE cleanup_answers a
-         SET value_text = NULL, value_json = NULL, scrubbed_at = now()
-        FROM cleanup_registrations r
-       WHERE a.registration_id = r.id AND r.user_id = ${id} AND a.scrubbed_at IS NULL
-    `)
-    const released = await tx.execute<{ id: string }>(sql`
-      WITH cancelled_waitlist AS (
-        UPDATE cleanup_waitlist SET status = 'cancelled'
-         WHERE user_id = ${id} AND status IN ('waiting', 'offered')
-        RETURNING ticket_type_id, party_size, offered_at
-      ), releases AS (
-        SELECT ticket_type_id, sum(party_size)::int AS seats
-          FROM cancelled_waitlist
-         WHERE offered_at IS NOT NULL
-         GROUP BY ticket_type_id
-      )
-      UPDATE cleanup_ticket_types t
-         SET reserved_seats = GREATEST(t.reserved_seats - r.seats, 0),
-             updated_at = now()
-        FROM releases r
-       WHERE t.id = r.ticket_type_id
-      RETURNING t.id
-    `)
-    await tx.execute(sql`
-      UPDATE donations
-         SET user_id = NULL,
-             profile_unlinked_at = COALESCE(profile_unlinked_at, now()),
-             donor_email = CASE WHEN charged_at IS NULL THEN NULL ELSE donor_email END,
-             donor_name = CASE WHEN charged_at IS NULL THEN NULL ELSE donor_name END
-       WHERE user_id = ${id}
-    `)
-    return released.map((row) => row.id)
-  }
-
   private async runErasure(id: string): Promise<UserRecord> {
     const erasure = await this.db.transaction(async (tx) => {
-      const updated = await tx
-        .update(users)
-        .set({
-          deletedAt: sql`COALESCE(${users.deletedAt}, now())`,
-          allowDirectMessages: false,
-          email: null,
-          emailVerified: false,
-          displayName: DELETED_USER_LABEL,
-          handle: generateTombstoneHandle(),
-          bio: null,
-          avatarUrl: null,
-          avatarMediaId: null,
-          socialLinks: null,
-          donationUrl: null,
-          lastActivityGeom: null,
-          lastActivityAt: null,
-          primaryOrganizationId: null,
-        })
-        .where(eq(users.id, id))
-        .returning()
-      const r = updated[0]
-      if (!r) throw new Error("PgUserStore.softDeleteAndAnonymize: user not found")
+      const tombstoned = await this.tombstoneUser(tx, id)
+      // Revocation commits with the tombstone: if these ran after commit, a failure between the two would
+      // leave a deleted account whose tokens still authenticate and whose devices still get pushes.
+      await this.revokeSessionsAndDevices(tx, id)
       await tx
         .update(reports)
         .set({ visibility: "hidden" })
         .where(and(eq(reports.reporterUserId, id), eq(reports.visibility, "public")))
-      await this.releaseOrganizations(tx, id)
-      const moved = await this.transferHostedEvents(tx, id)
-      await tx
-        .update(cleanups)
-        .set({ status: "cancelled" })
-        .where(
-          and(
-            eq(cleanups.organizerUserId, id),
-            ne(cleanups.status, "cancelled"),
-            gt(cleanups.endsAt, new Date()),
-          ),
-        )
-      const releasedTicketTypeIds = await this.scrubAttendeeContributions(tx, id)
+      await this.erasure.releaseOrganizations(tx, id)
+      const moved = await this.erasure.transferHostedEvents(tx, id)
+      await this.cancelRemainingHostedEvents(tx, id)
+      const releasedTicketTypeIds = await this.erasure.scrubAttendeeContributions(tx, id)
       await tx
         .update(posts)
         .set({ visibility: "hidden" })
         .where(and(eq(posts.authorId, id), eq(posts.visibility, "public")))
-
-      const certificates = await tx
-        .update(serviceHoursCertificates)
-        .set({
-          revokedAt: sql`COALESCE(${serviceHoursCertificates.revokedAt}, now())`,
-          revokedReason: sql`COALESCE(${serviceHoursCertificates.revokedReason}, 'account_closed')`,
-          holderName: DELETED_USER_LABEL,
-          holderHandle: null,
-          snapshot: {},
-        })
-        .where(eq(serviceHoursCertificates.userId, id))
-        .returning({ r2Key: serviceHoursCertificates.r2Key })
-
-      await tx.execute(sql`
-        UPDATE moderation_items
-        SET meta = jsonb_set(
-          jsonb_set(
-            jsonb_set(
-              jsonb_set(meta, '{user,name}', to_jsonb(${DELETED_USER_LABEL}::text), false),
-              '{user,handle}', to_jsonb(''::text), false),
-            '{user,device}', to_jsonb(''::text), false),
-          '{user,joined}', to_jsonb(''::text), false)
-        WHERE meta->'user'->>'id' = ${id}
-      `)
-      await tx.execute(sql`
-        UPDATE moderation_items
-        SET meta = jsonb_set(
-          jsonb_set(meta, '{reporter}', to_jsonb(${DELETED_USER_LABEL}::text), false),
-          '{desc}', to_jsonb(''::text), false)
-        WHERE meta->>'reporterUserId' = ${id}
-      `)
-
-      const verificationMedia = await tx.execute<{
-        r2_key: string
-        served_key: string | null
-        thumb_key: string | null
-      }>(sql`
-        DELETE FROM media_assets
-        WHERE purpose = 'verification'
-          AND id IN (
-            SELECT (doc->>'mediaId')::uuid
-            FROM user_verification uv,
-                 jsonb_array_elements(uv.documents) AS doc
-            WHERE uv.user_id = ${id} AND doc->>'mediaId' IS NOT NULL
-          )
-        RETURNING r2_key, served_key, thumb_key
-      `)
-      await tx.execute(sql`
-        UPDATE user_verification
-        SET note = NULL, rejection_reason = NULL, documents = '[]'::jsonb, updated_at = now()
-        WHERE user_id = ${id}
-      `)
-
-      const objectKeys = [
-        ...certificates.map((c) => c.r2Key),
-        ...verificationMedia.flatMap((m) =>
-          [m.r2_key, m.served_key, m.thumb_key].filter((k): k is string => k !== null),
-        ),
-      ]
-      return { record: toUserRecord(r), objectKeys, moved, releasedTicketTypeIds }
+      const certificateKeys = await this.revokeCertificates(tx, id)
+      await this.erasure.scrubModerationSnapshots(tx, id)
+      const verificationKeys = await this.erasure.purgeVerificationDocuments(tx, id)
+      return {
+        record: toUserRecord(tombstoned),
+        objectKeys: [...certificateKeys, ...verificationKeys],
+        moved,
+        releasedTicketTypeIds,
+      }
     })
 
     await this.notifyNewOrganizers(erasure.moved)
     await enqueueWaitlistPromotion(this.jobs, erasure.releasedTicketTypeIds, this.logger)
-
-    for (const key of erasure.objectKeys) {
-      if (this.certificateObjects === undefined) {
-        this.logger?.warn(
-          { userId: id, key },
-          "erasure object not deleted: no object store wired",
-        )
-        continue
-      }
-      try {
-        await this.certificateObjects.delete(key)
-      } catch (err) {
-        this.logger?.warn({ err, userId: id, key }, "erasure object delete failed")
-      }
-    }
+    await this.deleteErasedObjects(id, erasure.objectKeys)
     return erasure.record
   }
 
-  private async notifyNewOrganizers(moved: readonly TransferredEvent[]): Promise<void> {
-    if (this.notifier === undefined) return
-    for (const row of moved) {
+  private async tombstoneUser(tx: DbTransaction, id: string): Promise<typeof users.$inferSelect> {
+    const updated = await tx
+      .update(users)
+      .set({
+        deletedAt: sql`COALESCE(${users.deletedAt}, now())`,
+        allowDirectMessages: false,
+        email: null,
+        emailVerified: false,
+        displayName: DELETED_USER_LABEL,
+        handle: generateTombstoneHandle(),
+        bio: null,
+        avatarUrl: null,
+        avatarMediaId: null,
+        socialLinks: null,
+        donationUrl: null,
+        lastActivityGeom: null,
+        lastActivityAt: null,
+        primaryOrganizationId: null,
+      })
+      .where(eq(users.id, id))
+      .returning()
+    const r = updated[0]
+    if (!r) throw new Error("PgUserStore.softDeleteAndAnonymize: user not found")
+    return r
+  }
+
+  private async revokeSessionsAndDevices(tx: DbTransaction, id: string): Promise<void> {
+    await tx.delete(sessions).where(eq(sessions.userId, id))
+    await tx.delete(pushTokens).where(eq(pushTokens.userId, id))
+    await tx.delete(notifications).where(eq(notifications.userId, id))
+  }
+
+  private async cancelRemainingHostedEvents(tx: DbTransaction, id: string): Promise<void> {
+    await tx
+      .update(cleanups)
+      .set({ status: "cancelled" })
+      .where(
+        and(
+          eq(cleanups.organizerUserId, id),
+          ne(cleanups.status, "cancelled"),
+          gt(cleanups.endsAt, new Date()),
+        ),
+      )
+  }
+
+  private async revokeCertificates(tx: DbTransaction, id: string): Promise<string[]> {
+    const certificates = await tx
+      .update(serviceHoursCertificates)
+      .set({
+        revokedAt: sql`COALESCE(${serviceHoursCertificates.revokedAt}, now())`,
+        revokedReason: sql`COALESCE(${serviceHoursCertificates.revokedReason}, 'account_closed')`,
+        holderName: DELETED_USER_LABEL,
+        holderHandle: null,
+        snapshot: {},
+      })
+      .where(eq(serviceHoursCertificates.userId, id))
+      .returning({ r2Key: serviceHoursCertificates.r2Key })
+    return certificates.map((c) => c.r2Key)
+  }
+
+  private async deleteErasedObjects(userId: string, keys: readonly string[]): Promise<void> {
+    const store = this.certificateObjects
+    if (store === undefined) {
+      for (const key of keys) {
+        this.logger?.warn({ userId, key }, "erasure object not deleted: no object store wired")
+      }
+      return
+    }
+    await mapWithLimit(keys, ERASURE_SIDE_EFFECT_CONCURRENCY, async (key) => {
       try {
-        await this.notifier.createNotification(row.new_organizer, {
+        await store.delete(key)
+      } catch (err) {
+        this.logger?.warn({ err, userId, key }, "erasure object delete failed")
+      }
+    })
+  }
+
+  private async notifyNewOrganizers(moved: readonly TransferredEvent[]): Promise<void> {
+    const notifier = this.notifier
+    if (notifier === undefined) return
+    await mapWithLimit(moved, ERASURE_SIDE_EFFECT_CONCURRENCY, async (row) => {
+      try {
+        await notifier.createNotification(row.new_organizer, {
           type: "cleanup_role",
-          titleKey: "notification.cleanup_role.promoted.title",
-          bodyKey: "notification.cleanup_role.promoted.body",
+          titleKey: HOST_TRANSFER_TITLE_KEY,
+          bodyKey: HOST_TRANSFER_BODY_KEY,
           vars: { title: row.title },
           link: `/cleanups/${row.cleanup_id}`,
         })
@@ -663,7 +505,7 @@ export class PgUserStore implements UserStore {
           "erasure host transfer notification failed (suppressed)",
         )
       }
-    }
+    })
   }
 }
 
@@ -702,6 +544,15 @@ export class PgOAuthIdentityStore implements OAuthIdentityStore {
 
   async deleteAllForUser(userId: string): Promise<void> {
     await this.db.delete(oauthIdentities).where(eq(oauthIdentities.userId, userId))
+  }
+
+  async hasIdentityForUser(userId: string): Promise<boolean> {
+    const rows = await this.db
+      .select({ id: oauthIdentities.id })
+      .from(oauthIdentities)
+      .where(eq(oauthIdentities.userId, userId))
+      .limit(1)
+    return rows.length > 0
   }
 }
 
@@ -841,16 +692,4 @@ function toOtpRecord(r: OtpRowLike): OtpRecord {
 
 function rolesFor(role: Role): Role[] {
   return [role]
-}
-
-const ERASURE_HANDLE_RETRIES = 5
-
-const PG_UNIQUE_VIOLATION = "23505"
-
-function isUniqueViolation(err: unknown): boolean {
-  return (
-    typeof err === "object" &&
-    err !== null &&
-    (err as { code?: unknown }).code === PG_UNIQUE_VIOLATION
-  )
 }

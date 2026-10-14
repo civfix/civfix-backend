@@ -4,7 +4,6 @@ import { AppError, ErrorCode } from "@civfix/shared"
 import { makeCsrf, CSRF_HEADER } from "../../src/auth/csrf.js"
 import { CSRF_COOKIE, SESSION_COOKIE, SESSION_COOKIE_HOST } from "../../src/auth/transport.js"
 
-/** Minimal FastifyRequest stub carrying just the cookies + headers + url csrfProtect reads. */
 function req(opts: {
   cookies?: Record<string, string>
   headers?: Record<string, string>
@@ -30,8 +29,8 @@ async function expectForbidden(p: Promise<unknown>): Promise<void> {
 
 const SESSION = "session-token-value"
 
-// The injected env IS the seam under test (C1): both halves are taken off ONE instance, exactly as
-// di.ts builds one per container.
+// The injected env is the seam under test: both halves come off one instance, as di.ts builds one per
+// container.
 const { protect: csrfProtect, tokenForSession: csrfTokenForSession } = makeCsrf({
   SESSION_SIGNING_KEY: "unit-test-session-signing-key",
 })
@@ -93,7 +92,6 @@ describe("csrfProtect (session-bound token, L3)", () => {
   })
 
   it("is EXEMPT for bearer requests (no ambient cookie)", async () => {
-    // A bearer request carrying a session cookie too should still be exempt: bearer wins.
     await expect(
       csrfProtect(
         req({
@@ -123,7 +121,6 @@ describe("csrfProtect (session-bound token, L3)", () => {
       ),
     )
 
-    // ...and the session-bound token still works there, so the operator console is not locked out.
     const token = await csrfTokenForSession(SESSION)
     await expect(
       csrfProtect(
@@ -145,7 +142,6 @@ describe("csrfTokenForSession", () => {
     expect(a).toBe(b)
     expect(a).not.toBe(c)
     expect(a.length).toBeGreaterThan(20)
-    // The session token itself must not be recoverable from (or embedded in) the CSRF value.
     expect(a).not.toContain(SESSION)
   })
 

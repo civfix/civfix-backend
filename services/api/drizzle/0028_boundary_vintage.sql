@@ -6,7 +6,7 @@
 -- are loaded on demand by running `pnpm db:boundaries:refresh` on a workstation (with GDAL) over an SSH
 -- tunnel to prod Postgres: it downloads the public-domain sources, converts them with ogr2ogr, ingests
 -- each layer (idempotent upsert), backfills NULL reports, then records WHAT was loaded (vintage + per-layer
--- counts + when) in this row. Purely informational — the load itself is idempotent and doesn't depend on it.
+-- counts + when) in this row. Purely informational: the load itself is idempotent and doesn't depend on it.
 --
 -- SINGLETON. `id` is a boolean PK pinned true (CHECK id), so there is at most one row = the one active
 -- vintage. Upserts use `INSERT ... ON CONFLICT (id) DO UPDATE`.

@@ -1,4 +1,5 @@
 import {
+  AppError,
   AdminBroadcastListQuerySchema,
   AdminHostListQuerySchema,
   SetHostMessagingSuspendedRequestSchema,
@@ -6,16 +7,16 @@ import {
   type AdminHostListResponse,
   type SetHostMessagingSuspendedResponse,
 } from "@civfix/shared"
-import { createHash } from "node:crypto"
-import type { FastifyInstance, FastifyRequest } from "fastify"
+import type { FastifyInstance } from "fastify"
 import type { Container } from "../../di.js"
 import { requireAuth } from "../../auth/context.js"
 import { route } from "../../versioning/route.js"
-import { parse } from "../_validate.js"
-import { writeAudit } from "../../services/admin/audit.js"
-import { encodeTimeCursor, parseTimeCursor } from "../../db/cursor-helpers.js"
+import { parse, paramsOverBody } from "../_validate.js"
+import { paginateKeyset, parseKeysetCursor } from "../../db/cursor-helpers.js"
 import { makeDrizzleBroadcastRepository } from "../../services/host/broadcast-repository.drizzle.js"
 import type { BroadcastRepository } from "../../services/host/broadcast-repository.js"
+import { sha256HexSync } from "../../lib/hash.js"
+import { MS_PER_DAY } from "../../lib/time.js"
 
 export interface AdminBroadcastOverrides {
   repo: BroadcastRepository
@@ -27,16 +28,17 @@ declare module "fastify" {
   }
 }
 
-export const ADMIN_BROADCAST_DEFAULT_LIMIT = 50
+const ADMIN_BROADCAST_DEFAULT_LIMIT = 50
 
-export const ADMIN_HOST_DEFAULT_LIMIT = 50
+const ADMIN_HOST_DEFAULT_LIMIT = 50
 
-export const ADMIN_HOST_DEFAULT_WINDOW_DAYS = 30
+const ADMIN_HOST_DEFAULT_WINDOW_DAYS = 30
 
-function mergeParams(request: FastifyRequest): Record<string, unknown> {
-  const params = (request.params ?? {}) as Record<string, unknown>
-  const body = (request.body ?? {}) as Record<string, unknown>
-  return { ...body, ...params }
+// Enough of the digest to tell subjects apart in the console without echoing the subject text itself.
+const SUBJECT_HASH_HEX_LENGTH = 16
+
+function hashSubject(subject: string): string {
+  return sha256HexSync(subject).slice(0, SUBJECT_HASH_HEX_LENGTH)
 }
 
 export async function registerAdminBroadcastRoutes(
@@ -51,7 +53,6 @@ export async function registerAdminBroadcastRoutes(
     requireAuth(request)
     const query = parse(AdminBroadcastListQuerySchema, request.query)
     const limit = query.limit ?? ADMIN_BROADCAST_DEFAULT_LIMIT
-    const cursor = parseTimeCursor(query.cursor, { direction: "desc" })
     const rows = await broadcastRepo().listAdmin({
       ...(query.status !== undefined ? { status: query.status } : {}),
       ...(query.kind !== undefined ? { kind: query.kind } : {}),
@@ -59,22 +60,18 @@ export async function registerAdminBroadcastRoutes(
       ...(query.createdBy !== undefined ? { createdBy: query.createdBy } : {}),
       ...(query.from !== undefined ? { from: new Date(query.from) } : {}),
       ...(query.to !== undefined ? { to: new Date(query.to) } : {}),
-      cursor: cursor === null ? null : { createdAt: cursor.at, id: cursor.id },
+      cursor: parseKeysetCursor(query.cursor, { direction: "desc" }),
       limit: limit + 1,
     })
-    const page = rows.slice(0, limit)
-    const last = page.at(-1)
+    const page = paginateKeyset(rows, limit, (row) => ({ atText: row.cursorAt, id: row.id }))
     const payload: AdminBroadcastListResponse = {
-      items: page.map((row) => ({
+      items: page.items.map((row) => ({
         id: row.id,
         cleanupId: row.cleanupId,
         eventTitle: row.eventTitle,
         kind: row.kind,
         status: row.status,
-        subjectHash:
-          row.subject === null
-            ? null
-            : createHash("sha256").update(row.subject).digest("hex").slice(0, 16),
+        subjectHash: row.subject === null ? null : hashSubject(row.subject),
         createdBy:
           row.createdBy === null
             ? null
@@ -92,10 +89,7 @@ export async function registerAdminBroadcastRoutes(
         createdAt: row.createdAt.toISOString(),
         finishedAt: row.finishedAt?.toISOString() ?? null,
       })),
-      nextCursor:
-        rows.length > limit && last !== undefined
-          ? encodeTimeCursor({ at: last.createdAt, id: last.id })
-          : null,
+      nextCursor: page.nextCursor,
     }
     reply.status(200).send(payload)
   })
@@ -105,18 +99,16 @@ export async function registerAdminBroadcastRoutes(
     const query = parse(AdminHostListQuerySchema, request.query ?? {})
     const limit = query.limit ?? ADMIN_HOST_DEFAULT_LIMIT
     const windowDays = query.windowDays ?? ADMIN_HOST_DEFAULT_WINDOW_DAYS
-    const cursor = parseTimeCursor(query.cursor, { direction: "desc" })
     const rows = await broadcastRepo().listAdminHosts({
       ...(query.q !== undefined ? { q: query.q } : {}),
       ...(query.suspended !== undefined ? { suspended: query.suspended } : {}),
-      windowStart: new Date(Date.now() - windowDays * 24 * 60 * 60 * 1000),
-      cursor: cursor === null ? null : { at: cursor.at, id: cursor.id },
+      windowStart: new Date(Date.now() - windowDays * MS_PER_DAY),
+      cursor: parseKeysetCursor(query.cursor, { direction: "desc" }),
       limit: limit + 1,
     })
-    const page = rows.slice(0, limit)
-    const last = page.at(-1)
+    const page = paginateKeyset(rows, limit, (row) => ({ atText: row.cursorAt, id: row.userId }))
     const payload: AdminHostListResponse = {
-      items: page.map((row) => ({
+      items: page.items.map((row) => ({
         host: {
           id: row.userId,
           name: row.displayName,
@@ -143,25 +135,27 @@ export async function registerAdminBroadcastRoutes(
         lastBroadcastAt: row.lastBroadcastAt?.toISOString() ?? null,
         eventsMessaged: row.eventsMessaged,
       })),
-      nextCursor:
-        rows.length > limit && last !== undefined
-          ? encodeTimeCursor({ at: last.sortAt, id: last.userId })
-          : null,
+      nextCursor: page.nextCursor,
     }
     reply.status(200).send(payload)
   })
 
-  route(app, "adminSetHostMessagingSuspended", { preHandler: csrfProtect }, async (request, reply) => {
-    const operatorId = requireAuth(request)
-    const body = parse(SetHostMessagingSuspendedRequestSchema, mergeParams(request))
-    await broadcastRepo().setHostMessagingSuspended(body.id, body.suspended)
-    await writeAudit(container.getDb().sql, {
-      action: body.suspended ? "host.messaging_suspended" : "host.messaging_restored",
-      actorId: operatorId,
-      target: `user:${body.id}`,
-      meta: { reason: body.reason },
-    })
-    const payload: SetHostMessagingSuspendedResponse = { ok: true, suspended: body.suspended }
-    reply.status(200).send(payload)
-  })
+  route(
+    app,
+    "adminSetHostMessagingSuspended",
+    { preHandler: csrfProtect },
+    async (request, reply) => {
+      const operatorId = requireAuth(request)
+      const body = parse(SetHostMessagingSuspendedRequestSchema, paramsOverBody(request))
+      const found = await broadcastRepo().setHostMessagingSuspended(body.id, body.suspended, {
+        action: body.suspended ? "host.messaging_suspended" : "host.messaging_restored",
+        actorId: operatorId,
+        target: `user:${body.id}`,
+        meta: { reason: body.reason },
+      })
+      if (!found) throw AppError.notFound("User not found.")
+      const payload: SetHostMessagingSuspendedResponse = { ok: true, suspended: body.suspended }
+      reply.status(200).send(payload)
+    },
+  )
 }

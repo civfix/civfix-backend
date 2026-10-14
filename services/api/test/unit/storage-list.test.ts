@@ -2,8 +2,8 @@ import { describe, expect, it } from "vitest"
 import { FakeStorage } from "@civfix/shared/fakes"
 
 /**
- * FakeStorage.list / getObject — the new Storage seam methods the inbound sweep relies on. The fake
- * mirrors R2's keyset pagination (sorted keys, last-key-as-cursor) so sweep tests are deterministic.
+ * FakeStorage.list / getObject back the inbound sweep. The fake mirrors R2's keyset pagination (sorted
+ * keys, last-key-as-cursor) so sweep tests are deterministic.
  */
 
 const enc = new TextEncoder()
@@ -46,7 +46,7 @@ describe("FakeStorage.getObject", () => {
   it("returns the stored bytes, or null when absent", async () => {
     const s = new FakeStorage()
     await s.put("k", enc.encode("hello"))
-    expect(new TextDecoder().decode((await s.getObject("k"))!)).toBe("hello")
+    expect(new TextDecoder().decode(await s.getObject("k"))).toBe("hello")
     expect(await s.getObject("missing")).toBeNull()
   })
 })

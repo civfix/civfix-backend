@@ -6,7 +6,15 @@ import { ingestGeoJsonSeqFile } from "../../src/db/ingest-jurisdictions-core.js"
 
 const validPolygon = {
   type: "Polygon",
-  coordinates: [[[-118, 34], [-117, 34], [-117, 35], [-118, 35], [-118, 34]]],
+  coordinates: [
+    [
+      [-118, 34],
+      [-117, 34],
+      [-117, 35],
+      [-118, 35],
+      [-118, 34],
+    ],
+  ],
 }
 const feature = (props: Record<string, unknown>, geometry: unknown = validPolygon): string =>
   JSON.stringify({ type: "Feature", properties: props, geometry })
@@ -52,7 +60,9 @@ describe("ingestGeoJsonSeqFile (streaming GeoJSONSeq loader)", () => {
     const dir = mkdtempSync(join(tmpdir(), "geojsonseq-"))
     const file = join(dir, "big.geojsonl")
     const total = 2500
-    const body = Array.from({ length: total }, (_, i) => feature({ OBJECTID: String(i), name: `NF ${i}` })).join("\n")
+    const body = Array.from({ length: total }, (_, i) =>
+      feature({ OBJECTID: String(i), name: `NF ${i}` }),
+    ).join("\n")
     writeFileSync(file, body + "\n")
 
     const { sql, batches } = fakeSql()

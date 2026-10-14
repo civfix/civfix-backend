@@ -1,31 +1,36 @@
-
 import type { JurisdictionLayer, ReportCategory } from "@civfix/shared"
-import type { Queryable, Sql } from "../../db/client.js"
-import { decodeCursor, clampLimit, paginate } from "./pagination.js"
-import { writeAudit } from "./audit.js"
-import { andAll, ilikeAnyOf, type SqlFragment } from "./sql-fragments.js"
+import type { Queryable, Sql, SqlFragment } from "../../db/client.js"
+import { clampLimit } from "./pagination.js"
+import { paginate, parseKeysetCursor } from "../../db/cursor-helpers.js"
+import { insertAuditRow } from "./audit-repository.drizzle.js"
+import { andAll, ilikeAnyOf, legacyContactEmailUsable } from "./sql-fragments.js"
 import {
   ADMIN_CATEGORIES,
-  categoryCountsFragment,
-  categoryCountsProjection,
   parseCategoryCounts,
   parseCount,
   type CategoryCountRow,
 } from "./category-counts.js"
+import { categoryCountsFragment, categoryCountsProjection } from "./category-counts-sql.js"
+import type {
+  DiscoveryContactRecord,
+  DiscoveryContactSuggestionRecord,
+  DiscoveryDetailRecord,
+  DiscoveryNoteRecord,
+  DiscoveryRepository,
+  DiscoverySamplePinRecord,
+  DiscoveryTaskRecord,
+  ListDiscoveryArgs,
+} from "./discovery-repository.js"
 import {
-  type DiscoveryContactRecord,
-  type DiscoveryContactSuggestionRecord,
-  type DiscoveryDetailRecord,
-  type DiscoveryNoteRecord,
-  type DiscoveryRepository,
-  type DiscoverySamplePinRecord,
-  type DiscoveryTaskRecord,
-  type ListDiscoveryArgs,
-} from "./discovery-service.js"
+  invalidateDirectoryFacetCache,
+  upsertJurisdictionContacts,
+} from "./jurisdiction-contacts-repository.drizzle.js"
 
 const SAMPLE_PIN_CAP = 50
 
 const DISCOVERY_NOTE_CAP = 200
+
+const DISCOVERY_DETAIL_ZOOM = 11
 
 interface TaskAggRow extends CategoryCountRow {
   id: string
@@ -142,13 +147,22 @@ async function taskAggregateSql(
   return rows as unknown as TaskAggRow[]
 }
 
+function taskAggregateByIdSql(sql: Queryable, id: string): Promise<TaskAggRow[]> {
+  return taskAggregateSql(
+    sql,
+    sql`AND t.id = ${id}`,
+    sql``,
+    sql`SELECT dt.geoid FROM jurisdiction_discovery_tasks dt WHERE dt.id = ${id} AND dt.geoid IS NOT NULL`,
+  )
+}
+
 export function makeDrizzleDiscoveryRepository(sql: Sql): DiscoveryRepository {
   return {
     async listTasks(
       args: ListDiscoveryArgs,
     ): Promise<{ records: DiscoveryTaskRecord[]; nextCursor: string | null }> {
       const limit = clampLimit(args.limit)
-      const anchor = decodeCursor(args.cursor, true)
+      const anchor = parseKeysetCursor(args.cursor)
       const sortValue = sortValueExpr(sql, args.sort)
 
       const conds: SqlFragment[] = []
@@ -162,7 +176,7 @@ export function makeDrizzleDiscoveryRepository(sql: Sql): DiscoveryRepository {
       }
       if (anchor !== null) {
         conds.push(
-          sql`AND (${sortValue}, t.id) < (${anchor.createdAt.getTime()}::bigint, ${anchor.id}::uuid)`,
+          sql`AND (${sortValue}, t.id) < (${anchor.at.getTime()}::bigint, ${anchor.id}::uuid)`,
         )
       }
 
@@ -172,19 +186,14 @@ export function makeDrizzleDiscoveryRepository(sql: Sql): DiscoveryRepository {
         sql`ORDER BY ${sortValue} DESC, t.id DESC LIMIT ${limit + 1}`,
       )
       const { items, nextCursor } = paginate(rows.map(toTaskRecord), limit, (r) => ({
-        createdAt: new Date(args.sort === "reports" ? r.total : (r.population ?? 0)),
+        at: new Date(args.sort === "reports" ? r.total : (r.population ?? 0)),
         id: r.id,
       }))
       return { records: items, nextCursor }
     },
 
     async getDetail(id: string): Promise<DiscoveryDetailRecord | null> {
-      const rows = await taskAggregateSql(
-        sql,
-        sql`AND t.id = ${id}`,
-        sql``,
-        sql`SELECT dt.geoid FROM jurisdiction_discovery_tasks dt WHERE dt.id = ${id} AND dt.geoid IS NOT NULL`,
-      )
+      const rows = await taskAggregateByIdSql(sql, id)
       const row = rows[0]
       if (!row) return null
       const task = toTaskRecord(row)
@@ -256,12 +265,7 @@ export function makeDrizzleDiscoveryRepository(sql: Sql): DiscoveryRepository {
     },
 
     async getTask(id: string): Promise<DiscoveryTaskRecord | null> {
-      const rows = await taskAggregateSql(
-        sql,
-        sql`AND t.id = ${id}`,
-        sql``,
-        sql`SELECT dt.geoid FROM jurisdiction_discovery_tasks dt WHERE dt.id = ${id} AND dt.geoid IS NOT NULL`,
-      )
+      const rows = await taskAggregateByIdSql(sql, id)
       const row = rows[0]
       return row ? toTaskRecord(row) : null
     },
@@ -270,7 +274,7 @@ export function makeDrizzleDiscoveryRepository(sql: Sql): DiscoveryRepository {
       id: string,
       input: { text: string; actorId: string | null; who: string },
     ): Promise<DiscoveryNoteRecord> {
-      const auditId = await writeAudit(sql, {
+      const auditId = await insertAuditRow(sql, {
         actorId: input.actorId,
         action: "discovery.note_added",
         target: `discovery:${id}`,
@@ -289,7 +293,7 @@ export function makeDrizzleDiscoveryRepository(sql: Sql): DiscoveryRepository {
     ): Promise<boolean> {
       return sql.begin(async (tx) => {
         const taskRows = await tx<{ sample_report_id: string | null }[]>`
-          SELECT sample_report_id FROM jurisdiction_discovery_tasks WHERE id = ${id} LIMIT 1
+          SELECT sample_report_id FROM jurisdiction_discovery_tasks WHERE id = ${id} FOR UPDATE
         `
         const task = taskRows[0]
         if (!task) return false
@@ -297,13 +301,21 @@ export function makeDrizzleDiscoveryRepository(sql: Sql): DiscoveryRepository {
         if (task.sample_report_id !== null) {
           await tx`
             INSERT INTO abuse_flags (subject_type, subject_id, reason, source)
-            VALUES ('report', ${task.sample_report_id}, 'manual', 'api')
+            SELECT 'report', ${task.sample_report_id}, 'manual', 'api'
+            WHERE NOT EXISTS (
+              SELECT 1 FROM abuse_flags
+              WHERE subject_type = 'report' AND subject_id = ${task.sample_report_id}
+                AND reason = 'manual' AND resolved_at IS NULL
+            )
           `
         }
+        // A done task stays done: re-opening it would collide with a newer open task for the same geoid
+        // on the one-open-task-per-geoid unique index.
         await tx`
-          UPDATE jurisdiction_discovery_tasks SET status = 'in_progress' WHERE id = ${id}
+          UPDATE jurisdiction_discovery_tasks SET status = 'in_progress'
+          WHERE id = ${id} AND status <> 'done'
         `
-        await writeAudit(tx, {
+        await insertAuditRow(tx, {
           actorId: input.actorId,
           action: "discovery.flagged",
           target: `discovery:${id}`,
@@ -322,7 +334,7 @@ export function makeDrizzleDiscoveryRepository(sql: Sql): DiscoveryRepository {
         actorId: string | null
       },
     ): Promise<boolean> {
-      return sql.begin(async (tx) => {
+      const saved = await sql.begin(async (tx) => {
         const taskRows = await tx<{ geoid: string | null }[]>`
           SELECT geoid FROM jurisdiction_discovery_tasks WHERE id = ${id} LIMIT 1
         `
@@ -330,8 +342,14 @@ export function makeDrizzleDiscoveryRepository(sql: Sql): DiscoveryRepository {
         if (!task || task.geoid === null) return false
         const geoid = task.geoid
 
-        await upsertJurisdictionContacts(tx, geoid, input.contacts, input.defaultEmails, input.formUrl)
-        await writeAudit(tx, {
+        await upsertJurisdictionContacts(
+          tx,
+          geoid,
+          input.contacts,
+          input.defaultEmails,
+          input.formUrl,
+        )
+        await insertAuditRow(tx, {
           actorId: input.actorId,
           action: "discovery.draft_saved",
           target: `discovery:${id}`,
@@ -343,6 +361,8 @@ export function makeDrizzleDiscoveryRepository(sql: Sql): DiscoveryRepository {
         })
         return true
       })
+      if (saved) invalidateDirectoryFacetCache()
+      return saved
     },
 
     async materializeDiscoveryTask(input: {
@@ -374,8 +394,9 @@ async function loadContacts(sql: Queryable, geoid: string): Promise<DiscoveryCon
     ORDER BY category ASC
   `
   return rows
-    .filter((r): r is { category: ReportCategory; email: string | null } =>
-      r.category !== null && (ADMIN_CATEGORIES as readonly string[]).includes(r.category),
+    .filter(
+      (r): r is { category: ReportCategory; email: string | null } =>
+        r.category !== null && (ADMIN_CATEGORIES as readonly string[]).includes(r.category),
     )
     .map((r) => ({ category: r.category, email: r.email }))
 }
@@ -397,9 +418,9 @@ async function loadGeometry(
   sql: Queryable,
   taskId: string,
   geoid: string,
-): Promise<{ placeGeojson: unknown | null; center: [number, number] | null; zoom: number | null }> {
+): Promise<{ placeGeojson: unknown; center: [number, number] | null; zoom: number | null }> {
   const [taskRows, centerRows] = await Promise.all([
-    sql<{ place_geojson: unknown | null }[]>`
+    sql<{ place_geojson: unknown }[]>`
       SELECT place_geojson FROM jurisdiction_discovery_tasks WHERE id = ${taskId} LIMIT 1
     `,
     sql<{ lat: number | null; lng: number | null }[]>`
@@ -413,79 +434,29 @@ async function loadGeometry(
   const c = centerRows[0]
   const center: [number, number] | null =
     c && c.lat !== null && c.lng !== null ? [c.lat, c.lng] : null
-  const zoom = center !== null ? 11 : null
+  const zoom = center !== null ? DISCOVERY_DETAIL_ZOOM : null
   return { placeGeojson, center, zoom }
 }
 
-export interface UpsertDefaultContactOpts {
-  setEmail?: boolean
-  setFormUrl?: boolean
-}
-
-export async function upsertJurisdictionContacts(
-  tx: Queryable,
-  geoid: string,
-  contacts: Partial<Record<ReportCategory, string | null>>,
-  defaultEmails: string[],
-  formUrl: string | null,
-  opts?: UpsertDefaultContactOpts,
-): Promise<void> {
-  for (const [category, rawEmail] of Object.entries(contacts) as [
-    ReportCategory,
-    string | null,
-  ][]) {
-    const email = rawEmail && rawEmail.trim() !== "" ? rawEmail.trim() : null
-    if (email === null) {
-      await tx`
-        DELETE FROM jurisdiction_contacts WHERE geoid = ${geoid} AND category = ${category}
-      `
-      continue
-    }
-    await tx`
-      INSERT INTO jurisdiction_contacts (geoid, category, email, updated_at, bounced_at)
-      VALUES (${geoid}, ${category}, ${email}, now(), NULL)
-      ON CONFLICT (geoid, category) WHERE category IS NOT NULL
-      DO UPDATE SET email = EXCLUDED.email, updated_at = now(), bounced_at = NULL
-    `
-  }
-
-  const defaultEmail = defaultEmails.find((e) => e.trim() !== "")?.trim() ?? null
-  const form = formUrl && formUrl.trim() !== "" ? formUrl.trim() : null
-  const setEmail = opts?.setEmail ?? defaultEmail !== null
-  const setForm = opts?.setFormUrl ?? form !== null
-  const writeEmail = setEmail && defaultEmail !== null
-  const writeForm = setForm && form !== null
-  if (writeEmail || writeForm) {
-    await tx`
-      INSERT INTO jurisdiction_contacts (geoid, category, email, form_url, updated_at, bounced_at)
-      VALUES (${geoid}, NULL, ${writeEmail ? defaultEmail : null}, ${writeForm ? form : null}, now(), NULL)
-      ON CONFLICT (geoid) WHERE category IS NULL
-      DO UPDATE SET
-        email = CASE WHEN ${setEmail} THEN EXCLUDED.email ELSE jurisdiction_contacts.email END,
-        form_url = CASE WHEN ${setForm} THEN EXCLUDED.form_url ELSE jurisdiction_contacts.form_url END,
-        updated_at = now(),
-        bounced_at = CASE WHEN ${setEmail} THEN NULL ELSE jurisdiction_contacts.bounced_at END
-    `
-  } else if (setEmail || setForm) {
-    await tx`
-      UPDATE jurisdiction_contacts
-      SET
-        email = CASE WHEN ${setEmail} THEN NULL ELSE email END,
-        form_url = CASE WHEN ${setForm} THEN NULL ELSE form_url END,
-        updated_at = now(),
-        bounced_at = CASE WHEN ${setEmail} THEN NULL ELSE bounced_at END
-      WHERE geoid = ${geoid} AND category IS NULL
-    `
-  }
-
-  if (defaultEmails.length > 0 || form !== null) {
-    const emails = defaultEmails.filter((e) => e.trim() !== "")
-    await tx`
-      UPDATE jurisdictions
-      SET
-        contact_emails = CASE WHEN ${emails.length} > 0 THEN ${emails} ELSE contact_emails END,
-        report_form_url = COALESCE(${form}, report_form_url)
-      WHERE geoid = ${geoid}
-    `
-  }
+export async function hasUsableRoutingContact(sql: Sql, geoid: string): Promise<boolean> {
+  const contactRows = await sql<{ has_contact: boolean }[]>`
+    SELECT EXISTS (
+      SELECT 1 FROM jurisdiction_contacts jc
+      WHERE jc.geoid = ${geoid} AND jc.email IS NOT NULL AND jc.email <> ''
+        AND jc.bounced_at IS NULL
+    ) OR EXISTS (
+      SELECT 1 FROM jurisdictions j
+      WHERE j.geoid = ${geoid}
+        AND EXISTS (
+          SELECT 1 FROM unnest(j.contact_emails) AS e
+          WHERE e <> ''
+            AND ${legacyContactEmailUsable(sql, {
+              email: sql`e`,
+              geoid: sql`j.geoid`,
+              contactUpdatedAt: sql`j.contact_updated_at`,
+            })}
+        )
+    ) AS has_contact
+  `
+  return contactRows[0]?.has_contact === true
 }

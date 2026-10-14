@@ -1,4 +1,3 @@
-
 import { afterEach, beforeEach, describe, expect, it } from "vitest"
 import { execFileSync } from "node:child_process"
 import { mkdtemp, link, rm, stat, symlink, writeFile } from "node:fs/promises"
@@ -30,7 +29,9 @@ describe("readScratchOutput", () => {
   it("refuses a SYMLINK at open time (O_NOFOLLOW), never following it", async () => {
     await symlink("/etc/hosts", join(dir, "out.bin"))
 
-    const err = await readScratchOutput(dir, "out.bin", SELF_UID, MAX_BYTES).catch((e: unknown) => e)
+    const err = await readScratchOutput(dir, "out.bin", SELF_UID, MAX_BYTES).catch(
+      (e: unknown) => e,
+    )
 
     expect(err).toBeInstanceOf(ScratchOutputError)
     expect(String(err)).toMatch(/could not be opened safely/)
@@ -42,7 +43,9 @@ describe("readScratchOutput", () => {
     try {
       await link(outside, join(dir, "out.bin"))
 
-      await expect(readScratchOutput(dir, "out.bin", SELF_UID, MAX_BYTES)).rejects.toThrow(/hard-linked/)
+      await expect(readScratchOutput(dir, "out.bin", SELF_UID, MAX_BYTES)).rejects.toThrow(
+        /hard-linked/,
+      )
     } finally {
       await rm(outside, { force: true })
     }
@@ -51,7 +54,9 @@ describe("readScratchOutput", () => {
   it("refuses a FIFO instead of blocking on it (O_NONBLOCK)", async () => {
     execFileSync("/usr/bin/mkfifo", [join(dir, "out.bin")])
 
-    const err = await readScratchOutput(dir, "out.bin", SELF_UID, MAX_BYTES).catch((e: unknown) => e)
+    const err = await readScratchOutput(dir, "out.bin", SELF_UID, MAX_BYTES).catch(
+      (e: unknown) => e,
+    )
 
     expect(err).toBeInstanceOf(ScratchOutputError)
     expect(String(err)).toMatch(/not a regular file|could not be opened safely/)
@@ -60,9 +65,9 @@ describe("readScratchOutput", () => {
   it("refuses a file owned by someone other than the sandbox uid", async () => {
     await writeFile(join(dir, "out.bin"), Buffer.from("bytes"))
 
-    await expect(readScratchOutput(dir, "out.bin", (SELF_UID ?? 0) + 1234, MAX_BYTES)).rejects.toThrow(
-      /not owned by the sandbox uid/,
-    )
+    await expect(
+      readScratchOutput(dir, "out.bin", (SELF_UID ?? 0) + 1234, MAX_BYTES),
+    ).rejects.toThrow(/not owned by the sandbox uid/)
   })
 
   it("refuses an output larger than the lane cap, without reading it", async () => {
@@ -96,7 +101,9 @@ describe("scratch.seal", () => {
     await writeFile(join(scratch.dir, "out.bin"), Buffer.from("ok"))
     await scratch.seal()
 
-    expect((await readScratchOutput(scratch.dir, "out.bin", SELF_UID, MAX_BYTES)).toString()).toBe("ok")
+    expect((await readScratchOutput(scratch.dir, "out.bin", SELF_UID, MAX_BYTES)).toString()).toBe(
+      "ok",
+    )
     await scratch.cleanup()
   })
 })

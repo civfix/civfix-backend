@@ -1,13 +1,6 @@
 /**
- * dm_threads: one row per unordered user PAIR for 1:1 direct messages.
- *
- * A thread is unique per pair, stored as (user_lo, user_hi) with user_lo < user_hi (enforced by a CHECK
- * in the canonical SQL) and a UNIQUE(user_lo, user_hi). Combined with ON CONFLICT DO NOTHING this makes
- * openOrCreateThread idempotent regardless of which party initiates. Deleting a thread cascades to its
- * dm_messages / dm_read_state (FKs declared there).
- *
- * The hand-authored SQL is the DDL source of truth: services/api/drizzle/0009_dm_and_privacy.sql. This
- * Drizzle definition mirrors it for type-safe queries only.
+ * One row per unordered user pair, stored ordered (user_lo < user_hi) under a UNIQUE so that, with
+ * ON CONFLICT DO NOTHING, openOrCreateThread is idempotent regardless of which party initiates.
  */
 
 import { sql } from "drizzle-orm"
@@ -31,8 +24,8 @@ export const dmThreads = pgTable(
   (t) => [
     unique("dm_threads_user_lo_user_hi_key").on(t.userLo, t.userHi),
     check("dm_threads_lo_lt_hi", sql`${t.userLo} < ${t.userHi}`),
-    // user_hi has no leftmost-prefix coverage from the UNIQUE(user_lo, user_hi); this standalone index
-    // lets the inbox `user_lo = X OR user_hi = X` filter BitmapOr both branches. See drizzle/0013.
+    // The UNIQUE(user_lo, user_hi) gives user_hi no leftmost-prefix coverage; this index lets the inbox
+    // `user_lo = X OR user_hi = X` filter BitmapOr both branches.
     index("dm_threads_user_hi_idx").on(t.userHi),
   ],
 )

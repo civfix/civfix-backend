@@ -1,0 +1,52 @@
+{
+  "$schema": "https://unpkg.com/knip@5/schema-jsonc.json",
+  // A type that appears in an exported signature stays exported so callers can name it.
+  "ignoreExportsUsedInFile": { "interface": true, "type": true },
+  "workspaces": {
+    ".": {
+      // check-dynamic-sql.d.mts types the .mjs guard for the api tests that import its matchers.
+      "entry": ["scripts/*.mjs", "scripts/check-dynamic-sql.d.mts"],
+      "project": ["scripts/**"],
+    },
+    // The package.json scripts, the tsup entries, the vitest globalSetup and drizzle.config.ts are entries
+    // through knip's plugins; listed here are only the hand-run CLIs nothing else names.
+    "services/api": {
+      "entry": [
+        // The font-change procedure in assets/fonts/PROVENANCE.md runs it with tsx.
+        "scripts/render-sample-certificate.ts",
+        // The only writer of jurisdictions.handle; whether to wire or retire it is an open decision.
+        "src/db/backfill-jurisdiction-handles.ts",
+      ],
+      "project": ["src/**/*.ts", "scripts/**/*.ts", "test/**/*.ts"],
+      "ignore": [
+        // Hand-run SQL transcript tooling: the generator is a tsx CLI, and the generated cases reach
+        // every exported SQL helper through a namespace import that static analysis cannot follow.
+        "test/sql-transcripts/**",
+        // Unused since it landed; deleting it waits on the roster-export vs host-contact consent
+        // decision, whose fix may reuse hostContactOptInFor.
+        "src/services/host/event-consents-repository.drizzle.ts",
+      ],
+    },
+    "services/media-worker": {
+      "project": ["src/**/*.ts", "test/**/*.ts"],
+      // tsup inlines @civfix/api (noExternal) but keeps these external, so the bundled api code
+      // resolves them from the worker's own node_modules at runtime.
+      "ignoreDependencies": [
+        // @civfix/api/adapters/storage (R2 client)
+        "@aws-sdk/client-s3",
+        // @civfix/api/adapters/storage (presigned URLs)
+        "@aws-sdk/s3-request-presigner",
+        // @civfix/api/errors (GlitchTip reporting)
+        "@sentry/node",
+        // @civfix/api/adapters/storage (R2 request timeouts and egress proxy)
+        "@smithy/node-http-handler",
+        // @civfix/api/adapters/storage (egress proxy agent)
+        "https-proxy-agent",
+      ],
+    },
+    "packages/config": {},
+    // Outside pnpm-workspace.yaml (it deploys with wrangler from its own lockfile); CI installs it before
+    // knip runs so its dependencies resolve.
+    "infra/email-worker": {},
+  },
+}

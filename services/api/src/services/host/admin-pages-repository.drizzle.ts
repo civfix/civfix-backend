@@ -1,46 +1,12 @@
 import type { EventPageStatus, EventVisibility } from "@civfix/shared"
-import type { Sql } from "../../db/client.js"
-
-export interface AdminEventPageRow {
-  cleanupId: string
-  slug: string | null
-  title: string
-  status: EventPageStatus
-  visibility: EventVisibility
-  organizerId: string | null
-  organizerName: string | null
-  organizerHandle: string | null
-  organizerJoined: Date | null
-  orgName: string | null
-  viewCount: number
-  publishedAt: Date | null
-  flaggedAt: Date | null
-  flagReason: string | null
-  flaggedById: string | null
-  flaggedByName: string | null
-  flaggedByHandle: string | null
-  flaggedByJoined: Date | null
-  sortAt: Date
-  pageId: string
-}
-
-export interface AdminEventPageListParams {
-  q?: string
-  status?: EventPageStatus
-  flagged?: boolean
-  cursor: { at: Date; id: string } | null
-  limit: number
-}
-
-export interface AdminEventPageRepository {
-  list(params: AdminEventPageListParams): Promise<AdminEventPageRow[]>
-  get(cleanupId: string): Promise<AdminEventPageRow | null>
-  setFlagged(
-    cleanupId: string,
-    input: { flagged: boolean; reason: string | null; operatorId: string },
-  ): Promise<AdminEventPageRow | null>
-  unpublish(cleanupId: string): Promise<AdminEventPageRow | null>
-}
+import type { Queryable } from "../../db/client.js"
+import { keysetInstant, keysetPredicate } from "../../db/cursor-helpers.js"
+import { likeContains } from "../../db/like.js"
+import type {
+  AdminEventPageListParams,
+  AdminEventPageRepository,
+  AdminEventPageRow,
+} from "./admin-pages-repository.js"
 
 interface PageRowSelect {
   page_id: string
@@ -62,7 +28,7 @@ interface PageRowSelect {
   flagged_by_name: string | null
   flagged_by_handle: string | null
   flagged_by_joined: Date | null
-  sort_at: Date
+  cursor_at: string
 }
 
 function toRow(row: PageRowSelect): AdminEventPageRow {
@@ -86,11 +52,12 @@ function toRow(row: PageRowSelect): AdminEventPageRow {
     flaggedByName: row.flagged_by_name,
     flaggedByHandle: row.flagged_by_handle,
     flaggedByJoined: row.flagged_by_joined,
-    sortAt: row.sort_at,
+    cursorAt: row.cursor_at,
   }
 }
 
-export function makeDrizzleAdminEventPageRepository(sql: Sql): AdminEventPageRepository {
+export function makeDrizzleAdminEventPageRepository(sql: Queryable): AdminEventPageRepository {
+  const sortAt = sql`COALESCE(p.published_at, p.updated_at)`
   const selection = sql`
     p.id AS page_id, p.cleanup_id, c.page_slug AS slug, c.title, p.status, c.visibility,
     u.id AS organizer_id, u.display_name AS organizer_name, u.handle AS organizer_handle,
@@ -98,7 +65,7 @@ export function makeDrizzleAdminEventPageRepository(sql: Sql): AdminEventPageRep
     o.name AS org_name, p.view_count, p.published_at, p.flagged_at, p.flag_reason,
     f.id AS flagged_by_id, f.display_name AS flagged_by_name, f.handle AS flagged_by_handle,
     f.created_at AS flagged_by_joined,
-    COALESCE(p.published_at, p.updated_at) AS sort_at
+    ${keysetInstant(sql, sortAt)} AS cursor_at
   `
   const joins = sql`
     FROM cleanup_pages p
@@ -117,7 +84,8 @@ export function makeDrizzleAdminEventPageRepository(sql: Sql): AdminEventPageRep
 
   return {
     async list(params: AdminEventPageListParams): Promise<AdminEventPageRow[]> {
-      const statusFilter = params.status !== undefined ? sql`AND p.status = ${params.status}` : sql``
+      const statusFilter =
+        params.status !== undefined ? sql`AND p.status = ${params.status}` : sql``
       const flaggedFilter =
         params.flagged === undefined
           ? sql``
@@ -126,11 +94,12 @@ export function makeDrizzleAdminEventPageRepository(sql: Sql): AdminEventPageRep
             : sql`AND p.flagged_at IS NULL`
       const search =
         params.q !== undefined && params.q.length > 0
-          ? sql`AND (c.title ILIKE ${`%${params.q}%`} OR c.page_slug::text ILIKE ${`%${params.q}%`})`
+          ? sql`AND (c.title ILIKE ${likeContains(params.q)} ESCAPE '\\'
+                     OR c.page_slug::text ILIKE ${likeContains(params.q)} ESCAPE '\\')`
           : sql``
       const cursorFilter =
         params.cursor !== null
-          ? sql`AND (COALESCE(p.published_at, p.updated_at), p.id) < (${params.cursor.at}, ${params.cursor.id}::uuid)`
+          ? sql`AND ${keysetPredicate(sql, sortAt, sql`p.id`, params.cursor)}`
           : sql``
       const rows = await sql<PageRowSelect[]>`
         SELECT ${selection} ${joins}
@@ -139,7 +108,7 @@ export function makeDrizzleAdminEventPageRepository(sql: Sql): AdminEventPageRep
            ${flaggedFilter}
            ${search}
            ${cursorFilter}
-         ORDER BY COALESCE(p.published_at, p.updated_at) DESC, p.id DESC
+         ORDER BY ${sortAt} DESC, p.id DESC
          LIMIT ${params.limit}`
       return rows.map(toRow)
     },

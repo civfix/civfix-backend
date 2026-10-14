@@ -9,18 +9,19 @@ import type {
   AnalyticsRetentionResponse,
   ReportCategory,
 } from "@civfix/shared"
-import {
-  ANALYTICS_CATEGORIES,
-  type CategoryCount,
-  type CategoryMedian,
-  type CoverageCounts,
-  type EventAggregates,
-  type FunnelCounts,
-  type KpiAggregates,
-  type MonthBucket,
-  type RetentionRow,
-  type WeekBucket,
-} from "./analytics-types.js"
+import { ANALYTICS_CATEGORIES } from "./analytics-types.js"
+import type {
+  CategoryCount,
+  CategoryMedian,
+  CoverageCounts,
+  EventAggregates,
+  FunnelCounts,
+  KpiAggregates,
+  MonthBucket,
+  RetentionRow,
+  WeekBucket,
+} from "./analytics-repository.js"
+import { MS_PER_DAY, MS_PER_WEEK } from "../../lib/time.js"
 
 const MONTH_ABBR = [
   "Jan",
@@ -36,6 +37,8 @@ const MONTH_ABBR = [
   "Nov",
   "Dec",
 ] as const
+
+const ROUTE_TIME_PENDING_DELTA = "Phase 3"
 
 export function round1(n: number): number {
   return Math.round(n * 10) / 10
@@ -88,11 +91,11 @@ export function buildKpis(agg: KpiAggregates): AnalyticsKpi[] {
       dir: deltaDir(agg.cleanupsPlanned.current, agg.cleanupsPlanned.previous),
     },
     {
-      // Avg. route time is a Phase 3 (VRP) metric; reported as 0 until routing is deployed. The analytics
-      // page hides any label matching /route/i in its KPI strip, but the value is part of the contract.
+      // Reported as 0 until routing is deployed. The analytics page hides any label matching /route/i in
+      // its KPI strip, but the value is part of the contract.
       label: "Avg. route time",
       num: 0,
-      delta: "Phase 3",
+      delta: ROUTE_TIME_PENDING_DELTA,
       dir: "flat",
     },
     {
@@ -147,12 +150,16 @@ export function buildFunnel(counts: FunnelCounts): AnalyticsFunnelResponse {
 
 export function buildCoverage(counts: CoverageCounts): AnalyticsCoverageResponse {
   const total = counts.mapped + counts.needsMapping
-  return { pct: pct(counts.mapped, total), mapped: counts.mapped, needsMapping: counts.needsMapping }
+  return {
+    pct: pct(counts.mapped, total),
+    mapped: counts.mapped,
+    needsMapping: counts.needsMapping,
+  }
 }
 
 /**
  * Align the repo's sparse weekly buckets to a fixed `weeks`-length trailing window ending at `ref`,
- * producing the value array + the design's labels ('', ..., 'last', 'now'). Pure (ref injected).
+ * producing the value array and the design's labels ('', ..., 'last', 'now').
  */
 export function buildPinsByWeek(
   buckets: WeekBucket[],
@@ -163,7 +170,7 @@ export function buildPinsByWeek(
   const values = new Array<number>(weeks).fill(0)
   for (const b of buckets) {
     const bWeek = startOfWeekUtc(b.weekStart).getTime()
-    const weeksAgo = Math.round((refWeek - bWeek) / WEEK_MS)
+    const weeksAgo = Math.round((refWeek - bWeek) / MS_PER_WEEK)
     if (weeksAgo >= 0 && weeksAgo < weeks) {
       // index 0 is the oldest week in the window, weeks-1 is the current week.
       values[weeks - 1 - weeksAgo] = b.count
@@ -230,16 +237,13 @@ export function buildRetention(rows: RetentionRow[], periods: number): Analytics
   return { cohorts, periodLabels }
 }
 
-const DAY_MS = 24 * 60 * 60 * 1000
-const WEEK_MS = 7 * DAY_MS
-
 /** UTC start-of-week anchored to Monday (matches date_trunc('week', ...) in Postgres, which is Monday). */
 export function startOfWeekUtc(d: Date): Date {
   const copy = new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate()))
   // getUTCDay: 0=Sun..6=Sat. Postgres week starts Monday; shift so Monday is the anchor.
   const dow = copy.getUTCDay()
   const deltaToMonday = (dow + 6) % 7
-  return new Date(copy.getTime() - deltaToMonday * DAY_MS)
+  return new Date(copy.getTime() - deltaToMonday * MS_PER_DAY)
 }
 
 export function subtractMonths(

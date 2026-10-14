@@ -1,37 +1,19 @@
-
 import { REPORT_CATEGORY_LABELS } from "@civfix/shared"
 import type { ReportCategory } from "@civfix/shared"
-import type postgres from "postgres"
-import type { Sql } from "../db/client.js"
+import type { Sql, SqlFragment } from "../db/client.js"
 import type { ConversationHideRoomKind } from "../db/schema/conversation_hides.js"
 import { publicReportFilter } from "./report-sql.js"
-import type { TimeCursor } from "../db/cursor-helpers.js"
-import type {
-  GroupThreadAggregateView,
-  GroupThreadsSource,
-  ReportThreadAggregateView,
-  ReportThreadsSource,
-  ThreadAggregate,
-  ThreadsRepository,
+import { msKeysetFilter, type TimeCursor } from "../db/cursor-helpers.js"
+import {
+  THREADS_DEFAULT_LIMIT,
+  type GroupThreadAggregateView,
+  type GroupThreadsSource,
+  type ReportThreadAggregateView,
+  type ReportThreadsSource,
 } from "./threads-service.js"
+import type { ThreadAggregate, ThreadsRepository } from "./threads-repository.js"
 
-type SqlFragment = postgres.Fragment
-
-function threadsCursorFilter(
-  sql: Sql,
-  activity: SqlFragment,
-  idColumn: SqlFragment,
-  cursor: TimeCursor | null | undefined,
-): SqlFragment {
-  if (cursor === null || cursor === undefined) return sql``
-  const msCeiling = new Date(cursor.at.getTime() + 1)
-  return sql`
-    AND ${activity} < ${msCeiling}
-    AND (${activity} < ${cursor.at} OR ${idColumn} < ${cursor.id}::uuid)
-  `
-}
-
-function reportThreadTitle(category: ReportCategory | string, addr: string | null): string {
+function reportThreadTitle(category: string, addr: string | null): string {
   const label = REPORT_CATEGORY_LABELS[category as ReportCategory] ?? category
   const short = (addr ?? "").split(",")[0]?.trim() ?? ""
   return short !== "" ? `${label} - ${short}` : label
@@ -66,7 +48,7 @@ async function listThreadFamily<R extends ThreadFamilyRow>(
   const scope = sql(spec.scopeColumn)
   const rawActivity = sql`COALESCE(last_msg.created_at, mem.joined_at)`
   const activity = sql`date_trunc('milliseconds', ${rawActivity})`
-  const cursorFilter = threadsCursorFilter(sql, activity, sql`r.id`, cursor)
+  const cursorFilter = msKeysetFilter(sql, activity, sql`r.id`, cursor)
   return await sql<R[]>`
     WITH page AS (
       SELECT
@@ -121,7 +103,9 @@ async function listThreadFamily<R extends ThreadFamilyRow>(
   `
 }
 
-function lastOf(r: ThreadFamilyRow): { body: string | null; createdAt: Date; senderId: string | null } | null {
+function lastOf(
+  r: ThreadFamilyRow,
+): { body: string | null; createdAt: Date; senderId: string | null } | null {
   return r.last_created_at !== null
     ? { body: r.last_body, createdAt: r.last_created_at, senderId: r.last_sender_id }
     : null
@@ -175,9 +159,10 @@ export function makeDrizzleThreadsRepository(sql: Sql): ThreadsRepository {
         joinedAt: r.joined_at,
         members: r.members,
         unread: r.unread,
-        last: r.last_created_at !== null
-          ? { body: r.last_body, createdAt: r.last_created_at, senderId: r.last_sender_id! }
-          : null,
+        last:
+          r.last_created_at !== null
+            ? { body: r.last_body, createdAt: r.last_created_at, senderId: r.last_sender_id! }
+            : null,
       }))
     },
 
@@ -199,7 +184,7 @@ export function makeDrizzleReportThreadsSource(sql: Sql): ReportThreadsSource {
   return {
     async listReportThreadsFor(
       userId: string,
-      limit = 30,
+      limit = THREADS_DEFAULT_LIMIT,
       cursor?: TimeCursor | null,
     ): Promise<ReportThreadAggregateView[]> {
       const rows = await listThreadFamily<
@@ -221,7 +206,7 @@ export function makeDrizzleGroupThreadsSource(sql: Sql): GroupThreadsSource {
   return {
     async listGroupThreadsFor(
       userId: string,
-      limit = 30,
+      limit = THREADS_DEFAULT_LIMIT,
       cursor?: TimeCursor | null,
     ): Promise<GroupThreadAggregateView[]> {
       const rows = await listThreadFamily<

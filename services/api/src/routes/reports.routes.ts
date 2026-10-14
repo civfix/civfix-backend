@@ -1,4 +1,3 @@
-
 import {
   CreateReportRequestSchema,
   ListReportsInBBoxRequestSchema,
@@ -22,18 +21,17 @@ import type { FastifyInstance, FastifyRequest } from "fastify"
 import type { Container } from "../di.js"
 import type { Sql } from "../db/client.js"
 import { requireAuth } from "../auth/context.js"
-import {
-  makeCachedAddressResolver,
-  makeGeoidResolver,
-} from "../services/route-geo-helpers.js"
+import { makeCachedAddressResolver, makeGeoidResolver } from "../services/route-geo-helpers.js"
 import { makeMediaPresigner, makePrivateMediaPresigner } from "../services/media-presign.js"
 import { perIdentity } from "../plugins/rate-limit.js"
 import {
   makeReportService,
-  type ReportRepository,
+  type ReportDiscussionMeta,
+  type ReportOwner,
   type ReportService,
   type ReportServiceDeps,
 } from "../services/report-service.js"
+import type { ReportRepository } from "../services/report-repository.js"
 import { makeDrizzleReportRepository } from "../services/report-repository.drizzle.js"
 import { resolveJurisdictionCode } from "../db/reference-code.js"
 import { makeDrizzleCleanupRepository } from "../services/cleanup-repository.drizzle.js"
@@ -46,10 +44,17 @@ import { route } from "../versioning/route.js"
 import { parse, trimTextFields } from "./_validate.js"
 import { CappedBBoxQueryParam, CategoriesQueryParam, TypesQueryParam } from "./query-encoding.js"
 
-export const CREATE_REPORT_RATE_LIMIT = perIdentity({ max: 20, timeWindow: "1 minute", hostMax: 60 })
+export const CREATE_REPORT_RATE_LIMIT = perIdentity({
+  max: 20,
+  timeWindow: "1 minute",
+  hostMax: 60,
+})
 
 const MAP_REPORTS_RATE_LIMIT = { max: 60, timeWindow: "1 minute" } as const
 const SEARCH_REPORTS_RATE_LIMIT = { max: 30, timeWindow: "1 minute" } as const
+const MAP_REPORTS_CACHE_CONTROL = "public, max-age=60"
+const MAX_MAP_ZOOM = 22
+const MAX_SEARCH_LIMIT = 50
 
 export interface ReportServiceOverrides {
   repo: ReportRepository
@@ -84,7 +89,7 @@ export const CreateReportBodySchema = trimTextFields(
 
 const ReportRefOrIdParamsSchema = z.object({ id: ReportRefOrIdSchema }).strict()
 
-const ZoomQueryParam = z.coerce.number().int().min(0).max(22)
+const ZoomQueryParam = z.coerce.number().int().min(0).max(MAX_MAP_ZOOM)
 
 const MapReportsQuerySchema = z
   .object({
@@ -107,7 +112,7 @@ const SearchReportsQuerySchema = z
     categories: CategoriesQueryParam.optional(),
     types: TypesQueryParam.optional(),
     cursor: z.string().optional(),
-    limit: z.coerce.number().int().positive().max(50).optional(),
+    limit: z.coerce.number().int().positive().max(MAX_SEARCH_LIMIT).optional(),
   })
   .transform((q) => ({
     ...(q.q !== undefined ? { q: q.q } : {}),
@@ -176,120 +181,8 @@ export async function registerReportRoutes(
 
   function service(): ReportService {
     const overrides = app.reportOverrides
-    if (overrides) {
-      return makeReportService({
-        repo: overrides.repo,
-        resolveJurisdictionGeoid:
-          overrides.resolveJurisdictionGeoid ?? (() => Promise.resolve(null)),
-        ...(overrides.resolveJurisdictionCode !== undefined
-          ? { resolveJurisdictionCode: overrides.resolveJurisdictionCode }
-          : {}),
-        presignMedia: overrides.presignMedia ?? makeMediaPresigner(container.storage),
-        presignPrivateMedia:
-          overrides.presignPrivateMedia ?? makePrivateMediaPresigner(container.storage),
-        ...(overrides.resolveAddress !== undefined
-          ? { resolveAddress: overrides.resolveAddress }
-          : {}),
-        ...(overrides.loadLinkedEventsForReports !== undefined
-          ? { loadLinkedEventsForReports: overrides.loadLinkedEventsForReports }
-          : {}),
-        ...(overrides.loadDiscussionMeta !== undefined
-          ? { loadDiscussionMeta: overrides.loadDiscussionMeta }
-          : {}),
-        ...(overrides.loadReportChatMeta !== undefined
-          ? { loadReportChatMeta: overrides.loadReportChatMeta }
-          : {}),
-        ...(overrides.joinReportChatAsOwner !== undefined
-          ? { joinReportChatAsOwner: overrides.joinReportChatAsOwner }
-          : {}),
-        ...(overrides.reportChatEmitter !== undefined
-          ? { reportChatEmitter: overrides.reportChatEmitter }
-          : {}),
-        ...(overrides.newId !== undefined ? { newId: overrides.newId } : {}),
-        ...(overrides.now !== undefined ? { now: overrides.now } : {}),
-      })
-    }
-
-    const sql = container.getDb().sql
-    const repo: ReportRepository = makeDrizzleReportRepository(sql)
-    const cleanupRepo = makeDrizzleCleanupRepository(sql)
-    const discussionRepo = makeDrizzleDiscussionRepository(sql)
-    const chatRepo = makeDrizzleChatRepository(sql)
-    const reportChatRepo = makeReportChatRepository(sql)
-    return makeReportService({
-      repo,
-      loadLinkedEventsForReports: (reportIds) => cleanupRepo.loadLinkedEventsForReports(reportIds),
-      loadDiscussionMeta: async (reportId) => {
-        const [count, report] = await Promise.all([
-          chatRepo.countReportMessages(reportId),
-          discussionRepo.findReportForDiscussion(reportId),
-        ])
-        const jurisdiction = report?.jurisdiction ?? null
-        return {
-          discussionCount: count,
-          cityHandle:
-            jurisdiction !== null
-              ? effectiveJurisdictionHandle({
-                  handle: jurisdiction.handle,
-                  name: jurisdiction.name,
-                })
-              : null,
-          cityName: jurisdiction?.name ?? null,
-          canForwardToCity:
-            container.env.REPORT_AUTOFORWARD_ENABLED &&
-            jurisdiction !== null &&
-            jurisdiction.contactEmail !== null &&
-            jurisdiction.contactEmail !== "",
-        }
-      },
-      loadReportChatMeta: async (reportId, viewerUserId) => {
-        const rows = await sql<
-          { joined: boolean; member_count: number; message_count: number; unread: number }[]
-        >`
-          SELECT
-            EXISTS (
-              SELECT 1 FROM report_chat_members m
-              WHERE m.report_id = ${reportId} AND m.user_id = ${viewerUserId}
-            ) AS joined,
-            (
-              SELECT count(*)::int FROM report_chat_members m WHERE m.report_id = ${reportId}
-            ) AS member_count,
-            (
-              SELECT count(*)::int
-              FROM chat_messages cm
-              WHERE cm.report_id = ${reportId} AND cm.deleted_at IS NULL
-            ) AS message_count,
-            COALESCE((
-              SELECT count(*)::int
-              FROM report_chat_members mem
-              JOIN chat_messages cm ON cm.report_id = mem.report_id
-              WHERE mem.report_id = ${reportId}
-                AND mem.user_id = ${viewerUserId}
-                AND cm.deleted_at IS NULL
-                AND cm.sender_id IS DISTINCT FROM ${viewerUserId}
-                AND cm.created_at > GREATEST(mem.joined_at, COALESCE(mem.last_read_at, to_timestamp(0)))
-            ), 0) AS unread
-        `
-        const row = rows[0]
-        return {
-          joined: row?.joined ?? false,
-          memberCount: row?.member_count ?? 0,
-          messageCount: row?.message_count ?? 0,
-          unread: row?.unread ?? 0,
-        }
-      },
-      resolveJurisdictionGeoid: makeGeoidResolver(container),
-      resolveJurisdictionCode: (geoid) => resolveJurisdictionCode(sql, geoid),
-      resolveAddress: makeCachedAddressResolver(container),
-      presignMedia: makeMediaPresigner(container.storage),
-      presignPrivateMedia: makePrivateMediaPresigner(container.storage),
-      jobs: container.jobs,
-      autoForwardEnabled: container.env.REPORT_AUTOFORWARD_ENABLED,
-      isReportVerified: (userId) => isReportVerified(sql, userId),
-      joinReportChatAsOwner: (reportId, userId) => reportChatRepo.join(reportId, userId, "owner"),
-      reportChatEmitter: makeContainerReportChatEmitter(container, app.log),
-      logger: app.log,
-    })
+    if (overrides) return makeOverriddenReportService(overrides, container)
+    return makeContainerReportService(container, app.log)
   }
 
   route(
@@ -299,7 +192,10 @@ export async function registerReportRoutes(
     async (request, reply) => {
       const userId = requireAuth(request)
       const body = parse(CreateReportBodySchema, request.body)
-      const dto: ReportDTO = await service().createReport(body, { userId })
+      const dto: ReportDTO = await service().createReport(body, {
+        userId,
+        guestAnonSessionId: request.auth.guestAnonSessionId,
+      })
       reply.status(201).send(dto)
     },
   )
@@ -317,23 +213,36 @@ export async function registerReportRoutes(
     reply.status(200).send(payload)
   })
 
-  route(app, "mapReports", { schema: { response: { 200: MapReportsResponseJsonSchema } }, config: { rateLimit: MAP_REPORTS_RATE_LIMIT } }, async (request, reply) => {
-    const validated = parse(MapReportsQuerySchema, request.query)
-    const payload: ReportClusterResponse = await service().listReportsInBBox(
-      validated.bbox,
-      validated.categories ?? null,
-      validated.types ?? null,
-      validated.zoom,
-    )
-    reply.header("Cache-Control", "public, max-age=60")
-    reply.status(200).send(payload)
-  })
+  route(
+    app,
+    "mapReports",
+    {
+      schema: { response: { 200: MapReportsResponseJsonSchema } },
+      config: { rateLimit: MAP_REPORTS_RATE_LIMIT },
+    },
+    async (request, reply) => {
+      const validated = parse(MapReportsQuerySchema, request.query)
+      const payload: ReportClusterResponse = await service().listReportsInBBox(
+        validated.bbox,
+        validated.categories ?? null,
+        validated.types ?? null,
+        validated.zoom,
+      )
+      reply.header("Cache-Control", MAP_REPORTS_CACHE_CONTROL)
+      reply.status(200).send(payload)
+    },
+  )
 
-  route(app, "searchReports", { config: { rateLimit: SEARCH_REPORTS_RATE_LIMIT } }, async (request, reply) => {
-    const validated = parse(SearchReportsQuerySchema, request.query)
-    const payload: ListReportsSearchResponse = await service().searchReports(validated)
-    reply.status(200).send(payload)
-  })
+  route(
+    app,
+    "searchReports",
+    { config: { rateLimit: SEARCH_REPORTS_RATE_LIMIT } },
+    async (request, reply) => {
+      const validated = parse(SearchReportsQuerySchema, request.query)
+      const payload: ListReportsSearchResponse = await service().searchReports(validated)
+      reply.status(200).send(payload)
+    },
+  )
 
   route(app, "resolveReport", { preHandler: csrfProtect }, async (request, reply) => {
     const userId = requireAuth(request)
@@ -352,17 +261,99 @@ export async function registerReportRoutes(
   })
 }
 
-async function isReportVerified(sql: Sql, userId: string): Promise<boolean> {
-  const rows = await sql<{ report_verified: boolean }[]>`
-    SELECT report_verified FROM user_moderation WHERE user_id = ${userId} LIMIT 1
-  `
-  return rows[0]?.report_verified ?? false
+function makeOverriddenReportService(
+  overrides: ReportServiceOverrides,
+  container: Container,
+): ReportService {
+  return makeReportService({
+    repo: overrides.repo,
+    resolveJurisdictionGeoid: overrides.resolveJurisdictionGeoid ?? (() => Promise.resolve(null)),
+    ...(overrides.resolveJurisdictionCode !== undefined
+      ? { resolveJurisdictionCode: overrides.resolveJurisdictionCode }
+      : {}),
+    presignMedia: overrides.presignMedia ?? makeMediaPresigner(container.storage),
+    presignPrivateMedia:
+      overrides.presignPrivateMedia ?? makePrivateMediaPresigner(container.storage),
+    ...(overrides.resolveAddress !== undefined ? { resolveAddress: overrides.resolveAddress } : {}),
+    ...(overrides.loadLinkedEventsForReports !== undefined
+      ? { loadLinkedEventsForReports: overrides.loadLinkedEventsForReports }
+      : {}),
+    ...(overrides.loadDiscussionMeta !== undefined
+      ? { loadDiscussionMeta: overrides.loadDiscussionMeta }
+      : {}),
+    ...(overrides.loadReportChatMeta !== undefined
+      ? { loadReportChatMeta: overrides.loadReportChatMeta }
+      : {}),
+    ...(overrides.joinReportChatAsOwner !== undefined
+      ? { joinReportChatAsOwner: overrides.joinReportChatAsOwner }
+      : {}),
+    ...(overrides.reportChatEmitter !== undefined
+      ? { reportChatEmitter: overrides.reportChatEmitter }
+      : {}),
+    ...(overrides.newId !== undefined ? { newId: overrides.newId } : {}),
+    ...(overrides.now !== undefined ? { now: overrides.now } : {}),
+  })
 }
 
-function ownerOf(request: FastifyRequest): { userId?: string | undefined; anonSessionId?: string | undefined } {
-  const auth = request.auth
-  return {
-    userId: auth?.userId ?? undefined,
-    anonSessionId: auth?.anonSessionId ?? undefined,
+function makeContainerReportService(
+  container: Container,
+  log: FastifyInstance["log"],
+): ReportService {
+  const sql = container.getDb().sql
+  const repo: ReportRepository = makeDrizzleReportRepository(sql)
+  const cleanupRepo = makeDrizzleCleanupRepository(sql)
+  const reportChatRepo = makeReportChatRepository(sql)
+  return makeReportService({
+    repo,
+    loadLinkedEventsForReports: (reportIds) => cleanupRepo.loadLinkedEventsForReports(reportIds),
+    loadDiscussionMeta: makeDiscussionMetaLoader(container, sql),
+    loadReportChatMeta: (reportId, viewerUserId) =>
+      reportChatRepo.loadChatMeta(reportId, viewerUserId),
+    resolveJurisdictionGeoid: makeGeoidResolver(container),
+    resolveJurisdictionCode: (geoid) => resolveJurisdictionCode(sql, geoid),
+    resolveAddress: makeCachedAddressResolver(container),
+    presignMedia: makeMediaPresigner(container.storage),
+    presignPrivateMedia: makePrivateMediaPresigner(container.storage),
+    jobs: container.jobs,
+    autoForwardEnabled: container.env.REPORT_AUTOFORWARD_ENABLED,
+    isReportVerified: (userId) => reportChatRepo.isReportVerified(userId),
+    joinReportChatAsOwner: (reportId, userId) => reportChatRepo.join(reportId, userId, "owner"),
+    reportChatEmitter: makeContainerReportChatEmitter(container, log),
+    logger: log,
+  })
+}
+
+function makeDiscussionMetaLoader(
+  container: Container,
+  sql: Sql,
+): (reportId: string) => Promise<ReportDiscussionMeta> {
+  const discussionRepo = makeDrizzleDiscussionRepository(sql)
+  const chatRepo = makeDrizzleChatRepository(sql)
+  return async (reportId) => {
+    const [count, report] = await Promise.all([
+      chatRepo.countReportMessages(reportId),
+      discussionRepo.findReportForDiscussion(reportId),
+    ])
+    const jurisdiction = report?.jurisdiction ?? null
+    return {
+      discussionCount: count,
+      cityHandle:
+        jurisdiction !== null
+          ? effectiveJurisdictionHandle({
+              handle: jurisdiction.handle,
+              name: jurisdiction.name,
+            })
+          : null,
+      cityName: jurisdiction?.name ?? null,
+      canForwardToCity:
+        container.env.REPORT_AUTOFORWARD_ENABLED &&
+        jurisdiction !== null &&
+        jurisdiction.contactEmail !== null &&
+        jurisdiction.contactEmail !== "",
+    }
   }
+}
+
+function ownerOf(request: FastifyRequest): ReportOwner {
+  return { userId: request.auth?.userId ?? undefined }
 }

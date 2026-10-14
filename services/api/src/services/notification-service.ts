@@ -1,4 +1,3 @@
-
 import { AppError } from "@civfix/shared"
 import type {
   ListNotificationsResponse,
@@ -6,15 +5,14 @@ import type {
   NotificationPrefsDTO,
   NotificationType,
   PaginationQuery,
-  PushPlatform,
-  QuietHours,
   RegisterPushTokenRequest,
   UnregisterPushTokenRequest,
   UpdateNotificationPrefsRequest,
 } from "@civfix/shared"
 import type { PushPayload, PushSender, UserChannel } from "@civfix/shared/interfaces"
 import type { FastifyBaseLogger } from "fastify"
-import type { PersonView, SocialNotifier } from "./social-service.js"
+import type { SocialNotifier } from "./social-service.js"
+import type { PersonView } from "./social-repository.js"
 import type { PushGateMode } from "./notification-helpers.js"
 import {
   DEFAULT_PREFS,
@@ -23,10 +21,17 @@ import {
   toNotificationDTO,
   toPrefsDTO,
 } from "./notification-helpers.js"
-import { mapWithLimit } from "./media-presign.js"
+import { mapWithLimit } from "../lib/concurrency.js"
 import { classifyPushToken, isRegistrablePushEndpoint } from "./push-token-policy.js"
 import { renderMessage, type MessageKey, type MessageVars } from "../i18n/renderMessage.js"
 import { DEFAULT_LOCALE } from "../i18n/locales.js"
+import { actorDisplayName } from "./public-author.js"
+import type {
+  NotificationPrefsPatch,
+  NotificationPrefsRecord,
+  NotificationRecord,
+  NotificationRepository,
+} from "./notification-repository.js"
 
 export {
   DEFAULT_PREFS,
@@ -34,130 +39,30 @@ export {
   isFeedVisibleType,
   isWithinQuietHours,
   parseTimeOfDayMinutes,
-  pushGateAllows,
-  toNotificationDTO,
   toPrefsDTO,
   typeAllowedByPrefs,
 } from "./notification-helpers.js"
 export type { PushGateMode } from "./notification-helpers.js"
 
-export const NOTIFICATIONS_DEFAULT_LIMIT = 20
+const NOTIFICATIONS_DEFAULT_LIMIT = 20
 
 export const NOTIFICATION_DEDUPE_WINDOW_MS = 5 * 60 * 1000
 
-export const BULK_NOTIFY_CONCURRENCY = 8
+const BULK_NOTIFY_CONCURRENCY = 8
 
 export const PUSH_FANOUT_BATCH_SIZE = 100
 
-export interface NotificationRecord {
-  id: string
-  userId: string
-  type: NotificationType
-  title: string
-  body: string | null
-  link: string | null
-  readAt: Date | null
-  createdAt: Date
+const NOTIFICATIONS_TOPIC = "notifications"
+
+const INVALID_PUSH_TOKEN_MESSAGE = "Invalid push token"
+
+function postLink(postId: string): string {
+  return `/post/${postId}`
 }
 
-export interface NewNotificationArgs {
-  userId: string
-  type: NotificationType
-  title: string
-  body: string | null
-  link: string | null
+function personLink(userId: string): string {
+  return `/people/${userId}`
 }
-
-export interface NotificationPrefsRecord {
-  push: boolean
-  cleanupChat: boolean
-  reportUpdates: boolean
-  follows: boolean
-  mentions: boolean
-  postInteractions: boolean
-  hostBroadcasts: boolean
-  quietStart: string | null
-  quietEnd: string | null
-  tz: string | null
-}
-
-export interface NotificationPrefsPatch {
-  push?: boolean
-  cleanupChat?: boolean
-  reportUpdates?: boolean
-  follows?: boolean
-  mentions?: boolean
-  postInteractions?: boolean
-  hostBroadcasts?: boolean
-  quietHours?: QuietHours | null
-}
-
-export interface NotificationRepository {
-  insertNotification(args: NewNotificationArgs): Promise<NotificationRecord>
-
-  listNotifications(
-    userId: string,
-    cursor: string | null,
-    limit: number,
-  ): Promise<{ records: NotificationRecord[]; nextCursor: string | null }>
-
-  markRead(userId: string, ids: string[]): Promise<void>
-
-  clearByTypeAndLink(userId: string, type: NotificationType, link: string): Promise<void>
-
-  findRecentDuplicate(args: {
-    userId: string
-    type: NotificationType
-    link: string | null
-    body: string | null
-    since: Date
-  }): Promise<NotificationRecord | null>
-
-  refreshUnreadNotification(args: {
-    userId: string
-    type: NotificationType
-    link: string
-    title: string
-    body: string | null
-    since: Date
-  }): Promise<NotificationRecord | null>
-
-  upsertCoalescedNotification(args: {
-    userId: string
-    type: NotificationType
-    link: string
-    title: string
-    body: string | null
-    since: Date
-  }): Promise<{ record: NotificationRecord; coalesced: boolean }>
-
-  deleteAllNotificationsForUser(userId: string): Promise<void>
-
-  findPrefs(userId: string): Promise<NotificationPrefsRecord | null>
-
-  findPrefsMany?(userIds: string[]): Promise<Map<string, NotificationPrefsRecord>>
-
-  createDefaultPrefs(userId: string): Promise<NotificationPrefsRecord>
-
-  upsertPrefs(userId: string, patch: NotificationPrefsPatch): Promise<NotificationPrefsRecord>
-
-  upsertPushToken(args: {
-    userId: string
-    platform: PushPlatform
-    token: string
-    deviceId: string | null
-  }): Promise<PushTokenUpsertOutcome>
-
-  revokeToken(userId: string, platform: PushPlatform, token: string): Promise<void>
-
-  deletePushTokensForUser(userId: string): Promise<void>
-
-  findUserLocale(userId: string): Promise<string | null>
-
-  findUserLocaleMany?(userIds: string[]): Promise<Map<string, string>>
-}
-
-export type PushTokenUpsertOutcome = "stored" | "conflict"
 
 export interface CreateNotificationInput {
   type: NotificationType
@@ -182,12 +87,27 @@ export interface NotificationServiceDeps {
   isSafePushEndpoint?: (endpoint: string) => Promise<boolean>
 }
 
+export interface PostActivity {
+  recipientId: string
+  actorName: string
+  postId: string
+}
+
 export interface PostNotifier {
-  onPostLike(a: { recipientId: string; actorName: string; postId: string }): Promise<void>
-  onPostRepost(a: { recipientId: string; actorName: string; postId: string }): Promise<void>
-  onPostReply(a: { recipientId: string; actorName: string; postId: string }): Promise<void>
-  onPostQuote(a: { recipientId: string; actorName: string; postId: string }): Promise<void>
-  onPostMention(a: { recipientId: string; actorName: string; postId: string }): Promise<void>
+  onPostLike(a: PostActivity): Promise<void>
+  onPostRepost(a: PostActivity): Promise<void>
+  onPostReply(a: PostActivity): Promise<void>
+  onPostQuote(a: PostActivity): Promise<void>
+  onPostMention(a: PostActivity): Promise<void>
+}
+
+export interface FanOutNotificationResult {
+  /**
+   * Recipients whose in-app row was never written. The call resolves even when every write failed,
+   * so each caller decides what a failure means: the chat fan-out fails its job on a total failure,
+   * and the broadcast pipeline retries exactly these.
+   */
+  failed: string[]
 }
 
 export interface NotificationService extends SocialNotifier, PostNotifier {
@@ -199,12 +119,100 @@ export interface NotificationService extends SocialNotifier, PostNotifier {
   unregisterPushToken(userId: string, req: UnregisterPushTokenRequest): Promise<{ ok: true }>
   createNotification(userId: string, input: CreateNotificationInput): Promise<NotificationDTO>
   createNotifications(userIds: string[], input: CreateNotificationInput): Promise<void>
+  createNotificationsReportingFailures(
+    userIds: string[],
+    input: CreateNotificationInput,
+  ): Promise<FanOutNotificationResult>
   clearByTypeAndLink(userId: string, type: NotificationType, link: string): Promise<void>
 }
+
+type FallbackLane = "coalesce" | "dedupe"
+
+type FallbackReporter = (lane: FallbackLane, err: unknown) => void
 
 interface ResolvedPrefs {
   byUser: Map<string, NotificationPrefsRecord>
   unreadable: Set<string>
+}
+
+type PostActivityType = "post_like" | "post_repost" | "post_reply" | "post_quote" | "post_mention"
+
+interface PostActivitySpec {
+  titleKey: MessageKey
+  bodyKey: MessageKey
+  deduped: boolean
+}
+
+// Likes and reposts can be toggled repeatedly, so they are deduped; a reply, quote or mention is new
+// content every time.
+const POST_ACTIVITY_SPECS: Record<PostActivityType, PostActivitySpec> = {
+  post_like: {
+    titleKey: "notification.post.like.title",
+    bodyKey: "notification.post.like.body",
+    deduped: true,
+  },
+  post_repost: {
+    titleKey: "notification.post.repost.title",
+    bodyKey: "notification.post.repost.body",
+    deduped: true,
+  },
+  post_reply: {
+    titleKey: "notification.post.reply.title",
+    bodyKey: "notification.post.reply.body",
+    deduped: false,
+  },
+  post_quote: {
+    titleKey: "notification.post.quote.title",
+    bodyKey: "notification.post.quote.body",
+    deduped: false,
+  },
+  post_mention: {
+    titleKey: "notification.post.mention.title",
+    bodyKey: "notification.post.mention.body",
+    deduped: false,
+  },
+}
+
+interface CreatedNotification {
+  userId: string
+  record: NotificationRecord
+}
+
+interface PushGroup {
+  payload: PushPayload
+  userIds: string[]
+}
+
+function groupPushesByPayload(
+  created: readonly CreatedNotification[],
+  { byUser, unreadable }: ResolvedPrefs,
+  mode: PushGateMode,
+  at: Date,
+): Map<string, PushGroup> {
+  const groups = new Map<string, PushGroup>()
+  for (const { userId, record } of created) {
+    if (unreadable.has(userId)) continue
+    const prefs = byUser.get(userId) ?? DEFAULT_PREFS
+    if (!pushGateAllows(record.type, prefs, mode)) continue
+    if (isWithinQuietHours(at, prefs.quietStart, prefs.quietEnd, prefs.tz)) continue
+    const key = JSON.stringify([record.title, record.body, record.link])
+    const group = groups.get(key)
+    if (group) {
+      group.userIds.push(userId)
+      continue
+    }
+    groups.set(key, { payload: pushPayloadOf(record, { type: record.type }), userIds: [userId] })
+  }
+  return groups
+}
+
+function pushPayloadOf(record: NotificationRecord, data: Record<string, unknown>): PushPayload {
+  return {
+    title: record.title,
+    ...(record.body !== null ? { body: record.body } : {}),
+    ...(record.link !== null ? { link: record.link } : {}),
+    data,
+  }
 }
 
 export function makeNotificationService(deps: NotificationServiceDeps): NotificationService {
@@ -228,12 +236,7 @@ export function makeNotificationService(deps: NotificationServiceDeps): Notifica
       if (!pushGateAllows(record.type, prefs, mode)) return
       if (isWithinQuietHours(now(), prefs.quietStart, prefs.quietEnd, prefs.tz)) return
 
-      const payload: PushPayload = {
-        title: record.title,
-        ...(record.body !== null ? { body: record.body } : {}),
-        ...(record.link !== null ? { link: record.link } : {}),
-        data: { type: record.type, notificationId: record.id },
-      }
+      const payload = pushPayloadOf(record, { type: record.type, notificationId: record.id })
       await deps.pushSender.send(userId, payload)
     } catch (err) {
       deps.logger?.warn(
@@ -246,7 +249,7 @@ export function makeNotificationService(deps: NotificationServiceDeps): Notifica
   async function maybeSignalNotification(userId: string): Promise<void> {
     if (!deps.userChannel) return
     try {
-      await deps.userChannel.publishToUser(userId, { topic: "notifications" })
+      await deps.userChannel.publishToUser(userId, { topic: NOTIFICATIONS_TOPIC })
     } catch (err) {
       deps.logger?.warn({ err, userId }, "notification signal publish failed (suppressed)")
     }
@@ -298,10 +301,25 @@ export function makeNotificationService(deps: NotificationServiceDeps): Notifica
     }
   }
 
+  function logFallback(
+    lane: FallbackLane,
+    err: unknown,
+    userId: string,
+    input: CreateNotificationInput,
+  ) {
+    deps.logger?.warn(
+      { err, userId, type: input.type },
+      lane === "coalesce"
+        ? "notification coalesce upsert failed; creating anyway"
+        : "notification dedupe insert failed; creating anyway",
+    )
+  }
+
   async function persistNotification(
     userId: string,
     input: CreateNotificationInput,
     resolvedLocales?: Map<string, string>,
+    onFallback: FallbackReporter = (lane, err) => logFallback(lane, err, userId, input),
   ): Promise<{ record: NotificationRecord; deduped: boolean }> {
     const locale = await localeFor(userId, input, resolvedLocales)
     const vars = varsIn(locale, input)
@@ -326,27 +344,21 @@ export function makeNotificationService(deps: NotificationServiceDeps): Notifica
         })
         return { record, deduped: coalesced }
       } catch (err) {
-        deps.logger?.warn(
-          { err, userId, type: input.type },
-          "notification coalesce upsert failed; creating anyway",
-        )
+        onFallback("coalesce", err)
       }
     }
     if (input.dedupeWindowMs !== undefined) {
       try {
-        const existing = await deps.repo.findRecentDuplicate({
+        return await deps.repo.insertUnlessRecentDuplicate({
           userId,
           type: input.type,
-          link,
+          title,
           body,
+          link,
           since: new Date(now().getTime() - input.dedupeWindowMs),
         })
-        if (existing) return { record: existing, deduped: true }
       } catch (err) {
-        deps.logger?.warn(
-          { err, userId, type: input.type },
-          "notification dedupe lookup failed; creating anyway",
-        )
+        onFallback("dedupe", err)
       }
     }
     const record = await deps.repo.insertNotification({
@@ -374,6 +386,18 @@ export function makeNotificationService(deps: NotificationServiceDeps): Notifica
     return toNotificationDTO(record)
   }
 
+  async function notifyPostActivity(type: PostActivityType, a: PostActivity): Promise<void> {
+    const spec = POST_ACTIVITY_SPECS[type]
+    await doCreateNotification(a.recipientId, {
+      type,
+      titleKey: spec.titleKey,
+      bodyKey: spec.bodyKey,
+      vars: { name: a.actorName },
+      link: postLink(a.postId),
+      ...(spec.deduped ? { dedupeWindowMs: NOTIFICATION_DEDUPE_WINDOW_MS } : {}),
+    })
+  }
+
   async function prefsForMany(userIds: string[]): Promise<ResolvedPrefs> {
     if (deps.repo.findPrefsMany) {
       try {
@@ -390,7 +414,10 @@ export function makeNotificationService(deps: NotificationServiceDeps): Notifica
       try {
         return { prefs: await deps.repo.findPrefs(userId), readable: true }
       } catch (err) {
-        deps.logger?.warn({ err, userId }, "prefs lookup failed; suppressing push for this recipient")
+        deps.logger?.warn(
+          { err, userId },
+          "prefs lookup failed; suppressing push for this recipient",
+        )
         return { prefs: null, readable: false }
       }
     })
@@ -408,34 +435,12 @@ export function makeNotificationService(deps: NotificationServiceDeps): Notifica
   }
 
   async function sendBatchedPush(
-    created: Array<{ userId: string; record: NotificationRecord }>,
+    created: CreatedNotification[],
     mode: PushGateMode,
   ): Promise<void> {
     if (mode === "never") return
-    const { byUser, unreadable } = await prefsForMany(created.map((c) => c.userId))
-    const at = now()
-    const groups = new Map<string, { payload: PushPayload; userIds: string[] }>()
-    for (const { userId, record } of created) {
-      if (unreadable.has(userId)) continue
-      const prefs = byUser.get(userId) ?? DEFAULT_PREFS
-      if (!pushGateAllows(record.type, prefs, mode)) continue
-      if (isWithinQuietHours(at, prefs.quietStart, prefs.quietEnd, prefs.tz)) continue
-      const key = JSON.stringify([record.title, record.body, record.link])
-      const group = groups.get(key)
-      if (group) {
-        group.userIds.push(userId)
-        continue
-      }
-      groups.set(key, {
-        payload: {
-          title: record.title,
-          ...(record.body !== null ? { body: record.body } : {}),
-          ...(record.link !== null ? { link: record.link } : {}),
-          data: { type: record.type },
-        },
-        userIds: [userId],
-      })
-    }
+    const prefs = await prefsForMany(created.map((c) => c.userId))
+    const groups = groupPushesByPayload(created, prefs, mode, now())
     for (const group of groups.values()) {
       for (let i = 0; i < group.userIds.length; i += PUSH_FANOUT_BATCH_SIZE) {
         const batch = group.userIds.slice(i, i + PUSH_FANOUT_BATCH_SIZE)
@@ -451,37 +456,74 @@ export function makeNotificationService(deps: NotificationServiceDeps): Notifica
   async function signalMany(userIds: string[]): Promise<void> {
     if (!deps.userChannel) return
     try {
-      await deps.userChannel.publishToUsers(userIds, { topic: "notifications" })
+      await deps.userChannel.publishToUsers(userIds, { topic: NOTIFICATIONS_TOPIC })
     } catch (err) {
-      deps.logger?.warn({ err, count: userIds.length }, "notification signal publish failed (suppressed)")
+      deps.logger?.warn(
+        { err, count: userIds.length },
+        "notification signal publish failed (suppressed)",
+      )
+    }
+  }
+
+  function logFanOutFallbacks(
+    fallbacks: ReadonlyMap<FallbackLane, { count: number; err: unknown }>,
+    input: CreateNotificationInput,
+    recipients: number,
+  ): void {
+    for (const [lane, { count, err }] of fallbacks) {
+      deps.logger?.warn(
+        { err, type: input.type, lane, fallbacks: count, recipients },
+        lane === "coalesce"
+          ? "fan-out notification coalesce upsert failed; creating anyway"
+          : "fan-out notification dedupe insert failed; creating anyway",
+      )
     }
   }
 
   async function doCreateNotifications(
     userIds: string[],
     input: CreateNotificationInput,
-  ): Promise<void> {
+  ): Promise<FanOutNotificationResult> {
     const unique = [...new Set(userIds)]
-    if (unique.length === 0) return
+    if (unique.length === 0) return { failed: [] }
     const locales = await localesForMany(unique, input)
+    const failed: string[] = []
+    let firstFailure: unknown
+    const fallbacks = new Map<FallbackLane, { count: number; err: unknown }>()
+    // One line per fan-out, not per recipient: a store outage across a 2000-member room would
+    // otherwise write thousands of warnings for one incident.
+    const tallyFallback: FallbackReporter = (lane, err) => {
+      const seen = fallbacks.get(lane)
+      if (seen) seen.count += 1
+      else fallbacks.set(lane, { count: 1, err })
+    }
     const persisted = await mapWithLimit(unique, BULK_NOTIFY_CONCURRENCY, async (userId) => {
       try {
-        const { record, deduped } = await persistNotification(userId, input, locales)
+        const { record, deduped } = await persistNotification(userId, input, locales, tallyFallback)
         return deduped ? null : { userId, record }
       } catch (err) {
-        deps.logger?.warn(
-          { err, userId, type: input.type },
-          "fan-out notification insert failed (suppressed)",
-        )
+        if (failed.length === 0) firstFailure = err
+        failed.push(userId)
         return null
       }
     })
-    const created = persisted.filter((p): p is { userId: string; record: NotificationRecord } => p !== null)
-    if (created.length === 0) return
+    logFanOutFallbacks(fallbacks, input, unique.length)
+    if (failed.length > 0) {
+      deps.logger?.warn(
+        { err: firstFailure, type: input.type, failed: failed.length, recipients: unique.length },
+        "fan-out notification insert failed; reported to the caller",
+      )
+    }
+    const created = persisted.filter((p): p is CreatedNotification => p !== null)
+    if (created.length === 0) return { failed }
     void sendBatchedPush(created, input.push ?? "auto").catch((err: unknown) => {
-      deps.logger?.error({ err, count: created.length }, "batched push dispatch failed (suppressed)")
+      deps.logger?.error(
+        { err, count: created.length },
+        "batched push dispatch failed (suppressed)",
+      )
     })
     void signalMany(created.map((c) => c.userId))
+    return { failed }
   }
 
   return {
@@ -526,18 +568,15 @@ export function makeNotificationService(deps: NotificationServiceDeps): Notifica
       return toPrefsDTO(await deps.repo.upsertPrefs(userId, repoPatch))
     },
 
-    async registerPushToken(
-      userId: string,
-      req: RegisterPushTokenRequest,
-    ): Promise<{ ok: true }> {
+    async registerPushToken(userId: string, req: RegisterPushTokenRequest): Promise<{ ok: true }> {
       const shape = classifyPushToken(req.platform, req.token)
       if (!shape.ok) {
-        throw AppError.validation({ [shape.field]: shape.reason }, "Invalid push token")
+        throw AppError.validation({ [shape.field]: shape.reason }, INVALID_PUSH_TOKEN_MESSAGE)
       }
       if (shape.kind === "web" && (await isSafeEndpoint(shape.endpoint)) === false) {
         throw AppError.validation(
           { token: "subscription endpoint must be a public https push service" },
-          "Invalid push token",
+          INVALID_PUSH_TOKEN_MESSAGE,
         )
       }
       const outcome = await deps.repo.upsertPushToken({
@@ -558,7 +597,10 @@ export function makeNotificationService(deps: NotificationServiceDeps): Notifica
       try {
         await deps.pushSender.registerToken(userId, req.token, req.platform, req.deviceId)
       } catch (err) {
-        deps.logger?.warn({ err, userId, platform: req.platform }, "pushSender.registerToken failed")
+        deps.logger?.warn(
+          { err, userId, platform: req.platform },
+          "pushSender.registerToken failed",
+        )
       }
       return { ok: true }
     },
@@ -575,90 +617,37 @@ export function makeNotificationService(deps: NotificationServiceDeps): Notifica
       return doCreateNotification(userId, input)
     },
 
-    createNotifications(userIds: string[], input: CreateNotificationInput): Promise<void> {
+    async createNotifications(userIds: string[], input: CreateNotificationInput): Promise<void> {
+      await doCreateNotifications(userIds, input)
+    },
+
+    createNotificationsReportingFailures(
+      userIds: string[],
+      input: CreateNotificationInput,
+    ): Promise<FanOutNotificationResult> {
       return doCreateNotifications(userIds, input)
     },
 
-    async clearByTypeAndLink(
-      userId: string,
-      type: NotificationType,
-      link: string,
-    ): Promise<void> {
+    async clearByTypeAndLink(userId: string, type: NotificationType, link: string): Promise<void> {
       await deps.repo.clearByTypeAndLink(userId, type, link)
       await maybeSignalNotification(userId)
     },
 
     async onNewFollower(args: { followeeId: string; follower: PersonView }): Promise<void> {
-      const name =
-        args.follower.displayName.trim() !== ""
-          ? args.follower.displayName
-          : args.follower.handle
-            ? `@${args.follower.handle}`
-            : "Someone"
       await doCreateNotification(args.followeeId, {
         type: "new_follower",
         titleKey: "notification.follower.title",
         bodyKey: "notification.follower.body",
-        vars: { name },
-        link: `/people/${args.follower.id}`,
+        vars: { name: actorDisplayName(args.follower.displayName, args.follower.handle) },
+        link: personLink(args.follower.id),
         dedupeWindowMs: NOTIFICATION_DEDUPE_WINDOW_MS,
       })
     },
 
-    async onPostLike(a: { recipientId: string; actorName: string; postId: string }): Promise<void> {
-      await doCreateNotification(a.recipientId, {
-        type: "post_like",
-        titleKey: "notification.post.like.title",
-        bodyKey: "notification.post.like.body",
-        vars: { name: a.actorName },
-        link: `/post/${a.postId}`,
-        dedupeWindowMs: NOTIFICATION_DEDUPE_WINDOW_MS,
-      })
-    },
-
-    async onPostRepost(a: { recipientId: string; actorName: string; postId: string }): Promise<void> {
-      await doCreateNotification(a.recipientId, {
-        type: "post_repost",
-        titleKey: "notification.post.repost.title",
-        bodyKey: "notification.post.repost.body",
-        vars: { name: a.actorName },
-        link: `/post/${a.postId}`,
-        dedupeWindowMs: NOTIFICATION_DEDUPE_WINDOW_MS,
-      })
-    },
-
-    async onPostReply(a: { recipientId: string; actorName: string; postId: string }): Promise<void> {
-      await doCreateNotification(a.recipientId, {
-        type: "post_reply",
-        titleKey: "notification.post.reply.title",
-        bodyKey: "notification.post.reply.body",
-        vars: { name: a.actorName },
-        link: `/post/${a.postId}`,
-      })
-    },
-
-    async onPostQuote(a: { recipientId: string; actorName: string; postId: string }): Promise<void> {
-      await doCreateNotification(a.recipientId, {
-        type: "post_quote",
-        titleKey: "notification.post.quote.title",
-        bodyKey: "notification.post.quote.body",
-        vars: { name: a.actorName },
-        link: `/post/${a.postId}`,
-      })
-    },
-
-    async onPostMention(a: {
-      recipientId: string
-      actorName: string
-      postId: string
-    }): Promise<void> {
-      await doCreateNotification(a.recipientId, {
-        type: "post_mention",
-        titleKey: "notification.post.mention.title",
-        bodyKey: "notification.post.mention.body",
-        vars: { name: a.actorName },
-        link: `/post/${a.postId}`,
-      })
-    },
+    onPostLike: (a: PostActivity) => notifyPostActivity("post_like", a),
+    onPostRepost: (a: PostActivity) => notifyPostActivity("post_repost", a),
+    onPostReply: (a: PostActivity) => notifyPostActivity("post_reply", a),
+    onPostQuote: (a: PostActivity) => notifyPostActivity("post_quote", a),
+    onPostMention: (a: PostActivity) => notifyPostActivity("post_mention", a),
   }
 }

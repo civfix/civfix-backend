@@ -5,7 +5,7 @@
 -- between 'organizer' (the immutable creator) and 'member' (a plain attendee).
 --
 -- VERIFIED before writing this migration: cleanup_members.role (0001_core.sql)
--- is a bare `text NOT NULL` with NO CHECK constraint — the codebase convention
+-- is a bare `text NOT NULL` with NO CHECK constraint; the codebase convention
 -- (see the 0033 note: "kept flexible like `role`") is that role-ish columns are
 -- enforced by the shared Zod enum + the CLEANUP_MEMBER_ROLE_VALUES mirror in
 -- src/db/schema/types.ts (drift-guarded by test/unit/enums.test.ts), not by DDL.
@@ -13,7 +13,7 @@
 -- migration records the widened value set on the column itself so the DDL story
 -- stays self-describing.
 --
--- Volunteer hours (WS5): also VERIFIED that no DDL change is needed — the 0035
+-- Volunteer hours (WS5): also VERIFIED that no DDL change is needed; the 0035
 -- partial unique index volunteer_hours_event_uidx ON (cleanup_id, user_id)
 -- WHERE source = 'event' already supports the per-attendee upsert
 -- (ON CONFLICT (cleanup_id, user_id) WHERE source = 'event' DO UPDATE), which

@@ -1,27 +1,13 @@
-/**
- * F148 (HIGH, data-integrity): un-reposting must never destroy other people's content.
- *
- * 0051 created posts.reply_to_id / thread_root_id / repost_of_id and media_assets.post_id ON DELETE
- * CASCADE, while unrepost() issued a REAL `DELETE FROM posts`. A repost row is a normal post — third
- * parties can reply to or quote it — so one user's un-repost cascaded away other users' replies, quotes,
- * their media_assets rows (stranding the R2 objects, because media_reap_tombstones is only written by the
- * application delete path), their likes and saves, and left every denormalized counter drifting.
- *
- * Two independent fixes, both asserted here against the real schema (Docker-gated):
- *   1. unrepost is a SOFT delete (deleted_at + a single repost_count decrement), like every other delete
- *      path in the product;
- *   2. the self-FKs are ON DELETE RESTRICT and media_assets.post_id is ON DELETE SET NULL (0072/0073), so
- *      even a stray hard DELETE — a psql session, a future code path — cannot take someone else's post
- *      or strand an R2 object.
- */
+// Un-reposting must never destroy other people's content. A repost is a normal post others can reply to
+// or quote, and a hard delete once cascaded away their replies, quotes, media rows (stranding R2 objects)
+// and likes. Two independent guards: unrepost is a soft delete, and the self-FKs are ON DELETE RESTRICT
+// with media_assets.post_id ON DELETE SET NULL (0072/0073), so even a stray hard DELETE cannot do it.
 
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest"
 import { randomUUID } from "node:crypto"
 import { withPg, testHandle, type PgHarness } from "../helpers/pg.js"
-import {
-  makeDrizzlePostRepository,
-  type PostRepository,
-} from "../../src/services/post-repository.drizzle.js"
+import { makeDrizzlePostRepository } from "../../src/services/post-repository.drizzle.js"
+import type { PostRepository } from "../../src/services/post-repository.js"
 
 const pg = await withPg()
 
@@ -78,7 +64,9 @@ describe.skipIf(!pg)("F148: un-reposting never destroys other users' content", (
     return m!.id
   }
 
-  async function postRow(id: string): Promise<{ deleted_at: Date | null; repost_count: number } | undefined> {
+  async function postRow(
+    id: string,
+  ): Promise<{ deleted_at: Date | null; repost_count: number } | undefined> {
     const rows = await h.sql<{ deleted_at: Date | null; repost_count: number }[]>`
       SELECT deleted_at, repost_count FROM posts WHERE id = ${id}
     `

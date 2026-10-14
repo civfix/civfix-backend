@@ -1,4 +1,3 @@
-
 import { afterAll, beforeAll, describe, expect, it } from "vitest"
 import { randomUUID } from "node:crypto"
 import { testHandle, withPg, type PgHarness } from "../helpers/pg.js"
@@ -9,10 +8,13 @@ import { makeDrizzleHostTeamRepository } from "../../src/services/host/host-team
 import { makeDrizzleHostPortfolioRepository } from "../../src/services/host/host-portfolio-repository.drizzle.js"
 import { makeDrizzleAnalyticsRepository } from "../../src/services/host/analytics-repository.drizzle.js"
 import { MAX_INSIGHTS_TOP_VOLUNTEERS } from "@civfix/shared"
-import { hostStandingOf, orgStandingOf } from "../../src/services/host/host-standing.js"
-import type { CleanupRepository } from "../../src/services/cleanup-repository.types.js"
-import type { OrganizationRepository } from "../../src/services/host/organization-repository.types.js"
-import type { HostTeamRepository } from "../../src/services/host/host-team-repository.types.js"
+import {
+  hostStandingOf,
+  orgStandingOf,
+} from "../../src/services/host/host-standing-repository.drizzle.js"
+import type { CleanupRepository } from "../../src/services/cleanup-repository.js"
+import type { OrganizationRepository } from "../../src/services/host/organization-repository.js"
+import type { HostTeamRepository } from "../../src/services/host/host-team-repository.js"
 
 const pg = await withPg()
 const FUTURE = new Date(Date.now() + 7 * 86_400_000)
@@ -134,17 +136,19 @@ describe.skipIf(!pg)("host organizations + team (integration)", () => {
     const b = await newUser("B")
     const slug = `slug-race-${randomUUID().slice(0, 8)}`
     const first = await newOrg(a, slug)
-    expect(await orgs.createOrganizationTx({
-      organizationId: randomUUID(),
-      slug,
-      name: "Duplicate",
-      description: null,
-      websiteUrl: null,
-      logoMediaId: null,
-      socialLinks: null,
-      createdBy: b,
-      now: new Date(),
-    })).toBe("slug_taken")
+    expect(
+      await orgs.createOrganizationTx({
+        organizationId: randomUUID(),
+        slug,
+        name: "Duplicate",
+        description: null,
+        websiteUrl: null,
+        logoMediaId: null,
+        socialLinks: null,
+        createdBy: b,
+        now: new Date(),
+      }),
+    ).toBe("slug_taken")
 
     await h.sql`UPDATE organizations SET deleted_at = now() WHERE id = ${first}`
     const reused = await orgs.createOrganizationTx({
@@ -160,6 +164,32 @@ describe.skipIf(!pg)("host organizations + team (integration)", () => {
     })
     expect(reused).not.toBe("slug_taken")
     expect(await orgs.findOrganizationById(first, null)).toBeNull()
+  })
+
+  it("reads the gate's access record from the same row and role as the full organization record", async () => {
+    const owner = await newUser("Access owner")
+    const stranger = await newUser("Access stranger")
+    const orgId = await newOrg(owner, `access-${randomUUID().slice(0, 8)}`)
+    await h.sql`UPDATE organizations SET suspended_at = now() WHERE id = ${orgId}`
+
+    for (const viewer of [owner, stranger]) {
+      const full = await orgs.findOrganizationById(orgId, viewer)
+      expect(full).not.toBeNull()
+      expect(await orgs.findOrganizationAccess(orgId, viewer)).toEqual({
+        id: full?.id,
+        slug: full?.slug,
+        name: full?.name,
+        suspendedAt: full?.suspendedAt,
+        verifiedStatus: full?.verifiedStatus,
+        myRole: full?.myRole,
+      })
+    }
+    expect((await orgs.findOrganizationAccess(orgId, owner))?.myRole).toBe("owner")
+    expect((await orgs.findOrganizationAccess(orgId, stranger))?.myRole).toBeNull()
+
+    await h.sql`UPDATE organizations SET deleted_at = now() WHERE id = ${orgId}`
+    expect(await orgs.findOrganizationAccess(orgId, owner)).toBeNull()
+    expect(await orgs.findOrganizationById(orgId, owner)).toBeNull()
   })
 
   it("keeps at most one OPEN verification per organization and scrubs the EIN on schedule", async () => {
@@ -267,7 +297,8 @@ describe.skipIf(!pg)("host organizations + team (integration)", () => {
       CHECK_VIOLATION,
     )
     await expectPgError(
-      () => h.sql`UPDATE cleanups SET donation_url = 'http://give.example.org' WHERE id = ${eventId}`,
+      () =>
+        h.sql`UPDATE cleanups SET donation_url = 'http://give.example.org' WHERE id = ${eventId}`,
       CHECK_VIOLATION,
     )
     await expectPgError(

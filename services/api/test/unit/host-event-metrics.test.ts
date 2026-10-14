@@ -7,10 +7,7 @@ import {
   makeMetricsService,
   parseCounterKey,
 } from "../../src/services/host/metrics-service.js"
-import type {
-  MetricUpsert,
-  MetricsRepository,
-} from "../../src/services/host/metrics-repository.drizzle.js"
+import type { MetricUpsert, MetricsRepository } from "../../src/services/host/metrics-repository.js"
 
 const EVENT = "00000000-0000-0000-0000-0000000000ee"
 
@@ -22,12 +19,10 @@ function repoStub(): MetricsRepository & { greatest: MetricUpsert[]; exact: Metr
     exact,
     resolveSlug: (slug) =>
       Promise.resolve(
-        slug === "beach-cleanup"
-          ? { cleanupId: EVENT, timezone: "America/Los_Angeles" }
-          : null,
+        slug === "beach-cleanup" ? { cleanupId: EVENT, timezone: "America/Los_Angeles" } : null,
       ),
     eventTimezone: () => Promise.resolve("America/Los_Angeles"),
-    listRollupEvents: () => Promise.resolve([EVENT]),
+    listRollupEvents: () => Promise.resolve([{ id: EVENT, timezone: "America/Los_Angeles" }]),
     recomputeFromSource: () =>
       Promise.resolve([
         { cleanupId: EVENT, day: "2026-02-01", metric: "registrations", bucket: "", value: 4 },

@@ -5,14 +5,13 @@ import { makeGroupChatNotifier } from "../../src/services/group-chat-notifier.js
 import { makeChatPowersResolver } from "../../src/services/chat-room-roles.js"
 
 /**
- * Block-bypass regressions from the 2026-07-24 backend review:
+ * Block-bypass regressions:
  *
- *   M11 — the report-room and group-room notification fan-outs had NO block check (unlike the mention
- *         and reply bells in chat-bells), so a blocked user in a shared public room pushed a
- *         notification carrying their own name and a text preview to their target, per message.
- *   L10 — the chat-powers resolver's dm lane granted canPin to any participant without re-checking
- *         blocks, so a blocked user could pin/unpin in a thread they are cut off from, broadcasting
- *         each time.
+ *   - the report-room and group-room notification fan-outs had NO block check (unlike the mention and
+ *     reply bells in chat-bells), so a blocked user in a shared public room pushed a notification
+ *     carrying their own name and a text preview to their target, per message;
+ *   - the chat-powers resolver's dm lane granted canPin to any participant without re-checking blocks,
+ *     so a blocked user could pin/unpin in a thread they are cut off from, broadcasting each time.
  */
 
 const ROOM = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
@@ -24,7 +23,11 @@ function message(): ChatMessageDTO {
   return {
     id: "msg-1",
     cleanupId: ROOM,
-    from: { id: ACTOR, name: "Blocker McBlocked", avatar: { kind: "gradient", from: "#000", to: "#fff" } },
+    from: {
+      id: ACTOR,
+      name: "Blocker McBlocked",
+      avatar: { kind: "gradient", from: "#000", to: "#fff" },
+    },
     body: "hello there",
     kind: "text",
     createdAt: new Date().toISOString(),
@@ -33,12 +36,17 @@ function message(): ChatMessageDTO {
   } as unknown as ChatMessageDTO
 }
 
-function notificationSpy(): { createNotifications: ReturnType<typeof vi.fn>; recipients: () => string[] } {
-  const createNotifications = vi.fn(() => Promise.resolve())
+function notificationSpy(): {
+  createNotificationsReportingFailures: ReturnType<typeof vi.fn>
+  recipients: () => string[]
+} {
+  const createNotificationsReportingFailures = vi.fn(() => Promise.resolve({ failed: [] }))
   return {
-    createNotifications,
+    createNotificationsReportingFailures,
     recipients: () =>
-      createNotifications.mock.calls.flatMap((c) => (c as unknown as [string[]])[0]),
+      createNotificationsReportingFailures.mock.calls.flatMap(
+        (c) => (c as unknown as [string[]])[0],
+      ),
   }
 }
 
@@ -46,7 +54,9 @@ describe("M11: the report-room fan-out skips blocked pairs", () => {
   const build = (isBlockedEitherWay: (a: string, b: string) => Promise<boolean>) => {
     const spy = notificationSpy()
     const notify = makeReportChatNotifier({
-      notificationService: { createNotifications: spy.createNotifications } as never,
+      notificationService: {
+        createNotificationsReportingFailures: spy.createNotificationsReportingFailures,
+      },
       reportChatRepo: { listMemberIds: () => Promise.resolve([ACTOR, BLOCKED, NEUTRAL]) },
       isMuted: () => Promise.resolve(false),
       roomKeyFor: (_k, id) => `report:${id}`,
@@ -76,7 +86,6 @@ describe("M11: the report-room fan-out skips blocked pairs", () => {
       return Promise.resolve(false)
     })
     await notify(ROOM, message())
-    // Both non-sender members are checked, each against the message author.
     expect(seen).toEqual([
       [ACTOR, BLOCKED],
       [ACTOR, NEUTRAL],
@@ -84,34 +93,38 @@ describe("M11: the report-room fan-out skips blocked pairs", () => {
   })
 
   /**
-   * The dep is REQUIRED, not optional-with-a-fail-open-default. The first cut of M11 made it optional so
-   * offline harnesses could omit it, and the poll fan-out (chat-poll-notifier) promptly did exactly that
-   * — silently reproducing the bypass on the REST poll path with nothing in the type system to catch it.
+   * The dep is REQUIRED, not optional-with-a-fail-open-default. When it was optional so offline
+   * harnesses could omit it, the poll fan-out (chat-poll-notifier) did exactly that, silently
+   * reproducing the bypass on the REST poll path with nothing in the type system to catch it.
    * This is a COMPILE-time assertion: `tsc --noEmit` covers test/, so if the dep ever goes back to
    * optional the @ts-expect-error below becomes an unused-suppression error and typecheck fails.
    */
   it("REQUIRED dep: a construction that omits the blocks seam does not typecheck", () => {
     const withoutBlocks = {
-      notificationService: { createNotifications: () => Promise.resolve() } as never,
+      notificationService: {
+        createNotificationsReportingFailures: () => Promise.resolve({ failed: [] }),
+      } as never,
       reportChatRepo: { listMemberIds: () => Promise.resolve([ACTOR]) },
       isMuted: () => Promise.resolve(false),
       roomKeyFor: (_k: "report", id: string) => `report:${id}`,
     }
-    // @ts-expect-error isBlockedEitherWay is required — omitting it must never compile.
+    // @ts-expect-error isBlockedEitherWay is required: omitting it must never compile.
     expect(makeReportChatNotifier(withoutBlocks)).toBeTypeOf("function")
 
     const withoutBlocksGroup = {
-      notificationService: { createNotifications: () => Promise.resolve() } as never,
+      notificationService: {
+        createNotificationsReportingFailures: () => Promise.resolve({ failed: [] }),
+      } as never,
       groupRepo: { listMemberIds: () => Promise.resolve([ACTOR]) },
       isMuted: () => Promise.resolve(false),
       roomKeyFor: (_k: "group", id: string) => `group:${id}`,
     }
-    // @ts-expect-error isBlockedEitherWay is required — omitting it must never compile.
+    // @ts-expect-error isBlockedEitherWay is required: omitting it must never compile.
     expect(makeGroupChatNotifier(withoutBlocksGroup)).toBeTypeOf("function")
   })
 
   it("an EXPLICIT no-blocks seam (offline harness) still bells everyone but the sender", async () => {
-    // The old fail-open behaviour is still available — it just has to be asked for by name now.
+    // The old fail-open behaviour is still available; it just has to be asked for by name now.
     const { notify, spy } = build(() => Promise.resolve(false))
     await notify(ROOM, message())
     expect(spy.recipients().sort()).toEqual([BLOCKED, NEUTRAL].sort())
@@ -123,7 +136,9 @@ describe("M11 batch seam: blockedIdsFor replaces the per-candidate gate, with th
     const spy = notificationSpy()
     const single = vi.fn(() => Promise.resolve(false))
     const notify = makeReportChatNotifier({
-      notificationService: { createNotifications: spy.createNotifications } as never,
+      notificationService: {
+        createNotificationsReportingFailures: spy.createNotificationsReportingFailures,
+      },
       reportChatRepo: { listMemberIds: () => Promise.resolve([ACTOR, BLOCKED, NEUTRAL]) },
       isMuted: () => Promise.resolve(false),
       roomKeyFor: (_k, id) => `report:${id}`,
@@ -143,7 +158,7 @@ describe("M11 batch seam: blockedIdsFor replaces the per-candidate gate, with th
     expect(spy.recipients()).toEqual([NEUTRAL])
     // One query for both candidates (a 200-member room used to cost 200 round trips here)...
     expect(seen).toEqual([[ACTOR, [BLOCKED, NEUTRAL]]])
-    // ...and the seam is authoritative: the per-candidate gate is not also run.
+    // The seam is authoritative: the per-candidate gate is not also run.
     expect(single).not.toHaveBeenCalled()
   })
 
@@ -158,7 +173,9 @@ describe("M11: the group-room fan-out skips blocked pairs", () => {
   it("drops the blocked member and keeps the rest", async () => {
     const spy = notificationSpy()
     const notify = makeGroupChatNotifier({
-      notificationService: { createNotifications: spy.createNotifications } as never,
+      notificationService: {
+        createNotificationsReportingFailures: spy.createNotificationsReportingFailures,
+      },
       groupRepo: { listMemberIds: () => Promise.resolve([ACTOR, BLOCKED, NEUTRAL]) },
       isMuted: () => Promise.resolve(false),
       roomKeyFor: (_k, id) => `group:${id}`,
@@ -180,7 +197,7 @@ describe("L10: the dm lane's pin power respects blocks", () => {
   })
 
   it("a blocked participant holds NO powers in the thread", async () => {
-    const resolve = makeChatPowersResolver(deps({ isDmBlocked: () => Promise.resolve(true) }) as never)
+    const resolve = makeChatPowersResolver(deps({ isDmBlocked: () => Promise.resolve(true) }))
     expect(await resolve({ roomKind: "dm", roomId: ROOM, userId: ACTOR })).toEqual({
       canPin: false,
       canDeleteOthers: false,
@@ -189,7 +206,7 @@ describe("L10: the dm lane's pin power respects blocks", () => {
   })
 
   it("an unblocked participant keeps canPin (and never canDeleteOthers)", async () => {
-    const resolve = makeChatPowersResolver(deps({ isDmBlocked: () => Promise.resolve(false) }) as never)
+    const resolve = makeChatPowersResolver(deps({ isDmBlocked: () => Promise.resolve(false) }))
     expect(await resolve({ roomKind: "dm", roomId: ROOM, userId: ACTOR })).toEqual({
       canPin: true,
       canDeleteOthers: false,
@@ -200,7 +217,7 @@ describe("L10: the dm lane's pin power respects blocks", () => {
   it("a non-participant is refused before the block lookup is even consulted", async () => {
     const isDmBlocked = vi.fn(() => Promise.resolve(false))
     const resolve = makeChatPowersResolver(
-      deps({ isDmParticipant: () => Promise.resolve(false), isDmBlocked }) as never,
+      deps({ isDmParticipant: () => Promise.resolve(false), isDmBlocked }),
     )
     expect(await resolve({ roomKind: "dm", roomId: ROOM, userId: ACTOR })).toMatchObject({
       canPin: false,

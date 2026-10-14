@@ -29,7 +29,9 @@ export const hostExports = pgTable(
       .notNull()
       .references(() => users.id, { onDelete: "cascade" }),
     kind: text("kind").$type<HostExportKindValue>().notNull(),
-    filters: jsonb("filters").notNull().default(sql`'{}'::jsonb`),
+    filters: jsonb("filters")
+      .notNull()
+      .default(sql`'{}'::jsonb`),
     status: text("status").$type<HostExportStatusValue>().notNull().default("queued"),
     r2Key: text("r2_key"),
     rowCount: integer("row_count"),
@@ -43,11 +45,7 @@ export const hostExports = pgTable(
     expiresAt: timestamp("expires_at", { withTimezone: true }),
   },
   (t) => [
-    index("host_exports_cleanup_requested_idx").on(
-      t.cleanupId,
-      t.requestedAt.desc(),
-      t.id.desc(),
-    ),
+    index("host_exports_cleanup_requested_idx").on(t.cleanupId, t.requestedAt.desc(), t.id.desc()),
     index("host_exports_requester_idx").on(t.requestedBy, t.requestedAt.desc(), t.id.desc()),
     index("host_exports_reap_idx")
       .on(t.expiresAt)

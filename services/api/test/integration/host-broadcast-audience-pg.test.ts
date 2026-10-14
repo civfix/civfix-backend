@@ -1,8 +1,9 @@
-import type { BroadcastKind } from "@civfix/shared"
+import type { BroadcastKind, BroadcastSegment } from "@civfix/shared"
 import { randomUUID } from "node:crypto"
 import { afterAll, beforeAll, describe, expect, it } from "vitest"
 import { withPg, type PgHarness } from "../helpers/pg.js"
 import { seedCleanup } from "../helpers/cleanups.js"
+import { audiencePages } from "../../src/services/host/broadcast-audience.js"
 import { makeDrizzleBroadcastRepository } from "../../src/services/host/broadcast-repository.drizzle.js"
 import type { BroadcastRepository } from "../../src/services/host/broadcast-repository.js"
 
@@ -181,6 +182,52 @@ describe.skipIf(!pg)("broadcast audience resolution (integration)", () => {
       RETURNING id`
     return row!.id
   }
+
+  it("counts the same audience the pages resolve, each side capped", async () => {
+    const extraMembers = [await newUser("Count1"), await newUser("Count2")]
+    for (const userId of extraMembers) await register(userId)
+    await newGuest({ email: "count-guest@example.test" })
+    const [ticketType] = await h.sql<{ id: string }[]>`
+      INSERT INTO cleanup_ticket_types (cleanup_id, name, capacity, max_party_size, waitlist_enabled)
+      VALUES (${cleanupId}, ${`Type ${randomUUID().slice(0, 8)}`}, NULL, 4, true)
+      RETURNING id`
+    await h.sql`
+      UPDATE cleanup_registrations SET ticket_type_id = ${ticketType!.id}
+       WHERE cleanup_id = ${cleanupId} AND user_id = ${extraMembers[0]!}`
+    const [slot] = await h.sql<{ id: string }[]>`
+      INSERT INTO cleanup_slots (cleanup_id, title, sort_order)
+      VALUES (${cleanupId}, ${`Slot ${randomUUID().slice(0, 8)}`}, 0)
+      RETURNING id`
+    await h.sql`
+      INSERT INTO cleanup_slot_claims (cleanup_id, user_id, slot_id)
+      VALUES (${cleanupId}, ${extraMembers[1]!}, ${slot!.id})`
+
+    const segments: BroadcastSegment[] = [
+      { kind: "all_registered" },
+      { kind: "guests_only" },
+      { kind: "checked_in" },
+      { kind: "not_checked_in" },
+      { kind: "waitlist" },
+      { kind: "ticket_types", ids: [ticketType!.id] },
+      { kind: "slots", ids: [slot!.id] },
+    ]
+    for (const segment of segments) {
+      for (const kind of ["host_broadcast", "event_cancelled"] as const) {
+        let members = 0
+        let guests = 0
+        for await (const page of audiencePages(repo, { cleanupId, segment, kind })) {
+          members += page.members.length
+          guests += page.guests.length
+        }
+        for (const cap of [1, 2, 1000]) {
+          const label = `${segment.kind}/${kind}/cap=${cap}`
+          expect(await repo.audienceCount({ cleanupId, segment, kind, cap }), label).toBe(
+            Math.min(members, cap) + Math.min(guests, cap),
+          )
+        }
+      }
+    }
+  })
 
   it("suppresses an email hash and reads it back", async () => {
     const hash = "a".repeat(64)

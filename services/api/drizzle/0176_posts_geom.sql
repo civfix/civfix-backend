@@ -2,8 +2,8 @@
 -- 0176_posts_geom.sql
 -- -----------------------------------------------------------------------------
 -- ISSUE #100 (ranked home feed): the ranker scores a "nearby" term, but `posts`
--- carried no geometry at all. A post's only location was indirect — through
--- posts.report_id -> reports.geom or posts.event_id -> cleanups.geom — so a
+-- carried no geometry at all. A post's only location was indirect (through
+-- posts.report_id -> reports.geom or posts.event_id -> cleanups.geom), so a
 -- proximity pool would need two joins and could not use a KNN order at all.
 --
 -- This denormalises that point onto the post row so the nearby candidate pool
@@ -14,7 +14,7 @@
 -- docs/out-of-band-indexes.md (users, reports, chat_messages, dm_messages,
 -- media_assets, notifications, sessions), so the partial GIST is built inline
 -- here rather than out of band. If `posts` has grown large by the time this
--- deploys, build it with CREATE INDEX CONCURRENTLY first — the IF NOT EXISTS
+-- deploys, build it with CREATE INDEX CONCURRENTLY first; the IF NOT EXISTS
 -- guard below then turns this statement into a no-op.
 --
 -- NO BACKFILL HERE: one UPDATE over the whole table inside this file's single
@@ -28,7 +28,7 @@
 -- PRIVACY: no new class of data. The value is a copy of a coordinate this
 -- platform already publishes at full precision on the linked report or event
 -- DTO. It is never populated from a client-supplied coordinate, carries no
--- EXIF, and is never returned to any client — it only orders the feed. Any
+-- EXIF, and is never returned to any client; it only orders the feed. Any
 -- future location-coarsening decision must cover this column too
 -- (docs/location-coarsening-assessment.md).
 --

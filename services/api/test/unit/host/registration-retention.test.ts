@@ -57,8 +57,9 @@ describe("registration retention lanes", () => {
   })
 
   it("keeps draining a lane while it returns a full batch, up to the page ceiling", async () => {
-    const full = Array.from({ length: REGISTRATION_RETENTION_MAX_PAGES + 5 }, () =>
-      REGISTRATION_RETENTION_BATCH,
+    const full = Array.from(
+      { length: REGISTRATION_RETENTION_MAX_PAGES + 5 },
+      () => REGISTRATION_RETENTION_BATCH,
     )
     const { sql } = stubSql(full)
     const warnings: unknown[] = []

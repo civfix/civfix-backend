@@ -8,7 +8,7 @@
 --
 --   broadcasts             one composed message. `segment` is the contract's
 --                          discriminated union stored as jsonb (one hand-written
---                          query per branch -- see broadcast-audience-sql.ts --
+--                          query per branch -- see broadcast-audience-repository.drizzle.ts --
 --                          so audience resolution never becomes dynamic SQL).
 --                          `body_md` is scrubbed at 180d by the host retention
 --                          sweep; the counts and the row survive as the audit

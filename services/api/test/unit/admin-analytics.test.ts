@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from "vitest"
-import { InMemoryAnalyticsRepository } from "../../src/services/admin/analytics-repository.memory.js"
+import { InMemoryAnalyticsRepository } from "../helpers/admin/analytics-repository.memory.js"
 import { makeDrizzleAnalyticsRepository } from "../../src/services/admin/analytics-repository.drizzle.js"
 import type { Sql } from "../../src/db/client.js"
 import {
@@ -24,7 +24,6 @@ import {
   PINS_BY_WEEK_WEEKS,
   type AnalyticsService,
 } from "../../src/services/admin/analytics-service.js"
-
 
 const NOW = new Date("2026-06-15T12:00:00.000Z")
 

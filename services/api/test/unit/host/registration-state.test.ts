@@ -3,12 +3,12 @@
  *
  * Registration used to close on the stored `done` a host set by hand. Nothing writes that value any
  * more, so the gate is the clock: `cancelled` (the one stored decision) OR the event's end having
- * passed. An UNDERWAY event stays open — walk-ups are the whole point of the check-in desk.
+ * passed. An UNDERWAY event stays open: walk-ups are the whole point of the check-in desk.
  */
 
 import { describe, expect, it } from "vitest"
 import { registrationStateOf } from "../../../src/services/host/registration-dto.js"
-import type { EventRegistrationContext } from "../../../src/services/host/registration-repository.types.js"
+import type { EventRegistrationContext } from "../../../src/services/host/registration-repository.js"
 
 const NOW = new Date("2026-06-01T12:00:00.000Z")
 const HOUR = 3_600_000

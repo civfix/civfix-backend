@@ -2,7 +2,7 @@
  * Tests for the pg TEST HARNESS itself (test/helpers/pg-selection.ts + the pure half of
  * pg-container.ts). These decide whether a vitest run boots the shared PostGIS container and what
  * database each test file clones, so a silent mistake here either taxes every unit-test run with a
- * container nobody uses or — much worse — hands two test files the same database.
+ * container nobody uses or (much worse) hands two test files the same database.
  *
  * The bias under test is deliberate: an ambiguous CLI always resolves to "start the container", because
  * over-starting only costs time while under-starting would let an integration file quietly skip.
@@ -122,17 +122,17 @@ describe("pgSkipDecision", () => {
 
   it("lets CIVFIX_ALLOW_PG_SKIP override both (a CI job that intentionally has no Docker)", () => {
     expect(pgSkipDecision({ CI: "true", CIVFIX_ALLOW_PG_SKIP: "1" }).allowed).toBe(true)
-    expect(
-      pgSkipDecision({ CIVFIX_REQUIRE_PG: "1", CIVFIX_ALLOW_PG_SKIP: "true" }).allowed,
-    ).toBe(true)
+    expect(pgSkipDecision({ CIVFIX_REQUIRE_PG: "1", CIVFIX_ALLOW_PG_SKIP: "true" }).allowed).toBe(
+      true,
+    )
   })
 })
 
 describe("assertPgSkipAllowed", () => {
   it("throws where a skip is forbidden, quoting the underlying Docker failure", () => {
-    expect(() => assertPgSkipAllowed("connect ENOENT /var/run/docker.sock", { CI: "true" })).toThrow(
-      /REQUIRED in this environment \(CI=true\)[\s\S]*docker\.sock/,
-    )
+    expect(() =>
+      assertPgSkipAllowed("connect ENOENT /var/run/docker.sock", { CI: "true" }),
+    ).toThrow(/REQUIRED in this environment \(CI=true\)[\s\S]*docker\.sock/)
   })
 
   it("names the escape hatch in the message, so the failure is actionable", () => {

@@ -7,8 +7,8 @@ import {
   FEED_RECENT_POOL,
   makeDrizzlePostRepository,
   nearbyRadiusDegrees,
-  type FeedCandidateArgs,
 } from "../../src/services/post-repository.drizzle.js"
+import type { FeedCandidateArgs } from "../../src/services/post-repository.js"
 
 const VIEWER = "11111111-1111-1111-1111-111111111111"
 

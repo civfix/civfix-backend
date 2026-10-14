@@ -1,23 +1,3 @@
-export const BROADCAST_PLAN_JOB = "broadcast.plan"
-export const BROADCAST_CHUNK_JOB = "broadcast.chunk"
-export const BROADCAST_SCHEDULE_SWEEP_JOB = "broadcast.schedule.sweep"
-export const EVENT_REMINDERS_SWEEP_JOB = "event.reminders.sweep"
-export const EVENT_METRICS_ROLLUP_JOB = "event.metrics.rollup"
-export const HOST_EXPORT_JOB = "host.export"
-export const HOST_EXPORT_REAP_JOB = "host.export.reap"
-export const HOST_RETENTION_SWEEP_JOB = "host.retention.sweep"
-
-export const COMMS_QUEUE_NAMES = [
-  BROADCAST_PLAN_JOB,
-  BROADCAST_CHUNK_JOB,
-  BROADCAST_SCHEDULE_SWEEP_JOB,
-  EVENT_REMINDERS_SWEEP_JOB,
-  EVENT_METRICS_ROLLUP_JOB,
-  HOST_EXPORT_JOB,
-  HOST_EXPORT_REAP_JOB,
-  HOST_RETENTION_SWEEP_JOB,
-] as const
-
 export interface BroadcastPlanJob {
   broadcastId: string
 }

@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest"
 import { FakeInboundMail, FakeJobs, FakeStorage } from "@civfix/shared/fakes"
-import { InMemoryMailRepository } from "../../src/services/admin/mail-repository.memory.js"
-import { InMemoryInboundRepository } from "../../src/services/admin/inbound-repository.memory.js"
+import { InMemoryMailRepository } from "../helpers/admin/mail-repository.memory.js"
+import { InMemoryInboundRepository } from "../helpers/admin/inbound-repository.memory.js"
 import {
   processInboundObject,
   INBOUND_PENDING_PREFIX,
@@ -9,7 +9,6 @@ import {
 } from "../../src/services/admin/inbound-processor.js"
 import type { Container } from "../../src/di.js"
 import { makeFakeSql, type FakeSqlControl, type SqlHandler } from "../helpers/fake-sql.js"
-
 
 const TOKEN = "0123456789abcdef01234567"
 

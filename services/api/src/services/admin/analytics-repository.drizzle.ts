@@ -1,4 +1,3 @@
-
 import type { Sql } from "../../db/client.js"
 import type {
   AnalyticsRepository,
@@ -14,7 +13,7 @@ import type {
   TopContributorRow,
   TopJurisdictionRow,
   WeekBucket,
-} from "./analytics-types.js"
+} from "./analytics-repository.js"
 import type { ReportCategory } from "@civfix/shared"
 import { jurisdictionHasAnyContactExpr } from "./sql-fragments.js"
 
@@ -31,19 +30,70 @@ interface AnalyticsCacheEntry {
   value: Promise<unknown>
 }
 
-const analyticsCache = new Map<string, AnalyticsCacheEntry>()
+// Module-scoped because the admin routes rebuild the repository per request; keyed by the sql handle so
+// two repositories over different databases in one process never read each other's aggregates.
+const analyticsCaches = new WeakMap<Sql, Map<string, AnalyticsCacheEntry>>()
 
-function withCache<T>(ttlMs: number, key: string, run: () => Promise<T>): Promise<T> {
-  if (ttlMs <= 0) return run()
+function cacheFor(sql: Sql): Map<string, AnalyticsCacheEntry> {
+  let cache = analyticsCaches.get(sql)
+  if (cache === undefined) {
+    cache = new Map()
+    analyticsCaches.set(sql, cache)
+  }
+  return cache
+}
+
+function withCacheIn<T>(
+  analyticsCache: Map<string, AnalyticsCacheEntry>,
+  ttlMs: number,
+  key: string,
+  run: () => Promise<T>,
+): Promise<T> {
   const hit = analyticsCache.get(key)
   if (hit !== undefined && Date.now() - hit.at <= ttlMs) return hit.value as Promise<T>
   const value = run()
   analyticsCache.set(key, { at: Date.now(), value })
+  // The caller awaits `value` and sees the rejection itself; this handler only evicts the failed entry so
+  // the next call retries instead of serving a cached failure for the whole TTL.
   void value.catch(() => {
     const cur = analyticsCache.get(key)
     if (cur !== undefined && cur.value === value) analyticsCache.delete(key)
   })
   return value
+}
+
+interface RetentionCell {
+  y: string
+  m: string
+  size: string
+  period: string
+  active: string
+}
+
+function toRetentionRows(cells: readonly RetentionCell[], cohorts: number): RetentionRow[] {
+  const byCohort = new Map<string, RetentionRow>()
+  for (const cell of cells) {
+    const year = num(cell.y)
+    const month = num(cell.m)
+    const key = `${year}-${month}`
+    let cohort = byCohort.get(key)
+    if (!cohort) {
+      cohort = { year, month, size: num(cell.size), activeByPeriod: [] }
+      byCohort.set(key, cohort)
+    }
+    const period = num(cell.period)
+    if (period >= 0 && period < cohorts) {
+      cohort.activeByPeriod[period] = num(cell.active)
+    }
+  }
+  const result: RetentionRow[] = []
+  for (const cohort of byCohort.values()) {
+    const dense: number[] = []
+    for (let i = 0; i < cohorts; i++) dense.push(cohort.activeByPeriod[i] ?? 0)
+    result.push({ ...cohort, activeByPeriod: dense })
+  }
+  result.sort((a, b) => b.year * 12 + b.month - (a.year * 12 + a.month))
+  return result
 }
 
 export function makeDrizzleAnalyticsRepository(
@@ -78,6 +128,7 @@ export function makeDrizzleAnalyticsRepository(
             )::text AS prev_resolved
           FROM reports
           WHERE deleted_at IS NULL AND visibility = 'public'
+            AND created_at >= date_trunc('month', now()) - interval '1 month'
         `,
         sql<
           {
@@ -105,6 +156,9 @@ export function makeDrizzleAnalyticsRepository(
                 AND scheduled_at < date_trunc('month', now())
             )::text AS prev_events
           FROM cleanups
+          WHERE created_at >= date_trunc('month', now()) - interval '1 month'
+             OR (scheduled_at >= date_trunc('month', now()) - interval '1 month'
+                 AND scheduled_at < date_trunc('month', now()) + interval '1 month')
         `,
         sql<{ cur_new: string; prev_new: string }[]>`
           SELECT
@@ -117,6 +171,7 @@ export function makeDrizzleAnalyticsRepository(
             )::text AS prev_new
           FROM users
           WHERE deleted_at IS NULL
+            AND created_at >= date_trunc('month', now()) - interval '1 month'
         `,
       ])
       const r = reportRows[0]
@@ -304,7 +359,7 @@ export function makeDrizzleAnalyticsRepository(
         WITH report_counts AS (
           SELECT reporter_user_id AS user_id, COUNT(*)::int AS n
           FROM reports
-          WHERE deleted_at IS NULL AND reporter_user_id IS NOT NULL
+          WHERE deleted_at IS NULL AND visibility = 'public' AND reporter_user_id IS NOT NULL
           GROUP BY reporter_user_id
         ),
         cleanup_counts AS (
@@ -329,7 +384,10 @@ export function makeDrizzleAnalyticsRepository(
           ) t
           LEFT JOIN report_counts rc ON rc.user_id = t.user_id
           LEFT JOIN cleanup_counts cc ON cc.user_id = t.user_id
-          WHERE t.total > 0
+          -- Filtered before the LIMIT so a deleted or banned account never takes a leaderboard slot.
+          JOIN users tu ON tu.id = t.user_id AND tu.deleted_at IS NULL
+          LEFT JOIN user_moderation tm ON tm.user_id = t.user_id
+          WHERE t.total > 0 AND COALESCE(tm.account_status, 'active') <> 'banned'
           ORDER BY t.total DESC, t.user_id ASC
           LIMIT ${limit}
         ),
@@ -393,9 +451,7 @@ export function makeDrizzleAnalyticsRepository(
     },
 
     async retention(cohorts: number): Promise<RetentionRow[]> {
-      const rows = await sql<
-        { y: string; m: string; size: string; period: string; active: string }[]
-      >`
+      const rows = await sql<RetentionCell[]>`
         WITH cohort_users AS (
           SELECT
             u.id AS user_id,
@@ -443,49 +499,30 @@ export function makeDrizzleAnalyticsRepository(
         LEFT JOIN active_counts ac ON ac.cohort_month = cs.cohort_month
         ORDER BY cs.cohort_month, period
       `
-      const byCohort = new Map<string, RetentionRow>()
-      for (const row of rows) {
-        const year = num(row.y)
-        const month = num(row.m)
-        const key = `${year}-${month}`
-        let cohort = byCohort.get(key)
-        if (!cohort) {
-          cohort = { year, month, size: num(row.size), activeByPeriod: [] }
-          byCohort.set(key, cohort)
-        }
-        const period = num(row.period)
-        if (period >= 0 && period < cohorts) {
-          cohort.activeByPeriod[period] = num(row.active)
-        }
-      }
-      const result: RetentionRow[] = []
-      for (const cohort of byCohort.values()) {
-        const dense: number[] = []
-        for (let i = 0; i < cohorts; i++) dense.push(cohort.activeByPeriod[i] ?? 0)
-        result.push({ ...cohort, activeByPeriod: dense })
-      }
-      result.sort((a, b) => b.year * 12 + b.month - (a.year * 12 + a.month))
-      return result
+      return toRetentionRows(rows, cohorts)
     },
   }
 
   const ttl = opts?.cacheTtlMs ?? 0
   if (ttl <= 0) return base
 
+  const cache = cacheFor(sql)
+  const withCache = <T>(key: string, run: () => Promise<T>): Promise<T> =>
+    withCacheIn(cache, ttl, key, run)
   return {
-    kpis: () => withCache(ttl, "kpis", () => base.kpis()),
-    pinsByWeek: (weeks) => withCache(ttl, `pinsByWeek:${weeks}`, () => base.pinsByWeek(weeks)),
-    byCategory: () => withCache(ttl, "byCategory", () => base.byCategory()),
-    funnel: () => withCache(ttl, "funnel", () => base.funnel()),
-    coverage: () => withCache(ttl, "coverage", () => base.coverage()),
+    kpis: () => withCache("kpis", () => base.kpis()),
+    pinsByWeek: (weeks) => withCache(`pinsByWeek:${weeks}`, () => base.pinsByWeek(weeks)),
+    byCategory: () => withCache("byCategory", () => base.byCategory()),
+    funnel: () => withCache("funnel", () => base.funnel()),
+    coverage: () => withCache("coverage", () => base.coverage()),
     resolutionByCategory: () =>
-      withCache(ttl, "resolutionByCategory", () => base.resolutionByCategory()),
-    events: (months) => withCache(ttl, `events:${months}`, () => base.events(months)),
+      withCache("resolutionByCategory", () => base.resolutionByCategory()),
+    events: (months) => withCache(`events:${months}`, () => base.events(months)),
     topJurisdictions: (limit) =>
-      withCache(ttl, `topJurisdictions:${limit}`, () => base.topJurisdictions(limit)),
+      withCache(`topJurisdictions:${limit}`, () => base.topJurisdictions(limit)),
     topContributors: (limit) =>
-      withCache(ttl, `topContributors:${limit}`, () => base.topContributors(limit)),
-    heatmap: (limit) => withCache(ttl, `heatmap:${limit}`, () => base.heatmap(limit)),
-    retention: (cohorts) => withCache(ttl, `retention:${cohorts}`, () => base.retention(cohorts)),
+      withCache(`topContributors:${limit}`, () => base.topContributors(limit)),
+    heatmap: (limit) => withCache(`heatmap:${limit}`, () => base.heatmap(limit)),
+    retention: (cohorts) => withCache(`retention:${cohorts}`, () => base.retention(cohorts)),
   }
 }

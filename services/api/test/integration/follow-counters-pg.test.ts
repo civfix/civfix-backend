@@ -1,9 +1,9 @@
 /**
- * drizzle/0059_users_follow_counters.sql — the BACKFILL branch, against a real database.
+ * drizzle/0059_users_follow_counters.sql: the BACKFILL branch, against a real database.
  *
  * The migration adds users.follower_count / following_count and backfills them from follows_people. Every
  * other test in the suite gets its database from the template, where 0059 was applied to an EMPTY
- * follows_people — so the backfill UPDATE rewrote zero rows and the only branch that matters in
+ * follows_people, so the backfill UPDATE rewrote zero rows and the only branch that matters in
  * production (a live database full of existing edges -> correct counters) had no coverage at all. The
  * write path (addFollow/removeFollow moving the counters) is covered in social-notifications-pg.test.ts;
  * this file covers the one-time convergence, the re-apply guard, and the documented tombstone semantics.
@@ -62,7 +62,7 @@ describe.skipIf(!pg)("0059 follow-counter backfill (integration)", () => {
     return u!.id
   }
 
-  /** A raw edge, with NO counter maintenance — what a psql session or a bulk import leaves behind. */
+  /** A raw edge, with NO counter maintenance: what a psql session or a bulk import leaves behind. */
   async function rawEdge(followerId: string, followeeId: string): Promise<void> {
     await h.sql`
       INSERT INTO follows_people (follower_id, followee_id) VALUES (${followerId}, ${followeeId})
@@ -83,7 +83,7 @@ describe.skipIf(!pg)("0059 follow-counter backfill (integration)", () => {
   }
 
   /**
-   * Every user whose stored counters disagree with a live count over follows_people — the drift detector
+   * Every user whose stored counters disagree with a live count over follows_people: the drift detector
    * from the operator runbook. Empty is the invariant the backfill exists to establish.
    */
   async function drift(): Promise<Array<{ id: string }>> {
@@ -112,7 +112,7 @@ describe.skipIf(!pg)("0059 follow-counter backfill (integration)", () => {
 
     // EXACTLY the three users with edges: the WHERE guard skips `loner`, whose 0/0 already agrees with
     // the aggregate. That is what keeps a re-apply (and this apply, on a mostly-followless users table)
-    // off every row — see the guard's rationale in the migration.
+    // off every row; see the guard's rationale in the migration.
     expect(await runBackfill()).toBe(3)
 
     expect(await counters(bob)).toEqual({ followers: 2, following: 1 })
@@ -130,7 +130,7 @@ describe.skipIf(!pg)("0059 follow-counter backfill (integration)", () => {
 
     // First run fixes this file's drift (its own two rows, plus anything an earlier test left).
     expect(await runBackfill()).toBeGreaterThanOrEqual(2)
-    // Second run must touch nothing — this is what keeps a re-apply off the whole users table.
+    // Second run must touch nothing; this is what keeps a re-apply off the whole users table.
     expect(await runBackfill()).toBe(0)
     expect(await counters(b)).toEqual({ followers: 1, following: 0 })
   })
@@ -175,7 +175,7 @@ describe.skipIf(!pg)("0059 follow-counter backfill (integration)", () => {
 
     expect(await counters(a)).toEqual({ followers: 0, following: 1 })
     expect(await counters(b)).toEqual({ followers: 1, following: 0 })
-    // The canonical backfill finds nothing to fix — the property a raw INSERT fixture does not have.
+    // The canonical backfill finds nothing to fix: the property a raw INSERT fixture does not have.
     expect(await runBackfill()).toBe(0)
 
     // Re-seeding the same edge is a no-op, not a double count (mirrors addFollow's ON CONFLICT gate).

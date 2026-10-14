@@ -1,5 +1,5 @@
-import type postgres from "postgres"
-import type { Queryable } from "../db/client.js"
+import type { Queryable, SqlFragment } from "../db/client.js"
+import { keysetInstant } from "../db/cursor-helpers.js"
 import type {
   AddressPrecision,
   ReportAddressSource,
@@ -13,22 +13,7 @@ import type {
   ReportMediaView,
   ReportRecord,
   ReportTimelineView,
-} from "./report-service.types.js"
-
-type SqlFragment = postgres.Fragment
-
-export async function reportOwnedBy(
-  sql: Queryable,
-  reportId: string,
-  userId: string,
-): Promise<boolean> {
-  const rows = await sql<{ reporter_user_id: string | null }[]>`
-    SELECT reporter_user_id FROM reports
-    WHERE id = ${reportId} AND deleted_at IS NULL
-    LIMIT 1
-  `
-  return rows[0]?.reporter_user_id === userId
-}
+} from "./report-repository.js"
 
 export interface ReportRowSelect {
   id: string
@@ -160,6 +145,7 @@ export interface PublicPinRow {
   thumb_key: string | null
   r2_key: string | null
   created_at: Date
+  cursor_at: string | null
 }
 
 export function toMapPoint(r: PublicPinRow): ReportMapPoint {
@@ -199,7 +185,8 @@ export async function selectPublicPins(
       r.reference_code,
       m.thumb_key,
       m.r2_key,
-      r.created_at
+      r.created_at,
+      ${keysetInstant(sql, sql`r.created_at`)} AS cursor_at
     FROM reports r
     ${firstReadyStillLateral(sql)}
     WHERE ${publicReportFilter(sql)}

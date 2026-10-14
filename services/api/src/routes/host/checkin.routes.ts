@@ -45,9 +45,7 @@ export function registerHostCheckinRoutes(
       const userId = requireAuth(request)
       const { id } = parse(CleanupIdParamsSchema, request.params)
       const query = parse(GetMyEventTicketRequestSchema, { id })
-      const payload: GetMyEventTicketResponse = await ctx
-        .services()
-        .checkin.myTicket(query, userId)
+      const payload: GetMyEventTicketResponse = await ctx.services().checkin.myTicket(query, userId)
       reply.status(200).send(payload)
     },
   )
@@ -130,9 +128,7 @@ export function registerHostCheckinRoutes(
       const { id } = parse(CleanupIdParamsSchema, request.params)
       await ctx.guards().requireCapability(id, userId, "check_in")
       const query = parse(GetEventCheckinCountersRequestSchema, { id })
-      const payload: GetEventCheckinCountersResponse = await ctx
-        .services()
-        .checkin.counters(query)
+      const payload: GetEventCheckinCountersResponse = await ctx.services().checkin.counters(query)
       reply.status(200).send(payload)
     },
   )

@@ -1,36 +1,41 @@
 /**
- * Signup-seat backfill (DECISIONS §44). A sign-up on an event with NO ticket types now writes a free
- * `cleanup_registrations` row plus one `cleanup_registration_seats` row, so the host roster, the
- * check-in scanner, the counters and the attendee's own ticket all work on slot-based events. Rows
- * that predate that change have a `cleanup_members` row and nothing else — this CLI mints the missing
- * registration + seat for them.
+ * A sign-up on an event with no ticket types writes a free registration plus one seat (DECISIONS §44);
+ * members who joined before that have neither, and this CLI mints them.
  *
- * It is a Node one-shot and NOT a SQL migration because `ticket_token_hash` is
- * sha256(base32(hmac(TICKET_TOKEN_SECRET, seat_id))) — the HMAC is not computable in Postgres without
- * putting the ticket secret in the database.
+ * A Node one-shot rather than a SQL migration because `ticket_token_hash` is an HMAC over the ticket
+ * secret, which is not computable in Postgres without putting the secret in the database.
  *
  *   DATABASE_URL=postgres://... pnpm db:backfill:signup-seats              # rehearse (rollback), report
  *   DATABASE_URL=postgres://... pnpm db:backfill:signup-seats -- --yes     # commit
  *   DATABASE_URL=postgres://... pnpm db:backfill:signup-seats -- --yes --batch 200
  *
- * Scope: every `cleanup_members` row of an event that is not cancelled and has not ended
- * (`ends_at > now()`), that has zero ticket types, where the member holds no active registration —
- * organizers included, because the live `claimSlot` path mints a seat for an organizer who claims
- * their own shift and 0169 gave every existing member a slot claim. Safe to re-run: the insert
- * carries the same `ON CONFLICT (cleanup_id, user_id) WHERE status = 'registered'` arbiter the
- * runtime path uses, and the candidate query already excludes anyone who has a registration.
+ * Organizers are included, because the live claimSlot path mints a seat for an organizer who claims
+ * their own shift and 0169 gave every existing member a slot claim. Safe to re-run: the insert carries
+ * the same ON CONFLICT arbiter the runtime path uses.
  */
 
 import { randomUUID } from "node:crypto"
-import type postgres from "postgres"
-import type { Sql } from "./client.js"
-import { runDbCli, runIfMain } from "./cli.js"
+import type { Sql, SqlFragment } from "./client.js"
+import { EXIT_USAGE, runDbCli, runIfMain } from "./cli.js"
 import { loadEnv } from "../env.js"
 import { makeTicketTokenSigner } from "../services/host/ticket-token.js"
 
-type SqlFragment = postgres.Fragment
+const SIGNUP_SEAT_BACKFILL_BATCH = 500
 
-export const SIGNUP_SEAT_BACKFILL_BATCH = 500
+export const SIGNUP_SEAT_BACKFILL_MAX_BATCH = 5000
+
+const BATCH_FLAG = "--batch"
+const DIGITS_ONLY_RE = /^\d+$/
+
+// undefined = flag absent (use the default); null = a value that is not a usable LIMIT.
+export function parseSignupSeatBatchArg(argv: readonly string[]): number | undefined | null {
+  const at = argv.indexOf(BATCH_FLAG)
+  if (at < 0) return undefined
+  const raw = argv[at + 1]
+  if (raw === undefined || !DIGITS_ONLY_RE.test(raw)) return null
+  const size = Number(raw)
+  return size >= 1 && size <= SIGNUP_SEAT_BACKFILL_MAX_BATCH ? size : null
+}
 
 class RehearsalRollback extends Error {
   constructor(readonly written: number) {
@@ -67,13 +72,48 @@ interface SeatInsertRow {
   created_at: Date
 }
 
-export interface SignupSeatBackfillResult {
+interface SignupSeatBackfillResult {
   scanned: number
   created: number
   batches: number
 }
 
-export async function backfillSignupSeats(
+/** One free registration plus its single seat per candidate, mirroring the live sign-up write. */
+function signupRowsFor(
+  page: readonly CandidateRow[],
+  hashFor: (seatId: string) => string,
+): { registrations: RegistrationInsertRow[]; seatOf: Map<string, SeatInsertRow> } {
+  const registrations: RegistrationInsertRow[] = page.map((row) => ({
+    id: randomUUID(),
+    cleanup_id: row.cleanup_id,
+    ticket_type_id: null,
+    user_id: row.user_id,
+    guest_id: null,
+    party_size: 1,
+    status: "registered",
+    source: "self",
+    registered_at: row.joined_at,
+  }))
+  const seatOf = new Map<string, SeatInsertRow>(
+    registrations.map((registration) => {
+      const seatId = randomUUID()
+      const seat: SeatInsertRow = {
+        id: seatId,
+        cleanup_id: registration.cleanup_id,
+        registration_id: registration.id,
+        seat_index: 0,
+        attendee_name: null,
+        ticket_token_hash: hashFor(seatId),
+        status: "active",
+        created_at: registration.registered_at,
+      }
+      return [registration.id, seat]
+    }),
+  )
+  return { registrations, seatOf }
+}
+
+async function backfillSignupSeats(
   sql: Sql,
   opts: {
     hashFor: (seatId: string) => string
@@ -115,33 +155,7 @@ export async function backfillSignupSeats(
     `
     if (page.length === 0) break
 
-    const registrations: RegistrationInsertRow[] = page.map((row) => ({
-      id: randomUUID(),
-      cleanup_id: row.cleanup_id,
-      ticket_type_id: null,
-      user_id: row.user_id,
-      guest_id: null,
-      party_size: 1,
-      status: "registered",
-      source: "self",
-      registered_at: row.joined_at,
-    }))
-    const seatOf = new Map<string, SeatInsertRow>(
-      registrations.map((registration) => {
-        const seatId = randomUUID()
-        const seat: SeatInsertRow = {
-          id: seatId,
-          cleanup_id: registration.cleanup_id,
-          registration_id: registration.id,
-          seat_index: 0,
-          attendee_name: null,
-          ticket_token_hash: opts.hashFor(seatId),
-          status: "active",
-          created_at: registration.registered_at,
-        }
-        return [registration.id, seat]
-      }),
-    )
+    const { registrations, seatOf } = signupRowsFor(page, opts.hashFor)
 
     const written = await sql
       .begin(async (tx) => {
@@ -201,11 +215,15 @@ export async function backfillSignupSeats(
   return { scanned, created, batches }
 }
 
-export async function main(): Promise<void> {
+async function main(): Promise<void> {
   const commit = process.argv.includes("--yes")
-  const batchIndex = process.argv.indexOf("--batch")
-  const batchSize =
-    batchIndex >= 0 ? Number(process.argv[batchIndex + 1] ?? SIGNUP_SEAT_BACKFILL_BATCH) : undefined
+  const batchSize = parseSignupSeatBatchArg(process.argv)
+  if (batchSize === null) {
+    console.error(
+      `backfill-signup-seats: ${BATCH_FLAG} takes an integer from 1 to ${SIGNUP_SEAT_BACKFILL_MAX_BATCH}`,
+    )
+    process.exit(EXIT_USAGE)
+  }
   const signer = makeTicketTokenSigner(loadEnv().TICKET_TOKEN_SECRET.trim())
 
   console.log(
@@ -220,7 +238,7 @@ export async function main(): Promise<void> {
       ...(batchSize !== undefined ? { batchSize } : {}),
     })
     console.log(
-      `backfill-signup-seats: done — scanned=${result.scanned} seats=${result.created} batches=${result.batches}` +
+      `backfill-signup-seats: done: scanned=${result.scanned} seats=${result.created} batches=${result.batches}` +
         (commit ? "" : " (rolled back; re-run with --yes to commit)"),
     )
   })

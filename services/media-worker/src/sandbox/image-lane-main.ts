@@ -1,9 +1,8 @@
-
 import { readFile, writeFile } from "node:fs/promises"
 import { join } from "node:path"
 import type { WorkerLimits } from "../config.js"
 import { processImage } from "./image.js"
-import { perceptualHash } from "./phash.js"
+import { bestEffortPerceptualHash } from "./phash.js"
 
 export const RUN_FLAG = "--civfix-image-lane"
 
@@ -32,7 +31,7 @@ export interface ImageLaneFailure {
 
 export type ImageLaneResponse = ImageLaneSuccess | ImageLaneFailure
 
-export function requestArg(argv: string[]): string | undefined {
+function requestArg(argv: string[]): string | undefined {
   const at = argv.indexOf(RUN_FLAG)
   return at === -1 ? argv[2] : argv[at + 1]
 }
@@ -40,7 +39,8 @@ export function requestArg(argv: string[]): string | undefined {
 export function parseRequest(raw: string | undefined): ImageLaneRequest {
   if (raw === undefined) throw new Error("image-lane: missing request argument")
   const parsed: unknown = JSON.parse(raw)
-  if (typeof parsed !== "object" || parsed === null) throw new Error("image-lane: request is not an object")
+  if (typeof parsed !== "object" || parsed === null)
+    throw new Error("image-lane: request is not an object")
   const req = parsed as Record<string, unknown>
   if (typeof req.inputPath !== "string" || typeof req.outDir !== "string") {
     throw new Error("image-lane: request is missing inputPath/outDir")
@@ -64,12 +64,7 @@ export async function runImageLane(req: ImageLaneRequest): Promise<ImageLaneResp
     return { ok: false, error: err instanceof Error ? err.message : String(err) }
   }
 
-  let phash: string | null = null
-  try {
-    phash = await perceptualHash(bytes, req.limits)
-  } catch {
-    phash = null
-  }
+  const phash = await bestEffortPerceptualHash(bytes, req.limits)
 
   await writeFile(join(req.outDir, STRIPPED_FILE), processed.strippedBytes)
   await writeFile(join(req.outDir, THUMB_FILE), processed.thumbnailBytes)

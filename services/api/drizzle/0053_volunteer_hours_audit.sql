@@ -7,7 +7,7 @@
 -- logEventHours upserts on the (cleanup_id, user_id) WHERE source='event' partial
 -- unique index with `DO UPDATE SET hours = EXCLUDED.hours`, so the previous value
 -- was destroyed on every re-log. The only trace of who did it was
--- volunteer_hours.logged_by_user_id, which is likewise overwritten — meaning a
+-- volunteer_hours.logged_by_user_id, which is likewise overwritten, meaning a
 -- host could inflate a credit, and later quietly restore it, leaving the row
 -- indistinguishable from one that had never been touched. Hours feed the public
 -- jurisdiction leaderboard, so this is a falsifiable public record.
@@ -22,12 +22,12 @@
 -- unique index the upsert itself conflicts on.
 --
 -- CANONICAL DDL: this hand-authored SQL is the source of truth. The Drizzle mirror
--- lives alongside the other hours tables in src/db/schema/volunteer-hours.ts.
+-- lives alongside the other hours tables in src/db/schema/volunteer_hours.ts.
 --
 -- Conventions (match the rest of the suite): timestamptz, additive
 -- IF NOT EXISTS so a partial or repeat apply is safe; the migrate runner
 -- (src/db/migrate.ts) records applied files and wraps each file in one
--- transaction. Forward-only — there is no down migration in this suite.
+-- transaction. Forward-only: there is no down migration in this suite.
 --
 -- Ordering rules: requires 0001_core.sql (users, cleanups) and
 -- 0035_volunteer_hours.sql (volunteer_hours + its partial unique indexes).
@@ -43,7 +43,7 @@ CREATE TABLE IF NOT EXISTS volunteer_hours_audit (
   -- worthless.
   actor_user_id     uuid          NOT NULL REFERENCES users (id),
   -- The credit BEFORE this upsert; NULL means there was no prior credit (first
-  -- time this attendee was logged for this event) — distinct from a stored 0.
+  -- time this attendee was logged for this event), distinct from a stored 0.
   previous_hours    numeric(6, 2),
   -- The credit AFTER this upsert.
   new_hours         numeric(6, 2) NOT NULL,

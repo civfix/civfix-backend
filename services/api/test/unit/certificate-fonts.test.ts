@@ -1,10 +1,10 @@
 /**
- * The vendored-font guard (DP §8.6): the same promise `scripts/copy-contract-fonts.mjs` gives the web
- * app, ported to the backend's `assets/fonts/`.
+ * The vendored-font guard: the same promise `scripts/copy-contract-fonts.mjs` gives the web app, ported
+ * to the backend's `assets/fonts/`.
  *
  * A font that silently changes changes the printed document, and a font that silently DISAPPEARS takes
- * the certificate endpoint down in production only — the resolver probes at render time, not at boot. So
- * the manifest is re-hashed here, on every run, with no Docker and no network.
+ * the certificate endpoint down in production only, because the resolver probes at render time, not at
+ * boot. So the manifest is re-hashed here on every run.
  */
 
 import { createHash } from "node:crypto"
@@ -63,9 +63,9 @@ describe("certificate fonts", () => {
     }
   })
 
-  it("reads and memoizes font buffers", () => {
-    const first = fontBuffer(FONT.body)
+  it("reads and memoizes font buffers", async () => {
+    const first = await fontBuffer(FONT.body)
     expect(first.length).toBeGreaterThan(1024)
-    expect(fontBuffer(FONT.body)).toBe(first)
+    expect(await fontBuffer(FONT.body)).toBe(first)
   })
 })

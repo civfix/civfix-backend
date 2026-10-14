@@ -1,5 +1,5 @@
 /**
- * P5 Task 5.2 integration test (Docker-gated): CHANNEL read-only enforcement + PUBLIC self-serve join,
+ * Integration test (Docker-gated): CHANNEL read-only enforcement + PUBLIC self-serve join,
  * against a live PostGIS container (via withPg).
  *
  *   Channels are chat_groups with kind='channel': every member reads, but only owner/admin post. A
@@ -7,7 +7,7 @@
  *   authed user (self-serve join + WS read-only presence join + pre-join history reads); 'private'
  *   stays member-only.
  *
- *   HTTP (buildServer + chatOverrides on real repos):
+ *   HTTP (makeServer + chatOverrides on real repos):
  *     - POST /groups/:id/join: public 200 (myRole 'member', memberCount bumps) + idempotent re-join
  *       (no dupe row, count stable); private 403 not_public;
  *     - GET /groups/:id/messages: a non-member reads a PUBLIC channel's history 200, a PRIVATE one 403;
@@ -32,20 +32,16 @@ import { randomUUID } from "node:crypto"
 import type { FastifyInstance } from "fastify"
 import { FakeMailer } from "@civfix/shared/fakes"
 import { withPg, type PgHarness, testHandle } from "../helpers/pg.js"
-import { buildServer } from "../../src/server.js"
-import { buildContainer, type Container } from "../../src/di.js"
+import { makeServer } from "../../src/server.js"
+import { makeContainer, type Container } from "../../src/di.js"
 import { loadEnv } from "../../src/env.js"
 import { InMemoryCacheClient } from "../../src/auth/cache.js"
 import { makeInMemoryStores } from "../../src/auth/stores.js"
-import { buildAuthServices, type AuthServices } from "../../src/auth/auth-services.js"
+import { makeAuthServices, type AuthServices } from "../../src/auth/auth-services.js"
 import { StubJwksVerifier } from "../helpers/auth.js"
 import { InMemoryThreadsRepository, MockConnection } from "../helpers/chat.js"
 import type { ChatGatewayOverrides } from "../../src/routes/chat.routes.js"
-import {
-  handleClientFrame,
-  type GatewayDeps,
-  type GatewaySession,
-} from "../../src/ws/gateway.js"
+import { handleClientFrame, type GatewayDeps, type GatewaySession } from "../../src/ws/gateway.js"
 import { WsChatService } from "../../src/adapters/chat-service.ws.js"
 import { InMemoryChatPubSub } from "../../src/adapters/chat-pubsub.js"
 import { InMemoryChatPresence } from "../../src/adapters/chat-presence.js"
@@ -129,7 +125,7 @@ describe.skipIf(!pg)("chat channels: read-only enforcement + public join (integr
 
     beforeAll(async () => {
       const env = loadEnv({ NODE_ENV: "test" })
-      authServices = buildAuthServices({
+      authServices = makeAuthServices({
         stores: makeInMemoryStores(),
         cache: new InMemoryCacheClient(() => Date.now()),
         mailer: new FakeMailer(),
@@ -146,8 +142,8 @@ describe.skipIf(!pg)("chat channels: read-only enforcement + public join (integr
         reportChat: makeReportChatRepository(h.sql),
         groups: makeChatGroupRepository(h.sql),
       }
-      container = buildContainer(env)
-      app = await buildServer({ env, container, authServices, chatOverrides: overrides })
+      container = makeContainer(env)
+      app = await makeServer({ env, container, authServices, chatOverrides: overrides })
     })
 
     afterAll(async () => {
@@ -158,12 +154,7 @@ describe.skipIf(!pg)("chat channels: read-only enforcement + public join (integr
 
     // Per-request remoteAddress keeps the IP-keyed rate limiters (join 20/min etc.) out of the way.
     let injectSeq = 0
-    function inject(
-      tok: string,
-      method: "GET" | "POST" | "PATCH",
-      url: string,
-      payload?: unknown,
-    ) {
+    function inject(tok: string, method: "GET" | "POST" | "PATCH", url: string, payload?: unknown) {
       injectSeq += 1
       return app.inject({
         method,
@@ -229,7 +220,7 @@ describe.skipIf(!pg)("chat channels: read-only enforcement + public join (integr
         members: [{ id: memberId, role: "member" }],
       })
       // A read-only member can't author, so target the OWNER's message: the gate 403s before the
-      // sender/window checks (belt-and-braces — a read-only member's edit is rejected like a WS send).
+      // sender/window checks (belt-and-braces: a read-only member's edit is rejected like a WS send).
       const msg = await chat().insertMessage(
         { cleanupId: channelId, roomKind: "group", userId: ownerId, body: "owner post" },
         randomUUID(),
@@ -259,7 +250,7 @@ describe.skipIf(!pg)("chat channels: read-only enforcement + public join (integr
         randomUUID(),
       )
 
-      // A joined (read-only) member may react — reactions stay MEMBER-gated, not send-gated.
+      // A joined (read-only) member may react: reactions stay MEMBER-gated, not send-gated.
       const ok = await inject(await token(memberId), "POST", "/v1/messages/reactions", {
         roomKind: "group",
         roomId: channelId,
@@ -303,7 +294,13 @@ describe.skipIf(!pg)("chat channels: read-only enforcement + public join (integr
     }
 
     function sessionFor(userId: string, conn: MockConnection, deps: GatewayDeps): GatewaySession {
-      return { userId, conn, joined: new Set<string>(), typingThrottle: new Map<string, number>(), deps }
+      return {
+        userId,
+        conn,
+        joined: new Set<string>(),
+        typingThrottle: new Map<string, number>(),
+        deps,
+      }
     }
 
     const frame = (f: Record<string, unknown>) => JSON.stringify(f)
@@ -326,14 +323,26 @@ describe.skipIf(!pg)("chat channels: read-only enforcement + public join (integr
       const adminSession = sessionFor(adminId, adminConn, deps)
       const memberSession = sessionFor(memberId, memberConn, deps)
       // Both are members, so both may JOIN (read-only for the plain member).
-      await handleClientFrame(adminSession, frame({ type: "join", cleanupId: channelId, roomKind: "group" }))
-      await handleClientFrame(memberSession, frame({ type: "join", cleanupId: channelId, roomKind: "group" }))
+      await handleClientFrame(
+        adminSession,
+        frame({ type: "join", cleanupId: channelId, roomKind: "group" }),
+      )
+      await handleClientFrame(
+        memberSession,
+        frame({ type: "join", cleanupId: channelId, roomKind: "group" }),
+      )
       expect(memberConn.framesOfType("error")).toHaveLength(0)
 
       // Read-only member send -> channel_read_only, no ack, nothing persisted.
       await handleClientFrame(
         memberSession,
-        frame({ type: "send", cleanupId: channelId, roomKind: "group", clientId: "m1", body: "let me post" }),
+        frame({
+          type: "send",
+          cleanupId: channelId,
+          roomKind: "group",
+          clientId: "m1",
+          body: "let me post",
+        }),
       )
       expect(memberConn.framesOfType("ack")).toHaveLength(0)
       const memberErr = memberConn.framesOfType("error")
@@ -343,13 +352,21 @@ describe.skipIf(!pg)("chat channels: read-only enforcement + public join (integr
       // Admin send -> ack to the admin, broadcast to the read-only member, row persisted group-scoped.
       await handleClientFrame(
         adminSession,
-        frame({ type: "send", cleanupId: channelId, roomKind: "group", clientId: "a1", body: "the news" }),
+        frame({
+          type: "send",
+          cleanupId: channelId,
+          roomKind: "group",
+          clientId: "a1",
+          body: "the news",
+        }),
       )
       const acks = adminConn.framesOfType("ack")
       expect(acks).toHaveLength(1)
       const acked = (acks[0] as { message: { id: string; body: string } }).message
       expect(acked.body).toBe("the news")
-      expect((memberConn.framesOfType("message")[0] as { message: { id: string } }).message.id).toBe(acked.id)
+      expect(
+        (memberConn.framesOfType("message")[0] as { message: { id: string } }).message.id,
+      ).toBe(acked.id)
 
       const rows = await h.sql<{ count: number }[]>`
         SELECT COUNT(*)::int AS count FROM chat_messages WHERE group_id = ${channelId}
@@ -368,8 +385,14 @@ describe.skipIf(!pg)("chat channels: read-only enforcement + public join (integr
 
       const conn = new MockConnection("member")
       const session = sessionFor(memberId, conn, deps)
-      await handleClientFrame(session, frame({ type: "join", cleanupId: channelId, roomKind: "group" }))
-      await handleClientFrame(session, frame({ type: "typing", cleanupId: channelId, roomKind: "group" }))
+      await handleClientFrame(
+        session,
+        frame({ type: "join", cleanupId: channelId, roomKind: "group" }),
+      )
+      await handleClientFrame(
+        session,
+        frame({ type: "typing", cleanupId: channelId, roomKind: "group" }),
+      )
 
       const errors = conn.framesOfType("error")
       expect(errors).toHaveLength(1)
@@ -385,7 +408,10 @@ describe.skipIf(!pg)("chat channels: read-only enforcement + public join (integr
       const conn = new MockConnection("stranger")
       const session = sessionFor(strangerId, conn, deps)
       // Public read-only join: admitted, no error, presence snapshot delivered.
-      await handleClientFrame(session, frame({ type: "join", cleanupId: channelId, roomKind: "group" }))
+      await handleClientFrame(
+        session,
+        frame({ type: "join", cleanupId: channelId, roomKind: "group" }),
+      )
       expect(conn.framesOfType("error")).toHaveLength(0)
       expect(session.joined.has(`group:${channelId}`)).toBe(true)
       expect(conn.framesOfType("presence_snapshot")).toHaveLength(1)
@@ -393,7 +419,13 @@ describe.skipIf(!pg)("chat channels: read-only enforcement + public join (integr
       // ...but they're not a member, so a send is rejected and nothing persists.
       await handleClientFrame(
         session,
-        frame({ type: "send", cleanupId: channelId, roomKind: "group", clientId: "x", body: "sneak in" }),
+        frame({
+          type: "send",
+          cleanupId: channelId,
+          roomKind: "group",
+          clientId: "x",
+          body: "sneak in",
+        }),
       )
       expect(conn.framesOfType("ack")).toHaveLength(0)
       expect(conn.framesOfType("error")).toHaveLength(1)

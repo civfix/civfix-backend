@@ -1,4 +1,3 @@
-
 import { afterAll, beforeAll, describe, expect, it } from "vitest"
 import { withPg, type PgHarness } from "../helpers/pg.js"
 import {
@@ -64,9 +63,11 @@ describe.skipIf(!pg)("jurisdiction ingest (integration: real upsert)", () => {
     return rows[0]
   }
 
-
   it("stamps a JURCODE from jurisdiction_code_seq on a NEW jurisdiction (never NULL)", async () => {
-    await upsertJurisdiction(h.sql, row({ geoid: "PADUS-IN-1", name: "Ingest Park", layer: "federal" }))
+    await upsertJurisdiction(
+      h.sql,
+      row({ geoid: "PADUS-IN-1", name: "Ingest Park", layer: "federal" }),
+    )
     const created = await read("PADUS-IN-1")
     expect(created).toBeDefined()
     expect(created!.code).not.toBeNull()
@@ -122,7 +123,6 @@ describe.skipIf(!pg)("jurisdiction ingest (integration: real upsert)", () => {
     expect(after!.population).toBe(777)
   })
 
-
   it("CLEARS an all-placeholder contact list (the dev seed's example.gov addresses) on re-ingest", async () => {
     await h.sql`
       UPDATE jurisdictions SET contact_emails = ARRAY['trash@example.gov', 'graffiti@example.gov']
@@ -130,7 +130,12 @@ describe.skipIf(!pg)("jurisdiction ingest (integration: real upsert)", () => {
     `
     await upsertJurisdiction(
       h.sql,
-      row({ geoid: "0644000", name: "Los Angeles", layer: "place", geometry: square(-118.35, 34.1, 0.15) }),
+      row({
+        geoid: "0644000",
+        name: "Los Angeles",
+        layer: "place",
+        geometry: square(-118.35, 34.1, 0.15),
+      }),
     )
     const after = await read("0644000")
     expect(after!.contact_emails).toBeNull()
@@ -151,15 +156,23 @@ describe.skipIf(!pg)("jurisdiction ingest (integration: real upsert)", () => {
       WHERE geoid = 'PADUS-IN-7'
     `
     await upsertJurisdiction(h.sql, row({ geoid: "PADUS-IN-7", name: "Refreshed" }))
-    expect((await read("PADUS-IN-7"))!.contact_emails).toEqual(["real@lacity.org", "dev@example.gov"])
+    expect((await read("PADUS-IN-7"))!.contact_emails).toEqual([
+      "real@lacity.org",
+      "dev@example.gov",
+    ])
   })
-
 
   it("resolves overlapping SAME-LAYER polygons deterministically (priority, then geoid)", async () => {
     const pt = { lng: -101.25, lat: 41.25 }
     const geom = square(pt.lng, pt.lat, 0.25)
-    await upsertJurisdiction(h.sql, row({ geoid: "PADUS-OVERLAP-B", name: "Parcel B", geometry: geom }))
-    await upsertJurisdiction(h.sql, row({ geoid: "PADUS-OVERLAP-A", name: "Parcel A", geometry: geom }))
+    await upsertJurisdiction(
+      h.sql,
+      row({ geoid: "PADUS-OVERLAP-B", name: "Parcel B", geometry: geom }),
+    )
+    await upsertJurisdiction(
+      h.sql,
+      row({ geoid: "PADUS-OVERLAP-A", name: "Parcel A", geometry: geom }),
+    )
 
     const first = await resolveJurisdiction(h.sql, pt.lng, pt.lat)
     expect(first?.geoid).toBe("PADUS-OVERLAP-A")
@@ -181,13 +194,20 @@ describe.skipIf(!pg)("jurisdiction ingest (integration: real upsert)", () => {
     expect(r?.layer).toBe("federal")
   })
 
-
   it("ingestGeoJsonFile loads a FeatureCollection in one transaction, prefixing geoids and stamping codes", async () => {
     const fc = JSON.stringify({
       type: "FeatureCollection",
       features: [
-        { type: "Feature", properties: { geoid: "9001", name: "File One" }, geometry: square(-105, 45, 0.2) },
-        { type: "Feature", properties: { geoid: "9002", name: "File Two" }, geometry: square(-106, 45, 0.2) },
+        {
+          type: "Feature",
+          properties: { geoid: "9001", name: "File One" },
+          geometry: square(-105, 45, 0.2),
+        },
+        {
+          type: "Feature",
+          properties: { geoid: "9002", name: "File Two" },
+          geometry: square(-106, 45, 0.2),
+        },
         { type: "Feature", properties: { geoid: "9003" }, geometry: square(-107, 45, 0.2) },
       ],
     })
@@ -206,7 +226,11 @@ describe.skipIf(!pg)("jurisdiction ingest (integration: real upsert)", () => {
 
   it("ingestGeoJsonFile REJECTS a non-FeatureCollection payload and writes nothing", async () => {
     await expect(
-      ingestGeoJsonFile(h.sql, JSON.stringify({ type: "Feature", properties: {}, geometry: null }), "federal"),
+      ingestGeoJsonFile(
+        h.sql,
+        JSON.stringify({ type: "Feature", properties: {}, geometry: null }),
+        "federal",
+      ),
     ).rejects.toThrow(/not a GeoJSON FeatureCollection/)
     await expect(ingestGeoJsonFile(h.sql, "{not json", "federal")).rejects.toThrow()
   })
@@ -215,7 +239,11 @@ describe.skipIf(!pg)("jurisdiction ingest (integration: real upsert)", () => {
     const fc = JSON.stringify({
       type: "FeatureCollection",
       features: [
-        { type: "Feature", properties: { geoid: "8001", name: "Atomic Good" }, geometry: square(-108, 46, 0.2) },
+        {
+          type: "Feature",
+          properties: { geoid: "8001", name: "Atomic Good" },
+          geometry: square(-108, 46, 0.2),
+        },
         {
           type: "Feature",
           properties: { geoid: "8002", name: "Atomic Bad" },
@@ -244,8 +272,16 @@ describe.skipIf(!pg)("jurisdiction ingest (integration: real upsert)", () => {
     const fc = JSON.stringify({
       type: "FeatureCollection",
       features: [
-        { type: "Feature", properties: { geoid: "7001", name: "Valid Unit" }, geometry: square(-92, 41, 0.2) },
-        { type: "Feature", properties: { geoid: "7002", name: "Self Intersecting" }, geometry: bowtie },
+        {
+          type: "Feature",
+          properties: { geoid: "7001", name: "Valid Unit" },
+          geometry: square(-92, 41, 0.2),
+        },
+        {
+          type: "Feature",
+          properties: { geoid: "7002", name: "Self Intersecting" },
+          geometry: bowtie,
+        },
       ],
     })
     const res = await ingestGeoJsonFile(h.sql, fc, "federal", "VALID-")
@@ -267,8 +303,15 @@ describe.skipIf(!pg)("jurisdiction ingest (integration: real upsert)", () => {
         ],
       ],
     }
-    expect(await upsertJurisdiction(h.sql, row({ geoid: "PADUS-VALID-1", geometry: square(-71, 41, 0.2) }))).toBe(true)
-    expect(await upsertJurisdiction(h.sql, row({ geoid: "PADUS-INVALID-1", geometry: bowtie }))).toBe(false)
+    expect(
+      await upsertJurisdiction(
+        h.sql,
+        row({ geoid: "PADUS-VALID-1", geometry: square(-71, 41, 0.2) }),
+      ),
+    ).toBe(true)
+    expect(
+      await upsertJurisdiction(h.sql, row({ geoid: "PADUS-INVALID-1", geometry: bowtie })),
+    ).toBe(false)
     expect(await read("PADUS-INVALID-1")).toBeUndefined()
   })
 })

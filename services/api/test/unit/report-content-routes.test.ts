@@ -1,19 +1,18 @@
 import { describe, it, expect, afterEach } from "vitest"
 import type { FastifyInstance } from "fastify"
 import { FakeMailer } from "@civfix/shared/fakes"
-import { buildServer } from "../../src/server.js"
+import { makeServer } from "../../src/server.js"
 import { loadEnv } from "../../src/env.js"
 import { InMemoryCacheClient } from "../../src/auth/cache.js"
 import { makeInMemoryStores } from "../../src/auth/stores.js"
-import { buildAuthServices } from "../../src/auth/auth-services.js"
+import { makeAuthServices } from "../../src/auth/auth-services.js"
 import { StubJwksVerifier } from "../helpers/auth.js"
-import { InMemoryModerationRepository } from "../../src/services/admin/moderation-repository.memory.js"
+import { InMemoryModerationRepository } from "../helpers/admin/moderation-repository.memory.js"
 import type { ContentSubjectGate } from "../../src/services/content-report-subject.js"
 import { AppError } from "@civfix/shared"
 
 /**
- * Offline HTTP test for the PUBLIC content-report route (POST /content-reports). The route builds the
- * moderation service from the injected in-memory ModerationRepository (the SAME app.moderationOverrides
+ * The PUBLIC content-report route (POST /content-reports) builds the moderation service from the injected in-memory ModerationRepository (the SAME app.moderationOverrides
  * seam the admin queue uses), so the whole flow runs with no DB: a signed-in user files a report and an
  * OPEN `user_report` moderation item is enqueued (deduped by subject).
  */
@@ -38,7 +37,7 @@ async function harness(gate?: ContentSubjectGate): Promise<{
   const stores = makeInMemoryStores()
   const cache = new InMemoryCacheClient(() => Date.now())
   const mailer = new FakeMailer()
-  const authServices = buildAuthServices({
+  const authServices = makeAuthServices({
     stores,
     cache,
     mailer,
@@ -47,7 +46,7 @@ async function harness(gate?: ContentSubjectGate): Promise<{
     now: () => Date.now(),
   })
   const repo = new InMemoryModerationRepository()
-  const app = await buildServer({
+  const app = await makeServer({
     env,
     authServices,
     moderationOverrides: { repo },
@@ -157,7 +156,7 @@ describe("POST /content-reports", () => {
   })
 
   it("files a report-subject content report (owner check degrades to false with no DB)", async () => {
-    // With no DATABASE_URL (all-fakes harness), reportOwnedBy() short-circuits to false, so a `report`
+    // With no DATABASE_URL (all-fakes harness), the owner check short-circuits to false, so a `report`
     // subject is filed as an ordinary user_report (flag "User report"), never crashing on a DB query.
     const { app, mailer, repo } = await harness()
     const { token } = await signIn(app, mailer, "reporter@example.com")
@@ -166,7 +165,12 @@ describe("POST /content-reports", () => {
       method: "POST",
       url: "/v1/content-reports",
       headers: { authorization: `Bearer ${token}`, "x-client": "mobile" },
-      payload: { subjectType: "report", subjectId: SUBJECT, reason: "other", details: "remove please" },
+      payload: {
+        subjectType: "report",
+        subjectId: SUBJECT,
+        reason: "other",
+        details: "remove please",
+      },
     })
 
     expect(res.statusCode).toBe(200)

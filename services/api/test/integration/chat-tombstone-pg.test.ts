@@ -6,7 +6,7 @@ import { seedCleanup } from "../helpers/cleanups.js"
 import { seedMediaAsset } from "../helpers/media-pg.js"
 import { makeDrizzleChatRepository } from "../../src/services/chat-repository.drizzle.js"
 import { makeDrizzleDmRepository } from "../../src/services/dm-repository.drizzle.js"
-import { recordChatMentions } from "../../src/services/chat-mentions.drizzle.js"
+import { recordChatMentions } from "../../src/services/chat-mentions-repository.drizzle.js"
 import { makeReportChatRepository } from "../../src/services/report-chat-repository.drizzle.js"
 import type { PresignMedia } from "../../src/services/media-presign.js"
 
@@ -128,7 +128,9 @@ describe.skipIf(!pg)("soft-deleted messages hydrate as tombstones (integration)"
     const victim = await seedLoadedMessage(cleanupId, organizerId, peerId)
     await repo.insertMessage({ cleanupId, userId: organizerId, body: "after" }, randomUUID())
 
-    expect(await repo.editMessage(cleanupId, victim, organizerId, "doxxing text and a photo")).not.toBeNull()
+    expect(
+      await repo.editMessage(cleanupId, victim, organizerId, "doxxing text and a photo"),
+    ).not.toBeNull()
     expect(await repo.setPinned(cleanupId, victim, organizerId, true)).not.toBeNull()
 
     const live = await repo.history(cleanupId, undefined, 20, peerId, victim)

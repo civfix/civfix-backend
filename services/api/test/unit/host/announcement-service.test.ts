@@ -7,7 +7,7 @@ import {
   type PersonDTO,
 } from "@civfix/shared"
 import { InMemoryCounterStore } from "../../../src/abuse/counter-store.js"
-import { InMemoryBroadcastRepository } from "../../../src/services/host/broadcast-repository.memory.js"
+import { InMemoryBroadcastRepository } from "../../helpers/host/broadcast-repository.memory.js"
 import {
   BroadcastCapError,
   makeBroadcastService,
@@ -19,7 +19,7 @@ import {
   makeAnnouncementService,
   type AnnouncementService,
 } from "../../../src/services/host/announcement-service.js"
-import type { AnnouncementIdentityRepository } from "../../../src/services/host/announcement-repository.drizzle.js"
+import type { AnnouncementIdentityRepository } from "../../../src/services/host/announcement-identity-repository.js"
 import type { EventBroadcastContext } from "../../../src/services/host/broadcast-types.js"
 
 const EVENT = "00000000-0000-0000-0000-0000000000ee"
@@ -237,7 +237,10 @@ describe("createEventAnnouncement", () => {
         bodyMd: "One too many",
         audience: { kind: "all_registered" },
       }),
-    ).rejects.toMatchObject({ code: "RATE_LIMITED" })
+    ).rejects.toMatchObject({
+      code: "RATE_LIMITED",
+      message: "Announcement limit reached for today. Use the group chat for ongoing discussion.",
+    })
   })
 
   it("admits exactly one of two concurrent creates that race for the last daily slot", async () => {

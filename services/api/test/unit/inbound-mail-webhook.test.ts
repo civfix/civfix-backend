@@ -3,8 +3,8 @@ import { describe, expect, it, vi } from "vitest"
 import Fastify, { type FastifyInstance, type FastifyRequest } from "fastify"
 import { FakeInboundMail, FakeStorage } from "@civfix/shared/fakes"
 import type { InboundMail, ParsedMail } from "@civfix/shared/interfaces"
-import { InMemoryMailRepository } from "../../src/services/admin/mail-repository.memory.js"
-import { InMemoryInboundRepository } from "../../src/services/admin/inbound-repository.memory.js"
+import { InMemoryMailRepository } from "../helpers/admin/mail-repository.memory.js"
+import { InMemoryInboundRepository } from "../helpers/admin/inbound-repository.memory.js"
 import {
   assertSignature,
   registerInboundMailWebhook,
@@ -44,7 +44,7 @@ function sign(body: string, secret: string): string {
 /**
  * Build a minimal RFC822 message the FakeInboundMail subset parses (headers, blank line, body).
  *
- * M7: a DMARC-pass Authentication-Results header is stamped by default. The processor only lets
+ * A DMARC-pass Authentication-Results header is stamped by default. The processor only lets
  * DMARC-aligned mail reach the threaded path, so a fixture without one is Inbox-only by design.
  */
 function rfc822(opts: {
@@ -90,13 +90,19 @@ interface Harness {
   secret: string | undefined
 }
 
-async function harness(opts?: { secret?: string | undefined; inboundMail?: InboundMail }): Promise<Harness> {
+async function harness(opts?: {
+  secret?: string | undefined
+  inboundMail?: InboundMail
+}): Promise<Harness> {
   const mailRepo = new InMemoryMailRepository()
   const inboundRepo = new InMemoryInboundRepository()
   const storage = new FakeStorage()
   const inboundMail = opts?.inboundMail ?? new FakeInboundMail()
   const secret = opts && "secret" in opts ? opts.secret : SECRET
-  const container = { env: { CF_EMAIL_WEBHOOK_SECRET: secret }, inboundMail } as unknown as Container
+  const container = {
+    env: { CF_EMAIL_WEBHOOK_SECRET: secret },
+    inboundMail,
+  } as unknown as Container
 
   const app = Fastify()
   app.setErrorHandler(makeErrorHandler())
@@ -127,7 +133,10 @@ async function ingest(
 describe("inbound-mail webhook: authentication", () => {
   it("rejects a missing signature with 401 and writes nothing", async () => {
     const h = await harness()
-    await h.storage.put(`${INBOUND_PENDING_PREFIX}x.eml`, rfc822({ from: "a@b.gov", to: "reply+t@civfix.org" }))
+    await h.storage.put(
+      `${INBOUND_PENDING_PREFIX}x.eml`,
+      rfc822({ from: "a@b.gov", to: "reply+t@civfix.org" }),
+    )
     const res = await h.app.inject({
       method: "POST",
       url: "/webhooks/inbound-mail",
@@ -161,7 +170,10 @@ describe("inbound-mail webhook: authentication", () => {
 describe("inbound-mail webhook: reply threading (token present)", () => {
   it("threads onto an existing thread, marks unread, records an event, and deletes the pending object", async () => {
     const h = await harness()
-    const thread = h.mailRepo.seedThread({ threadToken: "0a0a0a0a0a0a0a0a0a0a0a0a", org: "City of LA" })
+    const thread = h.mailRepo.seedThread({
+      threadToken: "0a0a0a0a0a0a0a0a0a0a0a0a",
+      org: "City of LA",
+    })
     const { res, key } = await ingest(h, {
       eml: rfc822({
         from: "clerk@lacity.gov",
@@ -186,10 +198,14 @@ describe("inbound-mail webhook: reply threading (token present)", () => {
     await h.app.close()
   })
 
-  it("an UNKNOWN reply token mints no thread — it lands in inbound_emails (finding #37)", async () => {
+  it("an UNKNOWN reply token mints no thread; it lands in inbound_emails (finding #37)", async () => {
     const h = await harness()
     const { res } = await ingest(h, {
-      eml: rfc822({ from: "x@city.gov", to: "reply+0b0b0b0b0b0b0b0b0b0b0b0b@civfix.org", body: "hi" }),
+      eml: rfc822({
+        from: "x@city.gov",
+        to: "reply+0b0b0b0b0b0b0b0b0b0b0b0b@civfix.org",
+        body: "hi",
+      }),
     })
     expect(res.statusCode).toBe(202)
     expect(res.json()).toMatchObject({ accepted: true, outcome: "inbox" })
@@ -219,12 +235,22 @@ describe("inbound-mail webhook: reply threading (token present)", () => {
   it("streams an attachment to R2 and stores it on the message", async () => {
     const bytes = encoder.encode("PDF-BYTES-HERE")
     const h = await harness({
-      inboundMail: new InboundMailWithAttachments([{ filename: "notice.pdf", content: bytes, size: bytes.byteLength }]),
+      inboundMail: new InboundMailWithAttachments([
+        { filename: "notice.pdf", content: bytes, size: bytes.byteLength },
+      ]),
     })
     h.mailRepo.seedThread({ threadToken: "0d0d0d0d0d0d0d0d0d0d0d0d" })
-    const { res } = await ingest(h, { eml: rfc822({ from: "c@city.gov", to: "reply+0d0d0d0d0d0d0d0d0d0d0d0d@civfix.org", body: "see attached" }) })
+    const { res } = await ingest(h, {
+      eml: rfc822({
+        from: "c@city.gov",
+        to: "reply+0d0d0d0d0d0d0d0d0d0d0d0d@civfix.org",
+        body: "see attached",
+      }),
+    })
     expect(res.statusCode).toBe(202)
-    const att = (await h.mailRepo.getThread([...h.mailRepo.threads.values()][0]!.id))?.messages[0]?.attachments ?? []
+    const att =
+      (await h.mailRepo.getThread([...h.mailRepo.threads.values()][0]!.id))?.messages[0]
+        ?.attachments ?? []
     expect(att).toHaveLength(1)
     expect(att[0]?.filename).toBe("notice.pdf")
     expect(h.storage.get(att[0]!.key)).not.toBeNull()
@@ -233,10 +259,18 @@ describe("inbound-mail webhook: reply threading (token present)", () => {
 
   it("preserves an OVER-SIZE attachment by reference (flagged, not stored)", async () => {
     const h = await harness({
-      inboundMail: new InboundMailWithAttachments([{ filename: "huge.zip", size: INBOUND_ATTACHMENT_MAX_BYTES + 1 }]),
+      inboundMail: new InboundMailWithAttachments([
+        { filename: "huge.zip", size: INBOUND_ATTACHMENT_MAX_BYTES + 1 },
+      ]),
     })
     h.mailRepo.seedThread({ threadToken: "0e0e0e0e0e0e0e0e0e0e0e0e" })
-    const { res } = await ingest(h, { eml: rfc822({ from: "c@city.gov", to: "reply+0e0e0e0e0e0e0e0e0e0e0e0e@civfix.org", body: "big" }) })
+    const { res } = await ingest(h, {
+      eml: rfc822({
+        from: "c@city.gov",
+        to: "reply+0e0e0e0e0e0e0e0e0e0e0e0e@civfix.org",
+        body: "big",
+      }),
+    })
     expect(res.statusCode).toBe(202)
     const dto = await h.mailRepo.getThread([...h.mailRepo.threads.values()][0]!.id)
     expect(dto?.messages[0]?.attachments).toHaveLength(0)
@@ -249,7 +283,12 @@ describe("inbound-mail webhook: catch-all (no token) -> inbox", () => {
   it("inserts a no-token message into inbound_emails and deletes the pending object", async () => {
     const h = await harness()
     const { res, key } = await ingest(h, {
-      eml: rfc822({ from: "resident@example.com", to: "support@civfix.org", subject: "Help", body: "question" }),
+      eml: rfc822({
+        from: "resident@example.com",
+        to: "support@civfix.org",
+        subject: "Help",
+        body: "question",
+      }),
     })
     expect(res.statusCode).toBe(202)
     expect(res.json()).toMatchObject({ accepted: true, outcome: "inbox" })
@@ -262,7 +301,12 @@ describe("inbound-mail webhook: catch-all (no token) -> inbox", () => {
 
   it("is idempotent: a re-delivered catch-all message inserts one inbox row", async () => {
     const h = await harness()
-    const eml = rfc822({ from: "r@example.com", to: "hello@civfix.org", body: "x", messageId: "<inbox-1@example.com>" })
+    const eml = rfc822({
+      from: "r@example.com",
+      to: "hello@civfix.org",
+      body: "x",
+      messageId: "<inbox-1@example.com>",
+    })
     await ingest(h, { eml, key: `${INBOUND_PENDING_PREFIX}ib.eml` })
     const second = await ingest(h, { eml, key: `${INBOUND_PENDING_PREFIX}ib.eml` })
     expect(second.res.json()).toMatchObject({ outcome: "replay" })
@@ -278,7 +322,10 @@ describe("inbound-mail webhook: malformed / safe handling", () => {
     const res = await h.app.inject({
       method: "POST",
       url: "/webhooks/inbound-mail",
-      headers: { "content-type": "application/json", [CF_WEBHOOK_SIGNATURE_HEADER]: sign(body, SECRET) },
+      headers: {
+        "content-type": "application/json",
+        [CF_WEBHOOK_SIGNATURE_HEADER]: sign(body, SECRET),
+      },
       payload: body,
     })
     expect(res.statusCode).toBe(202)
@@ -311,7 +358,7 @@ describe("inbound-mail webhook: malformed / safe handling", () => {
 })
 
 /**
- * L17 — the HMAC covered the body ALONE, with no timestamp and no nonce, so a captured
+ * The HMAC used to cover the body ALONE, with no timestamp and no nonce, so a captured
  * (body, signature) pair stayed valid forever. The signed payload is now `<timestamp>.<body>` and the
  * timestamp must be fresh.
  */
@@ -368,7 +415,7 @@ describe("inbound-mail webhook: signature replay window (L17)", () => {
     await h.app.close()
   })
 
-  it("rejects a fresh timestamp paired with a body-only (legacy) signature — the ts is INSIDE the MAC", async () => {
+  it("rejects a fresh timestamp paired with a body-only (legacy) signature: the ts is INSIDE the MAC", async () => {
     const h = await harness()
     const key = `${INBOUND_PENDING_PREFIX}ts-mixed.eml`
     await h.storage.put(key, rfc822({ from: "a@b.gov", to: "support@civfix.org", body: "x" }))

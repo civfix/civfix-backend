@@ -1,13 +1,18 @@
-
 import type { Sql } from "./client.js"
 
 export const ACS_POP_VAR = "B01003_001E"
 
-export const DEFAULT_ACS_YEAR = 2023
+const DEFAULT_ACS_YEAR = 2023
 
 export type CensusJsonFetch = (url: string) => Promise<unknown[][]>
 
 const CENSUS_FETCH_TIMEOUT_MS = 20_000
+
+const CENSUS_API_BASE = "https://api.census.gov/data"
+const CENSUS_KEY_SIGNUP_URL = "https://api.census.gov/data/key_signup.html"
+
+// One UPDATE per chunk keeps each unnest() parameter array bounded.
+const POPULATION_UPDATE_CHUNK = 1000
 
 const defaultFetchJson: CensusJsonFetch = async (url) => {
   const controller = new AbortController()
@@ -17,12 +22,14 @@ const defaultFetchJson: CensusJsonFetch = async (url) => {
     const contentType = res.headers.get("content-type") ?? ""
     if (res.url.includes("missing_key") || (!contentType.includes("json") && res.redirected)) {
       throw new Error(
-        "Census API requires an API key — set CENSUS_API_KEY (free, instant: https://api.census.gov/data/key_signup.html)",
+        `Census API requires an API key: set CENSUS_API_KEY (free, instant: ${CENSUS_KEY_SIGNUP_URL})`,
       )
     }
     if (!res.ok) throw new Error(`Census API ${res.status} ${res.statusText}`)
     if (!contentType.includes("json")) {
-      throw new Error(`Census API returned a non-JSON response (${res.status}); check the query/year`)
+      throw new Error(
+        `Census API returned a non-JSON response (${res.status}); check the query/year`,
+      )
     }
     return (await res.json()) as unknown[][]
   } finally {
@@ -30,21 +37,24 @@ const defaultFetchJson: CensusJsonFetch = async (url) => {
   }
 }
 
-function acsUrl(year: number, forClause: string, inClause: string | null, key: string | null): string {
+function acsUrl(
+  year: number,
+  forClause: string,
+  inClause: string | null,
+  key: string | null,
+): string {
   const params = new URLSearchParams()
   params.set("get", ACS_POP_VAR)
   params.set("for", forClause)
   if (inClause) params.set("in", inClause)
   if (key) params.set("key", key)
-  return `https://api.census.gov/data/${year}/acs/acs5?${params.toString()}`
+  return `${CENSUS_API_BASE}/${year}/acs/acs5?${params.toString()}`
 }
 
 /**
- * The Census geography columns a response may carry, in the order they CONCATENATE into a GEOID
- * (state "06" + county "037" = "06037"; state "06" + place "44000" = "0644000"). Only these are used, and
- * always in this order — never header order — so an extra column (a `NAME` get-variable, a Census column
- * reshuffle) can never end up inside a geoid. Add a level here to support it; an unlisted level is ignored,
- * which is why every caller must fetch only the levels above.
+ * The order these columns concatenate into a GEOID (state "06" + county "037" = "06037"). They are always
+ * read in this order, never header order, so an extra column (a `NAME` variable, a Census reshuffle) can
+ * never end up inside a geoid. An unlisted level is ignored, so callers must fetch only these levels.
  */
 const ACS_GEO_COLUMNS = ["state", "county", "place"] as const
 
@@ -53,13 +63,16 @@ export function parseAcs(rows: unknown[][]): { geoid: string; population: number
   const header = (rows[0] ?? []).map(String)
   const varIdx = header.indexOf(ACS_POP_VAR)
   if (varIdx < 0) return []
-  const geoCols = ACS_GEO_COLUMNS.map((c) => header.indexOf(c)).filter((i) => i >= 0 && i !== varIdx)
+  const geoCols = ACS_GEO_COLUMNS.map((c) => header.indexOf(c)).filter(
+    (i) => i >= 0 && i !== varIdx,
+  )
   const out: { geoid: string; population: number }[] = []
   for (let r = 1; r < rows.length; r++) {
     const row = rows[r]
     if (!Array.isArray(row)) continue
     const pop = Number(row[varIdx])
     if (!Number.isFinite(pop) || pop < 0) continue
+    // eslint-disable-next-line @typescript-eslint/no-base-to-string -- ACS API cells are JSON scalars, read the same way as the header row
     const geoid = geoCols.map((i) => String(row[i] ?? "")).join("")
     if (geoid) out.push({ geoid, population: Math.round(pop) })
   }
@@ -71,9 +84,8 @@ async function applyPopulations(
   rows: { geoid: string; population: number }[],
 ): Promise<number> {
   let updated = 0
-  const CHUNK = 1000
-  for (let i = 0; i < rows.length; i += CHUNK) {
-    const chunk = rows.slice(i, i + CHUNK)
+  for (let i = 0; i < rows.length; i += POPULATION_UPDATE_CHUNK) {
+    const chunk = rows.slice(i, i + POPULATION_UPDATE_CHUNK)
     const geoids = chunk.map((c) => c.geoid)
     const pops = chunk.map((c) => c.population)
     const res = await sql`
@@ -127,8 +139,8 @@ export async function backfillPopulation(
   const fetched = collected.length
   if (fetched === 0) {
     log(
-      "fetched 0 ACS rows — every Census call failed. The Census API requires CENSUS_API_KEY " +
-        "(free, instant: https://api.census.gov/data/key_signup.html); set it and re-run.",
+      "fetched 0 ACS rows: every Census call failed. The Census API requires CENSUS_API_KEY " +
+        `(free, instant: ${CENSUS_KEY_SIGNUP_URL}); set it and re-run.`,
     )
     return { fetched: 0, updated: 0, states: states.length }
   }

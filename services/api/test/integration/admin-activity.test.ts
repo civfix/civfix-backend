@@ -20,7 +20,7 @@ import { makeDrizzleActivityRepository } from "../../src/services/admin/activity
 import type {
   ActivityRepository,
   ListActivityArgs,
-} from "../../src/services/admin/activity-service.js"
+} from "../../src/services/admin/activity-repository.js"
 import { LA_CITY } from "../../src/db/seed-fixtures.js"
 
 const pg = await withPg()
@@ -64,28 +64,26 @@ describe.skipIf(!pg)("admin activity repository (integration: real schema)", () 
     const reporter = await insertUser(h, "Reporter")
     const org = await insertUser(h, "Organizer")
 
-    // A report (2h ago).
     await h.sql`
       INSERT INTO reports (reporter_user_id, idempotency_key, geom, geom_source, category, status, visibility, h3_cell, jurisdiction_geoid, created_at)
       VALUES (${reporter}, gen_random_uuid(), ST_SetSRID(ST_MakePoint(-118.35,34.1),4326), 'manual', 'trash', 'submitted', 'public', 'h0', ${GEOID}, now() - interval '2 hours')
     `
-    // A cleanup (3h ago).
     await seedCleanup(h.sql, {
       organizerUserId: org,
       title: "Park cleanup",
       createdAt: new Date(Date.now() - 3 * 60 * 60 * 1000),
     })
-    // An audit row (1h ago).
     await h.sql`
       INSERT INTO audit_log (actor_id, action, target, created_at)
       VALUES (${actor}, 'gov_claim.approved', 'gov_claim:1', now() - interval '1 hour')
     `
-    // A mail thread + a bounced event (30m ago).
-    const threadId = (await h.sql<{ id: string }[]>`
+    const threadId = (
+      await h.sql<{ id: string }[]>`
       INSERT INTO mail_threads (thread_token, org, subject, status)
       VALUES ('tok-1', 'Waynesboro', 'Outreach', 'bounced')
       RETURNING id
-    `)[0]!.id
+    `
+    )[0]!.id
     await h.sql`
       INSERT INTO mail_events (thread_id, type, created_at)
       VALUES (${threadId}, 'bounced', now() - interval '30 minutes')
@@ -99,19 +97,15 @@ describe.skipIf(!pg)("admin activity repository (integration: real schema)", () 
     expect(records).toHaveLength(4)
     // Newest first: mail_event (30m) -> audit (1h) -> report (2h) -> cleanup (3h).
     expect(records.map((r) => r.source)).toEqual(["mail_event", "audit", "report", "cleanup"])
-    // The whole feed fit in the page, so there is no next page.
     expect(nextCursor).toBeNull()
-    // The audit row carries the actor name + action.
     const audit = records.find((r) => r.source === "audit")!
     expect(audit.who).toBe("Operator")
     expect(audit.actorless).toBe(false)
     expect(audit.action).toBe("gov_claim.approved")
-    // The report carries the category subject + the jurisdiction place.
     const report = records.find((r) => r.source === "report")!
     expect(report.subject).toBe("trash")
     expect(report.where).toBe(LA_CITY.name)
     expect(report.who).toBe("Reporter")
-    // The mail event carries its type.
     const mail = records.find((r) => r.source === "mail_event")!
     expect(mail.eventType).toBe("bounced")
   })

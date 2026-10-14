@@ -1,15 +1,14 @@
 import { describe, it, expect, afterEach } from "vitest"
 import type { FastifyInstance } from "fastify"
 import { FakeMailer } from "@civfix/shared/fakes"
-import { buildServer } from "../../src/server.js"
+import { makeServer } from "../../src/server.js"
 import { loadEnv } from "../../src/env.js"
-import { buildContainer, type Container } from "../../src/di.js"
+import { makeContainer, type Container } from "../../src/di.js"
 import { InMemoryCacheClient } from "../../src/auth/cache.js"
 import { makeInMemoryStores, type InMemoryUserStore } from "../../src/auth/stores.js"
-import { buildAuthServices, type AuthServices } from "../../src/auth/auth-services.js"
+import { makeAuthServices, type AuthServices } from "../../src/auth/auth-services.js"
 import { StubJwksVerifier } from "../helpers/auth.js"
 import { makeFakeSql, type FakeSqlControl } from "../helpers/fake-sql.js"
-
 
 let current: FastifyInstance | undefined
 afterEach(async () => {
@@ -24,7 +23,7 @@ async function harness(): Promise<{ app: FastifyInstance; mailer: FakeMailer }> 
   const stores = makeInMemoryStores()
   const cache = new InMemoryCacheClient(() => Date.now())
   const mailer = new FakeMailer()
-  const authServices = buildAuthServices({
+  const authServices = makeAuthServices({
     stores,
     cache,
     mailer,
@@ -32,7 +31,7 @@ async function harness(): Promise<{ app: FastifyInstance; mailer: FakeMailer }> 
     verifier: new StubJwksVerifier(),
     now: () => Date.now(),
   })
-  const app = await buildServer({ env, authServices })
+  const app = await makeServer({ env, authServices })
   current = app
   return { app, mailer }
 }
@@ -48,7 +47,7 @@ async function cleanupHarness(): Promise<{
   const stores = makeInMemoryStores()
   const cache = new InMemoryCacheClient(() => Date.now())
   const mailer = new FakeMailer()
-  const services = buildAuthServices({
+  const services = makeAuthServices({
     stores,
     cache,
     mailer,
@@ -61,14 +60,12 @@ async function cleanupHarness(): Promise<{
     unlinkCalls += 1
     return Promise.reject(new Error("oauth store unavailable"))
   }
-  const fake = makeFakeSql([
-    { match: /INSERT INTO audit_log/i, rows: [{ id: "audit-1" }] },
-  ])
+  const fake = makeFakeSql([{ match: /INSERT INTO audit_log/i, rows: [{ id: "audit-1" }] }])
   const container = {
-    ...buildContainer(env),
+    ...makeContainer(env),
     getDb: () => ({ sql: fake.sql }),
   } as unknown as Container
-  const app = await buildServer({ env, container, authServices: services })
+  const app = await makeServer({ env, container, authServices: services })
   current = app
   return {
     app,
@@ -114,7 +111,11 @@ describe("DELETE /me email-OTP gate", () => {
   it("rejects deletion with 401 when a freshly-issued code does not match", async () => {
     const { app, mailer } = await harness()
     const token = await signIn(app, mailer, "jane@example.com")
-    await app.inject({ method: "POST", url: "/v1/auth/otp/request", payload: { email: "jane@example.com" } })
+    await app.inject({
+      method: "POST",
+      url: "/v1/auth/otp/request",
+      payload: { email: "jane@example.com" },
+    })
     const real = mailer.lastOtpFor("jane@example.com")!
     const wrong = real === "123456" ? "654321" : "123456"
     const res = await del(app, token, wrong)
@@ -136,7 +137,11 @@ describe("DELETE /me email-OTP gate", () => {
     const { app, mailer } = await harness()
     const email = "jane@example.com"
     await signIn(app, mailer, email)
-    const res = await app.inject({ method: "POST", url: "/v1/auth/otp/request", payload: { email } })
+    const res = await app.inject({
+      method: "POST",
+      url: "/v1/auth/otp/request",
+      payload: { email },
+    })
     expect(res.statusCode).toBe(200)
     expect(res.json()).toMatchObject({ sent: true })
     const codes = mailer.sent.filter((m) => m.to === email && m.code !== undefined)
@@ -158,16 +163,23 @@ describe("DELETE /me post-revocation cleanup isolation", () => {
     expect(res.json()).toEqual({ ok: true })
 
     const pushDelete = fake.statements.find((s) => /DELETE FROM push_tokens/i.test(s.sql))
-    expect(pushDelete, "push-token erasure must not be skipped by the unlink failure").toBeDefined()
-    expect(pushDelete?.values).toContain(userId)
+    expect(
+      pushDelete,
+      "push tokens are purged inside the erasure transaction, not by a post-commit route step",
+    ).toBeUndefined()
 
     const audit = fake.statements.find((s) => /INSERT INTO audit_log/i.test(s.sql))
-    expect(audit, "the account.deleted audit row must not be skipped by the unlink failure").toBeDefined()
+    expect(
+      audit,
+      "the account.deleted audit row must not be skipped by the unlink failure",
+    ).toBeDefined()
     expect(audit?.values.slice(0, 3)).toEqual([userId, "account.deleted", `user:${userId}`])
 
     const notifDelete = fake.statements.find((s) => /DELETE FROM notifications/i.test(s.sql))
-    expect(notifDelete, "the deleted user's notification rows must be purged (F088)").toBeDefined()
-    expect(notifDelete?.values).toContain(userId)
+    expect(
+      notifDelete,
+      "notifications are purged inside the erasure transaction, not by a post-commit route step",
+    ).toBeUndefined()
 
     const after = await services.users.findById(userId)
     expect(after?.deletedAt ?? null).not.toBeNull()

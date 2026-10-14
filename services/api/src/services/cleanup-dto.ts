@@ -18,7 +18,7 @@ import type {
   EventSlotView,
   LinkedEventView,
   LinkedReportView,
-} from "./cleanup-repository.types.js"
+} from "./cleanup-repository.js"
 import { officialPersonFlag } from "../auth/official-account.js"
 
 export const CLEANUPS_DEFAULT_LIMIT = 20
@@ -26,8 +26,6 @@ export const CLEANUPS_DEFAULT_LIMIT = 20
 export const ATTENDEES_DEFAULT_LIMIT = 50
 
 export const THREAD_SIGNAL_MEMBER_CAP = 500
-
-export { MAX_LINKED_REPORTS } from "@civfix/shared"
 
 export const LINKED_REPORTS_LIST_PREVIEW = 6
 
@@ -49,7 +47,7 @@ export function toAttendeePersonDTO(view: CleanupPersonView, isFollowing: boolea
   }
 }
 
-export function toOrganizerPerson(view: CleanupPersonView): PersonDTO {
+function toOrganizerPerson(view: CleanupPersonView): PersonDTO {
   return toAttendeePersonDTO(view, false)
 }
 
@@ -152,7 +150,10 @@ export function toCleanupDTO(
   }
 }
 
-export function toLinkedReportRef(view: LinkedReportView, thumbUrl: string | null): LinkedReportRef {
+export function toLinkedReportRef(
+  view: LinkedReportView,
+  thumbUrl: string | null,
+): LinkedReportRef {
   return {
     id: view.id,
     category: view.category,

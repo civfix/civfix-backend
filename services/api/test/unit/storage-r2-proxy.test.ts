@@ -1,4 +1,3 @@
-
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 
 const clientConfigs: Record<string, unknown>[] = []
@@ -44,6 +43,13 @@ function storage() {
   })
 }
 
+async function proxyOf(config: Record<string, unknown>): Promise<URL | undefined> {
+  const handler = config.requestHandler as {
+    configProvider?: Promise<{ httpsAgent?: { proxy?: URL } }>
+  }
+  return (await handler.configProvider)?.httpsAgent?.proxy
+}
+
 beforeEach(() => {
   clientConfigs.length = 0
   for (const key of ENV_KEYS) {
@@ -60,11 +66,11 @@ afterEach(() => {
 })
 
 describe("R2 client egress", () => {
-  it("builds no requestHandler when HTTPS_PROXY is unset (the API container)", async () => {
+  it("builds a direct requestHandler when HTTPS_PROXY is unset (the API container)", async () => {
     await storage().presignGet("uploads/a", 60, { forceSigned: true })
 
     expect(clientConfigs).toHaveLength(1)
-    expect(clientConfigs[0]!.requestHandler).toBeUndefined()
+    expect(await proxyOf(clientConfigs[0]!)).toBeUndefined()
   })
 
   it("builds a proxy-bearing requestHandler when HTTPS_PROXY is set (the worker)", async () => {
@@ -88,21 +94,21 @@ describe("R2 client egress", () => {
 
     await storage().presignGet("uploads/a", 60, { forceSigned: true })
 
-    expect(clientConfigs[0]!.requestHandler).toBeUndefined()
+    expect(await proxyOf(clientConfigs[0]!)).toBeUndefined()
   })
 })
 
 describe("proxy settings parsing", () => {
   it("reports no proxy when the variable is absent or blank", () => {
-    expect(readProxySettings({} as NodeJS.ProcessEnv)).toBeNull()
-    expect(readProxySettings({ HTTPS_PROXY: "   " } as NodeJS.ProcessEnv)).toBeNull()
+    expect(readProxySettings({})).toBeNull()
+    expect(readProxySettings({ HTTPS_PROXY: "   " })).toBeNull()
   })
 
   it("honors exact, suffix, wildcard and host:port NO_PROXY entries", () => {
     const settings = readProxySettings({
       HTTPS_PROXY: "http://p:8888",
       NO_PROXY: "postgres, .internal, redis:6379",
-    } as NodeJS.ProcessEnv)!
+    })!
     expect(shouldProxyHost("postgres", settings)).toBe(false)
     expect(shouldProxyHost("db.internal", settings)).toBe(false)
     expect(shouldProxyHost("redis", settings)).toBe(false)
@@ -111,7 +117,7 @@ describe("proxy settings parsing", () => {
     const all = readProxySettings({
       HTTPS_PROXY: "http://p:8888",
       NO_PROXY: "*",
-    } as NodeJS.ProcessEnv)!
+    })!
     expect(shouldProxyHost("anything", all)).toBe(false)
   })
 })

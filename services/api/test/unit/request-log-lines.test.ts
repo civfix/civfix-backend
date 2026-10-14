@@ -1,7 +1,7 @@
 import { get as httpGet } from "node:http"
 import { afterEach, describe, expect, it } from "vitest"
 import type { FastifyInstance, LogLevel } from "fastify"
-import { buildServer } from "../../src/server.js"
+import { makeServer } from "../../src/server.js"
 import { loadEnv } from "../../src/env.js"
 
 interface LogLine {
@@ -27,7 +27,7 @@ describe("request log lines", () => {
 
   async function serve(level: LogLevel): Promise<FastifyInstance> {
     lines = []
-    app = await buildServer({
+    app = await makeServer({
       env: loadEnv(),
       logCapture: { level, stream: { write: (line) => lines.push(JSON.parse(line) as LogLine) } },
     })
@@ -40,7 +40,8 @@ describe("request log lines", () => {
     return app
   }
 
-  const requestLines = () => lines.filter((line) => line.req !== undefined || line.res !== undefined)
+  const requestLines = () =>
+    lines.filter((line) => line.req !== undefined || line.res !== undefined)
 
   async function untilRequestLine(): Promise<void> {
     await expect.poll(() => requestLines().length, { timeout: 2000 }).toBeGreaterThan(0)
@@ -101,7 +102,11 @@ describe("request log lines", () => {
     await untilRequestLine()
 
     expect(requestLines()).toMatchObject([
-      { level: INFO, msg: "incoming request", req: { method: "GET", url: "/ws", remoteAddress: "127.0.0.1" } },
+      {
+        level: INFO,
+        msg: "incoming request",
+        req: { method: "GET", url: "/ws", remoteAddress: "127.0.0.1" },
+      },
     ])
     expect(typeof requestLines()[0]?.reqId).toBe("string")
     expect(JSON.stringify(lines)).not.toContain("SECRET-TICKET")

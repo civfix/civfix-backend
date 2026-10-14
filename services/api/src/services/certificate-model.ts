@@ -1,9 +1,8 @@
-
-import { createHash } from "node:crypto"
 import { MAX_CERTIFICATE_ENTRIES } from "@civfix/shared"
 import type { VolunteerHoursSource } from "@civfix/shared"
 import { resolveLocale } from "../i18n/locales.js"
-import { renderMessage, type MessageKey } from "../i18n/renderMessage.js"
+import { sha256HexSync } from "../lib/hash.js"
+import { renderMessage } from "../i18n/renderMessage.js"
 
 export const CERTIFICATE_TIME_ZONE = "America/Los_Angeles"
 
@@ -48,7 +47,7 @@ export type CertificateTranslator = (
 
 export function certificateTranslator(locale: unknown): CertificateTranslator {
   const resolved = resolveLocale(locale)
-  return (key, vars) => renderMessage(resolved, key as unknown as MessageKey, vars)
+  return (key, vars) => renderMessage(resolved, key, vars)
 }
 
 export interface TranscriptLedgerRow {
@@ -102,7 +101,10 @@ export interface BuildTranscriptModelInput {
   t?: CertificateTranslator
 }
 
-const EMPTY_CELL = "—"
+// An en dash, not a hyphen: it reads as "no value" in print and matches the period range glyph.
+export const EMPTY_VALUE = "–"
+
+const COMMUNITIES_NAMED_ON_TILE = 2
 
 function toIso(value: Date | string): string {
   return typeof value === "string" ? new Date(value).toISOString() : value.toISOString()
@@ -126,7 +128,7 @@ function activityLabel(row: TranscriptLedgerRow, t: CertificateTranslator): stri
     case "manual":
       return t("certificate.activity.manual")
     case "event":
-      return row.eventTitle?.trim() || row.eventReferenceCode?.trim() || EMPTY_CELL
+      return row.eventTitle?.trim() || row.eventReferenceCode?.trim() || EMPTY_VALUE
   }
 }
 
@@ -151,7 +153,7 @@ export function buildTranscriptModel(input: BuildTranscriptModelInput): Transcri
 
   const rows: TranscriptModelRow[] = included.map((row) => {
     const occurredAt = toIso(row.occurredAt)
-    const community = row.jurisdictionName?.trim() || EMPTY_CELL
+    const community = row.jurisdictionName?.trim() || EMPTY_VALUE
     return {
       id: row.id,
       source: row.source,
@@ -166,7 +168,7 @@ export function buildTranscriptModel(input: BuildTranscriptModelInput): Transcri
 
   const jurisdictions: string[] = []
   for (const row of rows) {
-    if (row.community !== EMPTY_CELL && !jurisdictions.includes(row.community)) {
+    if (row.community !== EMPTY_VALUE && !jurisdictions.includes(row.community)) {
       jurisdictions.push(row.community)
     }
   }
@@ -196,8 +198,8 @@ export function communitiesLabel(
   jurisdictions: readonly string[],
   t: CertificateTranslator,
 ): string {
-  const shown = jurisdictions.slice(0, 2).join(", ")
-  const extra = jurisdictions.length - 2
+  const shown = jurisdictions.slice(0, COMMUNITIES_NAMED_ON_TILE).join(", ")
+  const extra = jurisdictions.length - COMMUNITIES_NAMED_ON_TILE
   if (extra <= 0) return shown
   return `${shown} ${t("certificate.summary.more", { count: extra })}`.trim()
 }
@@ -213,5 +215,5 @@ export function ledgerFingerprint(model: TranscriptModel): string {
     count: model.entryCount,
     rows: model.rows.map((row) => [row.id, row.hours.toFixed(2), row.occurredAt]),
   })
-  return createHash("sha256").update(basis).digest("hex")
+  return sha256HexSync(basis)
 }

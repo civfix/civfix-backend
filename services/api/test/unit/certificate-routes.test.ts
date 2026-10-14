@@ -1,16 +1,14 @@
 /**
- * Service-hours certificate routes (DP §8.5) — `app.inject` over `certificateOverrides`, no DB.
- *
  * THE HIGHEST-VALUE TEST IN THIS FILE is `presignGet(key, 900, { forceSigned: true })`. `FakeStorage`
  * declares `presignGet(key, _ttlSec)` and always returns `memory://<key>`, so asserting on the returned
- * STRING proves exactly nothing about the third argument — and in production `R2_PUBLIC_BASE` is set, so
- * a missing `forceSigned` makes `R2Storage.presignGet` hand back an UNSIGNED, PERMANENT CDN URL. That
- * would publish every volunteer's itemised service record forever, with no expiry and no revocation
- * (finding H9). A thin recording wrapper is therefore injected and its ARGUMENTS are asserted.
+ * STRING proves nothing about the third argument, and in production `R2_PUBLIC_BASE` is set, so a
+ * missing `forceSigned` makes `R2Storage.presignGet` hand back an UNSIGNED, PERMANENT CDN URL. That
+ * would publish every volunteer's itemised service record forever, with no expiry and no revocation.
+ * A thin recording wrapper is therefore injected and its ARGUMENTS are asserted.
  *
  * The other rules pinned here: an empty ledger is a 409 (no empty official-looking documents), a repeat
  * tap reuses one document rather than minting a second, an edited ledger row mints a genuinely new one,
- * revoking someone else's code is a 404 (never a 403 — no existence oracle), and the PUBLIC verification
+ * revoking someone else's code is a 404 (never a 403: no existence oracle), and the PUBLIC verification
  * projection leaks no url / userId / r2Key.
  */
 
@@ -20,15 +18,15 @@ import { randomUUID } from "node:crypto"
 import { CERTIFICATE_CODE_RE, formatCertificateCode } from "@civfix/shared"
 import { FakeMailer, FakeStorage } from "@civfix/shared/fakes"
 import type { StorageHead, StoragePutMeta } from "@civfix/shared/interfaces"
-import { buildServer } from "../../src/server.js"
-import { buildContainer } from "../../src/di.js"
+import { makeServer } from "../../src/server.js"
+import { makeContainer } from "../../src/di.js"
 import { loadEnv } from "../../src/env.js"
 import { InMemoryCacheClient } from "../../src/auth/cache.js"
 import { makeInMemoryStores } from "../../src/auth/stores.js"
-import { buildAuthServices } from "../../src/auth/auth-services.js"
+import { makeAuthServices } from "../../src/auth/auth-services.js"
 import { StubJwksVerifier } from "../helpers/auth.js"
-import { InMemoryVolunteerHoursRepository } from "../../src/services/volunteer-hours-repository.memory.js"
-import { InMemoryCertificateRepository } from "../../src/services/certificate-repository.memory.js"
+import { InMemoryVolunteerHoursRepository } from "../helpers/volunteer-hours-repository.memory.js"
+import { InMemoryCertificateRepository } from "../helpers/certificate-repository.memory.js"
 import {
   makeCertificateService,
   type CertificateStorage,
@@ -103,7 +101,7 @@ async function makeHarness(): Promise<Harness> {
   const env = loadEnv({ NODE_ENV: "test" })
   const stores = makeInMemoryStores()
   const mailer = new FakeMailer()
-  const authServices = buildAuthServices({
+  const authServices = makeAuthServices({
     stores,
     cache: new InMemoryCacheClient(() => Date.now()),
     mailer,
@@ -118,8 +116,8 @@ async function makeHarness(): Promise<Harness> {
   const objects = new FakeStorage()
   const storage = new RecordingStorage(objects)
 
-  const container = buildContainer(env)
-  const app = await buildServer({
+  const container = makeContainer(env)
+  const app = await makeServer({
     env,
     container,
     authServices,
@@ -216,7 +214,6 @@ describe("POST /me/volunteer-hours/certificates", () => {
     const res = await issue(h.app, me)
     expect(res.statusCode).toBe(409)
     expect(res.json().code).toBe("CONFLICT")
-    // Nothing was rendered or stored on the refusal path.
     expect(h.objects.objects.size).toBe(0)
   })
 
@@ -227,10 +224,10 @@ describe("POST /me/volunteer-hours/certificates", () => {
 
     const res = await issue(h.app, me)
     expect(res.statusCode).toBe(200)
-    const body = res.json() as {
+    const body = res.json<{
       certificate: { code: string; url: string | null; status: string; totalHours: number }
       reused?: boolean
-    }
+    }>()
     expect(body.certificate.code).toMatch(CERTIFICATE_CODE_RE)
     expect(body.certificate.status).toBe("valid")
     expect(body.certificate.totalHours).toBe(4.5)
@@ -246,7 +243,6 @@ describe("POST /me/volunteer-hours/certificates", () => {
     expect(head?.contentDisposition).toBe(
       `inline; filename="civfix-service-hours-${formatCertificateCode(body.certificate.code)}.pdf"`,
     )
-    // Really a PDF, not an empty buffer.
     expect(Buffer.from(h.objects.get(key)!).subarray(0, 5).toString()).toBe("%PDF-")
   })
 
@@ -277,7 +273,7 @@ describe("POST /me/volunteer-hours/certificates", () => {
     expect(second.json().reused).toBe(true)
     expect(h.objects.objects.size).toBe(1)
     expect(h.certs.all()).toHaveLength(1)
-    // The reuse path still mints a fresh URL — that is the whole point of calling again.
+    // The reuse path still mints a fresh URL; that is the whole point of calling again.
     expect(second.json().certificate.url).toBeTruthy()
     expect(h.storage.presigns).toHaveLength(2)
   })
@@ -291,7 +287,7 @@ describe("POST /me/volunteer-hours/certificates", () => {
     expect(first.statusCode).toBe(200)
 
     // The host corrects the credit. `volunteer_hours.id` survives the upsert, so the row identity is
-    // stable and only `hours` moves — which is exactly what the fingerprint keys on.
+    // stable and only `hours` moves, which is exactly what the fingerprint keys on.
     await h.hours.logEventHours({
       actorId: "00000000-0000-4000-8000-0000000000aa",
       cleanupId,
@@ -346,7 +342,7 @@ describe("GET /me/volunteer-hours/certificates", () => {
       headers: bearer(me),
     })
     expect(res.statusCode).toBe(200)
-    const list = res.json() as { certificates: { code: string; url: string | null }[] }
+    const list = res.json<{ certificates: { code: string; url: string | null }[] }>()
     expect(list.certificates).toHaveLength(1)
     expect(list.certificates[0]!.url).toBeNull()
     expect(h.storage.presigns).toHaveLength(presignsAfterIssue)
@@ -400,7 +396,7 @@ describe("POST /me/volunteer-hours/certificates/:code/revoke", () => {
     expect(second.json().reused).toBe(false)
   })
 
-  it("404s (NOT 403) when the code belongs to somebody else — no existence oracle", async () => {
+  it("404s (NOT 403) when the code belongs to somebody else: no existence oracle", async () => {
     const h = await makeHarness()
     const owner = await h.signIn("owner@example.com", "Owner")
     const stranger = await h.signIn("stranger@example.com", "Stranger")
@@ -415,7 +411,6 @@ describe("POST /me/volunteer-hours/certificates/:code/revoke", () => {
       payload: {},
     })
     expect(res.statusCode).toBe(404)
-    // The owner's document is untouched.
     expect(h.objects.objects.size).toBe(1)
   })
 })
@@ -443,7 +438,7 @@ describe("certificate service: recovery branches", () => {
 
     const second = await issue(h.app, me)
     expect(second.statusCode).toBe(200)
-    // SAME document: same code, same key, no second row — a re-render, not a re-issue.
+    // SAME document: same code, same key, no second row. A re-render, not a re-issue.
     expect(second.json().certificate.code).toBe(code)
     expect(second.json().reused).toBe(true)
     expect([...h.objects.objects.keys()]).toEqual([key])
@@ -550,7 +545,7 @@ describe("GET /service-hours/verify/:code (public)", () => {
 
     const res = await verifyCode(h, code)
     expect(res.statusCode).toBe(200)
-    const body = res.json() as Record<string, unknown>
+    const body = res.json<Record<string, unknown>>()
     expect(body.status).toBe("valid")
     expect(body.holderName).toBe("Jane Doe")
     expect(body.totalHours).toBe(12.5)
@@ -573,7 +568,7 @@ describe("GET /service-hours/verify/:code (public)", () => {
 
     const res = await verifyCode(h, code)
     expect(res.statusCode).toBe(200)
-    const body = res.json() as Record<string, unknown>
+    const body = res.json<Record<string, unknown>>()
     expect(body.status).toBe("revoked")
     expect(body.revokedReason).toBe("holder")
     // The person holding the paper learns WHY it is not good.
@@ -587,7 +582,7 @@ describe("GET /service-hours/verify/:code (public)", () => {
 
     const res = await verifyCode(h, code)
     expect(res.statusCode).toBe(200)
-    const body = res.json() as Record<string, unknown>
+    const body = res.json<Record<string, unknown>>()
     expect(body.status).toBe("revoked")
     expect(body.revokedReason).toBe("account_closed")
     expect(Object.keys(body)).not.toContain("holderName")

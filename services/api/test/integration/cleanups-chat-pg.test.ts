@@ -18,16 +18,16 @@ import { randomUUID } from "node:crypto"
 import type { FastifyInstance } from "fastify"
 import { withPg, type PgHarness } from "../helpers/pg.js"
 import { signupSeat } from "../helpers/cleanups.js"
-import { buildServer } from "../../src/server.js"
-import { buildContainer } from "../../src/di.js"
+import { makeServer } from "../../src/server.js"
+import { makeContainer } from "../../src/di.js"
 import { loadEnv } from "../../src/env.js"
 import { InMemoryCacheClient } from "../../src/auth/cache.js"
 import { makeInMemoryStores } from "../../src/auth/stores.js"
-import { buildAuthServices } from "../../src/auth/auth-services.js"
+import { makeAuthServices } from "../../src/auth/auth-services.js"
 import { StubJwksVerifier } from "../helpers/auth.js"
 import { makeDrizzleCleanupRepository } from "../../src/services/cleanup-repository.drizzle.js"
 import { makeDrizzleChatRepository } from "../../src/services/chat-repository.drizzle.js"
-import { makeDrizzleChatReadState } from "../../src/services/chat-read-state.drizzle.js"
+import { makeDrizzleChatReadState } from "../../src/services/read-watermark-repository.drizzle.js"
 import { makeCleanupService } from "../../src/services/cleanup-service.js"
 
 const pg = await withPg()
@@ -43,7 +43,6 @@ describe.skipIf(!pg)("cleanups + chat (integration)", () => {
     await h.teardown()
   })
 
-  /** Insert a user and return its id. */
   async function newUser(name: string): Promise<string> {
     const [u] = await h.sql<{ id: string }[]>`
       INSERT INTO users (display_name) VALUES (${name}) RETURNING id
@@ -190,7 +189,10 @@ describe.skipIf(!pg)("cleanups + chat (integration)", () => {
     const chatRepo = makeDrizzleChatRepository(h.sql)
     // Room A has 3 messages; room B has 1 message whose id we will (mis)use as a cursor against room A.
     for (let i = 1; i <= 3; i++) {
-      await chatRepo.insertMessage({ cleanupId: roomA.id, userId: organizerId, body: `a${i}` }, randomUUID())
+      await chatRepo.insertMessage(
+        { cleanupId: roomA.id, userId: organizerId, body: `a${i}` },
+        randomUUID(),
+      )
     }
     const bMsg = await chatRepo.insertMessage(
       { cleanupId: roomB.id, userId: organizerId, body: "b1" },
@@ -252,18 +254,18 @@ describe.skipIf(!pg)("cleanups + chat (integration)", () => {
   it("GET /cleanups/:id/messages is membership-gated against real Postgres (200 member, 403 non-member)", async () => {
     // Real DB-backed cleanup routes (no cleanupOverrides) + an in-memory auth bundle for sessions.
     const env = loadEnv({ NODE_ENV: "test", DATABASE_URL: h.uri })
-    const container = buildContainer(env)
+    const container = makeContainer(env)
     const stores = makeInMemoryStores()
     const cache = new InMemoryCacheClient(() => Date.now())
-    const authServices = buildAuthServices({
+    const authServices = makeAuthServices({
       stores,
       cache,
-      mailer: container.mailer as never,
+      mailer: container.mailer,
       oauthConfig: {},
       verifier: new StubJwksVerifier(),
       now: () => Date.now(),
     })
-    const app: FastifyInstance = await buildServer({ env, container, authServices })
+    const app: FastifyInstance = await makeServer({ env, container, authServices })
 
     try {
       // Create a cleanup owned by an organizer who is also a real session user.
@@ -289,7 +291,11 @@ describe.skipIf(!pg)("cleanups + chat (integration)", () => {
       )
 
       // Seed a message via the chat seam so history is non-empty.
-      await container.chatService.persist({ cleanupId: created.id, userId: organizerId, body: "hello" })
+      await container.chatService.persist({
+        cleanupId: created.id,
+        userId: organizerId,
+        body: "hello",
+      })
 
       // Member (organizer) -> 200.
       const ok = await app.inject({
@@ -317,20 +323,20 @@ describe.skipIf(!pg)("cleanups + chat (integration)", () => {
 
   it("P1: reaction toggle honors the WIDENED allowlist end-to-end (laugh -> 200 + summary; unknown -> 422)", async () => {
     // Full server against the real DB (same wiring as the membership-gated route test above) so the
-    // POST /cleanups/:id/messages/:messageId/reactions path — shared-schema parse included — runs for real.
+    // POST /cleanups/:id/messages/:messageId/reactions path, shared-schema parse included, runs for real.
     const env = loadEnv({ NODE_ENV: "test", DATABASE_URL: h.uri })
-    const container = buildContainer(env)
+    const container = makeContainer(env)
     const stores = makeInMemoryStores()
     const cache = new InMemoryCacheClient(() => Date.now())
-    const authServices = buildAuthServices({
+    const authServices = makeAuthServices({
       stores,
       cache,
-      mailer: container.mailer as never,
+      mailer: container.mailer,
       oauthConfig: {},
       verifier: new StubJwksVerifier(),
       now: () => Date.now(),
     })
-    const app: FastifyInstance = await buildServer({ env, container, authServices })
+    const app: FastifyInstance = await makeServer({ env, container, authServices })
 
     try {
       const organizerId = await newUser("Org Reaction")
@@ -357,7 +363,7 @@ describe.skipIf(!pg)("cleanups + chat (integration)", () => {
         randomUUID(),
       )
 
-      // "laugh" is one of the two P1 additions (append-only widening 6 -> 8): the shared schema at the
+      // "laugh" is one of the two later additions (append-only widening 6 -> 8): the shared schema at the
       // route boundary must accept it and the toggle must land in chat_reactions.
       const on = await app.inject({
         method: "POST",
@@ -377,7 +383,9 @@ describe.skipIf(!pg)("cleanups + chat (integration)", () => {
         payload: { emoji: "laugh" },
       })
       expect(off.statusCode).toBe(200)
-      expect((off.json().reactions as { emoji: string }[]).some((r) => r.emoji === "laugh")).toBe(false)
+      expect((off.json().reactions as { emoji: string }[]).some((r) => r.emoji === "laugh")).toBe(
+        false,
+      )
 
       // The allowlist is widened, not open: a name outside the 8 still fails schema parse.
       const rejected = await app.inject({
@@ -439,7 +447,7 @@ describe.skipIf(!pg)("cleanups + chat (integration)", () => {
     const removed = await service.removeMember(created.id, organizerId, bobId)
     expect(removed).toEqual({ ok: true, going: 2 })
     expect(await repo.isMember(created.id, bobId)).toBe(false)
-    // M17: the same transaction wrote the ban that makes the removal stick — the self-service join
+    // The same transaction wrote the ban that makes the removal stick: the self-service join
     // now refuses instead of silently re-creating the membership row.
     expect(await repo.isBanned(created.id, bobId)).toBe(true)
     expect(await repo.joinCleanupTx(created.id, bobId, signupSeat())).toBe("banned")

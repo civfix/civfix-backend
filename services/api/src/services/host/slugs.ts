@@ -1,5 +1,7 @@
 import { AppError } from "@civfix/shared"
 
+const RESERVED_NAME_MESSAGE = "that name is reserved"
+
 export const RESERVED_SLUGS: ReadonlySet<string> = new Set([
   "about",
   "account",
@@ -77,8 +79,12 @@ export const RESERVED_SLUGS: ReadonlySet<string> = new Set([
   "www",
 ])
 
-export function assertSlugAllowed(slug: string, field: string): void {
+export function assertSlugAllowed(
+  slug: string,
+  field: string,
+  message: string = RESERVED_NAME_MESSAGE,
+): void {
   if (RESERVED_SLUGS.has(slug)) {
-    throw AppError.validation({ [field]: "that name is reserved" })
+    throw AppError.validation({ [field]: message })
   }
 }

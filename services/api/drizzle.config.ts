@@ -1,15 +1,12 @@
 import { defineConfig } from "drizzle-kit"
 
 /**
- * Drizzle Kit config -- FOR DIFF INSPECTION ONLY.
+ * FOR DIFF INSPECTION ONLY. The CANONICAL DDL is the hand-authored ./drizzle/NNNN_*.sql, applied by
+ * src/db/migrate.ts: drizzle-kit cannot express PostGIS geometry, GiST indexes, or declarative
+ * partitioning, so it is NOT the migration generator here. It stays configured only so `pnpm
+ * db:generate` can show how the Drizzle table models differ from a baseline.
  *
- * The CANONICAL DDL for civfix is the hand-authored SQL in ./drizzle (0000_extensions.sql,
- * 0001_core.sql, 0002_chat_partitioning.sql), applied by src/db/migrate.ts. drizzle-kit cannot
- * express PostGIS geometry, GiST indexes, or declarative partitioning, so it is NOT the migration
- * generator here. We keep it configured only so a developer can run `pnpm db:generate` to eyeball
- * how the Drizzle table models differ from a baseline.
- *
- * IMPORTANT - two deliberate choices:
+ * Two deliberate choices:
  *   1. `out` points at ./drizzle/_generated (NOT ./drizzle) so generated artifacts can never collide
  *      with or be picked up alongside the canonical hand SQL that the migrate runner applies.
  *   2. drizzle-kit@0.28 loads the schema through esbuild-register (CJS), which does not rewrite the

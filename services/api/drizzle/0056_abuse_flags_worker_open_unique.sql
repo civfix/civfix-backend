@@ -13,7 +13,7 @@
 -- media was supposed to carry a review flag), and the job is otherwise
 -- idempotent, so the right place to absorb the retry is the database: at most one
 -- OPEN worker-raised flag per (subject_type, subject_id, reason), which lets
--- insertAbuseFlag use ON CONFLICT DO NOTHING (media-worker-repo.ts).
+-- insertAbuseFlag use ON CONFLICT DO NOTHING (media-worker-repository.drizzle.ts).
 --
 -- SCOPED TO source = 'worker' ON PURPOSE. The other writers must keep inserting
 -- freely: admin discovery "start task" inserts ('report', id, 'manual', 'api')

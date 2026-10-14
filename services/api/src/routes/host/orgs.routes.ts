@@ -49,7 +49,11 @@ import {
 import { makeContainerCleanupService } from "../cleanups.routes.js"
 import { CLEANUPS_DEFAULT_LIMIT } from "../../services/cleanup-service.js"
 import { makeDrizzleOrganizationRepository } from "../../services/host/organization-repository.drizzle.js"
-import type { OrganizationRepository } from "../../services/host/organization-repository.types.js"
+import type { OrganizationRepository } from "../../services/host/organization-repository.js"
+import { webBaseUrlOf } from "../../lib/base-url.js"
+
+const ONE_MINUTE = "1 minute"
+const ONE_HOUR = "1 hour"
 
 export interface OrganizationOverrides {
   repo: OrganizationRepository
@@ -90,15 +94,15 @@ const OrgEventsQuerySchema = z
   })
   .strict()
 
-export const CREATE_ORG_RATE_LIMIT = perIdentity({ max: 5, timeWindow: "1 hour" })
+export const CREATE_ORG_RATE_LIMIT = perIdentity({ max: 5, timeWindow: ONE_HOUR })
 
-export const ORG_MUTATION_RATE_LIMIT = perIdentity({ max: 30, timeWindow: "1 minute" })
+export const ORG_MUTATION_RATE_LIMIT = perIdentity({ max: 30, timeWindow: ONE_MINUTE })
 
-export const ORG_INVITE_RATE_LIMIT = perIdentity({ max: 20, timeWindow: "1 hour" })
+export const ORG_INVITE_RATE_LIMIT = perIdentity({ max: 20, timeWindow: ONE_HOUR })
 
-export const ORG_VERIFICATION_RATE_LIMIT = perIdentity({ max: 3, timeWindow: "1 hour" })
+export const ORG_VERIFICATION_RATE_LIMIT = perIdentity({ max: 3, timeWindow: ONE_HOUR })
 
-export const PUBLIC_ORG_READ_RATE_LIMIT = perHost({ max: 120, timeWindow: "1 minute" })
+export const PUBLIC_ORG_READ_RATE_LIMIT = perHost({ max: 120, timeWindow: ONE_MINUTE })
 
 const CreateOrganizationBodySchema = trimTextFields(
   CreateOrganizationRequestSchema,
@@ -129,6 +133,7 @@ export function makeContainerOrganizationService(
       ...(overrides.newToken !== undefined ? { newToken: overrides.newToken } : {}),
       ...(overrides.mailer !== undefined ? { mailer: overrides.mailer } : {}),
       ...(overrides.notifier !== undefined ? { notifier: overrides.notifier } : {}),
+      webOrigin: webBaseUrlOf(container.env),
       logger: app.log,
     })
   }
@@ -144,9 +149,7 @@ export function makeContainerOrganizationService(
       createNotification: (userId, input) =>
         container.getNotificationService(app.log).createNotification(userId, input),
     },
-    ...(container.env.WEB_ORIGINS[0] !== undefined
-      ? { webOrigin: container.env.WEB_ORIGINS[0] }
-      : {}),
+    webOrigin: webBaseUrlOf(container.env),
     logger: app.log,
   })
 }
@@ -265,7 +268,11 @@ export async function registerHostOrgRoutes(
         ...(request.body as object),
         id,
       })
-      const payload: InviteOrganizationMemberResponse = await service().inviteMember(id, userId, body)
+      const payload: InviteOrganizationMemberResponse = await service().inviteMember(
+        id,
+        userId,
+        body,
+      )
       reply.status(200).send(payload)
     },
   )

@@ -38,17 +38,16 @@ describe("JURISDICTION_RESOLVE_SQL", () => {
   })
 
   it("embeds the shared JURISDICTION_LAYER_RANK_CASE constant so the resolver and backfill can never drift", () => {
-    // The resolver and the Phase-5 backfill CLI both interpolate this one constant; asserting the
+    // The resolver and the backfill CLI both interpolate this one constant; asserting the
     // RESOLVE_SQL contains it byte-for-byte proves the refactor preserved the SQL AND that there is a
     // single ranking source of truth.
     expect(JURISDICTION_RESOLVE_SQL).toContain(JURISDICTION_LAYER_RANK_CASE)
   })
 
-  // --- the same-layer tie-break (audit 2026-07-24, db MEDIUM) --------------------------------------
   // The rank CASE alone left SAME-LAYER overlaps (PAD-US federal Fee parcels, a dev-seeded fixture
   // polygon over the real boundary it duplicates) undecided, so Postgres was free to return either row:
-  // the write-time resolver and the keyset backfill could stamp DIFFERENT geoids — hence different
-  // routing — for one point. `priority, geoid` makes the choice a total order. These assertions pin the
+  // the write-time resolver and the keyset backfill could stamp DIFFERENT geoids, hence different
+  // routing, for one point. `priority, geoid` makes the choice a total order. These assertions pin the
   // whole ORDER BY list, because "the rank case is present" (above) stayed true while the tie-breaks
   // were missing, which is exactly how the bug survived.
 
@@ -77,7 +76,7 @@ describe("JURISDICTION_RESOLVE_ORDER_BY", () => {
     )
   })
 
-  it("ends with `END, priority, geoid` — rank first, then curated priority, then the PK", () => {
+  it("ends with `END, priority, geoid`: rank first, then curated priority, then the PK", () => {
     expect(JURISDICTION_RESOLVE_ORDER_BY.endsWith("END, priority, geoid")).toBe(true)
     // Order among the tie-breaks matters: `priority` (curated per-row ordering within a layer) must be
     // consulted BEFORE the arbitrary-but-total `geoid`.

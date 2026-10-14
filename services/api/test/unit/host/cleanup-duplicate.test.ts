@@ -35,14 +35,16 @@ function request(over: Partial<DuplicateCleanupRequest> & { id: string }): Dupli
 }
 
 function seedSource(over: Parameters<InMemoryCleanupRepository["seedCleanup"]>[0] = {}) {
+  // One clock read for both ends: two reads can straddle a millisecond and stretch the duration.
+  const startsAtMs = Date.now() + DAY_MS
   return repo.seedCleanup({
     organizerUserId: ORG,
     title: "Ballona sweep",
     description: "Bring boots",
     address: "North gate",
     bring: ["gloves", "bags"],
-    scheduledAt: new Date(Date.now() + DAY_MS),
-    endsAt: new Date(Date.now() + DAY_MS + 3 * HOUR_MS),
+    scheduledAt: new Date(startsAtMs),
+    endsAt: new Date(startsAtMs + 3 * HOUR_MS),
     timezone: "America/Los_Angeles",
     visibility: "public",
     reminderOffsetsMin: [1440],

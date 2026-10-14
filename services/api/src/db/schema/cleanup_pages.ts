@@ -25,8 +25,12 @@ export const cleanupPages = pgTable(
       .references(() => cleanups.id, { onDelete: "cascade" }),
     status: text("status").$type<EventPageStatusValue>().notNull().default("draft"),
     themeAccent: text("theme_accent").$type<ThemeAccentValue>().notNull().default("bloom"),
-    blocks: jsonb("blocks").notNull().default(sql`'[]'::jsonb`),
-    seo: jsonb("seo").notNull().default(sql`'{}'::jsonb`),
+    blocks: jsonb("blocks")
+      .notNull()
+      .default(sql`'[]'::jsonb`),
+    seo: jsonb("seo")
+      .notNull()
+      .default(sql`'{}'::jsonb`),
     publishedAt: timestamp("published_at", { withTimezone: true }),
     publishedBy: uuid("published_by").references(() => users.id),
     flaggedAt: timestamp("flagged_at", { withTimezone: true }),
