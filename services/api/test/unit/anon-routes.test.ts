@@ -91,6 +91,7 @@ async function makeHarness(): Promise<Harness> {
       following: false,
       media: [],
       mediaPending: 0,
+      mediaRejected: 0,
       timeline: [],
       linkedEvents: [],
     })

@@ -93,6 +93,7 @@ async function buildFullFakeServer(): Promise<FastifyInstance> {
       following: false,
       media: [],
       mediaPending: 0,
+      mediaRejected: 0,
       timeline: [],
       linkedEvents: [],
     })

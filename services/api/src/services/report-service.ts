@@ -184,6 +184,7 @@ export function makeReportService(deps: ReportServiceDeps): ReportService {
       following: false,
       media: mediaDTOs,
       mediaPending: flags.mediaPending ?? 0,
+      mediaRejected: 0,
       timeline: timeline.map(toTimelineDTO),
       linkedEvents: flags.linkedEvents ?? [],
       ...discussionFields(flags.discussionMeta ?? null),

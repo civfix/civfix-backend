@@ -75,8 +75,8 @@ importers:
         specifier: ^3.1147.0
         version: 3.1147.0
       '@civfix/shared':
-        specifier: 0.59.0-b-chore-cleanup-integration.gcf0a8d9
-        version: 0.59.0-b-chore-cleanup-integration.gcf0a8d9
+        specifier: 0.60.0-b-chore-cleanup-integration.g032498a
+        version: 0.60.0-b-chore-cleanup-integration.g032498a
       '@fastify/cookie':
         specifier: ^11.1.2
         version: 11.1.2
@@ -220,8 +220,8 @@ importers:
         specifier: workspace:*
         version: link:../api
       '@civfix/shared':
-        specifier: 0.59.0-b-chore-cleanup-integration.gcf0a8d9
-        version: 0.59.0-b-chore-cleanup-integration.gcf0a8d9
+        specifier: 0.60.0-b-chore-cleanup-integration.g032498a
+        version: 0.60.0-b-chore-cleanup-integration.g032498a
       '@sentry/node':
         specifier: ^10.76.1
         version: 10.76.1(@opentelemetry/core@2.12.0(@opentelemetry/api@1.9.1))
@@ -374,8 +374,8 @@ packages:
   '@balena/dockerignore@1.0.2':
     resolution: {integrity: sha512-wMue2Sy4GAVTk6Ic4tJVcnfdau+gx2EnG7S+uAEe+TWJFqE4YoWN4/H8MSLj4eYJKxGg26lZwboEniNiNwZQ6Q==}
 
-  '@civfix/shared@0.59.0-b-chore-cleanup-integration.gcf0a8d9':
-    resolution: {integrity: sha512-EEv3TXhYwJMHn3E3fau/8z3tBNt/l8Gl07Un827s84y5aJnbr+v9oF6bSnScjQfQgxefdJYYwWyibdcnclFq+w==}
+  '@civfix/shared@0.60.0-b-chore-cleanup-integration.g032498a':
+    resolution: {integrity: sha512-Kxkj5oYUldMxMwQGCUrBwtyxjWaTEuLDG94Mm4LZ6VDS1TbgXWk3wwU6RZEBVeSDbmLrDcz17B+z3iOKMeg1Mg==}
     engines: {node: '>=20'}
 
   '@derhuerst/http-basic@8.2.4':
@@ -4473,7 +4473,7 @@ snapshots:
 
   '@balena/dockerignore@1.0.2': {}
 
-  '@civfix/shared@0.59.0-b-chore-cleanup-integration.gcf0a8d9':
+  '@civfix/shared@0.60.0-b-chore-cleanup-integration.g032498a':
     dependencies:
       zod: 3.25.76
 
