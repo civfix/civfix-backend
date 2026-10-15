@@ -557,7 +557,7 @@ export function makeDrizzleReportRepository(sql: Sql): ReportRepository {
           WHERE id = ${reportId}
           RETURNING confirm_count
         `
-        return { kind: "applied", confirmCount: updated[0]?.confirm_count ?? 0 }
+        return { kind: "applied", confirmCount: updated[0]!.confirm_count }
       })
     },
 

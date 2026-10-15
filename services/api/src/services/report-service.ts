@@ -242,25 +242,18 @@ export function makeReportService(deps: ReportServiceDeps): ReportService {
     const isPublic = isPubliclyVisibleStatus(record.status) && record.visibility === "public"
     if (!isPublic && !mine) return null
 
-    const [
-      media,
-      timeline,
-      mediaStates,
-      linkedEvents,
-      discussionMeta,
-      chatMeta,
-      confirmedByMe,
-    ] = await Promise.all([
-      deps.repo.findMediaForReport(record.id, mine),
-      deps.repo.findTimelineForReport(record.id),
-      deps.repo.countMediaStatesForReport(record.id),
-      linkedEventsFor(record.id),
-      discussionMetaFor(record.id),
-      chatMetaFor(record.id, viewerId),
-      opts.withConfirmedByMe === true && viewerId !== null && !mine
-        ? deps.repo.isConfirmedBy(record.id, viewerId)
-        : Promise.resolve(false),
-    ])
+    const [media, timeline, mediaStates, linkedEvents, discussionMeta, chatMeta, confirmedByMe] =
+      await Promise.all([
+        deps.repo.findMediaForReport(record.id, mine),
+        deps.repo.findTimelineForReport(record.id),
+        deps.repo.countMediaStatesForReport(record.id),
+        linkedEventsFor(record.id),
+        discussionMetaFor(record.id),
+        chatMetaFor(record.id, viewerId),
+        opts.withConfirmedByMe === true && viewerId !== null && !mine
+          ? deps.repo.isConfirmedBy(record.id, viewerId)
+          : Promise.resolve(false),
+      ])
 
     const validatingShown = media.reduce((n, m) => (m.status === "validating" ? n + 1 : n), 0)
     const mediaPending = Math.max(0, mediaStates.validating - validatingShown)
