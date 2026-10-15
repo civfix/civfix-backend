@@ -108,7 +108,7 @@ user, with no capabilities and no environment:
 
 | lane | what runs | where |
 | --- | --- | --- |
-| video probe / remux / poster frame | `ffprobe`, `ffmpeg` | child, uid 1001 |
+| video probe / remux / transcode / poster frame | `ffprobe`, `ffmpeg` (with libx264) | child, uid 1001 |
 | images + video poster post-processing + perceptual hash | `node dist/image-lane.js` (sharp/libvips) | child, uid 1001 |
 
 - **Empty environment.** Children get `extendEnv: false` and only `PATH` (the binary's own directory),
@@ -200,7 +200,7 @@ user, with no capabilities and no environment:
   left behind are reaped instead of accumulating as zombies against `pids_limit`.
 - **Boot self-check (`src/sandbox/preflight.ts`).** In production the worker asserts it is not root,
   resolves both binaries, hands over one scratch dir, runs the REAL image lane on a built-in 1×1 PNG and
-  the REAL video lane (probe, remux and poster-frame grab) on built-in 16×16 h264 and hevc clips that
+  the REAL video lane (probe, remux, H.264 transcode and poster-frame grab) on built-in 16×16 h264 and hevc clips that
   carry a rotation matrix (so a missing `dist/image-lane.js`, a `node_modules` the sandbox uid cannot
   read, a broken protocol, or an ffmpeg build missing a component the lanes use refuses the boot instead
   of rejecting every upload or silently dropping every poster frame), and (this

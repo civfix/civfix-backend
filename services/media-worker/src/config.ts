@@ -129,7 +129,7 @@ const DEFAULT_LIMITS = {
   transcodeTimeoutMs: 90_000,
   transcodeThreads: 1,
   imageTimeoutMs: 15_000,
-  jobTimeoutMs: 260_000,
+  jobTimeoutMs: 290_000,
   maxVideoDurationSec: 10,
   maxVideoPixels: 1920 * 1080,
   maxVideoEdge: 1920,
@@ -170,6 +170,40 @@ function assertImageLaneFitsJobBudget(limits: WorkerLimits): void {
     `media-worker: MEDIA_IMAGE_TIMEOUT_MS=${limits.imageTimeoutMs} gives an image lane budget of ` +
       `${laneMs}ms (${IMAGE_LANE_TIMED_PHASES} phases + ${IMAGE_LANE_SPAWN_OVERHEAD_MS}ms spawn overhead), ` +
       `which must stay below MEDIA_JOB_TIMEOUT_MS=${limits.jobTimeoutMs}. Lower the image timeout or ` +
+      "raise the job timeout.",
+  )
+}
+
+// The slowest accepted video, step by step inside one processing phase: probe, wait out the transcodes of
+// the other jobs in this worker's batch (one runs at a time), transcode, probe the output, grab the poster
+// frame, then the poster thumbnail through the image lane.
+export function videoPathTimeoutMs(
+  limits: Pick<
+    WorkerLimits,
+    | "ffprobeTimeoutMs"
+    | "ffmpegTimeoutMs"
+    | "transcodeTimeoutMs"
+    | "imageTimeoutMs"
+    | "mediaChecksConcurrency"
+  >,
+): number {
+  return (
+    2 * limits.ffprobeTimeoutMs +
+    limits.mediaChecksConcurrency * limits.transcodeTimeoutMs +
+    limits.ffmpegTimeoutMs +
+    imageLaneTimeoutMs(limits)
+  )
+}
+
+// A video whose tools all run to their own timeouts must still finish inside the processing budget: past
+// it the job is retried as infra rather than settled, and the abandoned transcode keeps the one slot busy.
+function assertVideoPathFitsJobBudget(limits: WorkerLimits): void {
+  const pathMs = videoPathTimeoutMs(limits)
+  if (pathMs < limits.jobTimeoutMs) return
+  throw new Error(
+    `media-worker: the slowest video path takes up to ${pathMs}ms (2 x MEDIA_FFPROBE_TIMEOUT_MS + ` +
+      "MEDIA_CHECKS_CONCURRENCY x MEDIA_TRANSCODE_TIMEOUT_MS + MEDIA_FFMPEG_TIMEOUT_MS + the image lane), " +
+      `which must stay below MEDIA_JOB_TIMEOUT_MS=${limits.jobTimeoutMs}. Lower those timeouts or ` +
       "raise the job timeout.",
   )
 }
@@ -248,6 +282,7 @@ export function loadLimits(source: NodeJS.ProcessEnv = process.env): WorkerLimit
     ),
   }
   assertImageLaneFitsJobBudget(limits)
+  assertVideoPathFitsJobBudget(limits)
   return limits
 }
 
