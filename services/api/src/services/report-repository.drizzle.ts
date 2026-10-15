@@ -23,6 +23,7 @@ import type {
   CreateReportTxArgs,
   CreateReportTxResult,
   OwnerToggleStatus,
+  ReportConfirmationOutcome,
   ReportMapPoint,
   ReportMediaView,
   ReportRecord,
@@ -437,6 +438,18 @@ export function makeDrizzleReportRepository(sql: Sql): ReportRepository {
         id: r.id,
       }))
       return { points: items.map(toMapPoint), nextCursor }
+    },
+
+    findPressing(): Promise<ReportMapPoint[]> {
+      throw new Error("not implemented")
+    },
+
+    setConfirmation(): Promise<ReportConfirmationOutcome> {
+      throw new Error("not implemented")
+    },
+
+    isConfirmedBy(): Promise<boolean> {
+      throw new Error("not implemented")
     },
 
     async resolveByOwner(

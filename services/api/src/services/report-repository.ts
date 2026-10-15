@@ -9,6 +9,7 @@ import type {
   ReportVisibility,
 } from "@civfix/shared"
 import type { ReportVisibilityTimelineKind } from "./report-types.js"
+import type { ConfirmationVerdict } from "./report-visibility.js"
 
 export interface ReportMediaView {
   id: string
@@ -50,6 +51,7 @@ export interface ReportRecord {
   createdAt: Date
   publishedAt: Date | null
   deletedAt: Date | null
+  confirmCount: number
 }
 
 export interface ReportMapPoint {
@@ -65,7 +67,11 @@ export interface ReportMapPoint {
   referenceCode: string | null
   thumbKey: string | null
   r2Key: string | null
+  confirmCount: number
 }
+
+export type ReportConfirmationOutcome =
+  { kind: "applied"; confirmCount: number } | { kind: Exclude<ConfirmationVerdict, "allowed"> }
 
 export interface CreateReportTxArgs {
   reportId: string
@@ -136,6 +142,18 @@ export interface ReportRepository {
     cursor: string | null
     limit: number
   }): Promise<{ points: ReportMapPoint[]; nextCursor: string | null }>
+  /** Open public reports in the bbox with at least one confirmation, most confirmed first, then newest. */
+  findPressing(bbox: BBox, limit: number): Promise<ReportMapPoint[]>
+  /**
+   * Adds (confirm) or removes (unconfirm) the user's confirmation, judged by confirmationVerdict and
+   * applied atomically with reports.confirm_count. Repeating either is a no-op that reports the count.
+   */
+  setConfirmation(
+    reportId: string,
+    userId: string,
+    action: "confirm" | "unconfirm",
+  ): Promise<ReportConfirmationOutcome>
+  isConfirmedBy(reportId: string, userId: string): Promise<boolean>
   resolveByOwner(
     reportId: string,
     userId: string,

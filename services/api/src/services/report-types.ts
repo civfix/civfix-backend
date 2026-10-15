@@ -4,7 +4,9 @@ import type {
   ListReportsSearchResponse,
   PaginationQuery,
   ReportCategory,
+  PressingReportsResponse,
   ReportClusterResponse,
+  ReportConfirmResponse,
   ReportDTO,
   ReportType,
   ReportVisibility,
@@ -109,4 +111,7 @@ export interface ReportService {
   searchReports(request: ReportSearchInput): Promise<ListReportsSearchResponse>
   resolveReport(userId: string, reportId: string, resolved: boolean): Promise<ReportDTO>
   unlistReport(userId: string, reportId: string, unlisted: boolean): Promise<ReportDTO>
+  confirmReport(userId: string, reportId: string): Promise<ReportConfirmResponse>
+  unconfirmReport(userId: string, reportId: string): Promise<ReportConfirmResponse>
+  pressingReports(bbox: BBox): Promise<PressingReportsResponse>
 }

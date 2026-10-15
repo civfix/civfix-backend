@@ -7,7 +7,7 @@ import type {
   ReportStatus,
   ReportType,
 } from "@civfix/shared"
-import { PUBLIC_REPORT_STATUSES } from "./report-visibility.js"
+import { PUBLIC_REPORT_STATUSES } from "@civfix/shared"
 import type {
   ReportMapPoint,
   ReportMediaView,

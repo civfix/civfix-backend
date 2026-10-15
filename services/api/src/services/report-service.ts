@@ -7,8 +7,10 @@ import type {
   ListReportsSearchResponse,
   MediaDTO,
   PaginationQuery,
+  PressingReportsResponse,
   ReportCategory,
   ReportClusterResponse,
+  ReportConfirmResponse,
   ReportDTO,
   ReportPinDTO,
   ReportTimelineEntryDTO,
@@ -450,6 +452,18 @@ export function makeReportService(deps: ReportServiceDeps): ReportService {
       if (outcome === "unchanged") return dto
       await maybeEmitTimeline(deps, { reportId, status: dto.status, kind, note })
       return dto
+    },
+
+    confirmReport(): Promise<ReportConfirmResponse> {
+      throw new Error("not implemented")
+    },
+
+    unconfirmReport(): Promise<ReportConfirmResponse> {
+      throw new Error("not implemented")
+    },
+
+    pressingReports(): Promise<PressingReportsResponse> {
+      throw new Error("not implemented")
     },
   }
   return service

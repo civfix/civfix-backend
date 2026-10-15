@@ -24,6 +24,7 @@ import {
 import { InMemoryModerationRepository } from "../helpers/admin/moderation-repository.memory.js"
 import { InMemoryMailRepository } from "../helpers/admin/mail-repository.memory.js"
 import { InMemoryInboundRepository } from "../helpers/admin/inbound-repository.memory.js"
+import { InMemoryForwardTemplateRepository } from "../helpers/admin/forward-template-repository.memory.js"
 import { makeOutboundMailService } from "../../src/services/admin/outbound-mail-service.js"
 
 const OPERATOR = "ops@civfix.org"
@@ -711,5 +712,27 @@ describe("F092: GET /admin/mail/:id presigns inbound attachment keys", () => {
     const inbound = dto.messages.at(-1)!
     expect(inbound.attachments).toHaveLength(50)
     expect(inbound.attachments.every((a) => a.key.startsWith("memory://"))).toBe(true)
+  })
+})
+
+describe("forward template preview", () => {
+  it("T33: renders {confirmations} with the sample value 4, as today", async () => {
+    h.app.adminMailOverrides = {
+      ...h.app.adminMailOverrides!,
+      forwardTemplates: new InMemoryForwardTemplateRepository(),
+    }
+    const res = await h.app.inject({
+      method: "POST",
+      url: "/v1/admin/mail/forward-template/preview",
+      headers: { authorization: `Bearer ${h.token}` },
+      payload: {
+        subjectTemplate: "Neighbors: {confirmations}",
+        bodyTemplate: "Confirmed by {confirmations} neighbors.",
+      },
+    })
+    expect(res.statusCode).toBe(200)
+    const body = res.json<{ subject: string; text: string }>()
+    expect(body.subject).toBe("Neighbors: 4")
+    expect(body.text).toContain("Confirmed by 4 neighbors.")
   })
 })

@@ -1,9 +1,10 @@
-import type { ReportStatus } from "@civfix/shared"
+import { OPEN_REPORT_STATUSES, PUBLIC_REPORT_STATUSES } from "@civfix/shared"
+import type { ReportVisibility } from "@civfix/shared"
 import type { DiscussionReportView } from "./discussion-repository.js"
 import type { OwnerToggleStatus } from "./report-repository.js"
 
 /**
- * The statuses at which a report is PUBLICLY readable.
+ * The statuses at which a report is PUBLICLY readable come from the contract's PUBLIC_REPORT_STATUSES.
  *
  * The lifecycle is submitted -> held -> published -> acknowledged -> in_progress -> resolved (+ rejected;
  * see admin/admin-report-status.ts). A pin goes live at `published` and STAYS live while the city works
@@ -17,15 +18,8 @@ import type { OwnerToggleStatus } from "./report-repository.js"
  * whose report is `resolved`, i.e. the product's headline "a fix happened" surface was structurally
  * unrenderable. Every consumer of this set (the SQL twin `publicReportFilter` in ./report-sql.ts,
  * `isReportVisibleTo` below, report-service.getReport, media-authorization's report lane, and the
- * owner-mutation 403-vs-404 decision in report-repository) MUST read it from here.
+ * owner-mutation 403-vs-404 decision in report-repository) MUST read it from the contract, never a copy.
  */
-export const PUBLIC_REPORT_STATUSES = [
-  "published",
-  "acknowledged",
-  "in_progress",
-  "resolved",
-] as const satisfies readonly ReportStatus[]
-
 export function isPubliclyVisibleStatus(status: string): boolean {
   return (PUBLIC_REPORT_STATUSES as readonly string[]).includes(status)
 }
@@ -60,4 +54,37 @@ export function isReportVisibleTo(
   const mine = viewerUserId !== null && report.reporterUserId === viewerUserId
   const isPublic = isPubliclyVisibleStatus(report.status) && report.visibility === "public"
   return isPublic || mine
+}
+
+export interface ConfirmationTarget {
+  reporterUserId: string | null
+  status: string
+  visibility: ReportVisibility
+  deletedAt: Date | null
+}
+
+export type ConfirmationVerdict = "allowed" | "not_found" | "forbidden" | "closed"
+
+/**
+ * Whether `userId` may add ("confirm") or remove ("unconfirm") a Me too on this report, in the contract's
+ * error order. Visibility is judged as a non-owner sees it, so a report its own reporter can still open
+ * (hidden, held, submitted, rejected) is `not_found` for them too, and never reveals that it exists.
+ * Removal works on any visible report, so a confirmation made before the report was resolved can still
+ * be taken back.
+ */
+export function confirmationVerdict(
+  report: ConfirmationTarget,
+  userId: string,
+  action: "confirm" | "unconfirm",
+): ConfirmationVerdict {
+  if (report.deletedAt !== null) return "not_found"
+  if (!isPubliclyVisibleStatus(report.status) || report.visibility !== "public") return "not_found"
+  if (report.reporterUserId === userId) return "forbidden"
+  if (
+    action === "confirm" &&
+    !(OPEN_REPORT_STATUSES as readonly string[]).includes(report.status)
+  ) {
+    return "closed"
+  }
+  return "allowed"
 }
