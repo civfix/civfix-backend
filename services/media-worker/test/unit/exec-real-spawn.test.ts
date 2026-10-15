@@ -1,5 +1,11 @@
-import { describe, expect, it } from "vitest"
-import { runTool, SandboxSpawnError, SandboxToolError } from "../../src/sandbox/exec.js"
+import { afterEach, describe, expect, it } from "vitest"
+import {
+  resetSandboxStopped,
+  runTool,
+  SandboxSpawnError,
+  SandboxToolError,
+  stopSandbox,
+} from "../../src/sandbox/exec.js"
 
 const OPTS = { timeoutMs: 5_000, maxStdoutBytes: 64 * 1024 }
 
@@ -111,5 +117,26 @@ describe("runTool classification against real children", () => {
       maxStdoutBytes: 1024,
     })
     expect(res.stdout).toBe("small")
+  })
+})
+
+describe("stopSandbox", () => {
+  afterEach(() => resetSandboxStopped())
+
+  it("kills a running child at once and refuses every later spawn", async () => {
+    const started = Date.now()
+    const running = runTool("shell", "/bin/sh", ["-c", "sleep 30 & sleep 30"], {
+      timeoutMs: 60_000,
+      maxStdoutBytes: 64 * 1024,
+    }).catch((e: unknown) => e)
+    await new Promise((resolve) => setTimeout(resolve, 200))
+
+    stopSandbox()
+
+    expect(await running).toBeInstanceOf(SandboxToolError)
+    expect(Date.now() - started).toBeLessThan(5_000)
+    const refused = await run(["-c", "exit 0"])
+    expect(refused).toBeInstanceOf(SandboxSpawnError)
+    expect(String(refused)).toContain("the media worker is stopping")
   })
 })

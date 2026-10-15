@@ -9,6 +9,7 @@ import type { FindPhashDuplicateFn } from "@civfix/api/adapters/abuse-checks"
 import { settleWithin } from "@civfix/api/timeout"
 import type { WorkerLimits } from "../config.js"
 import { DownloadTooLargeError, type DownloadedObject, type DownloadFn } from "../download.js"
+import { JobInterruptedError } from "../worker-jobs.js"
 import {
   resolveJobObs,
   type JobObs,
@@ -61,6 +62,11 @@ export interface MediaChecksDeps extends JobObsDeps {
   download: DownloadFn
   findPhashDuplicate?: FindPhashDuplicateFn
   publicMediaBase?: string
+  /**
+   * Aborted when the worker interrupts in-flight jobs on stop; it also kills the sandbox children then.
+   * A job that sees it before persisting anything hands itself back instead of judging the upload.
+   */
+  stopSignal?: AbortSignal
 }
 
 function publicMediaUrl(base: string, key: string): string {
@@ -183,6 +189,9 @@ async function processAsset(
   const processing = await runPipeline(asset, downloaded.bytes, deps)
   if (processing.settled) return processing.status
   const result = processing.value
+  // The result may come from a tool the stop killed (a transcode reads as failed, a frame grab as
+  // missing), so it is no verdict on the upload; nothing has been written yet, the raw upload included.
+  throwIfStopping(asset, deps)
 
   const publishes = result.status !== "rejected" && result.processedBytes !== null
   if (publishes) {
@@ -205,13 +214,17 @@ async function downloadUpload(
 ): Promise<PhaseOutcome<DownloadedObject>> {
   let downloaded: DownloadedObject
   const downloadAbort = new AbortController()
+  const downloadSignal = deps.stopSignal
+    ? AbortSignal.any([downloadAbort.signal, deps.stopSignal])
+    : downloadAbort.signal
   try {
     downloaded = await withJobTimeout(
-      deps.download(asset.r2Key, deps.limits.maxDownloadBytes, downloadAbort.signal),
+      deps.download(asset.r2Key, deps.limits.maxDownloadBytes, downloadSignal),
       deps.limits.jobTimeoutMs,
       () => downloadAbort.abort(),
     )
   } catch (err) {
+    throwIfStopping(asset, deps)
     if (err instanceof DownloadTooLargeError) {
       return rejectedOutcome(asset, deps, errNote("download too large", err))
     }
@@ -276,12 +289,24 @@ async function runPipeline(
     )
     return { settled: false, value: result }
   } catch (err) {
+    throwIfStopping(asset, deps)
     const retryable = retryableProcessFailure(err)
     if (retryable !== null) {
       throw retryableFailure(resolveJobObs(deps), err, { ...retryable, ids: { mediaId: asset.id } })
     }
     return rejectedOutcome(asset, deps, errNote("process failed", err))
   }
+}
+
+function throwIfStopping(asset: MediaWorkerAsset, deps: MediaChecksDeps): void {
+  if (deps.stopSignal?.aborted !== true) return
+  resolveJobObs(deps).log(
+    "media.checks: interrupted by the worker stopping, handing the job back",
+    {
+      mediaId: asset.id,
+    },
+  )
+  throw new JobInterruptedError()
 }
 
 async function uploadDriftBeforePublish(

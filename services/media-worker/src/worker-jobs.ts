@@ -19,7 +19,7 @@ import type PgBoss from "pg-boss"
 import type { Jobs, EnqueueOptions, JobHandler } from "@civfix/shared/interfaces"
 import { FakeJobs } from "@civfix/shared/fakes"
 import { parseBool } from "@civfix/api/env-parsers"
-import { assertRealSeamInProd, loadLimits } from "./config.js"
+import { assertRealSeamInProd } from "./config.js"
 
 /** Default ON outside production so the worker boots offline; an explicit ON in prod fails boot. */
 function useFakeJobs(source: NodeJS.ProcessEnv = process.env): boolean {
@@ -97,27 +97,52 @@ function toQueueOptions(
 }
 
 /**
- * Slack added to the per-job budget when sizing the graceful-stop timeout: the budget bounds processing,
- * not the persist round-trips that follow it.
+ * How long a job that is in flight at SIGTERM may keep running. After it the worker interrupts the job
+ * (jobs/media-checks.ts) and hands it back with JobInterruptedError, so a deploy waits seconds, not a
+ * transcode.
  */
-const STOP_GRACE_MARGIN_MS = 5_000
+export const IN_FLIGHT_GRACE_MS = 30_000
 
 /**
- * MEDIA_JOB_TIMEOUT_MS is applied PER PHASE, not per job: jobs/media-checks.ts wraps the download in one
- * withJobTimeout and processMedia in a SECOND one, so a job that stalls in both phases runs for ~2x the
- * budget before it even reaches the persist writes. Sizing the graceful stop at 1x therefore abandoned an
- * in-flight job that was still inside its own budget (the asset left `validating` until a sweep reconciles
- * it). Deriving 2x + margin here keeps the two consistent without collapsing the phases into one shared
- * budget, which would make a slow download eat the processing budget.
+ * After the interrupt: an interrupted job winds down and is handed back within milliseconds, and a job
+ * that was already writing its result finishes those writes. Only past this does pg-boss fail what is
+ * still active, which costs that job one retry.
  */
-const STOP_GRACE_PHASES = 2
+const HAND_BACK_MARGIN_MS = 15_000
 
 /**
- * Exported because it is the number the CONTAINER's SIGKILL grace must exceed (civfix-infra compose
- * `stop_grace_period`); see stop().
+ * The graceful-stop timeout passed to pg-boss. The container's SIGKILL grace (civfix-infra compose
+ * `stop_grace_period`) must exceed it; see stop().
  */
-export function stopGraceMsFor(jobTimeoutMs: number): number {
-  return STOP_GRACE_PHASES * jobTimeoutMs + STOP_GRACE_MARGIN_MS
+export const STOP_GRACE_MS = IN_FLIGHT_GRACE_MS + HAND_BACK_MARGIN_MS
+
+/**
+ * Thrown by a handler whose job was interrupted because the worker is stopping. The work loop hands the
+ * job back instead of failing it: an interruption says nothing about the job, so it must not spend one of
+ * the retries that decide whether an upload is given up on.
+ */
+export class JobInterruptedError extends Error {
+  constructor() {
+    super("the worker stopped before this job finished")
+    this.name = "JobInterruptedError"
+    Object.setPrototypeOf(this, JobInterruptedError.prototype)
+  }
+}
+
+/**
+ * Queue an interrupted job again as a fresh job and complete the interrupted one. pg-boss has no way to
+ * return an active job to the queue as it was: fail, and cancel + resume, both leave started_on set, so the
+ * next fetch counts a retry. The fresh job is sent first, so a failure between the two writes leaves a
+ * duplicate (the asset's status makes the second run a no-op) rather than a lost job. Under the "short"
+ * policy a job already waiting with the same singletonKey dedups the send, and that job does the work.
+ */
+async function handBack(boss: PgBoss, name: string, job: PgBoss.JobWithMetadata): Promise<void> {
+  const requeuedAs = await boss.send(
+    name,
+    job.data,
+    job.singletonKey !== null ? { singletonKey: job.singletonKey } : {},
+  )
+  await boss.complete(name, job.id, { interrupted: true, requeuedAs })
 }
 
 /**
@@ -139,7 +164,7 @@ export function stopGraceMsFor(jobTimeoutMs: number): number {
 async function settleEachJob(
   boss: PgBoss,
   name: string,
-  jobs: PgBoss.Job[],
+  jobs: PgBoss.JobWithMetadata[],
   handler: JobHandler,
 ): Promise<void> {
   const settled = await Promise.allSettled(
@@ -147,6 +172,10 @@ async function settleEachJob(
       try {
         await handler({ id: j.id, data: j.data })
       } catch (err) {
+        if (err instanceof JobInterruptedError) {
+          await handBack(boss, name, j)
+          return
+        }
         await boss.fail(name, j.id, toFailureOutput(err))
         return
       }
@@ -163,12 +192,10 @@ async function settleEachJob(
 
 export class PgBossWorkerJobs implements WorkerJobs {
   private readonly connectionString: string
-  private readonly stopGraceMs: number
   private boss: PgBoss | undefined
 
-  constructor(connectionString: string, jobTimeoutMs: number = loadLimits().jobTimeoutMs) {
+  constructor(connectionString: string) {
     this.connectionString = connectionString
-    this.stopGraceMs = stopGraceMsFor(jobTimeoutMs)
   }
 
   async start(): Promise<void> {
@@ -183,17 +210,14 @@ export class PgBossWorkerJobs implements WorkerJobs {
 
   async stop(): Promise<void> {
     if (!this.boss) return
-    // The explicit timeout must EXCEED the longest per-job budget (media.checks' MEDIA_JOB_TIMEOUT_MS
-    // wall-clock, charged ONCE PER PHASE - see stopGraceMsFor): pg-boss's 30s graceful default would
-    // abandon an in-flight media job on SIGTERM (the asset stuck `validating` until a sweep reconciles).
-    // That budget is ENV-TUNABLE, so the timeout is derived from it at construction instead of being a
-    // constant an operator can silently outgrow by raising MEDIA_JOB_TIMEOUT_MS.
+    // Graceful: pg-boss stops fetching at once and waits for the jobs in flight. The worker interrupts
+    // those after IN_FLIGHT_GRACE_MS and they hand themselves back, so the wait ends then; STOP_GRACE_MS
+    // only bounds a job that was writing its result at that moment.
     //
     // OPERATOR REQUIREMENT (different repo): the media-worker container's `stop_grace_period` in the
-    // civfix-infra compose file must EXCEED this value, or the runtime SIGKILLs the process mid-job and the
-    // derivation buys nothing. At the default budget that is 125s, so the compose needs >= ~150s (Docker's
-    // default is 10s). Raising MEDIA_JOB_TIMEOUT_MS raises this requirement with it.
-    await this.boss.stop({ graceful: true, wait: true, timeout: this.stopGraceMs })
+    // civfix-infra compose file must EXCEED STOP_GRACE_MS (45s), or the runtime SIGKILLs the process
+    // before an interrupted job is handed back (Docker's default is 10s). The compose sets 200s.
+    await this.boss.stop({ graceful: true, wait: true, timeout: STOP_GRACE_MS })
     this.boss = undefined
   }
 
@@ -243,13 +267,16 @@ export class PgBossWorkerJobs implements WorkerJobs {
     handler: JobHandler,
     settings?: WorkSettings,
   ): Promise<void> {
-    const options: PgBoss.WorkOptions = {}
+    // The metadata carries the singletonKey a handed-back job is re-sent with.
+    const options: PgBoss.WorkOptions & { includeMetadata: true } = { includeMetadata: true }
     if (settings?.batchSize !== undefined) options.batchSize = settings.batchSize
     if (settings?.pollingIntervalSeconds !== undefined) {
       options.pollingIntervalSeconds = settings.pollingIntervalSeconds
     }
     const boss = this.requireBoss()
-    await boss.work(name, options, (jobs: PgBoss.Job[]) => settleEachJob(boss, name, jobs, handler))
+    await boss.work(name, options, (jobs: PgBoss.JobWithMetadata[]) =>
+      settleEachJob(boss, name, jobs, handler),
+    )
   }
 
   async complete(jobId: string): Promise<void> {
@@ -322,6 +349,6 @@ export function makeJobs(source: NodeJS.ProcessEnv = process.env): JobsHandle {
   if (!connectionString) {
     throw new Error("media-worker: DATABASE_URL is required when USE_FAKE_JOBS is off")
   }
-  const real = new PgBossWorkerJobs(connectionString, loadLimits(source).jobTimeoutMs)
+  const real = new PgBossWorkerJobs(connectionString)
   return { jobs: real, start: () => real.start(), stop: () => real.stop() }
 }

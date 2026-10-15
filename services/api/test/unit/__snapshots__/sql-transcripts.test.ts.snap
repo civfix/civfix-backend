@@ -7425,13 +7425,13 @@ INSERT INTO report_message_forwards (message_id, geoid, forwarded_at) VALUES ($1
 => undefined"
 `;
 
-exports[`sql transcripts > makeDrizzleReportRepository.countValidatingMediaForReport 1`] = `
+exports[`sql transcripts > makeDrizzleReportRepository.countMediaStatesForReport 1`] = `
 "-- empty
-SELECT count(*)::int AS n FROM media_assets WHERE report_id = $1 AND status = 'validating' -- ["reportId-1"]
-=> 0
+SELECT count(*) FILTER (WHERE status = 'validating')::int AS validating, count(*) FILTER (WHERE status = 'rejected')::int AS rejected FROM media_assets WHERE report_id = $1 AND status IN ('validating', 'rejected') -- ["reportId-1"]
+=> {"validating":0,"rejected":0}
 -- row
-SELECT count(*)::int AS n FROM media_assets WHERE report_id = $1 AND status = 'validating' -- ["reportId-1"]
-=> 2"
+SELECT count(*) FILTER (WHERE status = 'validating')::int AS validating, count(*) FILTER (WHERE status = 'rejected')::int AS rejected FROM media_assets WHERE report_id = $1 AND status IN ('validating', 'rejected') -- ["reportId-1"]
+=> {}"
 `;
 
 exports[`sql transcripts > makeDrizzleReportRepository.createReportTx 1`] = `
@@ -7451,9 +7451,9 @@ BEGIN tx1
 [tx1] UPDATE users SET last_activity_geom = ST_SetSRID(ST_MakePoint($1, $2), 4326), last_activity_at = $3 WHERE id = $4 AND (last_activity_at IS NULL OR last_activity_at < $5) -- [-118.24,34.05,"2026-03-04T05:06:07.000Z","reporterUserId-1","2026-03-04T05:06:07.000Z"]
 [tx1] SELECT id, kind, codec, COALESCE(<helper ["media_assets"]>.served_key, CASE WHEN <helper ["media_assets"]>.status = 'validating' THEN <helper ["media_assets"]>.r2_key END) AS r2_key, thumb_key, status, width, height FROM media_assets WHERE report_id = $1 AND (<helper ["media_assets"]>.status = 'validating' OR (<helper ["media_assets"]>.status = 'ready' AND <helper ["media_assets"]>.served_key IS NOT NULL)) ORDER BY created_at ASC -- ["reportId-1"]
 [tx1] SELECT status, note, kind, body, created_at FROM report_timeline WHERE report_id = $1 ORDER BY created_at ASC, id ASC -- ["reportId-1"]
-[tx1] INSERT INTO idempotency_keys (key, scope, user_or_anon, response_snapshot) VALUES ( $1, $2, $3, $4 ) -- ["key-1","scope-1","userOrAnon-1",{"<json>":{"lat":3,"lng":3,"status":"published","media":[undefined],"id":"id-1","following":true,"mine":true,"category":"trash","visibility":"public","geomSource":"manual","createdAt":"createdAt-1","gov":true,"mediaPending":3,"timeline":[undefined],"linkedEvents":[undefined],"type":"graffiti","title":"title-1","description":"description-1","addr":"addr-1","referenceCode":"referenceCode-1","addrSource":"user","addrPrecision":"street","jurisdictionGeoid":"jurisdictionGeoid-1","publishedAt":"publishedAt-1","discussionCount":3,"cityHandle":"cityHandle-1","cityName":"cityName-1","canForwardToCity":true,"chatJoined":true,"chatMemberCount":3,"chatMessageCount":3,"chatUnread":3}}]
+[tx1] INSERT INTO idempotency_keys (key, scope, user_or_anon, response_snapshot) VALUES ( $1, $2, $3, $4 ) -- ["key-1","scope-1","userOrAnon-1",{"<json>":{"lat":3,"lng":3,"status":"published","media":[undefined],"id":"id-1","following":true,"mine":true,"category":"trash","visibility":"public","geomSource":"manual","createdAt":"createdAt-1","gov":true,"mediaPending":3,"mediaRejected":3,"timeline":[undefined],"linkedEvents":[undefined],"type":"graffiti","title":"title-1","description":"description-1","addr":"addr-1","referenceCode":"referenceCode-1","addrSource":"user","addrPrecision":"street","jurisdictionGeoid":"jurisdictionGeoid-1","publishedAt":"publishedAt-1","discussionCount":3,"cityHandle":"cityHandle-1","cityName":"cityName-1","canForwardToCity":true,"chatJoined":true,"chatMemberCount":3,"chatMessageCount":3,"chatUnread":3}}]
 COMMIT tx1
-=> {"kind":"created","snapshot":{"lat":3,"lng":3,"status":"published","media":[undefined],"id":"id-1","following":true,"mine":true,"category":"trash","visibility":"public","geomSource":"manual","createdAt":"createdAt-1","gov":true,"mediaPending":3,"timeline":[undefined],"linkedEvents":[undefined],"type":"graffiti","title":"title-1","description":"description-1","addr":"addr-1","referenceCode":"referenceCode-1","addrSource":"user","addrPrecision":"street","jurisdictionGeoid":"jurisdictionGeoid-1","publishedAt":"publishedAt-1","discussionCount":3,"cityHandle":"cityHandle-1","cityName":"cityName-1","canForwardToCity":true,"chatJoined":true,"chatMemberCount":3,"chatMessageCount":3,"chatUnread":3}}"
+=> {"kind":"created","snapshot":{"lat":3,"lng":3,"status":"published","media":[undefined],"id":"id-1","following":true,"mine":true,"category":"trash","visibility":"public","geomSource":"manual","createdAt":"createdAt-1","gov":true,"mediaPending":3,"mediaRejected":3,"timeline":[undefined],"linkedEvents":[undefined],"type":"graffiti","title":"title-1","description":"description-1","addr":"addr-1","referenceCode":"referenceCode-1","addrSource":"user","addrPrecision":"street","jurisdictionGeoid":"jurisdictionGeoid-1","publishedAt":"publishedAt-1","discussionCount":3,"cityHandle":"cityHandle-1","cityName":"cityName-1","canForwardToCity":true,"chatJoined":true,"chatMemberCount":3,"chatMessageCount":3,"chatUnread":3}}"
 `;
 
 exports[`sql transcripts > makeDrizzleReportRepository.findIdempotentSnapshot 1`] = `

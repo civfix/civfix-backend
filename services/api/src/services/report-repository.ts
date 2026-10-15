@@ -111,7 +111,7 @@ export interface ReportRepository {
   findReportById(id: string): Promise<ReportRecord | null>
   findReportByReferenceCode(code: string): Promise<ReportRecord | null>
   findMediaForReport(reportId: string, ownerView?: boolean): Promise<ReportMediaView[]>
-  countValidatingMediaForReport(reportId: string): Promise<number>
+  countMediaStatesForReport(reportId: string): Promise<{ validating: number; rejected: number }>
   findMediaForReports(
     reportIds: string[],
     ownerView?: boolean,

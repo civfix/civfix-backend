@@ -3,16 +3,18 @@ import type { MediaKind, MediaStatus } from "@civfix/shared"
 import type { WorkerAbuseReason } from "@civfix/api/media-worker-repository"
 import type { FindPhashDuplicateFn } from "@civfix/api/adapters/abuse-checks"
 import type { WorkerLimits } from "../config.js"
-import { ALLOWED_VIDEO_CODECS } from "../config.js"
+import { ALLOWED_VIDEO_CODECS, SERVED_VIDEO_MAX_EDGE, SERVED_VIDEO_MAX_FPS } from "../config.js"
 import type { ExifGps } from "../sandbox/image.js"
 import { processImageLane } from "../sandbox/image-lane.js"
 import { SandboxSpawnError } from "../sandbox/exec.js"
 import { ScratchSetupError } from "../sandbox/tmp.js"
-import { probeBytes } from "../sandbox/ffprobe.js"
+import { probeBytes, type ProbeResult } from "../sandbox/ffprobe.js"
 import { grabFrameJpeg, remuxStripMetadata } from "../sandbox/ffmpeg-remux.js"
+import { transcodeToServedMp4 } from "../sandbox/ffmpeg-transcode.js"
 
 const MAX_NOTE_CHARS = 300
-const REMUXED_VIDEO_CONTENT_TYPE = "video/mp4"
+const SERVED_VIDEO_CONTENT_TYPE = "video/mp4"
+const SERVED_VIDEO_CODEC = "h264"
 const FRAME_GRAB_MAX_OFFSET_SEC = 1
 const NSFW_SCORE_DIGITS = 3
 
@@ -170,6 +172,13 @@ async function processImageBytes(
   }
 }
 
+// Duration and frame rate are capped by their nominal value: a clip from a 10 s camera limit probes at
+// a few hundredths over 10 s once its audio priming is counted, and a 60 fps clip can average a hair
+// over 60.
+function nominal(value: number): number {
+  return Math.round(value)
+}
+
 function videoLimitNote(
   probe: {
     durationSec: number
@@ -180,18 +189,24 @@ function videoLimitNote(
   },
   limits: WorkerLimits,
 ): string | null {
-  if (probe.durationSec <= 0 || probe.durationSec > limits.maxVideoDurationSec) {
-    return `duration ${probe.durationSec}s outside (0, ${limits.maxVideoDurationSec}]`
+  if (probe.durationSec <= 0) {
+    return `duration ${probe.durationSec}s is not positive`
+  }
+  if (nominal(probe.durationSec) > limits.maxVideoDurationSec) {
+    return `duration ${probe.durationSec}s exceeds the cap of ${limits.maxVideoDurationSec}s`
   }
   const { width, height } = probe
   if (width === null || height === null || width <= 0 || height <= 0) {
     return "video reports no usable resolution"
   }
+  if (Math.max(width, height) > limits.maxVideoEdge) {
+    return `resolution ${width}x${height} exceeds the long-edge cap of ${limits.maxVideoEdge}px`
+  }
   const pixels = width * height
   if (pixels > limits.maxVideoPixels) {
     return `resolution ${width}x${height} (${pixels}px) exceeds the cap of ${limits.maxVideoPixels}px`
   }
-  if (probe.fps !== null && probe.fps > limits.maxVideoFps) {
+  if (probe.fps !== null && nominal(probe.fps) > limits.maxVideoFps) {
     return `frame rate ${probe.fps.toFixed(2)}fps exceeds the cap of ${limits.maxVideoFps}fps`
   }
   if (probe.bitrateBps !== null && probe.bitrateBps > limits.maxVideoBitrateBps) {
@@ -200,7 +215,37 @@ function videoLimitNote(
   return null
 }
 
-type VideoProbe = Awaited<ReturnType<typeof probeBytes>>
+export type ServedVideoPlan = { transcode: false } | { transcode: true; capFps: boolean }
+
+// What every phone and Safari plays: 8-bit 4:2:0 in the three common H.264 profiles. High 10, High
+// 4:2:2 and High 4:4:4 are valid H.264 that many of them cannot decode, so those clips transcode.
+const PLAYABLE_PIX_FMTS: ReadonlySet<string> = new Set(["yuv420p", "yuvj420p"])
+const PLAYABLE_H264_PROFILES: ReadonlySet<string> = new Set([
+  "Constrained Baseline",
+  "Baseline",
+  "Main",
+  "High",
+])
+
+// A clip already within the served spec is only remuxed: a second lossy pass would cost quality and
+// CPU for nothing. An unknown frame rate, bitrate, pixel format or profile cannot be shown to be within
+// it, so it transcodes.
+export function servedVideoPlan(probe: ProbeResult, limits: WorkerLimits): ServedVideoPlan {
+  const capFps = probe.fps === null || probe.fps > SERVED_VIDEO_MAX_FPS
+  const withinSpec =
+    probe.codec?.toLowerCase() === SERVED_VIDEO_CODEC &&
+    probe.pixFmt !== null &&
+    PLAYABLE_PIX_FMTS.has(probe.pixFmt) &&
+    probe.profile !== null &&
+    PLAYABLE_H264_PROFILES.has(probe.profile) &&
+    probe.width !== null &&
+    probe.height !== null &&
+    Math.max(probe.width, probe.height) <= SERVED_VIDEO_MAX_EDGE &&
+    !capFps &&
+    probe.bitrateBps !== null &&
+    probe.bitrateBps <= limits.servedVideoMaxBitrateBps
+  return withinSpec ? { transcode: false } : { transcode: true, capFps }
+}
 
 // A frame that cannot be grabbed is no verdict on the video: without one it is held for review, not rejected.
 async function grabPosterFrame(
@@ -238,7 +283,7 @@ async function processVideoBytes(
   bytes: Uint8Array,
   deps: ProcessDeps,
 ): Promise<MediaProcessResult> {
-  let probe: VideoProbe
+  let probe: ProbeResult
   try {
     probe = await probeBytes(bytes, deps.limits)
   } catch (err) {
@@ -256,12 +301,22 @@ async function processVideoBytes(
     return rejected(limitNote)
   }
 
-  let remuxed: Buffer
+  const plan = servedVideoPlan(probe, deps.limits)
+  let served: Buffer
+  let servedWidth = probe.width
+  let servedHeight = probe.height
   try {
-    remuxed = await remuxStripMetadata(bytes, deps.limits)
+    if (plan.transcode) {
+      served = await transcodeToServedMp4(bytes, { capFps: plan.capFps }, deps.limits)
+      const servedProbe = await probeBytes(served, deps.limits)
+      servedWidth = servedProbe.width
+      servedHeight = servedProbe.height
+    } else {
+      served = await remuxStripMetadata(bytes, deps.limits)
+    }
   } catch (err) {
     if (isSandboxInfraFailure(err)) throw err
-    return rejected(errNote("remux failed", err))
+    return rejected(errNote(plan.transcode ? "transcode failed" : "remux failed", err))
   }
 
   const frameJpeg = await grabPosterFrame(bytes, probe.durationSec, deps.limits)
@@ -277,12 +332,12 @@ async function processVideoBytes(
 
   return {
     status: seam.status,
-    width: probe.width,
-    height: probe.height,
-    codec: probe.codec.toLowerCase(),
+    width: servedWidth,
+    height: servedHeight,
+    codec: SERVED_VIDEO_CODEC,
     phash: null,
-    processedBytes: remuxed,
-    processedContentType: REMUXED_VIDEO_CONTENT_TYPE,
+    processedBytes: served,
+    processedContentType: SERVED_VIDEO_CONTENT_TYPE,
     thumbnailBytes: thumbnail.thumbnailBytes,
     thumbnailContentType: thumbnail.thumbnailContentType,
     exifGps: null,

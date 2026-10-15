@@ -344,9 +344,9 @@ Operator notes:
 
 ## 3. media-worker `stop_grace_period` (civfix-infra, different repo)
 
-`MEDIA_JOB_TIMEOUT_MS` (default 60s) is charged **per phase**, not per job: `jobs/media-checks.ts` wraps the download in one budget and `processMedia` in a second, so one job can legitimately run ~2x it before the persist writes. The worker therefore derives its graceful-stop timeout as `2 x jobTimeoutMs + 5s` (`stopGraceMsFor` in `services/media-worker/src/worker-jobs.ts`) = **125s at the default**, and passes it to `boss.stop({ graceful: true, wait: true, timeout })`.
+On SIGTERM the worker stops fetching jobs at once and gives the `media.checks` jobs in flight 30s (`IN_FLIGHT_GRACE_MS` in `services/media-worker/src/worker-jobs.ts`). A job still running after that is interrupted: its decoders are killed and it is handed back to the queue as a fresh job, so it runs again after the restart without spending a retry, and its upload is untouched. `boss.stop({ graceful: true, wait: true, timeout })` gets `STOP_GRACE_MS` = **45s**, which leaves 15s for a job that was already writing its result. The graceful stop no longer depends on `MEDIA_JOB_TIMEOUT_MS`.
 
-**The container's `stop_grace_period` in the civfix-infra compose file must exceed that**: set it to ~150s for the media-worker service. Docker's default is 10s, so without this the runtime SIGKILLs the process mid-job and the derivation buys nothing: the asset is left `validating` until a sweep reconciles it. Raising `MEDIA_JOB_TIMEOUT_MS` raises this requirement with it (`.env.example` says so at the knob).
+**The container's `stop_grace_period` in the civfix-infra compose file must exceed 45s.** Docker's default is 10s, so without it the runtime SIGKILLs the process before an interrupted job is handed back, and pg-boss later fails that job, costing it one retry. The compose sets 200s.
 
 ## 4. Boundary refresh prunes only federal/tribal fixtures
 
