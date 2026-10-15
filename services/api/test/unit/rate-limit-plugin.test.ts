@@ -134,7 +134,10 @@ import { ADMIN_USER_HOURS_WRITE_RATE_LIMIT } from "../../src/routes/admin/user-h
 import { PUSH_TOKEN_RATE_LIMIT } from "../../src/routes/notifications.routes.js"
 import { FOLLOW_RATE_LIMIT, FOLLOW_SUGGESTIONS_RATE_LIMIT } from "../../src/routes/social.routes.js"
 import { DATA_EXPORT_RATE_LIMIT, LIST_BLOCKS_RATE_LIMIT } from "../../src/routes/users.routes.js"
-import { CREATE_REPORT_RATE_LIMIT } from "../../src/routes/reports.routes.js"
+import {
+  CONFIRM_REPORT_RATE_LIMIT,
+  CREATE_REPORT_RATE_LIMIT,
+} from "../../src/routes/reports.routes.js"
 import { REPORT_CONTENT_RATE_LIMIT } from "../../src/routes/report-content.routes.js"
 import { ANON_CREATE_RATE_LIMIT } from "../../src/routes/anon.routes.js"
 import { MEDIA_WRITE_RATE_LIMIT } from "../../src/routes/media.routes.js"
@@ -488,6 +491,7 @@ const IDENTITY_SCOPED_LIMITS = {
   DATA_EXPORT_RATE_LIMIT,
   LIST_BLOCKS_RATE_LIMIT,
   CREATE_REPORT_RATE_LIMIT,
+  CONFIRM_REPORT_RATE_LIMIT,
   REPORT_CONTENT_RATE_LIMIT,
   CLEANUP_MEMBERSHIP_RATE_LIMIT,
   TICKET_TYPE_WRITE_RATE_LIMIT,

@@ -32,6 +32,8 @@ const RAW_UPLOAD_KEY_READERS: Record<string, string> = {
     "service_hours_certificates.r2_key is a generated certificate, not an upload",
   "services/report-sql.ts":
     "m is the ready-only firstReadyStillLateral, whose r2_key is served_key",
+  "services/report-repository.drizzle.ts":
+    "m is the ready-only firstReadyStillLateral, whose r2_key is served_key",
   "services/cleanup-repository.drizzle.ts":
     "m is the ready-only firstReadyStillLateral, whose r2_key is served_key",
   "services/post-repository.drizzle.ts":

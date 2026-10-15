@@ -55,7 +55,7 @@ export const CREATE_REPORT_RATE_LIMIT = perIdentity({
 })
 
 // Its own bucket per route, so confirming and removing never spend each other's allowance (like post like).
-const CONFIRM_REPORT_RATE_LIMIT = perIdentity({ max: 60, timeWindow: "1 minute" })
+export const CONFIRM_REPORT_RATE_LIMIT = perIdentity({ max: 60, timeWindow: "1 minute" })
 
 const MAP_REPORTS_RATE_LIMIT = { max: 60, timeWindow: "1 minute" } as const
 const SEARCH_REPORTS_RATE_LIMIT = { max: 30, timeWindow: "1 minute" } as const
