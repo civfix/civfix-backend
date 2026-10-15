@@ -30,6 +30,7 @@ export * from "./report_chat_members.js"
 export * from "./conversation_mutes.js"
 export * from "./conversation_hides.js"
 export * from "./report_message_forwards.js"
+export * from "./report_confirmations.js"
 
 export * from "./dm_threads.js"
 export * from "./dm_messages.js"

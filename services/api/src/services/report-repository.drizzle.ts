@@ -1,5 +1,5 @@
 import type postgres from "postgres"
-import { AppError } from "@civfix/shared"
+import { AppError, OPEN_REPORT_STATUSES } from "@civfix/shared"
 import type {
   ReportCategory,
   ReportDTO,
@@ -14,7 +14,12 @@ import {
   paginateKeyset,
   parseKeysetCursor,
 } from "../db/cursor-helpers.js"
-import { isPubliclyVisibleStatus, ownerStatusTransition } from "./report-visibility.js"
+import {
+  confirmationVerdict,
+  isPubliclyVisibleStatus,
+  ownerStatusTransition,
+} from "./report-visibility.js"
+import { MAP_REPORTS_CANDIDATE_CAP } from "./report-clustering.js"
 import { allocateReportReferenceCode } from "../db/reference-code.js"
 import { likeContains } from "../db/like.js"
 import type { ReportVisibilityTimelineKind } from "./report-types.js"
@@ -35,6 +40,8 @@ import { claimableAsReportMedia } from "./media-bindings.js"
 import { lockUploadsForClaimIn } from "./media-claim-repository.drizzle.js"
 import { uploadersOf } from "./media-uploader.js"
 import {
+  firstReadyStillLateral,
+  publicReportFilter,
   reportColumns,
   selectPublicPins,
   toMapPoint,
@@ -42,6 +49,7 @@ import {
   toRecord,
   toTimelineView,
   type MediaRowSelect,
+  type PublicPinRow,
   type ReportRowSelect,
   type TimelineRowSelect,
 } from "./report-sql.js"
@@ -56,6 +64,14 @@ function notOwnerOutcome(row: {
 }): "not_found" | "forbidden" {
   const publiclyVisible = isPubliclyVisibleStatus(row.status) && row.visibility === "public"
   return publiclyVisible ? "forbidden" : "not_found"
+}
+
+interface ConfirmationLockRow {
+  reporter_user_id: string | null
+  status: ReportStatus
+  visibility: ReportVisibility
+  deleted_at: Date | null
+  confirm_count: number
 }
 
 interface OwnerLockRow {
@@ -440,16 +456,115 @@ export function makeDrizzleReportRepository(sql: Sql): ReportRepository {
       return { points: items.map(toMapPoint), nextCursor }
     },
 
-    findPressing(): Promise<ReportMapPoint[]> {
-      throw new Error("not implemented")
+    // One statement. The candidates are the map's: the newest public reports in the bbox, capped like
+    // the map before any media is read, so a dense or wide bbox cannot turn into an unbounded scan of
+    // a hot table. Only the 20 that make the list then join their thumbnail.
+    async findPressing(bbox: BBox, limit: number): Promise<ReportMapPoint[]> {
+      const rows = await sql<Omit<PublicPinRow, "cursor_at">[]>`
+        WITH candidates AS (
+          SELECT r.id
+          FROM reports r
+          WHERE ${publicReportFilter(sql)}
+            AND ST_Intersects(
+                  r.geom,
+                  ST_MakeEnvelope(${bbox.west}, ${bbox.south}, ${bbox.east}, ${bbox.north}, 4326)
+                )
+          ORDER BY r.created_at DESC
+          LIMIT ${MAP_REPORTS_CANDIDATE_CAP}
+        ),
+        pressing AS (
+          SELECT r.id, r.geom, r.category, r.type, r.status, r.title, r.description, r.addr,
+                 r.reference_code, r.confirm_count, r.created_at
+          FROM reports r
+          JOIN candidates c ON c.id = r.id
+          WHERE r.status = ANY(${[...OPEN_REPORT_STATUSES]}::text[])
+            AND r.confirm_count >= 1
+          ORDER BY r.confirm_count DESC, r.created_at DESC
+          LIMIT ${limit}
+        )
+        SELECT
+          r.id,
+          ST_X(r.geom) AS lng,
+          ST_Y(r.geom) AS lat,
+          r.category,
+          r.type,
+          r.status,
+          r.title,
+          r.description,
+          r.addr,
+          r.reference_code,
+          m.thumb_key,
+          m.r2_key,
+          r.confirm_count,
+          r.created_at
+        FROM pressing r
+        ${firstReadyStillLateral(sql)}
+        ORDER BY r.confirm_count DESC, r.created_at DESC
+      `
+      return rows.map(toMapPoint)
     },
 
-    setConfirmation(): Promise<ReportConfirmationOutcome> {
-      throw new Error("not implemented")
+    async setConfirmation(
+      reportId: string,
+      userId: string,
+      action: "confirm" | "unconfirm",
+    ): Promise<ReportConfirmationOutcome> {
+      return sql.begin(async (tx) => {
+        // The row lock holds the verdict (status, visibility, ownership) true until the write commits, so
+        // a confirmation cannot land on a report an operator resolved in between, and the count a no-op
+        // reports is current. NO KEY UPDATE is the level the count UPDATE takes anyway; it leaves the FK
+        // checks of rows that reference the report (this insert included) unblocked.
+        const rows = await tx<ConfirmationLockRow[]>`
+          SELECT reporter_user_id, status, visibility, deleted_at, confirm_count
+          FROM reports
+          WHERE id = ${reportId}
+          FOR NO KEY UPDATE
+        `
+        const row = rows[0]
+        if (!row) return { kind: "not_found" }
+        const verdict = confirmationVerdict(
+          {
+            reporterUserId: row.reporter_user_id,
+            status: row.status,
+            visibility: row.visibility,
+            deletedAt: row.deleted_at,
+          },
+          userId,
+          action,
+        )
+        if (verdict !== "allowed") return { kind: verdict }
+
+        const changed =
+          action === "confirm"
+            ? await tx<{ report_id: string }[]>`
+                INSERT INTO report_confirmations (report_id, user_id) VALUES (${reportId}, ${userId})
+                ON CONFLICT (report_id, user_id) DO NOTHING
+                RETURNING report_id
+              `
+            : await tx<{ report_id: string }[]>`
+                DELETE FROM report_confirmations
+                WHERE report_id = ${reportId} AND user_id = ${userId}
+                RETURNING report_id
+              `
+        if (changed.length === 0) return { kind: "applied", confirmCount: row.confirm_count }
+
+        const delta = action === "confirm" ? 1 : -1
+        const updated = await tx<{ confirm_count: number }[]>`
+          UPDATE reports SET confirm_count = GREATEST(confirm_count + ${delta}, 0)
+          WHERE id = ${reportId}
+          RETURNING confirm_count
+        `
+        return { kind: "applied", confirmCount: updated[0]?.confirm_count ?? 0 }
+      })
     },
 
-    isConfirmedBy(): Promise<boolean> {
-      throw new Error("not implemented")
+    async isConfirmedBy(reportId: string, userId: string): Promise<boolean> {
+      const rows = await sql`
+        SELECT 1 FROM report_confirmations
+        WHERE report_id = ${reportId} AND user_id = ${userId}
+        LIMIT 1
+      `
+      return rows.length > 0
     },
 
     async resolveByOwner(

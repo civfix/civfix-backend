@@ -17,6 +17,7 @@ const ROW = {
   followee_id: "user-followee",
   follower_id: "user-follower",
   blocked_id: "user-blocked",
+  report_id: "report-1",
   platform: "ios",
   created_at: "2026-01-01T00:00:00.000Z",
   revoked_at: null,
@@ -28,6 +29,7 @@ const EXPECTED_PROJECTIONS: ReadonlyArray<readonly [from: string, columns: strin
     "id, display_name, handle, email, email_verified, bio, avatar_url, donation_url, created_at, deleted_at",
   ],
   ["reports", "r.id, r.category, r.title, r.description, j.name AS place, r.status, r.created_at"],
+  ["report_confirmations", "report_id, created_at"],
   [
     "posts",
     "id, kind, body, visibility, reply_to_id, repost_of_id, created_at, updated_at, deleted_at",
@@ -75,6 +77,7 @@ const EXPECTED_TOP_LEVEL_KEYS = [
   "userId",
   "profile",
   "reports",
+  "reportConfirmations",
   "posts",
   "comments",
   "chatMessages",
@@ -171,6 +174,9 @@ describe("data export field set (BE-TEST-048)", () => {
     expect(exported.following).toEqual(["user-followee"])
     expect(exported.followers).toEqual(["user-follower"])
     expect(exported.blocks).toEqual(["user-blocked"])
+    expect(exported.reportConfirmations).toEqual([
+      { reportId: "report-1", createdAt: "2026-01-01T00:00:00.000Z" },
+    ])
     for (const section of [
       "reports",
       "posts",

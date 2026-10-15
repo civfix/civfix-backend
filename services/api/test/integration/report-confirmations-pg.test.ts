@@ -82,7 +82,9 @@ describe.skipIf(!pg)("report confirmations (integration)", () => {
     }
   }
 
-  async function resident(opts: { email?: string; role?: string } = {}): Promise<Resident> {
+  async function resident(
+    opts: { email?: string; role?: "citizen" | "operator" } = {},
+  ): Promise<Resident> {
     const handle = testHandle()
     const [u] = await h.sql<{ id: string }[]>`
       INSERT INTO users (display_name, handle, email, email_verified, role)

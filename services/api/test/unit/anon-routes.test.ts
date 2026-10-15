@@ -94,6 +94,8 @@ async function makeHarness(): Promise<Harness> {
       mediaRejected: 0,
       timeline: [],
       linkedEvents: [],
+      confirmCount: 0,
+      confirmedByMe: false,
     })
   }
   const claimService = makeClaimService({

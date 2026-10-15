@@ -96,6 +96,8 @@ async function buildFullFakeServer(): Promise<FastifyInstance> {
       mediaRejected: 0,
       timeline: [],
       linkedEvents: [],
+      confirmCount: 0,
+      confirmedByMe: false,
     })
   }
   const claimService = makeClaimService({

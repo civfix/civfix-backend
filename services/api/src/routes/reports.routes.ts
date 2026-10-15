@@ -2,6 +2,8 @@ import {
   CreateReportRequestSchema,
   ListReportsInBBoxRequestSchema,
   ListReportsSearchRequestSchema,
+  PressingReportsRequestSchema,
+  ReportConfirmRequestSchema,
   ResolveReportRequestSchema,
   UnlistReportRequestSchema,
   PaginationQuerySchema,
@@ -14,7 +16,9 @@ import {
   type GetReportResponse,
   type ListMyReportsResponse,
   type ListReportsSearchResponse,
+  type PressingReportsResponse,
   type ReportClusterResponse,
+  type ReportConfirmResponse,
 } from "@civfix/shared"
 import { z } from "zod"
 import type { FastifyInstance, FastifyRequest } from "fastify"
@@ -49,6 +53,9 @@ export const CREATE_REPORT_RATE_LIMIT = perIdentity({
   timeWindow: "1 minute",
   hostMax: 60,
 })
+
+// Its own bucket per route, so confirming and removing never spend each other's allowance (like post like).
+const CONFIRM_REPORT_RATE_LIMIT = perIdentity({ max: 60, timeWindow: "1 minute" })
 
 const MAP_REPORTS_RATE_LIMIT = { max: 60, timeWindow: "1 minute" } as const
 const SEARCH_REPORTS_RATE_LIMIT = { max: 30, timeWindow: "1 minute" } as const
@@ -106,6 +113,10 @@ const MapReportsQuerySchema = z
   }))
   .pipe(ListReportsInBBoxRequestSchema)
 
+const PressingReportsQuerySchema = z
+  .object({ bbox: CappedBBoxQueryParam })
+  .pipe(PressingReportsRequestSchema)
+
 const SearchReportsQuerySchema = z
   .object({
     q: z.string().optional(),
@@ -161,8 +172,9 @@ const MapReportsResponseJsonSchema = {
           title: { type: "string", nullable: true },
           description: { type: "string", nullable: true },
           thumbUrl: { type: "string", nullable: true },
+          confirmCount: { type: "integer" },
         },
-        required: ["id", "category", "lat", "lng", "status"],
+        required: ["id", "category", "lat", "lng", "status", "confirmCount"],
       },
     },
     counts: {
@@ -240,6 +252,42 @@ export async function registerReportRoutes(
     async (request, reply) => {
       const validated = parse(SearchReportsQuerySchema, request.query)
       const payload: ListReportsSearchResponse = await service().searchReports(validated)
+      reply.status(200).send(payload)
+    },
+  )
+
+  route(
+    app,
+    "pressingReports",
+    { config: { rateLimit: MAP_REPORTS_RATE_LIMIT } },
+    async (request, reply) => {
+      const { bbox } = parse(PressingReportsQuerySchema, request.query)
+      const payload: PressingReportsResponse = await service().pressingReports(bbox)
+      reply.header("Cache-Control", MAP_REPORTS_CACHE_CONTROL)
+      reply.status(200).send(payload)
+    },
+  )
+
+  route(
+    app,
+    "confirmReport",
+    { preHandler: csrfProtect, config: { rateLimit: CONFIRM_REPORT_RATE_LIMIT } },
+    async (request, reply) => {
+      const userId = requireAuth(request)
+      const { id } = parse(ReportConfirmRequestSchema, request.params)
+      const payload: ReportConfirmResponse = await service().confirmReport(userId, id)
+      reply.status(200).send(payload)
+    },
+  )
+
+  route(
+    app,
+    "unconfirmReport",
+    { preHandler: csrfProtect, config: { rateLimit: CONFIRM_REPORT_RATE_LIMIT } },
+    async (request, reply) => {
+      const userId = requireAuth(request)
+      const { id } = parse(ReportConfirmRequestSchema, request.params)
+      const payload: ReportConfirmResponse = await service().unconfirmReport(userId, id)
       reply.status(200).send(payload)
     },
   )

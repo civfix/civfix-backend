@@ -38,6 +38,8 @@ function stubGetReport(store: InMemoryAnonStore) {
       mediaRejected: 0,
       timeline: [],
       linkedEvents: [],
+      confirmCount: 0,
+      confirmedByMe: false,
     })
   }
 }
