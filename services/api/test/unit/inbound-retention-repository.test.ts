@@ -89,7 +89,9 @@ describe("deleteByIds", () => {
 
     expect(deleted).toBe(2)
     const stmt = fake.statements[0]!
-    expect(stmt.sql).toMatch(/DELETE FROM inbound_emails WHERE id = ANY\(\?::uuid\[\]\) RETURNING id/)
+    expect(stmt.sql).toMatch(
+      /DELETE FROM inbound_emails WHERE id = ANY\(\?::uuid\[\]\) RETURNING id/,
+    )
     expect(stmt.values).toEqual([["a", "b", "c"]])
   })
 })

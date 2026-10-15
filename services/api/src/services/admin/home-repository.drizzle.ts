@@ -1,7 +1,7 @@
-
 import type { Sql } from "../../db/client.js"
 import { makeDrizzleMailRepository } from "./mail-repository.drizzle.js"
 import { flaggedReportExpr } from "./admin-report-repository.drizzle.js"
+import { flaggedEventExpr } from "./admin-event-repository.drizzle.js"
 import { reportRoutableExpr } from "./sql-fragments.js"
 import { toEventStatus } from "./event-status.js"
 import { DISCOVERY_SLA_HOURS } from "./discovery-service.js"
@@ -13,7 +13,7 @@ import type {
   MailSectionCounts,
   ReportsSectionCounts,
   UsersSectionCounts,
-} from "./home-types.js"
+} from "./home-repository.js"
 import type { EventKind, ReportCategory } from "@civfix/shared"
 import { adminEventStatusExpr } from "../cleanup-sql.js"
 
@@ -70,7 +70,7 @@ export function makeDrizzleHomeRepository(sql: Sql): HomeRepository {
           COUNT(*) FILTER (WHERE r.status IN ('in_progress', 'acknowledged'))::text AS in_progress,
           COUNT(*) FILTER (WHERE r.status = 'resolved')::text AS completed
         FROM reports r
-        WHERE r.deleted_at IS NULL
+        WHERE r.deleted_at IS NULL AND r.status IN ('in_progress', 'acknowledged', 'resolved')
       `
       const r = rows[0]
       return {
@@ -81,19 +81,17 @@ export function makeDrizzleHomeRepository(sql: Sql): HomeRepository {
     },
 
     async eventsSummary(): Promise<EventsSectionCounts> {
+      // The WHERE keeps exactly the events the status expression calls upcoming or in progress (status and
+      // ends_at are NOT NULL), so the counts equal those over every event while the scan is an ends_at range.
       const rows = await sql<{ upcoming: string; live: string; attending: string }[]>`
         SELECT
           COUNT(*) FILTER (WHERE ${adminEventStatusExpr(sql)} = 'upcoming')::text AS upcoming,
           COUNT(*) FILTER (WHERE ${adminEventStatusExpr(sql)} = 'in_progress')::text AS live,
           COALESCE(SUM(
-            CASE WHEN ${adminEventStatusExpr(sql)} NOT IN ('completed', 'cancelled')
-              THEN COALESCE(mc.n, 0)
-              ELSE 0 END
+            (SELECT COUNT(*)::int FROM cleanup_members m WHERE m.cleanup_id = c.id)
           ), 0)::text AS attending
         FROM cleanups c
-        LEFT JOIN (
-          SELECT cleanup_id, COUNT(*)::int AS n FROM cleanup_members GROUP BY cleanup_id
-        ) mc ON mc.cleanup_id = c.id
+        WHERE c.status <> 'cancelled' AND c.ends_at > now()
       `
       const r = rows[0]
       return {
@@ -189,8 +187,8 @@ export function makeDrizzleHomeRepository(sql: Sql): HomeRepository {
             j.name AS place
           FROM reports r
           LEFT JOIN jurisdictions j ON j.geoid = r.jurisdiction_geoid
-          WHERE r.deleted_at IS NULL AND r.visibility = 'public'
-          ORDER BY r.created_at DESC NULLS LAST
+          WHERE r.deleted_at IS NULL AND r.visibility = 'public' AND r.created_at IS NOT NULL
+          ORDER BY r.created_at DESC
           LIMIT ${half}
         `,
         sql<
@@ -203,6 +201,7 @@ export function makeDrizzleHomeRepository(sql: Sql): HomeRepository {
             title: string
             place: string | null
             attendees: string
+            flagged: boolean
           }[]
         >`
           SELECT
@@ -210,12 +209,13 @@ export function makeDrizzleHomeRepository(sql: Sql): HomeRepository {
             ST_Y(c.geom) AS lat,
             ST_X(c.geom) AS lng,
             ${adminEventStatusExpr(sql)} AS status,
+            ${flaggedEventExpr(sql)} AS flagged,
             c.event_kind AS event_kind,
             c.title AS title,
             c.address AS place,
             (SELECT COUNT(*) FROM cleanup_members m WHERE m.cleanup_id = c.id)::text AS attendees
           FROM cleanups c
-          ORDER BY c.scheduled_at DESC NULLS LAST
+          ORDER BY c.scheduled_at DESC
           LIMIT ${half}
         `,
       ])
@@ -240,7 +240,7 @@ export function makeDrizzleHomeRepository(sql: Sql): HomeRepository {
         lng: e.lng,
         category: null,
         status: toEventStatus(e.status),
-        flagged: false,
+        flagged: e.flagged,
         title: e.title,
         place: e.place ?? "",
         attendees: num(e.attendees),

@@ -1,4 +1,3 @@
-
 import { describe, it, expect } from "vitest"
 import {
   makeVolunteerHoursService,
@@ -6,7 +5,7 @@ import {
   type CleanupHoursView,
   type VolunteerHoursService,
 } from "../../src/services/volunteer-hours-service.js"
-import { InMemoryVolunteerHoursRepository } from "../../src/services/volunteer-hours-repository.memory.js"
+import { InMemoryVolunteerHoursRepository } from "../helpers/volunteer-hours-repository.memory.js"
 
 const HOST = "11111111-1111-1111-1111-111111111111"
 const BOB = "22222222-2222-2222-2222-222222222222"
@@ -30,6 +29,7 @@ function makeRepo(opts?: { frozenClock?: boolean }): InMemoryVolunteerHoursRepos
 const doneEvent = (title: string): CleanupHoursView => ({
   organizerUserId: HOST,
   status: "done",
+  visibility: "public",
   jurisdictionGeoid: GEOID_A,
   title,
   scheduledAt: new Date("2026-07-04T08:00:00.000Z"),
@@ -47,7 +47,8 @@ function makeCleanups(
     load: () => Promise.resolve(view),
     listMemberIds: () => Promise.resolve(members),
     roleOf: (_cleanupId: string, userId: string) => {
-      if (view !== null && view.organizerUserId === userId) return Promise.resolve("organizer" as const)
+      if (view !== null && view.organizerUserId === userId)
+        return Promise.resolve("organizer" as const)
       if (cohosts.includes(userId)) return Promise.resolve("cohost" as const)
       if (members.includes(userId)) return Promise.resolve("member" as const)
       return Promise.resolve(null)
@@ -361,7 +362,6 @@ describe("hours ledger: the public projection (C18's two gates)", () => {
     expect(ownStillVisible.items.map((e) => e.source)).toEqual(["event", "event"])
   })
 
-
   it("isSelf bypasses both gates even when the owner has opted OUT", async () => {
     const repo = makeRepo()
     await seedBob(repo)
@@ -421,7 +421,7 @@ describe("hours ledger: getEventHours scope matrix (C10)", () => {
     return repo
   }
 
-  it("an acting host gets scope 'all' — every attendee's row, so the log form prefills", async () => {
+  it("an acting host gets scope 'all': every attendee's row, so the log form prefills", async () => {
     const repo = await seedEvent()
     const service = makeService(
       repo,

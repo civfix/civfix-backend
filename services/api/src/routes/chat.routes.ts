@@ -1,4 +1,3 @@
-
 import fastifyWebsocket from "@fastify/websocket"
 import {
   PaginationQuerySchema,
@@ -15,18 +14,19 @@ import type { Container } from "../di.js"
 import { requireAuth } from "../auth/context.js"
 import { parse } from "./_validate.js"
 import { route } from "../versioning/route.js"
-import { roomKeyFor } from "../ws/gateway.js"
 import { wireChatGateway } from "./chat-gateway-wiring.js"
-import {
-  deleteMessageWithPowers,
-  DELETE_MESSAGE_FORBIDDEN,
-  neutralizeChatViewerFields,
-} from "./chat-route-helpers.js"
+import { deleteMessageWithPowers, DELETE_MESSAGE_FORBIDDEN } from "./chat-route-helpers.js"
+import { neutralizeChatViewerFields } from "../services/chat-viewer-fields.js"
 import { makeChatReactionService } from "../services/chat-reaction-service.js"
-import type { ChatRepository } from "../services/chat-repository.drizzle.js"
-import type { ReportChatRepository } from "../services/report-chat-repository.drizzle.js"
-import type { ChatPollRepository } from "../services/chat-poll-repository.drizzle.js"
+import type { ChatRepository } from "../services/chat-repository.js"
+import type { ReportChatRepository } from "../services/report-chat-repository.js"
+import type { ChatPollRepository } from "../services/chat-poll-repository.js"
+import type { DmRepository } from "../services/dm-repository.js"
+import type { BlocksRepository } from "../services/blocks-repository.js"
+import type { ChatGroupRepository } from "../services/chat-group-repository.js"
+import type { ConversationMutesRepository } from "../services/conversation-mutes-repository.js"
 import {
+  roomKeyFor,
   type GatewayChatMentions,
   type IsMemberFn,
   type ReportVisibleFn,
@@ -36,9 +36,6 @@ import {
   makeDrizzleReportThreadsSource,
   makeDrizzleThreadsRepository,
 } from "../services/threads-repository.drizzle.js"
-import type { DmRepository } from "../services/dm-repository.drizzle.js"
-import type { BlocksRepository } from "../services/blocks-repository.drizzle.js"
-import type { ChatGroupRepository } from "../services/chat-group-repository.drizzle.js"
 import type { ChatPresence } from "../adapters/chat-presence.js"
 import {
   makeThreadsService,
@@ -47,16 +44,13 @@ import {
   type DmThreadsSource,
   type GroupThreadsSource,
   type ReportThreadsSource,
-  type ThreadsRepository,
   type ThreadsService,
 } from "../services/threads-service.js"
+import type { ThreadsRepository } from "../services/threads-repository.js"
 import type { NotificationService } from "../services/notification-service.js"
 import type { ResolveChatPowers } from "../services/chat-room-roles.js"
 import { wireChatPowers } from "./chat-powers-wiring.js"
-import {
-  makeConversationMutesRepository,
-  type ConversationMutesRepository,
-} from "../services/conversation-mutes-repository.drizzle.js"
+import { makeConversationMutesRepository } from "../services/conversation-mutes-repository.drizzle.js"
 
 export interface ChatGatewayOverrides {
   isMember: IsMemberFn
@@ -84,16 +78,21 @@ declare module "fastify" {
   }
 }
 
+const WS_MAX_PAYLOAD_BYTES = 64 * 1024
+
 const ThreadMessageParamsSchema = z.object({ cleanupId: IdSchema, messageId: IdSchema }).strict()
 
 export const CHAT_REACTION_RATE_LIMIT = perIdentity({ max: 60, timeWindow: "1 minute" })
 
 export const CHAT_DELETE_RATE_LIMIT = perIdentity({ max: 30, timeWindow: "1 minute" })
 
-export async function registerChatRoutes(app: FastifyInstance, container: Container): Promise<void> {
+export async function registerChatRoutes(
+  app: FastifyInstance,
+  container: Container,
+): Promise<void> {
   const csrfProtect = container.csrf.protect
 
-  await app.register(fastifyWebsocket, { options: { maxPayload: 64 * 1024 } })
+  await app.register(fastifyWebsocket, { options: { maxPayload: WS_MAX_PAYLOAD_BYTES } })
 
   const overrides = app.chatOverrides
   const wiring = wireChatGateway(app, container)
@@ -156,7 +155,12 @@ export async function registerChatRoutes(app: FastifyInstance, container: Contai
         dmPeerOf: wiring.dmPeerOf,
         isBlockedEitherWay: wiring.isBlockedEitherWay,
       })
-      const updated: ChatMessageDTO = await reactions.toggleCleanupReaction(cleanupId, messageId, userId, body.emoji)
+      const updated: ChatMessageDTO = await reactions.toggleCleanupReaction(
+        cleanupId,
+        messageId,
+        userId,
+        body.emoji,
+      )
       void Promise.resolve(
         container.chatService.broadcastEvent?.(roomKeyFor("cleanup", cleanupId), {
           type: "reaction",

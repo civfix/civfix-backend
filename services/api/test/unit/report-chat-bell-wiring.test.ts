@@ -3,7 +3,7 @@ import { FakePushSender } from "@civfix/shared/fakes"
 import type { FastifyInstance } from "fastify"
 import type { Container } from "../../src/di.js"
 import type { GatewayReportChat } from "../../src/ws/gateway.js"
-import type { ReportChatRepository } from "../../src/services/report-chat-repository.drizzle.js"
+import type { ReportChatRepository } from "../../src/services/report-chat-repository.js"
 import {
   makeNotificationService,
   type NotificationService,
@@ -15,6 +15,7 @@ import {
   InMemoryDmRepository,
 } from "../../src/services/dm-repository.memory.js"
 
+// eslint-disable-next-line @typescript-eslint/no-unnecessary-type-assertion -- the assertion is the field's declared type: vi.hoisted infers the record from this literal
 const { captured } = vi.hoisted(() => ({ captured: {} as { reportChat?: GatewayReportChat } }))
 
 vi.mock("../../src/ws/gateway.js", async (importOriginal) => {
@@ -27,7 +28,8 @@ vi.mock("../../src/ws/gateway.js", async (importOriginal) => {
   }
 })
 
-const { wireChatGateway, makeGatewayReportChat } = await import("../../src/routes/chat-gateway-wiring.js")
+const { wireChatGateway, makeGatewayReportChat } =
+  await import("../../src/routes/chat-gateway-wiring.js")
 
 const REPORT = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
 const BOB = "22222222-2222-2222-2222-222222222222"
@@ -41,15 +43,15 @@ function makeReportChatSource(
   }
   return {
     isMember: () => Promise.resolve(true),
-    roleOf: notImpl("roleOf") as never,
+    roleOf: notImpl("roleOf"),
     advanceReadWatermark,
-    markRead: notImpl("markRead") as never,
-    join: notImpl("join") as never,
-    leave: notImpl("leave") as never,
-    insertSystemMessage: notImpl("insertSystemMessage") as never,
-    listMemberIds: notImpl("listMemberIds") as never,
-    countMembers: notImpl("countMembers") as never,
-    listMembers: notImpl("listMembers") as never,
+    markRead: notImpl("markRead"),
+    join: notImpl("join"),
+    leave: notImpl("leave"),
+    insertSystemMessage: notImpl("insertSystemMessage"),
+    listMemberIds: notImpl("listMemberIds"),
+    countMembers: notImpl("countMembers"),
+    listMembers: notImpl("listMembers"),
   }
 }
 
@@ -92,9 +94,14 @@ describe("report chat bell wiring", () => {
   })
 
   it("the real wiring clears the report bell when a member reads (fails if the wiring drops the clear)", async () => {
-    const advance = vi.fn((_reportId: string, _userId: string, _upToId: string) => Promise.resolve())
+    const advance = vi.fn((_reportId: string, _userId: string, _upToId: string) =>
+      Promise.resolve(),
+    )
     const notifRepo = new InMemoryNotificationRepository()
-    const notifications = makeNotificationService({ repo: notifRepo, pushSender: new FakePushSender() })
+    const notifications = makeNotificationService({
+      repo: notifRepo,
+      pushSender: new FakePushSender(),
+    })
 
     wire(makeReportChatSource(advance), notifications)
     expect(captured.reportChat).toBeDefined()

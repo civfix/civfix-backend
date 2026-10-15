@@ -71,7 +71,7 @@ export function registerHostPageRoutes(
       const { id } = parse(CleanupIdParamsSchema, request.params)
       await ctx.pageGuards().requireCapability(id, userId, "manage_page")
       const body = parse(SaveEventPageRequestSchema, bodyWith(request, { id }))
-      const payload: SaveEventPageResponse = await ctx.pages().save(body)
+      const payload: SaveEventPageResponse = await ctx.pages().save(body, userId)
       reply.status(200).send(payload)
     },
   )

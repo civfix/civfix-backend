@@ -4,7 +4,7 @@
 -- FINDING F017 / F049 (validation half). 0076 added media_single_claim_chk as
 -- NOT VALID; validate it here in a SEPARATE file so a slow validation scan cannot
 -- strand 0076 mid-apply. Trivial on pre-launch volumes. Guarded so a re-run (or a
--- run before 0076 on a partial history) is a no-op — VALIDATE has no IF EXISTS.
+-- run before 0076 on a partial history) is a no-op; VALIDATE has no IF EXISTS.
 --
 -- CANONICAL DDL: hand-authored source of truth. No shape change → no mirror edit.
 --

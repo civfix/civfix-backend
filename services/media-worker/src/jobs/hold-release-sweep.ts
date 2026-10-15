@@ -1,15 +1,13 @@
 /**
- * anon.hold.release.sweep cron: self-healing backstop for the hold-then-publish release (P2-8).
- *
- * WHY THIS EXISTS. The normal release path is the media.checks post-success HOOK: after a media asset
- * reaches a terminal status, the worker enqueues anon.hold.release for the media's report, and that job
- * re-evaluates + publishes the held anon report once all its media are ready + clean. That inline enqueue
- * is best-effort: if SIGTERM lands such that pg-boss begins stopping while a handler sits between
+ * Self-healing backstop for the anon hold-then-publish release. The normal release path is the
+ * media.checks post-success HOOK: after a media asset reaches a terminal status, the worker enqueues
+ * anon.hold.release for the media's report, and that job re-evaluates + publishes the held anon report
+ * once all its media are ready + clean. That inline enqueue is best-effort: if SIGTERM lands such that pg-boss begins stopping while a handler sits between
  * "persisted the media result" and "enqueued anon.hold.release", the enqueue can fail (boss stopping) and
  * is swallowed (the media job still completes). For a single-media anon report there is then no other
  * media event to ever re-trigger the release, so the report could stay HELD forever.
  *
- * THE GUARANTEE this sweep provides: a held anon report whose media are all ready + clean is ALWAYS
+ * This sweep guarantees that a held anon report whose media are all ready + clean is ALWAYS
  * eventually published, independent of whether any single inline enqueue was delivered. Every few minutes
  * (HOLD_RELEASE_SWEEP_CRON) the sweep lists held anon reports (reporter_user_id IS NULL, status 'held',
  * not deleted, bounded batch oldest-first) and runs the SAME idempotent release gate
@@ -23,16 +21,14 @@
  */
 
 import type { AbuseChecks } from "@civfix/shared/interfaces"
-import {
-  releaseAnonHoldIfReady,
-  type AnonHoldReleaseRepo,
-} from "@civfix/api/anon-hold-release"
+import { releaseAnonHoldIfReady } from "@civfix/api/anon-hold-release"
+import type { AnonHoldReleaseRepository } from "@civfix/api/anon-hold-release-repository"
+import { ANON_HOLD_RELEASE_SWEEP_JOB } from "@civfix/api/queue-names"
 import { resolveJobObs, type JobObsDeps } from "./obs.js"
 
 export interface HoldReleaseSweepDeps extends JobObsDeps {
-  repo: AnonHoldReleaseRepo
+  repo: AnonHoldReleaseRepository
   abuseChecks: AbuseChecks
-  /** Max held anon reports to re-check this run. */
   batchSize: number
 }
 
@@ -42,10 +38,6 @@ export interface HoldReleaseSweepResult {
   errors: number
 }
 
-/**
- * Run one hold-release sweep. Returns counts. Never throws; per-report failures are counted + logged +
- * reported. Idempotent end-to-end (the underlying release gate is a no-op on a no-longer-held report).
- */
 export async function runHoldReleaseSweep(
   deps: HoldReleaseSweepDeps,
 ): Promise<HoldReleaseSweepResult> {
@@ -55,7 +47,7 @@ export async function runHoldReleaseSweep(
   try {
     ids = await deps.repo.findHeldAnonReportIds(deps.batchSize)
   } catch (err) {
-    report(err, { job: "anon.hold.release.sweep", phase: "find" })
+    report(err, { job: ANON_HOLD_RELEASE_SWEEP_JOB, phase: "find" })
     log("anon.hold.release.sweep: find failed", { err: String(err) })
     return { scanned: 0, published: 0, errors: 1 }
   }
@@ -73,7 +65,7 @@ export async function runHoldReleaseSweep(
       if (result.published) published++
     } catch (err) {
       errors++
-      report(err, { job: "anon.hold.release.sweep", phase: "release", reportId })
+      report(err, { job: ANON_HOLD_RELEASE_SWEEP_JOB, phase: "release", reportId })
       log("anon.hold.release.sweep: report failed", { reportId, err: String(err) })
     }
   }

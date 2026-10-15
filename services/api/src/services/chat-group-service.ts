@@ -1,4 +1,3 @@
-
 import { AppError, ErrorCode } from "@civfix/shared"
 import type {
   AddGroupMembersRequest,
@@ -14,15 +13,31 @@ import type {
   ChatGroupView,
   GroupMemberRole,
   GroupMemberView,
-} from "./chat-group-repository.drizzle.js"
+} from "./chat-group-repository.js"
 import { assertNoSlur } from "../abuse/slur-filter.js"
 import { isOfficialAccount } from "../auth/official-account.js"
+import { clampPageLimit } from "../lib/page-limit.js"
 import { NO_AFFILIATIONS, withAffiliation, type AffiliationLoader } from "./affiliation.js"
 
-export const GROUP_MEMBERS_DEFAULT_LIMIT = 25
-export const GROUP_MEMBERS_MAX_LIMIT = 50
+const GROUP_MEMBERS_DEFAULT_LIMIT = 25
+const GROUP_MEMBERS_MAX_LIMIT = 50
 
 const INVITE_BLOCK_SCAN_MEMBERS = 200
+
+const NOT_A_GROUP_MEMBER = "That user isn't a member of this group."
+
+const OWNER_ROLE_FIXED = "The owner's role can't be changed."
+
+const GROUP_ERROR_CODE = {
+  notAMember: "not_a_member",
+  updateForbidden: "update_forbidden",
+  visibilityOwnerOnly: "visibility_owner_only",
+  addMembersForbidden: "add_members_forbidden",
+  ownerMustStay: "owner_must_stay",
+  removeForbidden: "remove_forbidden",
+  roleOwnerOnly: "role_owner_only",
+  notPublic: "not_public",
+} as const
 
 export interface ChatGroupServiceDeps {
   groups: ChatGroupRepository
@@ -34,6 +49,12 @@ const forbidden = (message: string, code: string): AppError =>
   new AppError(ErrorCode.FORBIDDEN, message, { fields: { code } })
 
 const groupNotFound = (): AppError => AppError.notFound("Group not found")
+
+const notOpenToJoin = (): AppError =>
+  forbidden("This group isn't open to join.", GROUP_ERROR_CODE.notPublic)
+
+const isOwnerOrAdmin = (role: GroupMemberRole | null): boolean =>
+  role === "owner" || role === "admin"
 
 function toMemberDTO(view: GroupMemberView): GroupMemberDTO {
   return { user: view.user, role: view.role, joinedAt: view.joinedAt.toISOString() }
@@ -91,11 +112,6 @@ export function makeChatGroupService(deps: ChatGroupServiceDeps): ChatGroupServi
     }
   }
 
-  async function resolveAvatar(uploadId: string | undefined): Promise<string | null> {
-    if (uploadId === undefined) return null
-    return groups.findMediaIdByUploadId(uploadId)
-  }
-
   async function filterInvitees(actorId: string, memberIds: string[]): Promise<string[]> {
     const unique = [...new Set(memberIds)].filter((id) => id !== actorId && !isOfficialAccount(id))
     return groups.invitableIdsOf(actorId, unique)
@@ -128,9 +144,7 @@ export function makeChatGroupService(deps: ChatGroupServiceDeps): ChatGroupServi
       .filter((id) => !candidates.includes(id))
       .slice(0, INVITE_BLOCK_SCAN_MEMBERS)
     const blocked = await groups.blockedPairsAmong([...candidates, ...existing])
-    const rosterOk = candidates.filter(
-      (c) => !existing.some((m) => blocked.has(blockedKey(c, m))),
-    )
+    const rosterOk = candidates.filter((c) => !existing.some((m) => blocked.has(blockedKey(c, m))))
     return greedyPairwise(rosterOk, blocked)
   }
 
@@ -144,18 +158,27 @@ export function makeChatGroupService(deps: ChatGroupServiceDeps): ChatGroupServi
     viewerId: string,
     groupId: string,
   ): Promise<{ view: ChatGroupView; role: GroupMemberRole | null }> {
-    const [view, role] = await Promise.all([groups.findById(groupId), groups.roleOf(groupId, viewerId)])
+    const [view, role] = await Promise.all([
+      groups.findById(groupId),
+      groups.roleOf(groupId, viewerId),
+    ])
     if (view === null || (role === null && view.visibility === "private")) {
-      throw forbidden("You aren't a member of this group.", "not_a_member")
+      throw forbidden("You aren't a member of this group.", GROUP_ERROR_CODE.notAMember)
     }
     return { view, role }
   }
 
-  async function requireReadable(viewerId: string, groupId: string): Promise<GroupMemberRole | null> {
+  async function requireReadable(
+    viewerId: string,
+    groupId: string,
+  ): Promise<GroupMemberRole | null> {
     return (await readableGroup(viewerId, groupId)).role
   }
 
-  async function firstMembersPage(groupId: string, viewerId: string): Promise<ListGroupMembersResponse> {
+  async function firstMembersPage(
+    groupId: string,
+    viewerId: string,
+  ): Promise<ListGroupMembersResponse> {
     const page = await groups.listMembers(groupId, viewerId, null, GROUP_MEMBERS_DEFAULT_LIMIT)
     return { members: page.members.map(toMemberDTO), nextCursor: page.nextCursor }
   }
@@ -164,17 +187,14 @@ export function makeChatGroupService(deps: ChatGroupServiceDeps): ChatGroupServi
     async createGroup(ownerId, req) {
       assertNoSlur(req.name, "name")
       assertNoSlur(req.description ?? null, "description")
-      const [avatarMediaId, actorFiltered] = await Promise.all([
-        resolveAvatar(req.avatarUploadId),
-        filterInvitees(ownerId, req.memberIds),
-      ])
-      const memberIds = await filterPairwise(actorFiltered)
+      const memberIds = await filterPairwise(await filterInvitees(ownerId, req.memberIds))
       const id = await groups.create(
         {
           kind: req.kind,
           name: req.name,
-          description: req.description !== undefined && req.description !== "" ? req.description : null,
-          avatarMediaId,
+          description:
+            req.description !== undefined && req.description !== "" ? req.description : null,
+          avatarUploadId: req.avatarUploadId ?? null,
           ownerId,
           visibility: req.visibility,
         },
@@ -194,33 +214,44 @@ export function makeChatGroupService(deps: ChatGroupServiceDeps): ChatGroupServi
 
     async updateGroup(userId, req) {
       const role = await groups.roleOf(req.id, userId)
-      if (role !== "owner" && role !== "admin") {
-        throw forbidden("Only the owner or an admin can update this group.", "update_forbidden")
+      if (!isOwnerOrAdmin(role)) {
+        throw forbidden(
+          "Only the owner or an admin can update this group.",
+          GROUP_ERROR_CODE.updateForbidden,
+        )
       }
       assertNoSlur(req.name ?? null, "name")
       assertNoSlur(req.description ?? null, "description")
       const view = await requireGroup(req.id)
       if (req.visibility !== undefined && req.visibility !== view.visibility && role !== "owner") {
-        throw forbidden("Only the owner can change this group's visibility.", "visibility_owner_only")
+        throw forbidden(
+          "Only the owner can change this group's visibility.",
+          GROUP_ERROR_CODE.visibilityOwnerOnly,
+        )
       }
-      await groups.update(req.id, {
-        ...(req.name !== undefined ? { name: req.name } : {}),
-        ...(req.description !== undefined
-          ? { description: req.description === "" ? null : req.description }
-          : {}),
-        ...(req.avatarUploadId !== undefined
-          ? { avatarMediaId: await groups.findMediaIdByUploadId(req.avatarUploadId, req.id) }
-          : {}),
-        ...(req.visibility !== undefined ? { visibility: req.visibility } : {}),
-      })
+      await groups.update(
+        req.id,
+        {
+          ...(req.name !== undefined ? { name: req.name } : {}),
+          ...(req.description !== undefined
+            ? { description: req.description === "" ? null : req.description }
+            : {}),
+          ...(req.avatarUploadId !== undefined ? { avatarUploadId: req.avatarUploadId } : {}),
+          ...(req.visibility !== undefined ? { visibility: req.visibility } : {}),
+        },
+        userId,
+      )
       const updated = await requireGroup(req.id)
       return toGroupDTO(updated, userId, role)
     },
 
     async addMembers(userId, req) {
       const role = await groups.roleOf(req.id, userId)
-      if (role !== "owner" && role !== "admin") {
-        throw forbidden("Only the owner or an admin can add members.", "add_members_forbidden")
+      if (!isOwnerOrAdmin(role)) {
+        throw forbidden(
+          "Only the owner or an admin can add members.",
+          GROUP_ERROR_CODE.addMembersForbidden,
+        )
       }
       await requireGroup(req.id)
       const invitees = await filterInviteesForRoom(userId, req.id, req.memberIds)
@@ -235,52 +266,51 @@ export function makeChatGroupService(deps: ChatGroupServiceDeps): ChatGroupServi
       ])
 
       if (actorId === targetId) {
-        if (targetRole === null) throw AppError.notFound("That user isn't a member of this group.")
+        if (targetRole === null) throw AppError.notFound(NOT_A_GROUP_MEMBER)
         if (actorRole === "owner") {
           throw new AppError(ErrorCode.CONFLICT, "The owner can't leave their own group.", {
-            fields: { code: "owner_must_stay" },
+            fields: { code: GROUP_ERROR_CODE.ownerMustStay },
           })
         }
         await groups.removeMember(groupId, targetId)
         return
       }
 
-      if (actorRole !== "owner" && actorRole !== "admin") {
-        throw forbidden("Only the owner or an admin can remove members.", "remove_forbidden")
+      if (!isOwnerOrAdmin(actorRole)) {
+        throw forbidden(
+          "Only the owner or an admin can remove members.",
+          GROUP_ERROR_CODE.removeForbidden,
+        )
       }
-      if (targetRole === null) throw AppError.notFound("That user isn't a member of this group.")
+      if (targetRole === null) throw AppError.notFound(NOT_A_GROUP_MEMBER)
       if (targetRole === "owner" || (targetRole === "admin" && actorRole !== "owner")) {
-        throw forbidden("You can't remove this member.", "remove_forbidden")
+        throw forbidden("You can't remove this member.", GROUP_ERROR_CODE.removeForbidden)
       }
-      await groups.removeMember(groupId, targetId)
       await groups.banMember(groupId, targetId, actorId)
     },
 
     async setMemberRole(actorId, groupId, targetId, role) {
       const actorRole = await groups.roleOf(groupId, actorId)
       if (actorRole !== "owner") {
-        throw forbidden("Only the owner can change member roles.", "role_owner_only")
+        throw forbidden("Only the owner can change member roles.", GROUP_ERROR_CODE.roleOwnerOnly)
       }
       if (targetId === actorId) {
-        throw AppError.validation({ userId: "The owner's role can't be changed." })
+        throw AppError.validation({ userId: OWNER_ROLE_FIXED })
       }
       const targetRole = await groups.roleOf(groupId, targetId)
-      if (targetRole === null) throw AppError.notFound("That user isn't a member of this group.")
+      if (targetRole === null) throw AppError.notFound(NOT_A_GROUP_MEMBER)
       if (targetRole === "owner") {
-        throw AppError.validation({ userId: "The owner's role can't be changed." })
+        throw AppError.validation({ userId: OWNER_ROLE_FIXED })
       }
       await groups.setRole(groupId, targetId, role)
       const member = await groups.findMember(groupId, targetId, actorId)
-      if (member === null) throw AppError.notFound("That user isn't a member of this group.")
+      if (member === null) throw AppError.notFound(NOT_A_GROUP_MEMBER)
       return toMemberDTO(member)
     },
 
     async listMembers(viewerId, req) {
       await requireReadable(viewerId, req.id)
-      const limit = Math.min(
-        Math.max(req.limit ?? GROUP_MEMBERS_DEFAULT_LIMIT, 1),
-        GROUP_MEMBERS_MAX_LIMIT,
-      )
+      const limit = clampPageLimit(req.limit, GROUP_MEMBERS_DEFAULT_LIMIT, GROUP_MEMBERS_MAX_LIMIT)
       const page = await groups.listMembers(req.id, viewerId, req.cursor ?? null, limit)
       const affiliations = deps.affiliations
         ? await deps.affiliations(
@@ -299,17 +329,16 @@ export function makeChatGroupService(deps: ChatGroupServiceDeps): ChatGroupServi
 
     async joinGroup(userId, groupId) {
       const view = await groups.findById(groupId)
-      if (view === null || view.visibility !== "public") {
-        throw forbidden("This group isn't open to join.", "not_public")
-      }
-      if (await groups.isBanned(groupId, userId)) {
-        throw forbidden("This group isn't open to join.", "not_public")
-      }
+      if (view === null || view.visibility !== "public") throw notOpenToJoin()
       const role = await groups.roleOf(groupId, userId)
       if (role !== null) {
         return toGroupDTO(view, userId, role)
       }
-      await groups.addMembers(groupId, [userId])
+      if (!(await groups.joinUnlessBanned(groupId, userId))) {
+        const concurrentRole = await groups.roleOf(groupId, userId)
+        if (concurrentRole === null) throw notOpenToJoin()
+        return toGroupDTO(view, userId, concurrentRole)
+      }
       const refreshed = await requireGroup(groupId)
       return toGroupDTO(refreshed, userId, "member")
     },

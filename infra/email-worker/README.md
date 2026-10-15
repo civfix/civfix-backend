@@ -1,10 +1,17 @@
 # civfix Email Worker
 
 Cloudflare Email Worker that ingests catch-all `*@civfix.org` mail. It writes the raw `.eml` to
-**R2** (`inbound/pending/<messageId>.eml` — the source of truth) and best-effort POSTs an HMAC-signed
+**R2** (`inbound/pending/<slug>.<digest>.eml`, the source of truth) and best-effort POSTs an HMAC-signed
 `{ key }` nudge to the backend webhook. The backend re-fetches from R2, parses, routes (reply → mail
 thread; else → inbox), and reconciles `inbound/pending/` on boot + a cron sweep, so a missed nudge is
 never a lost message.
+
+The pending key is `<slug>.<digest>`: `<slug>` is the Message-ID with `<>` stripped and every character
+outside `A-Za-z0-9._@-` replaced by `_`, cut to 120 characters, and `<digest>` is the first 32 hex
+characters of the SHA-256 of the raw message. The sender chooses the Message-ID, so the digest keeps a
+second mail with the same (or a same-slugging) Message-ID from overwriting a pending one, while a
+byte-identical redelivery lands on the same key. A message with no Message-ID is stored under the full
+64-character digest alone.
 
 The Worker does **not** judge sender authentication. `message.headers` does not expose the
 `Authentication-Results` header Cloudflare stamps (workerd#6740), so a header check here never fired.
@@ -29,7 +36,7 @@ addresses outbound mail advertises live on `MAIL_REPLY_DOMAIN` (default `civfix.
 
 ## Layout
 
-Standalone — **not** in the backend pnpm/Turbo workspace (own `wrangler` toolchain).
+Standalone: **not** in the backend pnpm/Turbo workspace (own `wrangler` toolchain).
 
 ```
 src/index.ts   the email() handler
@@ -43,7 +50,7 @@ test/          vitest unit tests (id derivation, HMAC fixture shared with the ba
 1. **`wrangler.toml` → `bucket_name`**: set to the backend's `R2_INBOUND_BUCKET` value, so the
    backend sweep sees what the Worker writes. Never the media bucket `R2_BUCKET`.
 2. **`BACKEND_WEBHOOK_URL`**: must equal the backend `PUBLIC_API_URL` + `/webhooks/inbound-mail`.
-3. **Secret**: `wrangler secret put CF_EMAIL_WEBHOOK_SECRET --env production` — the **same value** the
+3. **Secret**: `wrangler secret put CF_EMAIL_WEBHOOK_SECRET --env production`, the **same value** the
    backend has for `CF_EMAIL_WEBHOOK_SECRET` (the HMAC key). They must be byte-identical.
 
 ## Develop
@@ -73,18 +80,20 @@ Content-Type: text/plain
 We received your report.'
 ```
 
-Expect an `inbound/pending/test-001@example.gov.eml` object and a signed POST to your local backend.
+Expect an `inbound/pending/test-001@example.gov.<digest>.eml` object and a signed POST to your local
+backend.
 
 ## Deploy + enable Email Routing
 
 ```sh
-pnpm deploy            # wrangler deploy --env production (after `wrangler login` / CLOUDFLARE_API_TOKEN)
+pnpm run deploy          # wrangler deploy --env production
+pnpm run deploy:staging  # wrangler deploy --env staging (after `wrangler login` / CLOUDFLARE_API_TOKEN)
 ```
 
-CI does not deploy the Worker: a change under `src/` reaches Cloudflare only through `pnpm deploy`.
+CI does not deploy the Worker: a change under `src/` reaches Cloudflare only through `pnpm run deploy` (a bare `pnpm deploy` is pnpm's own workspace-deploy command and never runs this script).
 
 Then, in the Cloudflare dashboard (or API): enable **Email Routing** on `civfix.org` (auto-manages
-MX/TXT and **takes over inbound mail for the domain** — confirm no other inbound provider first), and
+MX/TXT and **takes over inbound mail for the domain**; confirm no other inbound provider first), and
 set the **catch-all** route Action to **Send to a Worker** → `civfix-inbound-email`. The
 `/webhooks/*` path stays un-gated by Cloudflare Access, so the Worker can POST it through the tunnel.
 

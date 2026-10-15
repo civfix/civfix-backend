@@ -7,10 +7,11 @@ import type {
 } from "@civfix/shared"
 import { CIVFIX_OFFICIAL_USER_ID, isOfficialAccount } from "../auth/official-account.js"
 import type { Queryable, Sql, TransactionSql } from "../db/client.js"
-import { cursorAtSql, cursorInstantSql, encodeTimeCursor, pageWith } from "../db/cursor-helpers.js"
-import { writeAudit } from "./admin/audit.js"
-import { blockedPairExpr, hiddenIdentity } from "./hidden-identity.js"
-import { servedKeyExpr } from "./media-served-key.js"
+import { keysetInstant, keysetPredicate, pageWith, paginateKeyset } from "../db/cursor-helpers.js"
+import { insertAuditRow } from "./admin/audit-repository.drizzle.js"
+import { hiddenIdentity } from "./hidden-identity.js"
+import { blockedPairExpr } from "./blocks-sql.js"
+import { publicServedKeyExpr } from "./media-served-key.js"
 import {
   hoursHeldOnServiceDate,
   lockEventCredits,
@@ -51,13 +52,16 @@ import type {
   VolunteerHoursEntryView,
   VolunteerHoursRepository,
   VoidedEntry,
-} from "./volunteer-hours-service.js"
+} from "./volunteer-hours-repository.js"
+import { MS_PER_SECOND } from "../lib/time.js"
 
 const MORE_PAGES = "more"
 
-const RECIPROCAL_LOOKBACK_INTERVAL = `${RECIPROCAL_LOOKBACK_MS / 1000} seconds`
+const HOURS_ROUNDING_FACTOR = 100
+
+const RECIPROCAL_LOOKBACK_INTERVAL = `${RECIPROCAL_LOOKBACK_MS / MS_PER_SECOND} seconds`
 const WEEKLY_WINDOW_INTERVAL = "7 days"
-const MANUAL_REPEAT_INTERVAL = `${MANUAL_CREDIT_REPEAT_WINDOW_MS / 1000} seconds`
+const MANUAL_REPEAT_INTERVAL = `${MANUAL_CREDIT_REPEAT_WINDOW_MS / MS_PER_SECOND} seconds`
 
 // Transcripts and entry lists date a row by when the service happened: the event's start, a manual
 // row's service day, and only failing both, when the row was written. A manual row has no
@@ -103,6 +107,10 @@ interface OrgHoursRow {
   hours: number
 }
 
+function round2(n: number): number {
+  return Math.round(n * HOURS_ROUNDING_FACTOR) / HOURS_ROUNDING_FACTOR
+}
+
 function toOrgHoursView(r: OrgHoursRow): OrgHoursView {
   return {
     organizationId: r.id,
@@ -140,8 +148,8 @@ function toEntryView(r: LedgerRow): VolunteerHoursEntryView {
   }
 }
 
-async function computeTotalHours(sql: Sql, userId: string): Promise<number> {
-  const rows = await sql<{ total: number }[]>`
+function totalHoursQuery(sql: Sql, userId: string) {
+  return sql<{ total: number }[]>`
     SELECT (
       (SELECT COALESCE(SUM(total_hours), 0)
          FROM user_jurisdiction_hours
@@ -152,7 +160,10 @@ async function computeTotalHours(sql: Sql, userId: string): Promise<number> {
             AND source <> 'report' AND jurisdiction_geoid IS NULL)
     )::float8 AS total
   `
-  return Math.round((rows[0]?.total ?? 0) * 100) / 100
+}
+
+function totalHoursFrom(rows: readonly { total: number }[]): number {
+  return round2(rows[0]?.total ?? 0)
 }
 
 async function detectHoursAnomalies(
@@ -200,6 +211,28 @@ async function detectHoursAnomalies(
   }
 
   return anomalies
+}
+
+async function assertNoReciprocalCredit(
+  tx: Queryable,
+  args: LogEventHoursArgs,
+  userIds: readonly string[],
+): Promise<void> {
+  const reciprocal = await tx<{ logged_by_user_id: string }[]>`
+          SELECT DISTINCT logged_by_user_id
+          FROM volunteer_hours
+          WHERE cleanup_id = ${args.cleanupId}
+            AND source = 'event'
+            AND user_id = ${args.actorId}
+            AND voided_at IS NULL
+            AND logged_by_user_id <> ${args.actorId}
+            AND logged_by_user_id = ANY(${userIds}::uuid[])
+        `
+  if (reciprocal.length > 0) {
+    throw AppError.conflict(
+      "You can't credit hours to someone who has already credited you for this event.",
+    )
+  }
 }
 
 interface OperatorLedgerRow {
@@ -260,10 +293,6 @@ function toOperatorLedgerView(r: OperatorLedgerRow): OperatorLedgerEntryView {
   }
 }
 
-function round2(n: number): number {
-  return Math.round(n * 100) / 100
-}
-
 async function eventEntryId(
   tx: TransactionSql,
   cleanupId: string,
@@ -299,29 +328,12 @@ export function makeDrizzleVolunteerHoursRepository(sql: Sql): VolunteerHoursRep
       const userIds = args.entries.map((e) => e.userId)
       return sql.begin(async (tx) => {
         await lockEventCredits(tx, args.cleanupId, userIds)
-
-        const reciprocal = await tx<{ logged_by_user_id: string }[]>`
-          SELECT DISTINCT logged_by_user_id
-          FROM volunteer_hours
-          WHERE cleanup_id = ${args.cleanupId}
-            AND source = 'event'
-            AND user_id = ${args.actorId}
-            AND voided_at IS NULL
-            AND logged_by_user_id <> ${args.actorId}
-            AND logged_by_user_id = ANY(${userIds}::uuid[])
-        `
-        if (reciprocal.length > 0) {
-          throw AppError.conflict(
-            "You can't credit hours to someone who has already credited you for this event.",
-          )
-        }
-
+        await assertNoReciprocalCredit(tx, args, userIds)
         assertWithinDailyHoursCap(
           args.entries,
           await sameDayEventHours(tx, args.cleanupId, userIds),
           args.dailyCapHours ?? DAILY_HOURS_CAP,
         )
-
         const changed = await writeEventCredits(tx, {
           cleanupId: args.cleanupId,
           geoid: args.geoid,
@@ -342,45 +354,51 @@ export function makeDrizzleVolunteerHoursRepository(sql: Sql): VolunteerHoursRep
     },
 
     async totalsFor(userId: string): Promise<MyVolunteerHoursTotals> {
-      const rows = await sql<{ geoid: string; name: string | null; hours: number }[]>`
-        SELECT
-          ujh.jurisdiction_geoid AS geoid,
-          j.name AS name,
-          ujh.total_hours::float8 AS hours
-        FROM user_jurisdiction_hours ujh
-        JOIN jurisdictions j ON j.geoid = ujh.jurisdiction_geoid
-        WHERE ujh.user_id = ${userId} AND ujh.total_hours > 0
-        ORDER BY ujh.total_hours DESC, ujh.jurisdiction_geoid
-      `
+      const [rows, orgRows, totalRows] = await Promise.all([
+        sql<{ geoid: string; name: string | null; hours: number }[]>`
+          SELECT
+            ujh.jurisdiction_geoid AS geoid,
+            j.name AS name,
+            ujh.total_hours::float8 AS hours
+          FROM user_jurisdiction_hours ujh
+          JOIN jurisdictions j ON j.geoid = ujh.jurisdiction_geoid
+          WHERE ujh.user_id = ${userId} AND ujh.total_hours > 0
+          ORDER BY ujh.total_hours DESC, ujh.jurisdiction_geoid
+        `,
+        sql<OrgHoursRow[]>`
+          SELECT
+            o.id,
+            o.slug,
+            o.name,
+            ${publicServedKeyExpr(sql, "am")} AS logo_key,
+            o.verified_status,
+            o.verified_kind,
+            sum(vh.hours)::float8 AS hours
+          FROM volunteer_hours vh
+          JOIN cleanups c ON c.id = vh.cleanup_id
+          JOIN organizations o ON o.id = c.organization_id
+          LEFT JOIN media_assets am ON am.id = o.logo_media_id
+          WHERE vh.user_id = ${userId}
+            AND vh.source = 'event'
+            AND vh.voided_at IS NULL
+            AND o.deleted_at IS NULL
+            AND o.suspended_at IS NULL
+          GROUP BY o.id, o.slug, o.name, am.id, o.verified_status, o.verified_kind
+          ORDER BY sum(vh.hours) DESC, o.id
+          LIMIT ${MAX_ORG_CHIPS_FETCH}
+        `,
+        totalHoursQuery(sql, userId),
+      ])
       const byJurisdiction = rows.map((r) => ({ geoid: r.geoid, name: r.name, hours: r.hours }))
-      const orgRows = await sql<OrgHoursRow[]>`
-        SELECT
-          o.id,
-          o.slug,
-          o.name,
-          ${servedKeyExpr(sql, "am")} AS logo_key,
-          o.verified_status,
-          o.verified_kind,
-          sum(vh.hours)::float8 AS hours
-        FROM volunteer_hours vh
-        JOIN cleanups c ON c.id = vh.cleanup_id
-        JOIN organizations o ON o.id = c.organization_id
-        LEFT JOIN media_assets am ON am.id = o.logo_media_id
-        WHERE vh.user_id = ${userId}
-          AND vh.source = 'event'
-          AND vh.voided_at IS NULL
-          AND o.deleted_at IS NULL
-          AND o.suspended_at IS NULL
-        GROUP BY o.id, o.slug, o.name, am.id, o.verified_status, o.verified_kind
-        ORDER BY sum(vh.hours) DESC, o.id
-        LIMIT ${MAX_ORG_CHIPS_FETCH}
-      `
-      const totalHours = await computeTotalHours(sql, userId)
-      return { totalHours, byJurisdiction, byOrganization: orgRows.map(toOrgHoursView) }
+      return {
+        totalHours: totalHoursFrom(totalRows),
+        byJurisdiction,
+        byOrganization: orgRows.map(toOrgHoursView),
+      }
     },
 
     async totalHoursFor(userId: string): Promise<number> {
-      return computeTotalHours(sql, userId)
+      return totalHoursFrom(await totalHoursQuery(sql, userId))
     },
 
     async leaderboard(
@@ -390,84 +408,80 @@ export function makeDrizzleVolunteerHoursRepository(sql: Sql): VolunteerHoursRep
       viewerId: string | null,
       withExtras: boolean,
     ): Promise<LeaderboardPage> {
-      const jurRows = await sql<{ name: string }[]>`
-        SELECT name FROM jurisdictions WHERE geoid = ${geoid} LIMIT 1
-      `
-      const jurisdictionName = jurRows[0]?.name ?? null
-
       const blockedPair = blockedPairExpr(sql, viewerId, sql`ujh.user_id`)
 
-      const rows = await sql<
-        {
-          user_id: string
-          name: string
-          handle: string | null
-          avatar_url: string | null
-          hours: number
-          blocked_pair: boolean
-        }[]
-      >`
-        SELECT
-          ujh.user_id,
-          u.display_name AS name,
-          u.handle,
-          u.avatar_url,
-          ${blockedPair} AS blocked_pair,
-          ujh.total_hours::float8 AS hours
-        FROM user_jurisdiction_hours ujh
-        JOIN users u ON u.id = ujh.user_id
-        WHERE ujh.jurisdiction_geoid = ${geoid}
-          AND ujh.total_hours > 0
-          AND u.deleted_at IS NULL
-          AND u.show_volunteer_hours IS NOT FALSE
-        ORDER BY ujh.total_hours DESC, ujh.user_id
-        LIMIT ${limit + 1} OFFSET ${offset}
-      `
-
-      let viewerRank: number | null = null
-      let viewerHours: number | null = null
-      if (withExtras && viewerId !== null) {
-        const meRows = await sql<{ hours: number | null; rank: number | null }[]>`
-          WITH me AS (
-            SELECT ujh.total_hours
-            FROM user_jurisdiction_hours ujh
-            JOIN users u ON u.id = ujh.user_id
-            WHERE ujh.user_id = ${viewerId}
-              AND ujh.jurisdiction_geoid = ${geoid}
-              AND ujh.total_hours > 0
-              AND u.deleted_at IS NULL
-              AND u.show_volunteer_hours IS NOT FALSE
-          )
+      const [jurRows, rows, meRows, countRows] = await Promise.all([
+        sql<{ name: string }[]>`
+          SELECT name FROM jurisdictions WHERE geoid = ${geoid} LIMIT 1
+        `,
+        sql<
+          {
+            user_id: string
+            name: string
+            handle: string | null
+            avatar_url: string | null
+            hours: number
+            blocked_pair: boolean
+          }[]
+        >`
           SELECT
-            (SELECT total_hours::float8 FROM me) AS hours,
-            CASE WHEN EXISTS (SELECT 1 FROM me) THEN (
-              SELECT count(*)::int + 1
-              FROM user_jurisdiction_hours o
-              JOIN users ou ON ou.id = o.user_id
-              WHERE o.jurisdiction_geoid = ${geoid}
-                AND o.total_hours > (SELECT total_hours FROM me)
-                AND o.total_hours > 0
-                AND ou.deleted_at IS NULL
-                AND ou.show_volunteer_hours IS NOT FALSE
-            ) END AS rank
-        `
-        viewerHours = meRows[0]?.hours ?? null
-        viewerRank = meRows[0]?.rank ?? null
-      }
-
-      let participantCount: number | null = null
-      if (withExtras && offset === 0) {
-        const countRows = await sql<{ count: number }[]>`
-          SELECT count(*)::int AS count
+            ujh.user_id,
+            u.display_name AS name,
+            u.handle,
+            u.avatar_url,
+            ${blockedPair} AS blocked_pair,
+            ujh.total_hours::float8 AS hours
           FROM user_jurisdiction_hours ujh
           JOIN users u ON u.id = ujh.user_id
           WHERE ujh.jurisdiction_geoid = ${geoid}
             AND ujh.total_hours > 0
             AND u.deleted_at IS NULL
             AND u.show_volunteer_hours IS NOT FALSE
-        `
-        participantCount = countRows[0]?.count ?? 0
-      }
+          ORDER BY ujh.total_hours DESC, ujh.user_id
+          LIMIT ${limit + 1} OFFSET ${offset}
+        `,
+        withExtras && viewerId !== null
+          ? sql<{ hours: number | null; rank: number | null }[]>`
+              WITH me AS (
+                SELECT ujh.total_hours
+                FROM user_jurisdiction_hours ujh
+                JOIN users u ON u.id = ujh.user_id
+                WHERE ujh.user_id = ${viewerId}
+                  AND ujh.jurisdiction_geoid = ${geoid}
+                  AND ujh.total_hours > 0
+                  AND u.deleted_at IS NULL
+                  AND u.show_volunteer_hours IS NOT FALSE
+              )
+              SELECT
+                (SELECT total_hours::float8 FROM me) AS hours,
+                CASE WHEN EXISTS (SELECT 1 FROM me) THEN (
+                  SELECT count(*)::int + 1
+                  FROM user_jurisdiction_hours o
+                  JOIN users ou ON ou.id = o.user_id
+                  WHERE o.jurisdiction_geoid = ${geoid}
+                    AND o.total_hours > (SELECT total_hours FROM me)
+                    AND o.total_hours > 0
+                    AND ou.deleted_at IS NULL
+                    AND ou.show_volunteer_hours IS NOT FALSE
+                ) END AS rank
+            `
+          : null,
+        withExtras && offset === 0
+          ? sql<{ count: number }[]>`
+              SELECT count(*)::int AS count
+              FROM user_jurisdiction_hours ujh
+              JOIN users u ON u.id = ujh.user_id
+              WHERE ujh.jurisdiction_geoid = ${geoid}
+                AND ujh.total_hours > 0
+                AND u.deleted_at IS NULL
+                AND u.show_volunteer_hours IS NOT FALSE
+            `
+          : null,
+      ])
+      const jurisdictionName = jurRows[0]?.name ?? null
+      const viewerHours = meRows === null ? null : (meRows[0]?.hours ?? null)
+      const viewerRank = meRows === null ? null : (meRows[0]?.rank ?? null)
+      const participantCount = countRows === null ? null : (countRows[0]?.count ?? 0)
 
       const { items: page, nextCursor: more } = pageWith(rows, limit, () => MORE_PAGES)
       const entries: LeaderboardEntryDTO[] = page.map((r, i) => {
@@ -501,14 +515,15 @@ export function makeDrizzleVolunteerHoursRepository(sql: Sql): VolunteerHoursRep
       const sources = args.sources ?? ITEMISED_SOURCES
       const keyset =
         args.cursor !== null
-          ? sql`AND (vh.created_at, vh.id) < (${args.cursor.at}, ${args.cursor.id}::uuid)`
+          ? sql`AND ${keysetPredicate(sql, sql`vh.created_at`, sql`vh.id`, args.cursor)}`
           : sql``
-      const rows = await sql<LedgerRow[]>`
+      const rows = await sql<(LedgerRow & { cursor_at: string })[]>`
         SELECT
           vh.id,
           vh.source,
           vh.hours::float8 AS hours,
           vh.created_at,
+          ${keysetInstant(sql, sql`vh.created_at`)} AS cursor_at,
           ${occurredAtExpr(sql)} AS occurred_at,
           vh.cleanup_id,
           c.title AS cleanup_title,
@@ -530,9 +545,10 @@ export function makeDrizzleVolunteerHoursRepository(sql: Sql): VolunteerHoursRep
         ORDER BY vh.created_at DESC, vh.id DESC
         LIMIT ${args.limit + 1}
       `
-      const { items, nextCursor } = pageWith(rows, args.limit, (last) =>
-        encodeTimeCursor({ at: last.created_at, id: last.id }),
-      )
+      const { items, nextCursor } = paginateKeyset(rows, args.limit, (last) => ({
+        atText: last.cursor_at,
+        id: last.id,
+      }))
       return { items: items.map(toEntryView), nextCursor }
     },
 
@@ -585,49 +601,51 @@ export function makeDrizzleVolunteerHoursRepository(sql: Sql): VolunteerHoursRep
         args.geoid !== null ? sql`AND vh.jurisdiction_geoid = ${args.geoid}` : sql``
       const fromFilter = args.from !== null ? sql`AND vh.created_at >= ${args.from}` : sql``
       const toFilter = args.to !== null ? sql`AND vh.created_at <= ${args.to}` : sql``
-      const rows = await sql<LedgerRow[]>`
-        SELECT
-          vh.id,
-          vh.source,
-          vh.hours::float8 AS hours,
-          vh.created_at,
-          ${occurredAtExpr(sql)} AS occurred_at,
-          vh.cleanup_id,
-          c.title AS cleanup_title,
-          c.reference_code,
-          vh.report_id,
-          vh.jurisdiction_geoid,
-          j.name AS jurisdiction_name,
-          lb.id AS creditor_id,
-          lb.display_name AS creditor_name,
-          lb.handle AS creditor_handle
-        FROM volunteer_hours vh
-        LEFT JOIN cleanups c      ON c.id = vh.cleanup_id
-        LEFT JOIN jurisdictions j ON j.geoid = vh.jurisdiction_geoid
-        LEFT JOIN users lb        ON lb.id = vh.logged_by_user_id
-        WHERE vh.user_id = ${args.userId}
-          AND vh.voided_at IS NULL
-          AND vh.source <> 'report'
-          ${geoidFilter}
-          ${fromFilter}
-          ${toFilter}
-        ORDER BY vh.created_at DESC, vh.id DESC
-        LIMIT ${args.limit}
-      `
-      const countRows = await sql<{ count: number }[]>`
-        SELECT count(*)::int AS count
-        FROM volunteer_hours vh
-        WHERE vh.user_id = ${args.userId}
-          AND vh.voided_at IS NULL
-          AND vh.source <> 'report'
-          ${geoidFilter}
-          ${fromFilter}
-          ${toFilter}
-      `
+      const [rows, countRows] = await Promise.all([
+        sql<LedgerRow[]>`
+          SELECT
+            vh.id,
+            vh.source,
+            vh.hours::float8 AS hours,
+            vh.created_at,
+            ${occurredAtExpr(sql)} AS occurred_at,
+            vh.cleanup_id,
+            c.title AS cleanup_title,
+            c.reference_code,
+            vh.report_id,
+            vh.jurisdiction_geoid,
+            j.name AS jurisdiction_name,
+            lb.id AS creditor_id,
+            lb.display_name AS creditor_name,
+            lb.handle AS creditor_handle
+          FROM volunteer_hours vh
+          LEFT JOIN cleanups c      ON c.id = vh.cleanup_id
+          LEFT JOIN jurisdictions j ON j.geoid = vh.jurisdiction_geoid
+          LEFT JOIN users lb        ON lb.id = vh.logged_by_user_id
+          WHERE vh.user_id = ${args.userId}
+            AND vh.voided_at IS NULL
+            AND vh.source <> 'report'
+            ${geoidFilter}
+            ${fromFilter}
+            ${toFilter}
+          ORDER BY vh.created_at DESC, vh.id DESC
+          LIMIT ${args.limit}
+        `,
+        sql<{ count: number }[]>`
+          SELECT count(*)::int AS count
+          FROM volunteer_hours vh
+          WHERE vh.user_id = ${args.userId}
+            AND vh.voided_at IS NULL
+            AND vh.source <> 'report'
+            ${geoidFilter}
+            ${fromFilter}
+            ${toFilter}
+        `,
+      ])
       const items = rows.reverse().map(toEntryView)
       return {
         items,
-        totalHours: Math.round(items.reduce((sum, r) => sum + r.hours, 0) * 100) / 100,
+        totalHours: round2(items.reduce((sum, r) => sum + r.hours, 0)),
         entryCount: countRows[0]?.count ?? items.length,
       }
     },
@@ -669,7 +687,7 @@ export function makeDrizzleVolunteerHoursRepository(sql: Sql): VolunteerHoursRep
           entries,
         })
         const entryId = await eventEntryId(tx, args.cleanupId, args.userId)
-        await writeAudit(tx, {
+        await insertAuditRow(tx, {
           actorId: args.operatorId,
           action: "user.hours_credited",
           target: `user:${args.userId}`,
@@ -725,7 +743,7 @@ export function makeDrizzleVolunteerHoursRepository(sql: Sql): VolunteerHoursRep
         `
         const entryId = inserted[0]?.id
         if (entryId === undefined) throw new Error("creditManual: insert returned no row")
-        await writeAudit(tx, {
+        await insertAuditRow(tx, {
           actorId: args.operatorId,
           action: "user.hours_credited",
           target: `user:${args.userId}`,
@@ -797,7 +815,7 @@ export function makeDrizzleVolunteerHoursRepository(sql: Sql): VolunteerHoursRep
               AND ujh.jurisdiction_geoid = vh.jurisdiction_geoid
           `
         }
-        await writeAudit(tx, {
+        await insertAuditRow(tx, {
           actorId: args.operatorId,
           action: "user.hours_voided",
           target: `user:${args.userId}`,
@@ -819,7 +837,7 @@ export function makeDrizzleVolunteerHoursRepository(sql: Sql): VolunteerHoursRep
       const limit = Math.min(Math.max(1, Math.floor(args.limit)), OPERATOR_LEDGER_MAX_LIMIT)
       const keyset =
         args.cursor !== null
-          ? sql`AND (vh.created_at, vh.id) < (${cursorAtSql(sql, args.cursor)}, ${args.cursor.id}::uuid)`
+          ? sql`AND ${keysetPredicate(sql, sql`vh.created_at`, sql`vh.id`, args.cursor)}`
           : sql``
       const rows = await sql<OperatorLedgerRow[]>`
         SELECT
@@ -827,7 +845,7 @@ export function makeDrizzleVolunteerHoursRepository(sql: Sql): VolunteerHoursRep
           vh.source,
           vh.hours::float8 AS hours,
           vh.created_at,
-          ${cursorInstantSql(sql, sql`vh.created_at`)} AS cursor_at,
+          ${keysetInstant(sql, sql`vh.created_at`)} AS cursor_at,
           ${occurredAtExpr(sql)} AS occurred_at,
           vh.service_date::text AS service_date,
           vh.cleanup_id,
@@ -856,9 +874,10 @@ export function makeDrizzleVolunteerHoursRepository(sql: Sql): VolunteerHoursRep
         ORDER BY vh.created_at DESC, vh.id DESC
         LIMIT ${limit + 1}
       `
-      const { items, nextCursor } = pageWith(rows, limit, (last) =>
-        encodeTimeCursor({ at: last.cursor_at, id: last.id }),
-      )
+      const { items, nextCursor } = paginateKeyset(rows, limit, (last) => ({
+        atText: last.cursor_at,
+        id: last.id,
+      }))
       return { items: items.map(toOperatorLedgerView), nextCursor }
     },
 
@@ -871,7 +890,7 @@ export function makeDrizzleVolunteerHoursRepository(sql: Sql): VolunteerHoursRep
         WHERE user_id = ${userId}
       `
       return {
-        totalHours: await computeTotalHours(sql, userId),
+        totalHours: totalHoursFrom(await totalHoursQuery(sql, userId)),
         liveEntries: rows[0]?.live ?? 0,
         voidedEntries: rows[0]?.voided ?? 0,
       }

@@ -1,4 +1,3 @@
-
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { fileURLToPath } from "node:url"
 
@@ -11,13 +10,13 @@ vi.mock("../../src/sandbox/image-lane.js", () => ({
 
 const { FakeStorage, FakeAbuseChecks } = await import("@civfix/shared/fakes")
 const { loadLimits } = await import("../../src/config.js")
-const { SandboxSpawnError, SandboxToolError, resetSandboxIdentity } = await import(
-  "../../src/sandbox/exec.js"
-)
+const { SandboxSpawnError, SandboxToolError, resetSandboxIdentity } =
+  await import("../../src/sandbox/exec.js")
 const { processMedia } = await import("../../src/jobs/media-pipeline.js")
 const { runMediaChecksJob, MediaInfraError } = await import("../../src/jobs/media-checks.js")
 const { assertSandboxPreflight } = await import("../../src/sandbox/preflight.js")
-const { InMemoryWorkerRepo } = await import("../helpers/in-memory-repo.js")
+const { InMemoryMediaWorkerRepository } =
+  await import("../helpers/in-memory-media-worker-repository.js")
 const { makeDownloader } = await import("../../src/download.js")
 const fx = await import("../fixtures/make.js")
 
@@ -91,7 +90,7 @@ describe("media.checks classification", () => {
       }),
     )
     const storage = new FakeStorage()
-    const repo = new InMemoryWorkerRepo()
+    const repo = new InMemoryMediaWorkerRepository()
     const r2Key = "uploads/2026/09/segv"
     repo.seed({ id: "m2", uploadId: "u2", kind: "image", r2Key })
     await storage.put(r2Key, Buffer.from(await fx.makeValidPng()), { contentType: "image/png" })
@@ -116,7 +115,7 @@ describe("media.checks classification", () => {
   it("turns a spawn-level failure into MediaInfraError, leaving the asset validating and its bytes intact", async () => {
     processImageLaneMock.mockRejectedValue(new SandboxSpawnError("image-lane", new Error("EACCES")))
     const storage = new FakeStorage()
-    const repo = new InMemoryWorkerRepo()
+    const repo = new InMemoryMediaWorkerRepository()
     const r2Key = "uploads/2026/09/spawn"
     repo.seed({ id: "m1", uploadId: "u1", kind: "image", r2Key })
     await storage.put(r2Key, Buffer.from(await fx.makeValidPng()), { contentType: "image/png" })

@@ -1,4 +1,3 @@
-
 import { describe, expect, it } from "vitest"
 import { AppError, DEFAULT_FEED_RANKING } from "@civfix/shared"
 import type { PostComposeInput, PostDTO } from "@civfix/shared"
@@ -8,12 +7,14 @@ import { makeFakeSql } from "../helpers/fake-sql.js"
 import {
   makeDrizzlePostRepository,
   NIL_VIEWER_ID,
-  type CreatePostArgs,
-  type FeedCandidateArgs,
-  type PostBrief,
-  type PostRepository,
-  type ReplyListArgs,
 } from "../../src/services/post-repository.drizzle.js"
+import type {
+  CreatePostArgs,
+  FeedCandidateArgs,
+  PostBrief,
+  PostRepository,
+  ReplyListArgs,
+} from "../../src/services/post-repository.js"
 import type { PostNotifier } from "../../src/services/notification-service.js"
 
 const LEGACY_CURSOR_ID = "33333333-3333-3333-3333-333333333333"
@@ -31,7 +32,9 @@ interface FakeConfig {
   likeCreated?: boolean
 }
 
-function fakeRepo(cfg: FakeConfig = {}): PostRepository & { created: CreatePostArgs[]; deleted: string[] } {
+function fakeRepo(
+  cfg: FakeConfig = {},
+): PostRepository & { created: CreatePostArgs[]; deleted: string[] } {
   const created: CreatePostArgs[] = []
   const deleted: string[] = []
   const dto = (id: string): PostDTO => ({
@@ -69,7 +72,8 @@ function fakeRepo(cfg: FakeConfig = {}): PostRepository & { created: CreatePostA
       Promise.resolve(cfg.orgMembers?.has(`${organizationId}:${userId}`) ?? false),
     isEventMember: (eventId, userId) =>
       Promise.resolve(cfg.members?.has(`${eventId}:${userId}`) ?? false),
-    isReportAttachable: (reportId) => Promise.resolve(cfg.attachableReports?.has(reportId) ?? false),
+    isReportAttachable: (reportId) =>
+      Promise.resolve(cfg.attachableReports?.has(reportId) ?? false),
     createPost: (args) => {
       created.push(args)
       return Promise.resolve("new-post-id")
@@ -170,7 +174,11 @@ describe("PostService validation + authorization", () => {
         ranked.push(args.viewerId)
         return Promise.resolve([])
       },
-      publicFeed: (args: { filter: "all" | "events" | "fixes"; cursor: string | null; limit: number }) => {
+      publicFeed: (args: {
+        filter: "all" | "events" | "fixes"
+        cursor: string | null
+        limit: number
+      }) => {
         chronological.push({ cursor: args.cursor, limit: args.limit })
         return Promise.resolve({ items: [], nextCursor: null })
       },
@@ -318,7 +326,15 @@ describe("PostService validation + authorization", () => {
     const repo = {
       ...fakeRepo({
         briefs: {
-          p1: { id: "p1", authorId: "self", kind: "post", replyToId: null, repostOfId: null, deletedAt: null, visibility: "public" },
+          p1: {
+            id: "p1",
+            authorId: "self",
+            kind: "post",
+            replyToId: null,
+            repostOfId: null,
+            deletedAt: null,
+            visibility: "public",
+          },
         },
       }),
       repost: (postId: string, userId: string) => {
@@ -338,8 +354,24 @@ describe("PostService validation + authorization", () => {
     const repo = {
       ...fakeRepo({
         briefs: {
-          shell: { id: "shell", authorId: "booster", kind: "repost", replyToId: null, repostOfId: "orig", deletedAt: null, visibility: "public" },
-          orig: { id: "orig", authorId: "self", kind: "post", replyToId: null, repostOfId: null, deletedAt: null, visibility: "public" },
+          shell: {
+            id: "shell",
+            authorId: "booster",
+            kind: "repost",
+            replyToId: null,
+            repostOfId: "orig",
+            deletedAt: null,
+            visibility: "public",
+          },
+          orig: {
+            id: "orig",
+            authorId: "self",
+            kind: "post",
+            replyToId: null,
+            repostOfId: null,
+            deletedAt: null,
+            visibility: "public",
+          },
         },
       }),
       repost: (postId: string, userId: string) => {
@@ -384,7 +416,10 @@ describe("PostService listReplies names the focal author whose answers get inlin
     const svc = makePostService({ repo, sql: throwingSql })
     await svc.listReplies("p1", "viewer", { limit: 5, cursor: "c1" })
     expect(calls).toEqual([
-      { postId: "p1", args: { viewerId: "viewer", focalAuthorId: "origAuthor", cursor: "c1", limit: 5 } },
+      {
+        postId: "p1",
+        args: { viewerId: "viewer", focalAuthorId: "origAuthor", cursor: "c1", limit: 5 },
+      },
     ])
   })
 
@@ -445,7 +480,8 @@ describe("PostRepository listReplies inlines the focal author's latest answers",
   }
 
   const LIST = /WHERE p\.reply_to_id = \? AND p\.deleted_at IS NULL/
-  const ANSWERS = /SELECT DISTINCT ON \(p\.reply_to_id\)[\s\S]*WHERE p\.reply_to_id = ANY\(\?::uuid\[\]\)\s+AND p\.author_id = \?/
+  const ANSWERS =
+    /SELECT DISTINCT ON \(p\.reply_to_id\)[\s\S]*WHERE p\.reply_to_id = ANY\(\?::uuid\[\]\)\s+AND p\.author_id = \?/
   const AUTHORS = /LEFT JOIN media_assets am ON am\.id = u\.avatar_media_id/
 
   function repoOver(listRows: unknown[], answerRows: unknown[]) {
@@ -565,7 +601,13 @@ describe("PostService notification fan-out", () => {
     const spy = spyNotifier()
     const svc = makePostService({ repo, sql: throwingSql, notifier: spy.notifier })
     await svc.createPost(
-      { kind: "reply", replyToId: "parent", body: "nice", mediaUploadIds: [], mentionedUserIds: [] },
+      {
+        kind: "reply",
+        replyToId: "parent",
+        body: "nice",
+        mediaUploadIds: [],
+        mentionedUserIds: [],
+      },
       "replier",
     )
     expect(spy.replies).toEqual([
@@ -578,12 +620,17 @@ describe("PostService notification fan-out", () => {
     const orig = brief({ id: "orig", authorId: "origAuthor", kind: "post" })
     const base = fakeRepo({ briefs: { shell, orig }, likeCreated: true })
     const likeCalls: string[] = []
-    const repo: typeof base = { ...base, like: (id: string) => (likeCalls.push(id), Promise.resolve(true)) }
+    const repo: typeof base = {
+      ...base,
+      like: (id: string) => (likeCalls.push(id), Promise.resolve(true)),
+    }
     const spy = spyNotifier()
     const svc = makePostService({ repo, sql: throwingSql, notifier: spy.notifier })
     await svc.likePost("shell", "liker")
     expect(likeCalls).toEqual(["orig"])
-    expect(spy.likes).toEqual([{ recipientId: "origAuthor", actorName: "Actor Zed", postId: "orig" }])
+    expect(spy.likes).toEqual([
+      { recipientId: "origAuthor", actorName: "Actor Zed", postId: "orig" },
+    ])
   })
 })
 
@@ -841,7 +888,9 @@ describe("PostRepository.loadRefs: a hidden original is an unavailable embed", (
   it("selects posts.visibility on the ref query", async () => {
     const { repo, fake } = repoOver("hidden")
     await repo.getPostDTO(QUOTE, VIEWER)
-    const refStmt = fake.statements.find((s) => /LEFT JOIN users u ON u\.id = p\.author_id/.test(s.sql))
+    const refStmt = fake.statements.find((s) =>
+      /LEFT JOIN users u ON u\.id = p\.author_id/.test(s.sql),
+    )
     expect(refStmt?.sql).toContain("p.visibility")
   })
 
@@ -858,7 +907,9 @@ describe("PostRepository.loadRefs: a hidden original is an unavailable embed", (
       event: null,
       report: null,
     })
-    const mediaStmts = fake.statements.filter((s) => /FROM media_assets\s+WHERE post_id/.test(s.sql))
+    const mediaStmts = fake.statements.filter((s) =>
+      /FROM media_assets\s+WHERE post_id/.test(s.sql),
+    )
     expect(mediaStmts.some((s) => JSON.stringify(s.values).includes(ORIG))).toBe(false)
     const eventStmts = fake.statements.filter((s) => /FROM cleanups c/.test(s.sql))
     expect(eventStmts).toHaveLength(0)
@@ -869,7 +920,9 @@ describe("PostRepository.loadRefs: a hidden original is an unavailable embed", (
     const dto = await repo.getPostDTO(QUOTE, VIEWER)
     expect(dto?.repostOf).toMatchObject({ id: ORIG, body: "the original body" })
     expect(dto?.repostOf?.deleted).toBeUndefined()
-    const mediaStmts = fake.statements.filter((s) => /FROM media_assets\s+WHERE post_id/.test(s.sql))
+    const mediaStmts = fake.statements.filter((s) =>
+      /FROM media_assets\s+WHERE post_id/.test(s.sql),
+    )
     expect(mediaStmts.some((s) => JSON.stringify(s.values).includes(ORIG))).toBe(true)
   })
 })
@@ -878,7 +931,9 @@ describe("PostRepository read paths all exclude non-public posts", () => {
   const VIEWER = "11111111-1111-1111-1111-111111111111"
   const SUBJECT = "22222222-2222-2222-2222-222222222222"
 
-  async function emitted(run: (repo: ReturnType<typeof makeDrizzlePostRepository>) => Promise<unknown>) {
+  async function emitted(
+    run: (repo: ReturnType<typeof makeDrizzlePostRepository>) => Promise<unknown>,
+  ) {
     const fake = makeFakeSql()
     const repo = makeDrizzlePostRepository(fake.sql as unknown as Sql, {
       presignMedia: () => Promise.resolve({ url: "u" }),
@@ -891,7 +946,9 @@ describe("PostRepository read paths all exclude non-public posts", () => {
   const args = { viewerId: VIEWER, cursor: null, limit: 10 }
 
   it("filters every post-listing query on visibility, not just the public feed", async () => {
-    const cases: Array<[string, (r: ReturnType<typeof makeDrizzlePostRepository>) => Promise<unknown>]> = [
+    const cases: Array<
+      [string, (r: ReturnType<typeof makeDrizzlePostRepository>) => Promise<unknown>]
+    > = [
       ["getPostDTO", (r) => r.getPostDTO(SUBJECT, VIEWER)],
       ["homeFeedChronological", (r) => r.homeFeedChronological({ ...args, filter: "all" })],
       ["publicFeed", (r) => r.publicFeed({ filter: "all", cursor: null, limit: 10 })],
@@ -986,7 +1043,9 @@ describe("PostRepository organization hydration", () => {
 
   it("selects organization_id on every post-listing query, so hydration never batches undefined", async () => {
     const args = { viewerId: VIEWER, cursor: null, limit: 10 }
-    const cases: Array<[string, (r: ReturnType<typeof makeDrizzlePostRepository>) => Promise<unknown>]> = [
+    const cases: Array<
+      [string, (r: ReturnType<typeof makeDrizzlePostRepository>) => Promise<unknown>]
+    > = [
       ["getPostDTO", (r) => r.getPostDTO(POST, VIEWER)],
       ["homeFeedChronological", (r) => r.homeFeedChronological({ ...args, filter: "all" })],
       ["publicFeed", (r) => r.publicFeed({ filter: "all", cursor: null, limit: 10 })],

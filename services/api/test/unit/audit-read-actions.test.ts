@@ -4,7 +4,6 @@ import { fileURLToPath } from "node:url"
 import { describe, expect, it } from "vitest"
 import { AUDIT_READ_ACTIONS } from "../../src/services/admin/audit.js"
 
-
 const SRC = join(dirname(fileURLToPath(import.meta.url)), "..", "..", "src")
 
 function walk(dir: string, out: string[] = []): string[] {

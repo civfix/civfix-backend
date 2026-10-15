@@ -1,34 +1,23 @@
 import { MAX_HOST_SUMMARY_EVENT_ROWS } from "@civfix/shared"
 import type { BroadcastKind, CleanupStatus, RegistrationSource } from "@civfix/shared"
-import type { DayCount, DayTimeCount, KeyCount } from "@civfix/shared/host"
+import type { DayCount, KeyCount } from "@civfix/shared/host"
 import type { Sql } from "../../db/client.js"
 import { cleanupStatusExpr } from "../cleanup-sql.js"
 import { DEFAULT_EVENT_TIME_ZONE } from "./event-fields.js"
+import type {
+  AnalyticsRepository,
+  EventKpiRow,
+  HeldEventTotals,
+  HostActivityTotals,
+  LabeledKeyCount,
+  PortfolioHoursTotals,
+} from "./analytics-repository.js"
 
 export const INSIGHTS_TREND_LIMIT = 400
 
 export const INSIGHTS_SOURCE_LIMIT = 10
 
-export const SUMMARY_DAY_ZONE = "UTC"
-
-export interface EventKpiRow {
-  registered: number
-  checkedIn: number
-  waitlisted: number
-  cancelled: number
-  noShow: number
-  capacity: number | null
-}
-
-export interface EventClockRecord {
-  status: CleanupStatus
-  createdAt: Date
-  scheduledAt: Date
-  endsAt: Date | null
-  completedAt: Date | null
-  registrationClosesAt: Date | null
-  timezone: string | null
-}
+const SUMMARY_DAY_ZONE = "UTC"
 
 interface EventClockRowSelect {
   status: CleanupStatus
@@ -42,27 +31,6 @@ interface EventClockRowSelect {
 
 function eventClockColumns(tag: Sql) {
   return tag`${cleanupStatusExpr(tag)} AS status, c.created_at, c.scheduled_at, c.ends_at, c.completed_at, c.registration_closes_at, c.timezone`
-}
-
-export interface SeatTrendPoint {
-  day: string
-  added: number
-  removed: number
-}
-
-export interface SourceSeats {
-  source: RegistrationSource
-  seats: number
-}
-
-export interface EventBroadcastRecord {
-  id: string
-  kind: BroadcastKind
-  finishedAt: Date | null
-  recipients: number
-  sent: number
-  failed: number
-  suppressed: number
 }
 
 interface EventBroadcastRowSelect {
@@ -79,54 +47,12 @@ function eventBroadcastColumns(tag: Sql) {
   return tag`id, kind, finished_at, recipient_count, sent_count, failed_count, suppressed_count`
 }
 
-export interface EventHoursTotals {
-  credited: number
-  attendeesCredited: number
-  attendeesCheckedIn: number
-}
-
-export interface TopVolunteerRow {
-  userId: string
-  name: string
-  handle: string | null
-  avatarUrl: string | null
-  hours: number
-}
-
-export interface PortfolioHoursTotals {
-  credited: number
-  volunteersCredited: number
-}
-
-export const ZERO_PORTFOLIO_HOURS_TOTALS: PortfolioHoursTotals = Object.freeze({
+const ZERO_PORTFOLIO_HOURS_TOTALS: PortfolioHoursTotals = Object.freeze({
   credited: 0,
   volunteersCredited: 0,
 })
 
-export interface ReturningAttendees {
-  seats: number
-  ofRegistered: number
-}
-
-export interface PortfolioTotals {
-  events: number
-  registrations: number
-  checkIns: number
-  uniqueAttendees: number
-  repeatAttendees: number
-}
-
-export interface HostActivityTotals {
-  registrations: number
-  cancellations: number
-  hoursTotal: number
-  hoursVolunteers: number
-  reportsLinked: number
-  reportsResolved: number
-  postsCreated: number
-}
-
-export const ZERO_HOST_ACTIVITY_TOTALS: HostActivityTotals = Object.freeze({
+const ZERO_HOST_ACTIVITY_TOTALS: HostActivityTotals = Object.freeze({
   registrations: 0,
   cancellations: 0,
   hoursTotal: 0,
@@ -136,70 +62,26 @@ export const ZERO_HOST_ACTIVITY_TOTALS: HostActivityTotals = Object.freeze({
   postsCreated: 0,
 })
 
-export interface HeldEventTotals {
-  events: number
-  registered: number
-  checkedIn: number
-  noShow: number
-}
-
-export const ZERO_HELD_EVENT_TOTALS: HeldEventTotals = Object.freeze({
+const ZERO_HELD_EVENT_TOTALS: HeldEventTotals = Object.freeze({
   events: 0,
   registered: 0,
   checkedIn: 0,
   noShow: 0,
 })
 
-export interface LabeledKeyCount extends KeyCount {
-  label: string
+function dayCounts(rows: { day: string; n: string }[]): DayCount[] {
+  return rows.map((row) => ({ day: row.day, count: Number(row.n) }))
 }
 
-export interface HostSummarySignups {
-  daily: DayCount[]
-  byEvent: LabeledKeyCount[]
-  hoursByEvent: LabeledKeyCount[]
+function keyCounts(rows: { key: string; n: string }[]): KeyCount[] {
+  return rows.map((row) => ({ key: row.key, count: Number(row.n) }))
 }
 
-export interface AnalyticsRepository {
-  eventKpis(cleanupId: string): Promise<EventKpiRow>
-  registrationsByDay(cleanupId: string, timezone: string, from: string, to: string): Promise<DayCount[]>
-  cancellationsByDay(cleanupId: string, timezone: string, from: string, to: string): Promise<DayCount[]>
-  registrationsByTicketType(cleanupId: string): Promise<KeyCount[]>
-  registrationsByAudience(cleanupId: string): Promise<KeyCount[]>
-  checkinsByTicketType(cleanupId: string): Promise<KeyCount[]>
-  checkinsBySlot(cleanupId: string): Promise<KeyCount[]>
-  arrivalOffsets(cleanupId: string, limit: number): Promise<number[]>
-  waitlistConversion(cleanupId: string): Promise<{ promoted: number; joined: number }>
-  hostedEventIds(userId: string, organizationId: string | null, limit: number): Promise<string[]>
-  portfolioTotals(cleanupIds: readonly string[]): Promise<PortfolioTotals>
-  portfolioByEvent(cleanupIds: readonly string[], limit: number): Promise<KeyCount[]>
-  portfolioDayTime(cleanupIds: readonly string[]): Promise<DayTimeCount[]>
-  broadcastsSent(cleanupId: string, timezone: string, from: string, to: string): Promise<number>
-  eventClock(cleanupId: string): Promise<EventClockRecord | null>
-  seatTrend(cleanupId: string, timezone: string): Promise<SeatTrendPoint[]>
-  registrationsBySource(cleanupId: string): Promise<SourceSeats[]>
-  broadcastsForEvent(cleanupId: string, limit: number): Promise<EventBroadcastRecord[]>
-  eventHoursTotals(cleanupId: string): Promise<EventHoursTotals>
-  topVolunteers(cleanupIds: readonly string[], limit: number): Promise<TopVolunteerRow[]>
-  hoursTotals(cleanupIds: readonly string[]): Promise<PortfolioHoursTotals>
-  returningAttendees(
-    cleanupId: string,
-    hostedEventIds: readonly string[],
-  ): Promise<ReturningAttendees>
-  activityTotals(cleanupIds: readonly string[], from: Date, to: Date): Promise<HostActivityTotals>
-  heldEventTotals(cleanupIds: readonly string[], from: Date, to: Date): Promise<HeldEventTotals>
-  signupsByDayAcross(
-    cleanupIds: readonly string[],
-    fromDay: string,
-    toDay: string,
-  ): Promise<HostSummarySignups>
+function labeledKeyCounts(rows: { key: string; label: string; n: string }[]): LabeledKeyCount[] {
+  return rows.map((row) => ({ key: row.key, label: row.label, count: Number(row.n) }))
 }
 
 export function makeDrizzleAnalyticsRepository(sql: Sql): AnalyticsRepository {
-  async function dayCounts(rows: { day: string; n: string }[]): Promise<DayCount[]> {
-    return rows.map((row) => ({ day: row.day, count: Number(row.n) }))
-  }
-
   return {
     async eventKpis(cleanupId: string): Promise<EventKpiRow> {
       const rows = await sql<
@@ -264,7 +146,7 @@ export function makeDrizzleAnalyticsRepository(sql: Sql): AnalyticsRepository {
           LEFT JOIN cleanup_ticket_types t ON t.id = r.ticket_type_id
          WHERE r.cleanup_id = ${cleanupId} AND r.status = 'registered'
          GROUP BY 1 ORDER BY 2 DESC LIMIT 50`
-      return rows.map((row) => ({ key: row.key, count: Number(row.n) }))
+      return keyCounts(rows)
     },
 
     async registrationsByAudience(cleanupId) {
@@ -274,7 +156,7 @@ export function makeDrizzleAnalyticsRepository(sql: Sql): AnalyticsRepository {
           FROM cleanup_registrations
          WHERE cleanup_id = ${cleanupId} AND status = 'registered'
          GROUP BY 1`
-      return rows.map((row) => ({ key: row.key, count: Number(row.n) }))
+      return keyCounts(rows)
     },
 
     async checkinsByTicketType(cleanupId) {
@@ -285,7 +167,7 @@ export function makeDrizzleAnalyticsRepository(sql: Sql): AnalyticsRepository {
           LEFT JOIN cleanup_ticket_types t ON t.id = r.ticket_type_id
          WHERE s.cleanup_id = ${cleanupId} AND s.checked_in_at IS NOT NULL
          GROUP BY 1 ORDER BY 2 DESC LIMIT 50`
-      return rows.map((row) => ({ key: row.key, count: Number(row.n) }))
+      return keyCounts(rows)
     },
 
     async checkinsBySlot(cleanupId) {
@@ -298,7 +180,7 @@ export function makeDrizzleAnalyticsRepository(sql: Sql): AnalyticsRepository {
           LEFT JOIN cleanup_slots sl ON sl.id = sc.slot_id
          WHERE s.cleanup_id = ${cleanupId} AND s.checked_in_at IS NOT NULL
          GROUP BY 1 ORDER BY 2 DESC LIMIT 50`
-      return rows.map((row) => ({ key: row.key, count: Number(row.n) }))
+      return keyCounts(rows)
     },
 
     async arrivalOffsets(cleanupId, limit) {
@@ -325,18 +207,20 @@ export function makeDrizzleAnalyticsRepository(sql: Sql): AnalyticsRepository {
     async hostedEventIds(userId, organizationId, limit) {
       const orgFilter =
         organizationId !== null ? sql`AND c.organization_id = ${organizationId}` : sql``
+      // Each UNION arm is one of the three hosting relations as an indexed lookup by user; an OR of
+      // correlated EXISTS over cleanups can only be planned as a sequential scan of every event.
       const rows = await sql<{ id: string }[]>`
         SELECT c.id
           FROM cleanups c
-         WHERE (c.organizer_user_id = ${userId}
-                OR EXISTS (
-                  SELECT 1 FROM cleanup_members m
-                   WHERE m.cleanup_id = c.id AND m.user_id = ${userId}
-                     AND m.role IN ('organizer','cohost','coordinator'))
-                OR EXISTS (
-                  SELECT 1 FROM organization_members om
-                   WHERE om.organization_id = c.organization_id AND om.user_id = ${userId}
-                     AND om.role IN ('owner','admin')))
+         WHERE c.id IN (
+                 SELECT oc.id FROM cleanups oc WHERE oc.organizer_user_id = ${userId}
+                 UNION
+                 SELECT m.cleanup_id FROM cleanup_members m
+                  WHERE m.user_id = ${userId} AND m.role IN ('organizer','cohost','coordinator')
+                 UNION
+                 SELECT hc.id FROM organization_members om
+                   JOIN cleanups hc ON hc.organization_id = om.organization_id
+                  WHERE om.user_id = ${userId} AND om.role IN ('owner','admin'))
            ${orgFilter}
          ORDER BY c.scheduled_at DESC
          LIMIT ${limit}`
@@ -391,7 +275,7 @@ export function makeDrizzleAnalyticsRepository(sql: Sql): AnalyticsRepository {
          GROUP BY c.id, c.title
          ORDER BY 2 DESC
          LIMIT ${limit}`
-      return rows.map((row) => ({ key: row.key, count: Number(row.n) }))
+      return keyCounts(rows)
     },
 
     async broadcastsSent(cleanupId, timezone, from, to) {
@@ -734,17 +618,9 @@ export function makeDrizzleAnalyticsRepository(sql: Sql): AnalyticsRepository {
            LIMIT ${MAX_HOST_SUMMARY_EVENT_ROWS}`,
       ])
       return {
-        daily: await dayCounts(dailyRows),
-        byEvent: byEventRows.map((row) => ({
-          key: row.key,
-          label: row.label,
-          count: Number(row.n),
-        })),
-        hoursByEvent: hoursRows.map((row) => ({
-          key: row.key,
-          label: row.label,
-          count: Number(row.n),
-        })),
+        daily: dayCounts(dailyRows),
+        byEvent: labeledKeyCounts(byEventRows),
+        hoursByEvent: labeledKeyCounts(hoursRows),
       }
     },
   }

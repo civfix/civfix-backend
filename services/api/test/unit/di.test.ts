@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest"
-import { buildContainer } from "../../src/di.js"
+import { makeContainer } from "../../src/di.js"
 import { loadEnv } from "../../src/env.js"
 import {
   FakeStorage,
@@ -22,7 +22,7 @@ import {
 
 describe("DI container", () => {
   it("selects all fakes in dev/test mode and leaves db/redis uncreated", () => {
-    const c = buildContainer(loadEnv({ NODE_ENV: "test" }))
+    const c = makeContainer(loadEnv({ NODE_ENV: "test" }))
     expect(c.storage).toBeInstanceOf(FakeStorage)
     expect(c.mailer).toBeInstanceOf(FakeMailer)
     expect(c.jobs).toBeInstanceOf(FakeJobs)
@@ -45,7 +45,7 @@ describe("DI container", () => {
       R2_SECRET_ACCESS_KEY: "c",
       R2_BUCKET: "d",
     })
-    const c = buildContainer(env)
+    const c = makeContainer(env)
     expect(c.storage).toBeInstanceOf(R2Storage)
     expect(c.mailer).toBeInstanceOf(FakeMailer)
   })
@@ -57,7 +57,7 @@ describe("DI container", () => {
       DATABASE_URL: "postgres://u:p@localhost:5432/civfix",
       REDIS_URL: "redis://localhost:6379",
     })
-    const c = buildContainer(env)
+    const c = makeContainer(env)
     expect(c.chatService).toBeInstanceOf(WsChatService)
     expect(c.dbHandle).toBeDefined()
     expect(c.redis).toBeDefined()
@@ -69,24 +69,24 @@ describe("DI container", () => {
       USE_FAKE_JOBS: "0",
       DATABASE_URL: "postgres://u:p@localhost:5432/civfix",
     })
-    const c = buildContainer(env)
+    const c = makeContainer(env)
     expect(c.jobs).toBeInstanceOf(PgBossJobs)
   })
 
   it("close() is safe to call when nothing was created", async () => {
-    const c = buildContainer(loadEnv({ NODE_ENV: "test" }))
+    const c = makeContainer(loadEnv({ NODE_ENV: "test" }))
     await expect(c.close()).resolves.toBeUndefined()
   })
 
   it("selects in-memory blocks/DM repos only when there is no database (F030)", () => {
-    const c = buildContainer(loadEnv({ NODE_ENV: "test" }))
+    const c = makeContainer(loadEnv({ NODE_ENV: "test" }))
     expect(c.getBlocksRepo()).toBeInstanceOf(InMemoryBlocksRepository)
     expect(c.getDmRepo()).toBeInstanceOf(InMemoryDmRepository)
     expect(c.dbHandle).toBeUndefined()
   })
 
   it("selects Drizzle blocks/DM repos when a database is configured, even with USE_FAKE_CHAT on (F030)", () => {
-    const c = buildContainer(
+    const c = makeContainer(
       loadEnv({
         NODE_ENV: "test",
         USE_FAKE_CHAT: "1",
@@ -103,7 +103,7 @@ describe("DI container", () => {
     const configOf = (checks: unknown): { turnstileHostnames?: readonly string[] } =>
       (checks as { config: { turnstileHostnames?: readonly string[] } }).config
 
-    const wired = buildContainer(
+    const wired = makeContainer(
       loadEnv({
         NODE_ENV: "test",
         USE_FAKE_ABUSE_NSFW: "0",
@@ -113,7 +113,7 @@ describe("DI container", () => {
     )
     expect(configOf(wired.abuseChecks).turnstileHostnames).toEqual(["civfix.org", "www.civfix.org"])
 
-    const unwired = buildContainer(
+    const unwired = makeContainer(
       loadEnv({ NODE_ENV: "test", USE_FAKE_ABUSE_NSFW: "0", CF_TURNSTILE_SECRET: "ts-secret" }),
     )
     expect(configOf(unwired.abuseChecks).turnstileHostnames).toBeUndefined()
@@ -138,7 +138,7 @@ describe("DI container: inbound-mail storage is never public", () => {
       R2_PUBLIC_BASE: "https://cdn.civfix.org",
       R2_INBOUND_BUCKET: "civfix-inbound",
     })
-    const c = buildContainer(env)
+    const c = makeContainer(env)
     const media = (c.storage as unknown as WithConfig).config
     const inbound = (c.inboundStorage as unknown as WithConfig).config
     expect(inbound.bucket).toBe("civfix-inbound")
@@ -149,11 +149,11 @@ describe("DI container: inbound-mail storage is never public", () => {
 
   it("throws rather than falling back to the media bucket when a public base is set", () => {
     const env = { ...loadEnv(realStorageEnv), R2_PUBLIC_BASE: "https://cdn.civfix.org" }
-    expect(() => buildContainer(env)).toThrow(/R2_INBOUND_BUCKET is required/)
+    expect(() => makeContainer(env)).toThrow(/R2_INBOUND_BUCKET is required/)
   })
 
   it("still shares the media bucket when nothing is publicly addressable", () => {
-    const c = buildContainer(loadEnv(realStorageEnv))
+    const c = makeContainer(loadEnv(realStorageEnv))
     expect((c.inboundStorage as unknown as WithConfig).config.bucket).toBe("civfix-media")
   })
 })

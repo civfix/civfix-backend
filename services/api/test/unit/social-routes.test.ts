@@ -1,16 +1,16 @@
 import { describe, it, expect, afterEach } from "vitest"
 import type { FastifyInstance } from "fastify"
 import { FakeMailer } from "@civfix/shared/fakes"
-import { buildServer } from "../../src/server.js"
+import { makeServer } from "../../src/server.js"
 import { loadEnv } from "../../src/env.js"
 import { InMemoryCacheClient } from "../../src/auth/cache.js"
 import { makeInMemoryStores } from "../../src/auth/stores.js"
-import { buildAuthServices } from "../../src/auth/auth-services.js"
+import { makeAuthServices } from "../../src/auth/auth-services.js"
 import { StubJwksVerifier } from "../helpers/auth.js"
 import { InMemorySocialRepository, makeCleanupRecord } from "../helpers/social.js"
 import type { SocialServiceOverrides } from "../../src/routes/social.routes.js"
-import type { SocialNotifier, PersonView } from "../../src/services/social-service.js"
-
+import type { SocialNotifier } from "../../src/services/social-service.js"
+import type { PersonView } from "../../src/services/social-repository.js"
 
 class SpyNotifier implements SocialNotifier {
   readonly calls: Array<{ followeeId: string; follower: PersonView }> = []
@@ -38,7 +38,7 @@ async function makeHarness(seed?: (repo: InMemorySocialRepository) => void): Pro
   const cache = new InMemoryCacheClient(() => Date.now())
   const mailer = new FakeMailer()
   const verifier = new StubJwksVerifier()
-  const authServices = buildAuthServices({
+  const authServices = makeAuthServices({
     stores,
     cache,
     mailer,
@@ -52,7 +52,7 @@ async function makeHarness(seed?: (repo: InMemorySocialRepository) => void): Pro
   const notifier = new SpyNotifier()
   const socialOverrides: SocialServiceOverrides = { repo, notifier }
 
-  const app = await buildServer({ env, authServices, socialOverrides })
+  const app = await makeServer({ env, authServices, socialOverrides })
 
   const { token, userId } = await signIn(app, mailer, "viewer@example.com")
   repo.seedUser({ id: userId, displayName: "Viewer", handle: "viewer" })
@@ -108,7 +108,11 @@ describe("GET /people", () => {
     })
     const noQ = await app.inject({ method: "GET", url: "/v1/people", headers: auth(token) })
     expect(noQ.statusCode).toBe(422)
-    const blankQ = await app.inject({ method: "GET", url: "/v1/people?q=%20", headers: auth(token) })
+    const blankQ = await app.inject({
+      method: "GET",
+      url: "/v1/people?q=%20",
+      headers: auth(token),
+    })
     expect(blankQ.statusCode).toBe(422)
   })
 
@@ -124,13 +128,21 @@ describe("GET /people", () => {
     expect(ids).not.toContain(userId)
     expect(body.items[0].avatar).toHaveLength(2)
 
-    const miss = await app.inject({ method: "GET", url: "/v1/people?q=nobody", headers: auth(token) })
+    const miss = await app.inject({
+      method: "GET",
+      url: "/v1/people?q=nobody",
+      headers: auth(token),
+    })
     expect(miss.json().items).toEqual([])
   })
 
   it("422s a bad limit", async () => {
     const { app, token } = await makeHarness()
-    const res = await app.inject({ method: "GET", url: "/v1/people?q=zel&limit=999", headers: auth(token) })
+    const res = await app.inject({
+      method: "GET",
+      url: "/v1/people?q=zel&limit=999",
+      headers: auth(token),
+    })
     expect(res.statusCode).toBe(422)
   })
 })
@@ -216,7 +228,11 @@ describe("GET /people/:id (profile)", () => {
       repo.seedUser({ id: OTHER, displayName: "Pro" })
     })
     await app.inject({ method: "POST", url: `/v1/people/${OTHER}/follow`, headers: auth(token) })
-    const res = await app.inject({ method: "GET", url: `/v1/people/${OTHER}`, headers: auth(token) })
+    const res = await app.inject({
+      method: "GET",
+      url: `/v1/people/${OTHER}`,
+      headers: auth(token),
+    })
     expect(res.json().profile.isFollowing).toBe(true)
   })
 
@@ -384,7 +400,7 @@ describe("GET /users/follow-suggestions", () => {
       headers: auth(token),
     })
     expect(res.statusCode).toBe(200)
-    const body = res.json() as { results: Array<{ id: string; isFollowing: boolean }> }
+    const body = res.json<{ results: Array<{ id: string; isFollowing: boolean }> }>()
     const ids = body.results.map((p) => p.id)
     expect(ids[0]).toBe(ORGANIZER)
     expect(ids).toContain(OTHER)
@@ -397,7 +413,7 @@ describe("GET /users/follow-suggestions", () => {
       url: "/v1/users/follow-suggestions",
       headers: auth(token),
     })
-    const ids2 = (res2.json() as { results: Array<{ id: string }> }).results.map((p) => p.id)
+    const ids2 = res2.json<{ results: Array<{ id: string }> }>().results.map((p) => p.id)
     expect(ids2).not.toContain(ORGANIZER)
   })
 

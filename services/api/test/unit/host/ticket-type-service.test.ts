@@ -2,7 +2,7 @@ import { beforeEach, describe, expect, it } from "vitest"
 import { AppError } from "@civfix/shared"
 import { InMemoryCounterStore } from "../../../src/abuse/counter-store.js"
 import { sha256Hex } from "../../../src/auth/crypto.js"
-import { InMemoryHostRegistrationRepository } from "../../../src/services/host/registration-repository.memory.js"
+import { InMemoryHostRegistrationRepository } from "../../helpers/host/registration-repository.memory.js"
 import {
   makeTicketTypeService,
   type TicketTypeService,
@@ -86,7 +86,10 @@ describe("ticket type service", () => {
 
     await expect(
       h.service.update({ id: EVENT, ticketTypeId: created.id, capacity: 2 }, HOST),
-    ).rejects.toBeInstanceOf(AppError)
+    ).rejects.toMatchObject({
+      code: "VALIDATION",
+      fields: { capacity: "already holding 3 seats, so cancel registrations before lowering it" },
+    })
   })
 
   it("refuses to delete a type that has registrations", async () => {
@@ -105,9 +108,9 @@ describe("ticket type service", () => {
       waitlistId: null,
       now: NOW,
     })
-    await expect(
-      h.service.remove({ id: EVENT, ticketTypeId: created.id }),
-    ).rejects.toBeInstanceOf(AppError)
+    await expect(h.service.remove({ id: EVENT, ticketTypeId: created.id })).rejects.toBeInstanceOf(
+      AppError,
+    )
   })
 
   it("deletes an unused type", async () => {
@@ -121,9 +124,9 @@ describe("ticket type service", () => {
     const a = await h.service.create({ ...base, name: "A" }, HOST)
     const b = await h.service.create({ ...base, name: "B" }, HOST)
 
-    await expect(
-      h.service.reorder({ id: EVENT, ticketTypeIds: [b.id] }),
-    ).rejects.toBeInstanceOf(AppError)
+    await expect(h.service.reorder({ id: EVENT, ticketTypeIds: [b.id] })).rejects.toBeInstanceOf(
+      AppError,
+    )
 
     const reordered = await h.service.reorder({ id: EVENT, ticketTypeIds: [b.id, a.id] })
     expect(reordered.items.map((item) => item.id)).toEqual([b.id, a.id])
@@ -186,7 +189,14 @@ describe("ticket type service", () => {
     await h.service.create({ ...base, name: "General", capacity: 20 }, HOST)
     await expect(
       h.service.create({ ...base, name: "Crew", capacity: 15 }, HOST),
-    ).rejects.toMatchObject({ code: "VALIDATION" })
+    ).rejects.toMatchObject({
+      code: "VALIDATION",
+      fields: {
+        capacity:
+          "the ticket types on this event may hold at most 30 seats in total " +
+          "(20 already allocated), so raise the event capacity first",
+      },
+    })
 
     const created = await h.service.create({ ...base, name: "Crew", capacity: 10 }, HOST)
     await expect(
@@ -196,7 +206,9 @@ describe("ticket type service", () => {
 
   it("refuses an unlimited ticket type on an event that has a capacity", async () => {
     h.repo.seedEvent({ cleanupId: EVENT, capacity: 30 })
-    await expect(h.service.create({ ...base, name: "General" }, HOST)).rejects.toMatchObject({ code: "VALIDATION" })
+    await expect(h.service.create({ ...base, name: "General" }, HOST)).rejects.toMatchObject({
+      code: "VALIDATION",
+    })
   })
 
   it("refuses a sales window that closes before it opens", async () => {
@@ -227,6 +239,7 @@ describe("ticket type service", () => {
       counters: {
         incr: () => Promise.reject(new Error("redis is down")),
         incrBy: () => Promise.reject(new Error("redis is down")),
+        decrBy: () => Promise.reject(new Error("redis is down")),
       },
     })
     await expect(broken.create({ ...base, name: "Nope" }, HOST)).rejects.toThrow(

@@ -1,4 +1,3 @@
-
 import { afterAll, beforeAll, describe, expect, it } from "vitest"
 import { randomUUID } from "node:crypto"
 import postgres from "postgres"
@@ -45,7 +44,7 @@ describe.skipIf(!pg)("threads inbox last-message LATERAL (integration)", () => {
       debug: (_conn: number, query: string, params: unknown[]) => {
         if (query.includes("report_chat_members")) captured = { query, params }
       },
-    }) as unknown as Sql
+    })
   })
 
   afterAll(async () => {
@@ -94,7 +93,8 @@ describe.skipIf(!pg)("threads inbox last-message LATERAL (integration)", () => {
       `EXPLAIN (ANALYZE, FORMAT JSON) ${captured!.query}`,
       captured!.params as never[],
     )
-    const root = (plan[0] as unknown as { "QUERY PLAN": { Plan: PlanNode }[] })["QUERY PLAN"][0]!.Plan
+    const root = (plan[0] as unknown as { "QUERY PLAN": { Plan: PlanNode }[] })["QUERY PLAN"][0]!
+      .Plan
     const probes = flatten(root, false).filter((f) => isMessageProbe(f.node))
     expect(probes.length).toBeGreaterThan(0)
 

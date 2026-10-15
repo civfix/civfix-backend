@@ -12,8 +12,7 @@ import {
 } from "@civfix/shared"
 import type { FastifyInstance } from "fastify"
 import type { Container } from "../../di.js"
-import { requireAuth } from "../../auth/context.js"
-import { resolveAuthContext } from "../../auth/context.js"
+import { requireAuth, resolveAuthContext } from "../../auth/context.js"
 import { route } from "../../versioning/route.js"
 import { parse } from "../_validate.js"
 import {
@@ -28,10 +27,10 @@ import {
 
 export function registerHostTicketRoutes(
   app: FastifyInstance,
-  _container: Container,
+  container: Container,
   ctx: HostRouteContext,
 ): void {
-  const csrfProtect = _container.csrf.protect
+  const csrfProtect = container.csrf.protect
 
   route(
     app,

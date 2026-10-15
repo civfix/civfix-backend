@@ -2,12 +2,12 @@ import { describe, it, expect, afterEach } from "vitest"
 import type { FastifyInstance } from "fastify"
 import { FakeMailer } from "@civfix/shared/fakes"
 import type { FakeChatService } from "@civfix/shared/fakes"
-import { buildServer } from "../../src/server.js"
-import { buildContainer } from "../../src/di.js"
+import { makeServer } from "../../src/server.js"
+import { makeContainer } from "../../src/di.js"
 import { loadEnv } from "../../src/env.js"
 import { InMemoryCacheClient } from "../../src/auth/cache.js"
 import { makeInMemoryStores } from "../../src/auth/stores.js"
-import { buildAuthServices } from "../../src/auth/auth-services.js"
+import { makeAuthServices } from "../../src/auth/auth-services.js"
 import { StubJwksVerifier } from "../helpers/auth.js"
 import { InMemoryCleanupRepository } from "../helpers/cleanups.js"
 import { clientQuery } from "../helpers/query.js"
@@ -15,7 +15,6 @@ import {
   CLEANUP_MEMBERSHIP_RATE_LIMIT,
   type CleanupServiceOverrides,
 } from "../../src/routes/cleanups.routes.js"
-
 
 interface Harness {
   app: FastifyInstance
@@ -35,7 +34,7 @@ async function makeHarness(seed?: (repo: InMemoryCleanupRepository) => void): Pr
   const cache = new InMemoryCacheClient(() => Date.now())
   const mailer = new FakeMailer()
   const verifier = new StubJwksVerifier()
-  const authServices = buildAuthServices({
+  const authServices = makeAuthServices({
     stores,
     cache,
     mailer,
@@ -48,10 +47,10 @@ async function makeHarness(seed?: (repo: InMemoryCleanupRepository) => void): Pr
   if (seed) seed(repo)
   const cleanupOverrides: CleanupServiceOverrides = { repo }
 
-  const container = buildContainer(env)
+  const container = makeContainer(env)
   const chat = container.chatService as FakeChatService
 
-  const app = await buildServer({ env, container, authServices, cleanupOverrides })
+  const app = await makeServer({ env, container, authServices, cleanupOverrides })
 
   const email = "organizer@example.com"
   const { token, userId } = await signIn(app, mailer, email)
@@ -555,8 +554,16 @@ describe("POST /cleanups/:id/complete (the deprecated no-op)", () => {
     const member = await signIn(app, mailer, "attendee@example.com")
     repo.seedUser({ id: cohost.userId, displayName: "Cory" })
     repo.seedUser({ id: member.userId, displayName: "Mel" })
-    await app.inject({ method: "POST", url: `/v1/cleanups/${id}/join`, headers: auth(cohost.token) })
-    await app.inject({ method: "POST", url: `/v1/cleanups/${id}/join`, headers: auth(member.token) })
+    await app.inject({
+      method: "POST",
+      url: `/v1/cleanups/${id}/join`,
+      headers: auth(cohost.token),
+    })
+    await app.inject({
+      method: "POST",
+      url: `/v1/cleanups/${id}/join`,
+      headers: auth(member.token),
+    })
     await app.inject({
       method: "PATCH",
       url: `/v1/cleanups/${id}/members/${cohost.userId}`,
@@ -627,7 +634,11 @@ describe("POST /cleanups/:id/complete (the deprecated no-op)", () => {
   it("401s an anonymous completion", async () => {
     const { app, token } = await makeHarness()
     const id = await createCleanup(app, token, PAST)
-    const res = await app.inject({ method: "POST", url: `/v1/cleanups/${id}/complete`, payload: {} })
+    const res = await app.inject({
+      method: "POST",
+      url: `/v1/cleanups/${id}/complete`,
+      payload: {},
+    })
     expect(res.statusCode).toBe(401)
   })
 
@@ -697,7 +708,11 @@ describe("GET /cleanups/:id/messages (member-gated history)", () => {
 
       const joiner = await signIn(app, mailer, "joiner@example.com")
       repo.seedUser({ id: joiner.userId, displayName: "Jordan" })
-      await app.inject({ method: "POST", url: `/v1/cleanups/${id}/join`, headers: auth(joiner.token) })
+      await app.inject({
+        method: "POST",
+        url: `/v1/cleanups/${id}/join`,
+        headers: auth(joiner.token),
+      })
 
       const anon = await app.inject({ method: "GET", url: `/v1/cleanups/${id}/attendees` })
       expect(anon.statusCode).toBe(200)
@@ -812,7 +827,11 @@ describe("WS4 member management: PATCH + DELETE /cleanups/:id/members/:userId", 
 
     const joiner = await signIn(app, mailer, "joiner@example.com")
     repo.seedUser({ id: joiner.userId, displayName: "Jordan" })
-    await app.inject({ method: "POST", url: `/v1/cleanups/${id}/join`, headers: auth(joiner.token) })
+    await app.inject({
+      method: "POST",
+      url: `/v1/cleanups/${id}/join`,
+      headers: auth(joiner.token),
+    })
 
     const promote = await app.inject({
       method: "PATCH",
@@ -855,7 +874,11 @@ describe("WS4 member management: PATCH + DELETE /cleanups/:id/members/:userId", 
     const id = await createCleanup(app, token)
     const joiner = await signIn(app, mailer, "joiner@example.com")
     repo.seedUser({ id: joiner.userId, displayName: "Jordan" })
-    await app.inject({ method: "POST", url: `/v1/cleanups/${id}/join`, headers: auth(joiner.token) })
+    await app.inject({
+      method: "POST",
+      url: `/v1/cleanups/${id}/join`,
+      headers: auth(joiner.token),
+    })
 
     const asMember = await app.inject({
       method: "PATCH",
@@ -878,7 +901,11 @@ describe("WS4 member management: PATCH + DELETE /cleanups/:id/members/:userId", 
     const id = await createCleanup(app, token)
     const joiner = await signIn(app, mailer, "joiner@example.com")
     repo.seedUser({ id: joiner.userId, displayName: "Jordan" })
-    await app.inject({ method: "POST", url: `/v1/cleanups/${id}/join`, headers: auth(joiner.token) })
+    await app.inject({
+      method: "POST",
+      url: `/v1/cleanups/${id}/join`,
+      headers: auth(joiner.token),
+    })
 
     const badRole = await app.inject({
       method: "PATCH",
@@ -903,7 +930,11 @@ describe("WS4 member management: PATCH + DELETE /cleanups/:id/members/:userId", 
     const id = await createCleanup(app, token)
     const joiner = await signIn(app, mailer, "joiner@example.com")
     repo.seedUser({ id: joiner.userId, displayName: "Jordan" })
-    await app.inject({ method: "POST", url: `/v1/cleanups/${id}/join`, headers: auth(joiner.token) })
+    await app.inject({
+      method: "POST",
+      url: `/v1/cleanups/${id}/join`,
+      headers: auth(joiner.token),
+    })
 
     const before = await app.inject({
       method: "GET",
@@ -935,8 +966,16 @@ describe("WS4 member management: PATCH + DELETE /cleanups/:id/members/:userId", 
     const member = await signIn(app, mailer, "member@example.com")
     repo.seedUser({ id: cohost.userId, displayName: "Cory" })
     repo.seedUser({ id: member.userId, displayName: "Mel" })
-    await app.inject({ method: "POST", url: `/v1/cleanups/${id}/join`, headers: auth(cohost.token) })
-    await app.inject({ method: "POST", url: `/v1/cleanups/${id}/join`, headers: auth(member.token) })
+    await app.inject({
+      method: "POST",
+      url: `/v1/cleanups/${id}/join`,
+      headers: auth(cohost.token),
+    })
+    await app.inject({
+      method: "POST",
+      url: `/v1/cleanups/${id}/join`,
+      headers: auth(member.token),
+    })
     await app.inject({
       method: "PATCH",
       url: `/v1/cleanups/${id}/members/${cohost.userId}`,
@@ -974,8 +1013,16 @@ describe("WS4 member management: PATCH + DELETE /cleanups/:id/members/:userId", 
     const member = await signIn(app, mailer, "member@example.com")
     repo.seedUser({ id: cohost.userId, displayName: "Cory" })
     repo.seedUser({ id: member.userId, displayName: "Mel" })
-    await app.inject({ method: "POST", url: `/v1/cleanups/${id}/join`, headers: auth(cohost.token) })
-    await app.inject({ method: "POST", url: `/v1/cleanups/${id}/join`, headers: auth(member.token) })
+    await app.inject({
+      method: "POST",
+      url: `/v1/cleanups/${id}/join`,
+      headers: auth(cohost.token),
+    })
+    await app.inject({
+      method: "POST",
+      url: `/v1/cleanups/${id}/join`,
+      headers: auth(member.token),
+    })
     await app.inject({
       method: "PATCH",
       url: `/v1/cleanups/${id}/members/${cohost.userId}`,
@@ -1205,13 +1252,23 @@ describe("GET /cleanups/:id/ics", () => {
 
     const res = await app.inject({ method: "GET", url: `/v1/cleanups/${id}/ics` })
     expect(res.statusCode).toBe(200)
-    const body = res.json() as { ics: string; filename: string }
+    const body = res.json<{ ics: string; filename: string }>()
     expect(body.filename).toBe(`civfix-event-${id}.ics`)
     expect(body.ics.startsWith("BEGIN:VCALENDAR")).toBe(true)
     expect(body.ics).toContain("BEGIN:VEVENT")
     expect(body.ics).toContain(`UID:cleanup-${id}@civfix.org`)
     expect(body.ics).toContain("SUMMARY:Sweep")
     expect(body.ics.trimEnd().endsWith("END:VCALENDAR")).toBe(true)
+  })
+
+  it("never links a production page when no web origin is configured", async () => {
+    const { app, token } = await makeHarness()
+    const id = await createCleanup(app, token)
+
+    const res = await app.inject({ method: "GET", url: `/v1/cleanups/${id}/ics` })
+
+    expect(res.statusCode).toBe(200)
+    expect(res.json<{ ics: string }>().ics).not.toContain("https://civfix.org/events/")
   })
 
   it("marks a cancelled event CANCELLED so a calendar client withdraws it", async () => {
@@ -1226,7 +1283,7 @@ describe("GET /cleanups/:id/ics", () => {
 
     const res = await app.inject({ method: "GET", url: `/v1/cleanups/${id}/ics` })
     expect(res.statusCode).toBe(200)
-    expect((res.json() as { ics: string }).ics).toContain("STATUS:CANCELLED")
+    expect(res.json<{ ics: string }>().ics).toContain("STATUS:CANCELLED")
   })
 
   it("404s an event that does not exist rather than emitting an empty calendar", async () => {
@@ -1284,10 +1341,10 @@ describe("GET /cleanups/:id/ics", () => {
         headers: auth(h.token),
       })
       expect(res.statusCode).toBe(200)
-      const ics = (res.json() as { ics: string }).ics
+      const ics = res.json<{ ics: string }>().ics
       expect(ics).toContain(`DTSTART:${stamp(slotStart)}`)
       expect(ics).toContain(`DTEND:${stamp(slotEnd)}`)
-      expect(ics).toContain("SUMMARY:Sweep — Morning sweep")
+      expect(ics).toContain("SUMMARY:Sweep (Morning sweep)")
     })
 
     it("gives anyone WITHOUT that claim the event's own window and plain title", async () => {
@@ -1296,7 +1353,7 @@ describe("GET /cleanups/:id/ics", () => {
 
       const res = await h.app.inject({ method: "GET", url: `/v1/cleanups/${id}/ics` })
       expect(res.statusCode).toBe(200)
-      const ics = (res.json() as { ics: string }).ics
+      const ics = res.json<{ ics: string }>().ics
       expect(ics).toContain(`DTSTART:${stamp(FUTURE)}`)
       expect(ics).toContain(`DTEND:${stamp(eventEnd)}`)
       expect(ics).toContain("SUMMARY:Sweep")
@@ -1331,7 +1388,7 @@ describe("GET /cleanups/:id/ics", () => {
         url: `/v1/cleanups/${id}/ics`,
         headers: auth(h.token),
       })
-      const ics = (res.json() as { ics: string }).ics
+      const ics = res.json<{ ics: string }>().ics
       expect(ics).toContain(`DTSTART:${stamp(FUTURE)}`)
       expect(ics).toContain("SUMMARY:Sweep")
       expect(ics).not.toContain("Grill")
@@ -1361,7 +1418,7 @@ describe("GET /cleanups/:id/ics", () => {
   })
 })
 
-describe("PATCH /cleanups/:id/members/:userId — the assignable roles", () => {
+describe("PATCH /cleanups/:id/members/:userId: the assignable roles", () => {
   async function seededEvent(): Promise<{ h: Harness; id: string; memberId: string }> {
     const h = await makeHarness()
     const id = await createCleanup(h.app, h.token)
@@ -1371,7 +1428,7 @@ describe("PATCH /cleanups/:id/members/:userId — the assignable roles", () => {
     return { h, id, memberId }
   }
 
-  it("accepts staff at the boundary — the contract enum carries it", async () => {
+  it("accepts staff at the boundary: the contract enum carries it", async () => {
     const { h, id, memberId } = await seededEvent()
     const res = await h.app.inject({
       method: "PATCH",
@@ -1383,7 +1440,7 @@ describe("PATCH /cleanups/:id/members/:userId — the assignable roles", () => {
     expect(await h.repo.roleOf(id, memberId)).toBe("staff")
   })
 
-  it("still refuses organizer — ownership moves by transfer, never by a role cell", async () => {
+  it("still refuses organizer: ownership moves by transfer, never by a role cell", async () => {
     const { h, id, memberId } = await seededEvent()
     const res = await h.app.inject({
       method: "PATCH",

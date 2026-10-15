@@ -5,6 +5,7 @@ import { describe, expect, it } from "vitest"
 
 const HERE = dirname(fileURLToPath(import.meta.url))
 const PG_STORES = join(HERE, "../../src/auth/pg-stores.ts")
+const ERASURE_REPOSITORY = join(HERE, "../../src/services/erasure-repository.drizzle.ts")
 
 const SCRUBBED_USER_COLUMNS = [
   "email: null",
@@ -38,7 +39,7 @@ describe("softDeleteAndAnonymize scrubs every self-authored identity column", ()
   })
 
   it("does NOT clear a departing owner's events' donation links (the link is the host's, not the org's)", () => {
-    const source = readFileSync(PG_STORES, "utf8")
+    const source = readFileSync(ERASURE_REPOSITORY, "utf8")
     expect(source).not.toContain("UPDATE cleanups SET organization_id = NULL, donation_url = NULL")
     expect(source).toContain("UPDATE cleanups SET organization_id = NULL")
   })

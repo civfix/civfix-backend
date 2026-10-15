@@ -1,4 +1,3 @@
-
 import { afterAll, beforeAll, describe, expect, it } from "vitest"
 import { withPg, type PgHarness } from "../helpers/pg.js"
 import { seedCleanup } from "../helpers/cleanups.js"
@@ -92,9 +91,7 @@ describe.skipIf(!pg)("cleanup<->report link bounds (integration)", () => {
     const remaining = await h.sql<{ report_id: string }[]>`
       SELECT report_id FROM cleanup_reports WHERE cleanup_id = ${cleanupId} ORDER BY report_id
     `
-    expect(remaining.map((r) => r.report_id).sort()).toEqual(
-      [visibleKept, invisible, added].sort(),
-    )
+    expect(remaining.map((r) => r.report_id).sort()).toEqual([visibleKept, invisible, added].sort())
     const unlinked = await h.sql<{ note: string | null }[]>`
       SELECT note FROM cleanup_timeline
       WHERE cleanup_id = ${cleanupId} AND kind = 'report_unlinked'

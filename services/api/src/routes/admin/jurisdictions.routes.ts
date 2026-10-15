@@ -1,9 +1,6 @@
-/**
- * Admin jurisdictions (routing contacts + directory) routes: "Save & route", the directory list, and the
- * no-route PATCH. The operator userId is threaded INTO the service so the audit (discovery.contacts_saved
- * on save, jurisdiction.patched on patch) is written inside the repo transaction (H4: did + recorded is
- * atomic with the effect); the route never writes a separate audit.
- */
+// The operator id is threaded into the service so the audit row (discovery.contacts_saved,
+// jurisdiction.patched) commits in the same repo transaction as the change; the route never writes a
+// separate audit.
 
 import {
   JurisdictionListQuerySchema,
@@ -11,7 +8,6 @@ import {
   SaveContactsRequestSchema,
   type JurisdictionDirectoryResponse,
   type JurisdictionGeometryResponse,
-  type ReportCategory,
 } from "@civfix/shared"
 import type { FastifyInstance } from "fastify"
 import type { Container } from "../../di.js"
@@ -27,15 +23,12 @@ import {
 } from "./_route-utils.js"
 import {
   makeJurisdictionContactsService,
-  type JurisdictionContactsRepository,
   type OutreachEnqueuer,
 } from "../../services/admin/jurisdiction-contacts-service.js"
+import type { JurisdictionContactsRepository } from "../../services/admin/jurisdiction-contacts-repository.js"
 import { makeDrizzleJurisdictionContactsRepository } from "../../services/admin/jurisdiction-contacts-repository.drizzle.js"
 
-/**
- * Optional injected contacts-service dependencies (tests). When present the routes build the service
- * from these (an in-memory repo + a fake jobs enqueuer) so the whole HTTP flow runs offline.
- */
+/** Test-only: an in-memory repo and a fake jobs enqueuer so the whole HTTP flow runs offline. */
 export interface JurisdictionRouteOverrides {
   repo: JurisdictionContactsRepository
   jobs?: OutreachEnqueuer
@@ -45,7 +38,6 @@ export interface JurisdictionRouteOverrides {
 
 declare module "fastify" {
   interface FastifyInstance {
-    /** Injected jurisdiction-route overrides (tests). See JurisdictionRouteOverrides. */
     jurisdictionOverrides?: JurisdictionRouteOverrides
   }
 }
@@ -56,7 +48,6 @@ export async function registerAdminJurisdictionsRoutes(
 ): Promise<void> {
   const csrfProtect = container.csrf.protect
 
-  /** Build the contacts service from injected overrides (tests) or the container (production). */
   const service = overridableService(
     app,
     "jurisdictionOverrides",
@@ -81,33 +72,28 @@ export async function registerAdminJurisdictionsRoutes(
     },
   )
 
-  route(
-    app,
-    "saveJurisdictionContacts",
-    { preHandler: csrfProtect },
-    async (request, reply) => {
-      const actorId = requireOperator(request)
-      const geoid = geoidParam(request)
-      const body = parse(SaveContactsRequestSchema, { ...(request.body as object), geoid })
-      await service().saveAndRoute(
-        geoid,
-        {
-          contacts: (body.contacts ?? {}) as Partial<Record<ReportCategory, string | null>>,
-          defaultEmails: body.defaultEmails ?? [],
-          // L7: reject javascript:/data: URIs the shared `.url()` schema lets through (see httpUrlField).
-          formUrl: httpUrlField(body.formUrl, "formUrl"),
-          ...(body.forwardSubjectTemplate !== undefined
-            ? { forwardSubjectTemplate: body.forwardSubjectTemplate }
-            : {}),
-          ...(body.forwardBodyTemplate !== undefined
-            ? { forwardBodyTemplate: body.forwardBodyTemplate }
-            : {}),
-        },
-        actorId,
-      )
-      sendOk(reply)
-    },
-  )
+  route(app, "saveJurisdictionContacts", { preHandler: csrfProtect }, async (request, reply) => {
+    const actorId = requireOperator(request)
+    const geoid = geoidParam(request)
+    const body = parse(SaveContactsRequestSchema, { ...(request.body as object), geoid })
+    await service().saveAndRoute(
+      geoid,
+      {
+        contacts: body.contacts ?? {},
+        defaultEmails: body.defaultEmails ?? [],
+        // The shared `.url()` schema lets javascript:/data: URIs through.
+        formUrl: httpUrlField(body.formUrl, "formUrl"),
+        ...(body.forwardSubjectTemplate !== undefined
+          ? { forwardSubjectTemplate: body.forwardSubjectTemplate }
+          : {}),
+        ...(body.forwardBodyTemplate !== undefined
+          ? { forwardBodyTemplate: body.forwardBodyTemplate }
+          : {}),
+      },
+      actorId,
+    )
+    sendOk(reply)
+  })
 
   route(app, "listJurisdictions", async (request, reply) => {
     const query = parse(JurisdictionListQuerySchema, request.query)
@@ -128,11 +114,9 @@ export async function registerAdminJurisdictionsRoutes(
     await service().patch(
       geoid,
       {
-        ...(body.contacts !== undefined
-          ? { contacts: body.contacts as Partial<Record<ReportCategory, string | null>> }
-          : {}),
+        ...(body.contacts !== undefined ? { contacts: body.contacts } : {}),
         ...(body.defaultEmails !== undefined ? { defaultEmails: body.defaultEmails } : {}),
-        // L7: same scheme allowlist on the PATCH path (an absent field still means "leave unchanged").
+        // Same scheme allowlist as save; an absent field still means "leave unchanged".
         ...(body.formUrl !== undefined ? { formUrl: httpUrlField(body.formUrl, "formUrl") } : {}),
         ...(body.notes !== undefined ? { notes: body.notes } : {}),
         ...(body.flagged !== undefined ? { flagged: body.flagged } : {}),

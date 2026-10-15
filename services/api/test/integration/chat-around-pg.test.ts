@@ -1,4 +1,3 @@
-
 import { TEST_TICKET_SIGNER } from "../helpers/ticket-signer.js"
 import { afterAll, beforeAll, describe, expect, it } from "vitest"
 import { randomUUID } from "node:crypto"
@@ -221,7 +220,11 @@ describe.skipIf(!pg)("around-mode history windows (integration)", () => {
     const base = Date.now() - 120_000
     const m: ChatMessageDTO[] = []
     for (let i = 0; i < 8; i++) {
-      const sent = await dm.persist({ threadId: thread.id, senderId: i % 2 === 0 ? a : b, body: `m${i + 1}` })
+      const sent = await dm.persist({
+        threadId: thread.id,
+        senderId: i % 2 === 0 ? a : b,
+        body: `m${i + 1}`,
+      })
       await h.sql`UPDATE dm_messages SET created_at = ${new Date(base + i * 1000)} WHERE id = ${sent.id}`
       m.push(sent)
     }

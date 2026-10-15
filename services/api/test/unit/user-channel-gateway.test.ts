@@ -56,7 +56,6 @@ beforeEach(() => {
   chat = new WsChatService({ repo, pubsub })
 })
 
-/** Assert a raw frame string parses as a valid server frame. */
 function assertServerFrame(raw: string): void {
   const parsed = WsServerMessageSchema.safeParse(JSON.parse(raw))
   expect(parsed.success, `frame failed server schema: ${raw}`).toBe(true)
@@ -90,7 +89,6 @@ describe("subscribeUserChannel (per-socket lifecycle)", () => {
     const aSignals = aConn.framesOfType("signal")
     expect(aSignals).toHaveLength(1)
     expect(aSignals[0]).toMatchObject({ type: "signal", topic: "notifications" })
-    // Bob (a different user) received nothing.
     expect(bConn.framesOfType("signal")).toHaveLength(0)
     for (const raw of aConn.sent) assertServerFrame(raw)
   })
@@ -105,13 +103,17 @@ describe("subscribeUserChannel (per-socket lifecycle)", () => {
     await channel.publishToUser(ALICE, { topic: "threads", id: ROOM })
     expect(a1.framesOfType("signal")).toHaveLength(1)
     expect(a2.framesOfType("signal")).toHaveLength(1)
-    expect(a1.framesOfType("signal")[0]).toMatchObject({ type: "signal", topic: "threads", id: ROOM })
+    expect(a1.framesOfType("signal")[0]).toMatchObject({
+      type: "signal",
+      topic: "threads",
+      id: ROOM,
+    })
 
     // Close the first device; the second still gets later signals.
     await dispose1!()
     expect(channel.subscriberCount(ALICE)).toBe(1)
     await channel.publishToUser(ALICE, { topic: "notifications" })
-    expect(a1.framesOfType("signal")).toHaveLength(1) // unchanged
+    expect(a1.framesOfType("signal")).toHaveLength(1)
     expect(a2.framesOfType("signal")).toHaveLength(2)
   })
 
@@ -126,7 +128,6 @@ describe("subscribeUserChannel (per-socket lifecycle)", () => {
 })
 
 describe("send fires a {topic:'threads'} signal to recipients (sender excluded by the resolver)", () => {
-  /** Build a gateway session wired with the user channel + a recipients resolver. */
   function sessionFor(
     userId: string,
     conn: MockConnection,
@@ -139,11 +140,17 @@ describe("send fires a {topic:'threads'} signal to recipients (sender excluded b
       userChannel: channel,
       threadRecipientsOf,
     }
-    return { userId, conn, joined: new Set<string>(), typingThrottle: new Map<string, number>(), deps }
+    return {
+      userId,
+      conn,
+      joined: new Set<string>(),
+      typingThrottle: new Map<string, number>(),
+      deps,
+    }
   }
 
   it("publishes a threads signal to the resolved recipients on a cleanup send", async () => {
-    // Resolver returns the room's OTHER members (Bob, Carol) — the sender (Alice) is already excluded.
+    // Resolver returns the room's OTHER members (Bob, Carol); the sender (Alice) is already excluded.
     const recipients: ThreadRecipientsOf = (_kind, _id, senderId) =>
       Promise.resolve([BOB, CAROL].filter((m) => m !== senderId))
     const aConn = new MockConnection("A")
@@ -156,13 +163,11 @@ describe("send fires a {topic:'threads'} signal to recipients (sender excluded b
     // Let the fire-and-forget signal IIFE settle.
     await flush()
 
-    // One threads signal per recipient, NONE to the sender, all carrying the room id.
     const published = channel.published
     expect(published).toHaveLength(2)
     expect(published.map((p) => p.userId).sort()).toEqual([BOB, CAROL].sort())
     expect(published.every((p) => p.signal.topic === "threads" && p.signal.id === ROOM)).toBe(true)
     expect(published.some((p) => p.userId === ALICE)).toBe(false)
-    // The signal payload is contract-valid.
     for (const p of published) expect(UserSignalSchema.safeParse(p.signal).success).toBe(true)
   })
 
@@ -177,7 +182,6 @@ describe("send fires a {topic:'threads'} signal to recipients (sender excluded b
     )
     await flush()
     expect(channel.published).toHaveLength(0)
-    // The send itself still succeeded (Alice was acked).
     expect(aConn.framesOfType("ack")).toHaveLength(1)
   })
 
@@ -191,7 +195,6 @@ describe("send fires a {topic:'threads'} signal to recipients (sender excluded b
       JSON.stringify({ type: "send", cleanupId: ROOM, clientId: "c1", body: "still works" }),
     )
     await flush()
-    // No signal published, but the send path is intact: ack delivered + message persisted.
     expect(channel.published).toHaveLength(0)
     expect(aConn.framesOfType("ack")).toHaveLength(1)
     expect(repo.count(ROOM)).toBe(1)
@@ -249,12 +252,12 @@ describe("send fires a {topic:'threads'} signal to recipients (sender excluded b
 
 /**
  * The Fastify-adapter wiring in registerChatGateway, exercised through the REAL handler with a mock socket
- * (no network / no `ws` client — the handler only needs readyState + send/close/terminate/ping + on()).
+ * (no network / no `ws` client: the handler only needs readyState + send/close/terminate/ping + on()).
  * Covers the subscribe-on-handshake / unsubscribe-on-close lifecycle AND the close-during-subscribe race:
  *   - a normal OPEN handshake subscribes the user (subscriberCount === 1); the "close" event disposes it (=== 0);
  *   - if the socket is NON-OPEN while subscribeUser is still pending, the handshake's close-during-subscribe
- *     guard must dispose the subscription so it never leaks — subscriberCount === 0 after the handshake settles,
- *     even though the lost "close" event never reached a (not-yet-registered) listener.
+ *     guard must dispose the subscription so it never leaks (subscriberCount === 0 after the handshake settles,
+ *     even though the lost "close" event never reached a (not-yet-registered) listener).
  */
 describe("registerChatGateway (subscribe-on-handshake / unsubscribe-on-close wiring + race)", () => {
   /** ws readyState constants used by the gateway's OPEN check. */
@@ -275,7 +278,6 @@ describe("registerChatGateway (subscribe-on-handshake / unsubscribe-on-close wir
       this.listeners.set(event, list)
       return this
     }
-    /** Fire every listener registered for an event (e.g. the gateway's "close" cleanup). */
     emit(event: string): void {
       for (const cb of this.listeners.get(event) ?? []) cb()
     }
@@ -300,10 +302,9 @@ describe("registerChatGateway (subscribe-on-handshake / unsubscribe-on-close wir
    * A mock FastifyInstance whose `app.get("/ws", opts, handler)` captures the gateway handler so a test can
    * invoke it directly with a mock socket. registerChatGateway calls only app.get.
    */
-  function captureGatewayHandler(opts: Parameters<typeof registerChatGateway>[1]): (
-    socket: WebSocket,
-    request: FastifyRequest,
-  ) => void {
+  function captureGatewayHandler(
+    opts: Parameters<typeof registerChatGateway>[1],
+  ): (socket: WebSocket, request: FastifyRequest) => void {
     let captured: ((socket: WebSocket, request: FastifyRequest) => void) | undefined
     const app = {
       get(
@@ -333,7 +334,7 @@ describe("registerChatGateway (subscribe-on-handshake / unsubscribe-on-close wir
   it("an OPEN handshake subscribes the user; the close event disposes the subscription", async () => {
     const handler = captureGatewayHandler(baseOpts(channel))
     const socket = new MockSocket()
-    handler(socket as unknown as WebSocket, authedRequest(ALICE))
+    handler(socket, authedRequest(ALICE))
     // The handler's body is an async IIFE (handshake + subscribe are awaited); let it settle.
     await flush()
 
@@ -356,10 +357,10 @@ describe("registerChatGateway (subscribe-on-handshake / unsubscribe-on-close wir
 
     const handler = captureGatewayHandler(baseOpts(racingChannel))
     const socket = new MockSocket()
-    handler(socket as unknown as WebSocket, authedRequest(ALICE))
+    handler(socket, authedRequest(ALICE))
     await flush()
 
-    // The subscribe is still pending — and the socket closes before the handshake installs its "close"
+    // The subscribe is still pending, and the socket closes before the handshake installs its "close"
     // listener (the listener never sees this close). Mark the socket CLOSED, then let subscribe complete.
     socket.readyState = WS_CLOSED
     releaseSubscribe!()

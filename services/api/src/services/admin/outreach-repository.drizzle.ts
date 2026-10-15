@@ -1,17 +1,9 @@
-
 import type { Sql } from "../../db/client.js"
-import {
-  OUTREACH_CATEGORIES,
-  type OutreachDigest,
-  type OutreachRepository,
-} from "./outreach-service.js"
-import {
-  categoryCountsFragment,
-  categoryCountsProjection,
-  parseCategoryCounts,
-  parseCount,
-  type CategoryCountRow,
-} from "./category-counts.js"
+import { OUTREACH_CATEGORIES } from "./outreach-service.js"
+import type { OutreachDigest, OutreachRepository } from "./outreach-repository.js"
+import { parseCategoryCounts, parseCount, type CategoryCountRow } from "./category-counts.js"
+import { categoryCountsFragment, categoryCountsProjection } from "./category-counts-sql.js"
+import { legacyContactEmailUsable } from "./sql-fragments.js"
 
 interface DigestRow extends CategoryCountRow {
   org: string | null
@@ -48,6 +40,11 @@ export function makeDrizzleOutreachRepository(sql: Sql): OutreachRepository {
             (
               SELECT e FROM unnest(COALESCE(j.contact_emails, ARRAY[]::text[])) AS e
               WHERE e <> ''
+                AND ${legacyContactEmailUsable(sql, {
+                  email: sql`e`,
+                  geoid: sql`j.geoid`,
+                  contactUpdatedAt: sql`j.contact_updated_at`,
+                })}
               LIMIT 1
             )
           ) AS to_addr,
@@ -109,7 +106,13 @@ export function makeDrizzleOutreachRepository(sql: Sql): OutreachRepository {
               WHERE j.geoid = c.geoid
                 AND j.contact_emails IS NOT NULL
                 AND EXISTS (
-                  SELECT 1 FROM unnest(j.contact_emails) AS e WHERE e <> ''
+                  SELECT 1 FROM unnest(COALESCE(j.contact_emails, ARRAY[]::text[])) AS e
+                  WHERE e <> ''
+                    AND ${legacyContactEmailUsable(sql, {
+                      email: sql`e`,
+                      geoid: sql`j.geoid`,
+                      contactUpdatedAt: sql`j.contact_updated_at`,
+                    })}
                 )
             )
           )

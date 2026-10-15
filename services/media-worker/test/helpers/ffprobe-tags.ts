@@ -1,4 +1,3 @@
-
 import { mediaToolPath } from "../../src/sandbox/binaries.js"
 import { runTool } from "../../src/sandbox/exec.js"
 import { makeScratch } from "../../src/sandbox/tmp.js"

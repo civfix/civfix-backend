@@ -1,9 +1,6 @@
-
 import { AppError, relativeAgo } from "@civfix/shared"
 import type {
   ModerationItemDTO,
-  ModerationDestinationKind,
-  ModerationKind,
   ModerationSubjectType,
   ModerationListQuery,
   ModerationListResponse,
@@ -11,116 +8,29 @@ import type {
   ModerationSignal,
   ModerationSimilar,
   ModerationUser,
-  Priority,
-  ReportCategory,
   UserStatus,
 } from "@civfix/shared"
 import { clampLimit } from "./pagination.js"
 import { timelineKindForStatus } from "./admin-report-status.js"
-import { mapWithLimit, PRESIGN_CONCURRENCY, type PresignMedia } from "../media-presign.js"
+import { mapWithLimit } from "../../lib/concurrency.js"
+import { PRESIGN_CONCURRENCY, type PresignMedia } from "../media-presign.js"
 import type { ReportChatSystemEmitter } from "../report-timeline-event.js"
+import type { MessageUpdateAnnouncer } from "./admin-report-chat-service.js"
+import type {
+  CreateModerationItemInput,
+  ListModerationArgs,
+  ModerationItemRecord,
+  ModerationRepository,
+  ModerationUserSnapshot,
+} from "./moderation-repository.js"
 
+/** Shared by the service's chat mirror and the repository's report_timeline row, which must agree. */
+export const MODERATION_APPROVED_NOTE = "Approved in moderation"
+export const MODERATION_REMOVED_NOTE = "Removed in moderation"
 
-export type ModerationFilter = "all" | ModerationKind | "high"
+const MODERATION_ITEM_NOT_FOUND = "Moderation item not found"
 
-export interface ListModerationArgs {
-  q: string | null
-  filter: ModerationFilter
-  cursor: string | null
-  limit: number
-}
-
-export interface ModerationUserSnapshot {
-  id: string | null
-  handle: string
-  name: string
-  joined: string
-  priorReports: number
-  priorRemovals: number
-  strikes: number
-  device: string
-}
-
-export interface ModerationMediaRecord {
-  id: string
-  kind: "image" | "video"
-  r2Key: string
-  thumbKey: string | null
-}
-
-export interface ModerationItemRecord {
-  id: string
-  kind: ModerationKind
-  subjectType: ModerationSubjectType
-  subjectId: string
-  destinationKind: ModerationDestinationKind | null
-  destinationId: string | null
-  flag: string | null
-  reason: string | null
-  category: ReportCategory | null
-  place: string | null
-  priority: Priority
-  autoAction: string | null
-  reporter: string | null
-  reporterId: string | null
-  desc: string | null
-  status: "open" | "approved" | "removed" | "held"
-  signals: ModerationSignal[]
-  similar: ModerationSimilar[]
-  user: ModerationUserSnapshot | null
-  media: ModerationMediaRecord[]
-  createdAt: Date
-  reportTimelineStatus?: "published" | "rejected"
-  restoredUserId?: string
-  suspendedUserId?: string
-}
-
-export interface CreateModerationItemInput {
-  kind: ModerationKind
-  subjectType: ModerationSubjectType
-  subjectId: string
-  flag?: string | null
-  reason?: string | null
-  category?: ReportCategory | null
-  place?: string | null
-  priority?: Priority
-  autoAction?: string | null
-  reporter?: string | null
-  reporterUserId?: string | null
-  desc?: string | null
-  signals?: ModerationSignal[]
-  similar?: ModerationSimilar[]
-  user?: ModerationUserSnapshot | null
-  dedupeOpen?: boolean
-}
-
-export interface ModerationRepository {
-  listOpen(
-    args: ListModerationArgs,
-  ): Promise<{ records: ModerationItemRecord[]; nextCursor: string | null }>
-  getItem(id: string): Promise<ModerationItemRecord | null>
-  approve(
-    id: string,
-    input: { actorId: string | null; note: string | null },
-  ): Promise<ModerationItemRecord | null>
-  remove(
-    id: string,
-    input: { actorId: string | null; reason: string | null },
-  ): Promise<ModerationItemRecord | null>
-  hold(
-    id: string,
-    input: { actorId: string | null; note: string | null },
-  ): Promise<ModerationItemRecord | null>
-  decideAppeal(
-    id: string,
-    input: { decision: "uphold" | "overturn"; actorId: string | null; note: string | null },
-  ): Promise<ModerationItemRecord | null>
-  createItem(input: CreateModerationItemInput): Promise<string | null>
-  backfillFromHeldReports(): Promise<number>
-}
-
-
-export const NEUTRAL_USER_SNAPSHOT: ModerationUserSnapshot = {
+const NEUTRAL_USER_SNAPSHOT: ModerationUserSnapshot = {
   id: null,
   handle: "",
   name: "Unknown",
@@ -145,7 +55,6 @@ function toUserDTO(snapshot: ModerationUserSnapshot | null): ModerationUser {
   }
 }
 
-
 export interface ModerationSessionControl {
   applyStatus(userId: string, status: UserStatus): Promise<number>
 }
@@ -156,6 +65,15 @@ export interface ModerationServiceDeps {
   now?: () => Date
   reportChatEmitter?: ReportChatSystemEmitter
   sessions?: ModerationSessionControl
+  announceMessageUpdate?: MessageUpdateAnnouncer
+}
+
+export function isMessageSubject(subjectType: ModerationSubjectType): boolean {
+  return subjectType === "chat" || subjectType === "message"
+}
+
+export function isUserSubject(subjectType: ModerationSubjectType): boolean {
+  return subjectType === "user" || subjectType === "profile"
 }
 
 export interface ModerationService {
@@ -233,7 +151,7 @@ export function makeModerationService(deps: ModerationServiceDeps): ModerationSe
       const ref = now()
       const args: ListModerationArgs = {
         q: query.q && query.q.trim() !== "" ? query.q.trim() : null,
-        filter: (query.filter ?? "all") as ModerationFilter,
+        filter: query.filter ?? "all",
         cursor: query.cursor ?? null,
         limit: clampLimit(query.limit),
       }
@@ -244,7 +162,7 @@ export function makeModerationService(deps: ModerationServiceDeps): ModerationSe
     async getItem(id: string): Promise<ModerationItemDTO> {
       const ref = now()
       const record = await deps.repo.getItem(id)
-      if (!record) throw AppError.notFound("Moderation item not found")
+      if (!record) throw AppError.notFound(MODERATION_ITEM_NOT_FOUND)
       return toDetailDTO(record, ref)
     },
 
@@ -253,13 +171,13 @@ export function makeModerationService(deps: ModerationServiceDeps): ModerationSe
       input: { actorId: string | null; note: string | null },
     ): Promise<void> {
       const result = await deps.repo.approve(id, input)
-      if (!result) throw AppError.notFound("Moderation item not found")
+      if (!result) throw AppError.notFound(MODERATION_ITEM_NOT_FOUND)
       if (deps.reportChatEmitter && result.reportTimelineStatus === "published") {
         await deps.reportChatEmitter.emit({
           reportId: result.subjectId,
           status: "published",
           kind: timelineKindForStatus("published"),
-          note: "Approved in moderation",
+          note: MODERATION_APPROVED_NOTE,
         })
       }
     },
@@ -269,7 +187,10 @@ export function makeModerationService(deps: ModerationServiceDeps): ModerationSe
       input: { actorId: string | null; reason: string | null },
     ): Promise<void> {
       const result = await deps.repo.remove(id, input)
-      if (!result) throw AppError.notFound("Moderation item not found")
+      if (!result) throw AppError.notFound(MODERATION_ITEM_NOT_FOUND)
+      if (isMessageSubject(result.subjectType)) {
+        await deps.announceMessageUpdate?.(result.subjectId)
+      }
       if (result.suspendedUserId && deps.sessions) {
         await deps.sessions.applyStatus(result.suspendedUserId, "suspended")
       }
@@ -278,14 +199,14 @@ export function makeModerationService(deps: ModerationServiceDeps): ModerationSe
           reportId: result.subjectId,
           status: "rejected",
           kind: timelineKindForStatus("rejected"),
-          note: input.reason ?? "Removed in moderation",
+          note: input.reason ?? MODERATION_REMOVED_NOTE,
         })
       }
     },
 
     async hold(id: string, input: { actorId: string | null; note: string | null }): Promise<void> {
       const result = await deps.repo.hold(id, input)
-      if (!result) throw AppError.notFound("Moderation item not found")
+      if (!result) throw AppError.notFound(MODERATION_ITEM_NOT_FOUND)
     },
 
     async appeal(
@@ -293,7 +214,10 @@ export function makeModerationService(deps: ModerationServiceDeps): ModerationSe
       input: { decision: "uphold" | "overturn"; actorId: string | null; note: string | null },
     ): Promise<void> {
       const result = await deps.repo.decideAppeal(id, input)
-      if (!result) throw AppError.notFound("Moderation item not found")
+      if (!result) throw AppError.notFound(MODERATION_ITEM_NOT_FOUND)
+      if (input.decision === "overturn" && isMessageSubject(result.subjectType)) {
+        await deps.announceMessageUpdate?.(result.subjectId)
+      }
       if (result.restoredUserId && deps.sessions) {
         await deps.sessions.applyStatus(result.restoredUserId, "active")
       }

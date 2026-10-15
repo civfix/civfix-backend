@@ -1,22 +1,34 @@
-
-import type { Queryable, Sql } from "../../db/client.js"
-import { decodeCursor, clampLimit, paginate } from "./pagination.js"
-import { isUuid } from "../../db/cursor-helpers.js"
-import { writeAudit } from "./audit.js"
-import { andAll, ilikeAnyOf, type SqlFragment } from "./sql-fragments.js"
-import { personSelect, toPersonRecord } from "./admin-person.js"
-import { STATUS_BUCKETS, toTimelineKind } from "./admin-report-status.js"
+import type { FastifyBaseLogger } from "fastify"
+import type { Queryable, Sql, SqlFragment } from "../../db/client.js"
+import { clampLimit } from "./pagination.js"
 import {
-  REPORT_VERIFIED_THRESHOLD,
-  type AdminReporterRecord,
-  type AdminReportMediaRecord,
-  type AdminReportRecord,
-  type AdminReportRepository,
-  type AdminReportRoutingRecord,
-  type AdminReportTimelineRecord,
-  type ListReportsArgs,
-  type ReportOutreachState,
-} from "./admin-report-service.js"
+  isUuid,
+  keysetInstant,
+  keysetPredicate,
+  paginateKeyset,
+  parseKeysetCursor,
+} from "../../db/cursor-helpers.js"
+import { insertAuditRow } from "./audit-repository.drizzle.js"
+import {
+  andAll,
+  firstUsableLegacyContactExpr,
+  ilikeAnyOf,
+  usableContactRowExpr,
+} from "./sql-fragments.js"
+import { personSelect } from "./admin-person-sql.js"
+import { toPersonRecord } from "./admin-person.js"
+import { STATUS_BUCKETS, toTimelineKind } from "./admin-report-status.js"
+import { REPORT_VERIFIED_THRESHOLD } from "./admin-report-types.js"
+import type {
+  AdminReportMediaRecord,
+  AdminReportRecord,
+  AdminReportRepository,
+  AdminReportRoutingRecord,
+  AdminReportTimelineRecord,
+  AdminReporterRecord,
+  ListReportsArgs,
+  ReportOutreachState,
+} from "./admin-report-repository.js"
 import type {
   AdminReportCounts,
   AdminReportStatus,
@@ -29,7 +41,7 @@ import {
   ROUTE_CLAIM_STALE_SECONDS,
   ROUTE_DEADLINE_INFLIGHT_SECONDS,
 } from "./outbound-send-policy.js"
-import { sendFailedExpr, sendInFlightExpr } from "./outbound-send-sql.js"
+import { sendFailedExpr, sendInFlightExpr } from "./mail-repository.drizzle.js"
 
 export { ROUTE_CLAIM_STALE_SECONDS, ROUTE_DEADLINE_INFLIGHT_SECONDS }
 
@@ -56,6 +68,9 @@ function searchReportsFragment(sql: Queryable, q: string | null): SqlFragment {
 
 const MEDIA_CAP = 20
 
+const UNTITLED_REPORT_TITLE = "Untitled report"
+const UNNAMED_REPORTER_NAME = "Neighbor"
+
 interface ReportRowSelect {
   id: string
   category: ReportCategory
@@ -75,6 +90,7 @@ interface ReportRowSelect {
   preview_key: string | null
   preview_thumb_key: string | null
   created_at: Date
+  cursor_at: string | null
   reference_code: string | null
   verification_verdict: "approved" | "rejected" | null
   verified_at: Date | null
@@ -97,7 +113,7 @@ function toRecord(r: ReportRowSelect): AdminReportRecord {
       hasOauth: r.reporter_has_oauth,
       joinedAt: r.reporter_joined,
     },
-    "Neighbor",
+    UNNAMED_REPORTER_NAME,
   )
   return {
     id: r.id,
@@ -105,7 +121,7 @@ function toRecord(r: ReportRowSelect): AdminReportRecord {
     status: r.status,
     visibility: r.visibility,
     flagged: r.flagged,
-    title: r.title ?? "Untitled report",
+    title: r.title ?? UNTITLED_REPORT_TITLE,
     place: r.place ?? "",
     reporter,
     confirmations: Number(r.confirmations ?? "0"),
@@ -158,10 +174,11 @@ function reportSelect(
       pm.served_key AS preview_key,
       pm.thumb_key AS preview_thumb_key,
       r.created_at,
+      ${keysetInstant(sql, sql`r.created_at`)} AS cursor_at,
       r.reference_code,
       r.verification_verdict,
       r.verified_at,
-      -- The reporter's earned report-verified flag (D7); null for an anonymous report (no user_moderation
+      -- The reporter's earned report-verified flag; null for an anonymous report (no user_moderation
       -- row joins), false when the reporter has a user row but no moderation row yet.
       CASE WHEN u.id IS NULL THEN NULL ELSE COALESCE(um.report_verified, false) END AS reporter_report_verified,
       ${personSelect(sql, "u", "reporter")}
@@ -182,13 +199,16 @@ function reportSelect(
   `
 }
 
-export function makeDrizzleAdminReportRepository(sql: Sql): AdminReportRepository {
+export function makeDrizzleAdminReportRepository(
+  sql: Sql,
+  opts: { logger?: Pick<FastifyBaseLogger, "warn"> } = {},
+): AdminReportRepository {
   return {
     async listReports(
       args: ListReportsArgs,
     ): Promise<{ records: AdminReportRecord[]; nextCursor: string | null }> {
       const limit = clampLimit(args.limit)
-      const anchor = decodeCursor(args.cursor, true)
+      const anchor = parseKeysetCursor(args.cursor)
 
       const conds: SqlFragment[] = []
       if (args.statuses !== null && args.statuses.length > 0) {
@@ -198,19 +218,23 @@ export function makeDrizzleAdminReportRepository(sql: Sql): AdminReportRepositor
       if (args.needsVerificationOnly) conds.push(sql`AND r.verification_verdict IS NULL`)
       if (args.q !== null) conds.push(searchReportsFragment(sql, args.q))
       if (anchor !== null) {
-        conds.push(sql`AND (r.created_at, r.id) < (${anchor.createdAt}, ${anchor.id}::uuid)`)
+        conds.push(sql`AND ${keysetPredicate(sql, sql`r.created_at`, sql`r.id`, anchor)}`)
       }
       const extraWhere = andAll(sql, conds)
       const orderLimit = sql`ORDER BY r.created_at DESC, r.id DESC LIMIT ${limit + 1}`
 
       const rows = (await reportSelect(sql, extraWhere, orderLimit)) as unknown as ReportRowSelect[]
-      const { items, nextCursor } = paginate(rows, limit, (r) => ({ at: r.created_at, id: r.id }))
+      const { items, nextCursor } = paginateKeyset(rows, limit, (r) => ({
+        atText: r.cursor_at,
+        id: r.id,
+      }))
       return { records: items.map(toRecord), nextCursor }
     },
 
     async countByBucket(args: { q: string | null }): Promise<AdminReportCounts> {
       const search = searchReportsFragment(sql, args.q)
-      const flaggedSearch = searchReportsFragment(sql, args.q)
+      // One row per report here (j and u join on their keys), so counting the rows with an open flag equals
+      // counting the distinct flagged subject ids, without a second pass over reports.
       const rows = await sql<
         {
           submitted: string
@@ -227,16 +251,11 @@ export function makeDrizzleAdminReportRepository(sql: Sql): AdminReportRepositor
           )::text AS needs_verification,
           COUNT(*) FILTER (WHERE r.status = ANY(${STATUS_BUCKETS.in_progress}))::text AS in_progress,
           COUNT(*) FILTER (WHERE r.status = ANY(${STATUS_BUCKETS.completed}))::text AS completed,
-          (
-            SELECT COUNT(DISTINCT af.subject_id)
-            FROM abuse_flags af
-            JOIN reports r ON r.id::text = af.subject_id
-            LEFT JOIN jurisdictions j ON j.geoid = r.jurisdiction_geoid
-            LEFT JOIN users u ON u.id = r.reporter_user_id
-            WHERE af.subject_type = 'report'
-              AND af.resolved_at IS NULL
-              AND r.deleted_at IS NULL
-              ${flaggedSearch}
+          COUNT(*) FILTER (
+            WHERE r.id::text IN (
+              SELECT af.subject_id FROM abuse_flags af
+              WHERE af.subject_type = 'report' AND af.resolved_at IS NULL
+            )
           )::text AS flagged
         FROM reports r
         LEFT JOIN jurisdictions j ON j.geoid = r.jurisdiction_geoid
@@ -314,13 +333,11 @@ export function makeDrizzleAdminReportRepository(sql: Sql): AdminReportRepositor
           j.forward_body_template,
           (SELECT jc.email FROM jurisdiction_contacts jc
              WHERE jc.geoid = j.geoid AND jc.category = r.category
-               AND jc.email IS NOT NULL AND jc.email <> ''
-               AND jc.bounced_at IS NULL LIMIT 1) AS cat_email,
+               AND ${usableContactRowExpr(sql, "jc")} LIMIT 1) AS cat_email,
           (SELECT jc.email FROM jurisdiction_contacts jc
              WHERE jc.geoid = j.geoid AND jc.category IS NULL
-               AND jc.email IS NOT NULL AND jc.email <> ''
-               AND jc.bounced_at IS NULL LIMIT 1) AS default_email,
-          (SELECT j.contact_emails[1]) AS legacy_email
+               AND ${usableContactRowExpr(sql, "jc")} LIMIT 1) AS default_email,
+          ${firstUsableLegacyContactExpr(sql, "j")} AS legacy_email
         FROM reports r
         LEFT JOIN jurisdictions j ON j.geoid = r.jurisdiction_geoid
         WHERE r.id = ${id}
@@ -427,7 +444,7 @@ export function makeDrizzleAdminReportRepository(sql: Sql): AdminReportRepositor
           INSERT INTO report_timeline (report_id, status, note, kind, actor_id)
           VALUES (${id}, ${input.to}, ${input.note}, ${input.kind ?? null}, ${input.actorId})
         `
-        await writeAudit(tx, {
+        await insertAuditRow(tx, {
           actorId: input.actorId,
           action: "report.status_changed",
           target: `report:${id}`,
@@ -490,7 +507,7 @@ export function makeDrizzleAdminReportRepository(sql: Sql): AdminReportRepositor
           INSERT INTO report_timeline (report_id, status, note, kind, body, actor_id)
           VALUES (${id}, ${input.status}, ${input.note}, ${input.kind ?? null}, ${input.body ?? null}, ${input.actorId})
         `
-        await writeAudit(tx, {
+        await insertAuditRow(tx, {
           actorId: input.actorId,
           action: "report.status_changed",
           target: `report:${id}`,
@@ -506,7 +523,7 @@ export function makeDrizzleAdminReportRepository(sql: Sql): AdminReportRepositor
     ): Promise<boolean | null> {
       return sql.begin(async (tx) => {
         const exists = await tx<{ status: AdminReportStatus }[]>`
-          SELECT status FROM reports WHERE id = ${id} AND deleted_at IS NULL LIMIT 1
+          SELECT status FROM reports WHERE id = ${id} AND deleted_at IS NULL FOR NO KEY UPDATE
         `
         const report = exists[0]
         if (!report) return null
@@ -538,7 +555,7 @@ export function makeDrizzleAdminReportRepository(sql: Sql): AdminReportRepositor
             ${input.actorId}
           )
         `
-        await writeAudit(tx, {
+        await insertAuditRow(tx, {
           actorId: input.actorId,
           action: nowFlagged ? "report.flagged" : "report.unflagged",
           target: `report:${id}`,
@@ -560,7 +577,7 @@ export function makeDrizzleAdminReportRepository(sql: Sql): AdminReportRepositor
           INSERT INTO report_timeline (report_id, status, note, kind, actor_id)
           VALUES (${id}, 'rejected', ${input.note}, 'remove', ${input.actorId})
         `
-        await writeAudit(tx, {
+        await insertAuditRow(tx, {
           actorId: input.actorId,
           action: "report.removed",
           target: `report:${id}`,
@@ -585,7 +602,7 @@ export function makeDrizzleAdminReportRepository(sql: Sql): AdminReportRepositor
           SELECT ${id}, r.status, ${input.note}, 'followup', ${input.actorId}
           FROM reports r WHERE r.id = ${id}
         `
-        await writeAudit(tx, {
+        await insertAuditRow(tx, {
           actorId: input.actorId,
           action: "report.followup_sent",
           target: `report:${id}`,
@@ -596,20 +613,24 @@ export function makeDrizzleAdminReportRepository(sql: Sql): AdminReportRepositor
 
     async setReportVerdict(
       id: string,
-      input: { verdict: "approved" | "rejected"; actorId: string | null },
+      input: { verdict: "approved" | "rejected"; actorId: string | null; note: string },
     ): Promise<boolean> {
       return sql.begin(async (tx) => {
-        const updated = await tx<{ reporter_user_id: string | null }[]>`
+        const updated = await tx<{ reporter_user_id: string | null; status: AdminReportStatus }[]>`
           UPDATE reports
           SET verification_verdict = ${input.verdict},
               verified_by = ${input.actorId},
               verified_at = now()
           WHERE id = ${id} AND deleted_at IS NULL
-          RETURNING reporter_user_id
+          RETURNING reporter_user_id, status
         `
         const row = updated[0]
         if (!row) return false
-        await writeAudit(tx, {
+        await tx`
+          INSERT INTO report_timeline (report_id, status, note, kind, actor_id)
+          VALUES (${id}, ${row.status}, ${input.note}, 'status', ${input.actorId})
+        `
+        await insertAuditRow(tx, {
           actorId: input.actorId,
           action: "report.verdict_set",
           target: `report:${id}`,
@@ -649,8 +670,12 @@ export function makeDrizzleAdminReportRepository(sql: Sql): AdminReportRepositor
         await reserved`SELECT pg_advisory_lock(${ROUTE_LOCK_NAMESPACE}, hashtext(${id}))`
         return await fn()
       } finally {
+        // A failed unlock almost always means the session is gone, which releases the lock server-side.
+        // It must not mask fn()'s own outcome, but it is logged so a stuck route lock is traceable.
         await reserved`SELECT pg_advisory_unlock(${ROUTE_LOCK_NAMESPACE}, hashtext(${id}))`.catch(
-          () => {},
+          (err: unknown) => {
+            opts.logger?.warn({ err, reportId: id }, "report route advisory unlock failed")
+          },
         )
         reserved.release()
       }
@@ -658,10 +683,7 @@ export function makeDrizzleAdminReportRepository(sql: Sql): AdminReportRepositor
   }
 }
 
-export function mapOutreachStatus(
-  threadStatus: string,
-  hasInbound: boolean,
-): ReportOutreachStatus {
+export function mapOutreachStatus(threadStatus: string, hasInbound: boolean): ReportOutreachStatus {
   if (threadStatus === "bounced") return "bounced"
   if (hasInbound || threadStatus === "replied") return "replied"
   if (threadStatus === "delivered" || threadStatus === "opened") return "delivered"

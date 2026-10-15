@@ -1,4 +1,3 @@
-
 import type { Container } from "../di.js"
 import { dropSuggestionsFor, type SuggestionsCache } from "./social-service.js"
 

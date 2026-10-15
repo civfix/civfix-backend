@@ -7,13 +7,13 @@
 -- the full sort. Cost was O(total users) per request, inside a 15s
 -- statement_timeout, at 30 req/min per identity.
 --
--- The fix materialises the point that LATERAL used to derive — the user's most
--- recent locatable public act (report filed, event organized/completed) — onto
+-- The fix materialises the point that LATERAL used to derive (the user's most
+-- recent locatable public act: report filed, event organized/completed) onto
 -- the users row, so the candidate set can be bounded BEFORE any per-row work by
 -- a KNN index scan (see social-repository.drizzle.ts suggestFollows).
 --
 -- HOT TABLE: `users`. Both columns are NULLABLE with NO DEFAULT, so this is a
--- catalog-only ADD COLUMN — no table rewrite, no full-table lock beyond the
+-- catalog-only ADD COLUMN: no table rewrite, no full-table lock beyond the
 -- brief ACCESS EXCLUSIVE for the catalog update.
 --
 -- INDEXES ARE NOT CREATED HERE. The migration runner wraps every file in one

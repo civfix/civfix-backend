@@ -1,4 +1,3 @@
-
 import fastifyRateLimit from "@fastify/rate-limit"
 import { AppError } from "@civfix/shared"
 import type {
@@ -12,7 +11,7 @@ import { normalizeIp } from "../abuse/ip-rate-limit.js"
 
 const RATE_LIMIT_ALLOWLIST = new Set(["/healthz"])
 
-export const SENSITIVE_RATE_LIMIT_PREFIXES: readonly string[] = [
+const SENSITIVE_RATE_LIMIT_PREFIXES: readonly string[] = [
   "/v1/auth",
   "/auth",
   "/v1/admin/auth",
@@ -25,8 +24,8 @@ export const SENSITIVE_RATE_LIMIT_PREFIXES: readonly string[] = [
   "/forms",
 ]
 
-export const SENSITIVE_WRITE_EXACT_PATHS: readonly string[] = ["/v1/reports"]
-export const SENSITIVE_WRITE_PREFIXES: readonly string[] = ["/v1/admin"]
+const SENSITIVE_WRITE_EXACT_PATHS: readonly string[] = ["/v1/reports"]
+const SENSITIVE_WRITE_PREFIXES: readonly string[] = ["/v1/admin"]
 
 const MUTATING_METHODS = new Set(["POST", "PUT", "PATCH", "DELETE"])
 
@@ -41,8 +40,14 @@ export function isWriteSensitivePath(path: string): boolean {
   return SENSITIVE_WRITE_PREFIXES.some((p) => path === p || path.startsWith(`${p}/`))
 }
 
+const RATE_LIMIT_WINDOW = "1 minute"
+const GLOBAL_RATE_LIMIT_PER_MINUTE = 300
 const SENSITIVE_MAX = 60
-const SENSITIVE_WINDOW = "1 minute"
+const SENSITIVE_WINDOW = RATE_LIMIT_WINDOW
+
+const IP_KEY_PREFIX = "ip:"
+const USER_KEY_PREFIX = "user:"
+const HOST_KEY_PREFIX = "host:"
 
 export interface RateLimitOptions {
   max?: number
@@ -60,12 +65,12 @@ export function isSensitivePath(path: string): boolean {
 }
 
 export function rateLimitKey(req: FastifyRequest): string {
-  return `ip:${normalizeIp(req.ip)}`
+  return `${IP_KEY_PREFIX}${normalizeIp(req.ip)}`
 }
 
 export function identityRateLimitKey(req: FastifyRequest): string {
   const userId = req.auth?.userId
-  return userId ? `user:${userId}` : `ip:${normalizeIp(req.ip)}`
+  return userId ? `${USER_KEY_PREFIX}${userId}` : rateLimitKey(req)
 }
 
 export interface RouteRateLimitSpec {
@@ -93,7 +98,7 @@ export function sensitiveRateLimitKey(req: FastifyRequest): string {
 }
 
 export function wsUpgradeRateLimitKey(req: FastifyRequest): string {
-  return `${WS_UPGRADE_BUCKET}:ip:${normalizeIp(req.ip)}`
+  return `${WS_UPGRADE_BUCKET}:${rateLimitKey(req)}`
 }
 
 export function perIdentity(spec: RouteRateLimitSpec): RouteRateLimitPolicy {
@@ -127,8 +132,8 @@ export async function registerRateLimit(
 ): Promise<void> {
   await app.register(fastifyRateLimit, {
     global: true,
-    max: opts.max ?? 300,
-    timeWindow: opts.timeWindow ?? "1 minute",
+    max: opts.max ?? GLOBAL_RATE_LIMIT_PER_MINUTE,
+    timeWindow: opts.timeWindow ?? RATE_LIMIT_WINDOW,
     keyGenerator: rateLimitKey,
     allowList: (req) => RATE_LIMIT_ALLOWLIST.has(pathOf(req.url)),
     skipOnError: true,
@@ -195,12 +200,14 @@ function appendOnRequestHook(
 }
 
 function hostCeilingLimitOf(config: unknown, url: string): RouteRateLimitSpec | null {
-  const limit = (config as {
-    rateLimit?: Partial<RouteRateLimitSpec> & {
-      keyGenerator?: unknown
-      [ROUTE_RATE_LIMIT_POLICY]?: unknown
+  const limit = (
+    config as {
+      rateLimit?: Partial<RouteRateLimitSpec> & {
+        keyGenerator?: unknown
+        [ROUTE_RATE_LIMIT_POLICY]?: unknown
+      }
     }
-  })?.rateLimit
+  )?.rateLimit
   if (!limit || typeof limit !== "object") return null
   if (limit.keyGenerator === undefined) return null
   if (limit[ROUTE_RATE_LIMIT_POLICY] !== true || limit.keyGenerator !== identityRateLimitKey) {
@@ -209,7 +216,10 @@ function hostCeilingLimitOf(config: unknown, url: string): RouteRateLimitSpec | 
     )
   }
   const { max, timeWindow, hostMax } = limit
-  if (typeof max !== "number" || (typeof timeWindow !== "string" && typeof timeWindow !== "number")) {
+  if (
+    typeof max !== "number" ||
+    (typeof timeWindow !== "string" && typeof timeWindow !== "number")
+  ) {
     throw new Error(
       `the rate limit on ${url} replaces the per-host key, so it needs a literal max and timeWindow to derive its host ceiling`,
     )
@@ -225,7 +235,7 @@ function hostCeilingHook(
   const checkHost = app.createRateLimit({
     max: limit.hostMax ?? limit.max * HOST_CEILING_MULTIPLIER,
     timeWindow: limit.timeWindow,
-    keyGenerator: (req) => `host:${routeId}:ip:${normalizeIp(req.ip)}`,
+    keyGenerator: (req) => `${HOST_KEY_PREFIX}${routeId}:${rateLimitKey(req)}`,
     allowList: () => false,
     skipOnError: true,
   })

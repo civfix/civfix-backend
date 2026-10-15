@@ -1,4 +1,3 @@
-
 export interface ProxySettings {
   url: string
   noProxy: string[]

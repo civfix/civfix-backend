@@ -22,18 +22,22 @@ import { requireAuth } from "../../auth/context.js"
 import { parse } from "../_validate.js"
 import { perIdentity } from "../../plugins/rate-limit.js"
 import { route } from "../../versioning/route.js"
-import { requireCapability } from "../../services/host/authz.js"
 import {
   makeHostTeamService,
+  makeSqlTeamStanding,
   MY_EVENT_INVITES_DEFAULT_LIMIT,
   type HostTeamService,
   type HostTeamServiceDeps,
 } from "../../services/host/host-team-service.js"
 import { makeDrizzleHostTeamRepository } from "../../services/host/host-team-repository.drizzle.js"
-import type { HostTeamRepository } from "../../services/host/host-team-repository.types.js"
+import type { HostTeamRepository } from "../../services/host/host-team-repository.js"
 import { makeEventMediaPresigner } from "../../services/host/event-media.js"
 import { makeRouteNotificationService } from "../../services/route-notifier.js"
 import { makeRouteCleanupReader } from "../../services/route-cleanup-reader.js"
+import { webBaseUrlOf } from "../../lib/base-url.js"
+
+const ONE_MINUTE = "1 minute"
+const ONE_HOUR = "1 hour"
 
 export interface HostTeamOverrides {
   repo: HostTeamRepository
@@ -65,11 +69,11 @@ const MyInvitesQuerySchema = z
   .object({ cursor: z.string().optional(), limit: z.string().optional() })
   .strict()
 
-export const TEAM_INVITE_RATE_LIMIT = perIdentity({ max: 20, timeWindow: "1 hour" })
+export const TEAM_INVITE_RATE_LIMIT = perIdentity({ max: 20, timeWindow: ONE_HOUR })
 
-export const TEAM_MUTATION_RATE_LIMIT = perIdentity({ max: 30, timeWindow: "1 minute" })
+export const TEAM_MUTATION_RATE_LIMIT = perIdentity({ max: 30, timeWindow: ONE_MINUTE })
 
-export const MY_EVENT_INVITES_READ_RATE_LIMIT = perIdentity({ max: 60, timeWindow: "1 minute" })
+export const MY_EVENT_INVITES_READ_RATE_LIMIT = perIdentity({ max: 60, timeWindow: ONE_MINUTE })
 
 export async function registerHostTeamRoutes(
   app: FastifyInstance,
@@ -94,29 +98,23 @@ export async function registerHostTeamRoutes(
         ...(overrides.now !== undefined ? { now: overrides.now } : {}),
         ...(overrides.newId !== undefined ? { newId: overrides.newId } : {}),
         ...(overrides.newToken !== undefined ? { newToken: overrides.newToken } : {}),
+        webOrigin: webBaseUrlOf(container.env),
         logger: app.log,
       })
     }
     const sql = container.getDb().sql
+    const repo = makeDrizzleHostTeamRepository(sql)
     return makeHostTeamService({
-      repo: makeDrizzleHostTeamRepository(sql),
-      standing: (cleanupId, userId, capability) =>
-        requireCapability(sql, cleanupId, userId, capability),
+      repo,
+      standing: makeSqlTeamStanding(sql),
       loadEvent: makeRouteCleanupReader(container, app.log),
       counters: container.getCounterStore(),
       mailer: container.mailer,
       notifier: makeRouteNotificationService(container, app.log),
       presignEventMedia: makeEventMediaPresigner(container.storage),
       affiliations: container.getAffiliationLoader(),
-      eventTitleOf: async (cleanupId: string) => {
-        const rows = await sql<{ title: string }[]>`
-          SELECT title FROM cleanups WHERE id = ${cleanupId} LIMIT 1
-        `
-        return rows[0]?.title ?? null
-      },
-      ...(container.env.WEB_ORIGINS[0] !== undefined
-        ? { webOrigin: container.env.WEB_ORIGINS[0] }
-        : {}),
+      eventTitleOf: (cleanupId: string) => repo.eventTitleOf(cleanupId),
+      webOrigin: webBaseUrlOf(container.env),
       logger: app.log,
     })
   }

@@ -1,4 +1,3 @@
-
 import {
   AdminUserListQuerySchema,
   FlagUserRequestSchema,
@@ -19,6 +18,7 @@ import { requireOperator } from "../../auth/admin-guard.js"
 import { route } from "../../versioning/route.js"
 import {
   idParam,
+  makeContainerMessageUpdateAnnouncer,
   overridableService,
   parse,
   parseBodyWithId,
@@ -29,9 +29,9 @@ import {
 import { auditRead } from "./_audit-read.js"
 import {
   makeAdminUserService,
-  type AdminUserRepository,
   type SessionControl,
 } from "../../services/admin/admin-user-service.js"
+import type { AdminUserRepository } from "../../services/admin/admin-user-repository.js"
 import { makeDrizzleAdminUserRepository } from "../../services/admin/admin-user-repository.drizzle.js"
 
 export interface AdminUserRouteOverrides {
@@ -68,7 +68,11 @@ export async function registerAdminUsersRoutes(
         applyStatus: (userId, status) => sessionSvc.applyAccountStatus(userId, status),
         revokeAll: (userId) => sessionSvc.revokeAllForUser(userId),
       }
-      return makeAdminUserService({ repo, sessions })
+      return makeAdminUserService({
+        repo,
+        sessions,
+        announceMessageUpdate: makeContainerMessageUpdateAnnouncer(container, app.log),
+      })
     },
   )
 
@@ -145,7 +149,11 @@ export async function registerAdminUsersRoutes(
   route(app, "removeUserMessage", { preHandler: csrfProtect }, async (request, reply) => {
     const actorId = requireOperator(request)
     const { id, messageId } = twoIdParams(request, "messageId")
-    const body = parse(RemoveUserMessageRequestSchema, { ...(request.body as object), id, messageId })
+    const body = parse(RemoveUserMessageRequestSchema, {
+      ...(request.body as object),
+      id,
+      messageId,
+    })
     await service().removeMessage(id, messageId, { reason: body.reason ?? null, actorId })
     sendOk(reply)
   })

@@ -1,4 +1,3 @@
-
 import type { FastifyBaseLogger } from "fastify"
 import type { ChatMessageDTO } from "@civfix/shared"
 import type { Jobs } from "@civfix/shared/interfaces"
@@ -15,8 +14,7 @@ import {
   type ContainerRoomFanoutDeps,
   type RoomFanoutLogger,
 } from "./chat-room-notifier-wiring.js"
-
-export const CHAT_ROOM_FANOUT_JOB = "chat.room.fanout"
+import { CHAT_ROOM_FANOUT_JOB } from "../lib/queue-names.js"
 
 export interface ChatRoomFanoutJob {
   kind: RoomFanoutKind
@@ -94,7 +92,7 @@ export async function runChatRoomFanout(
   await runRoomFanout(ROOM_FANOUT_SPEC[data.kind], deps.fanoutDeps[data.kind], data.roomId, message)
 }
 
-export async function runChatRoomFanoutJob(
+async function runChatRoomFanoutJob(
   container: Container,
   data: ChatRoomFanoutJob,
   logger?: RoomFanoutLogger,

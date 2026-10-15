@@ -1,12 +1,13 @@
 import type { Container } from "../di.js"
 import { REVIEWER_OTP_EMAIL } from "../auth/otp.js"
-import { writeAudit } from "./admin/audit.js"
+import { insertAuditRow } from "./admin/audit-repository.drizzle.js"
 import { requireCapability } from "./host/authz.js"
 import { makeContainerRegistrationServices } from "./host/registration-wiring.js"
-import { guestManageLinkBase } from "./guest-notify.js"
+import { webBaseUrlOf } from "../lib/base-url.js"
 import { makeDrizzleGuestRsvpRepository } from "./guest-rsvp-repository.drizzle.js"
 import {
   makeGuestRsvpService,
+  type GuestRegistrationBridge,
   type GuestRsvpService,
   type GuestRsvpServiceDeps,
 } from "./guest-rsvp-service.js"
@@ -25,12 +26,58 @@ export interface GuestRsvpOverrides {
   now?: GuestRsvpServiceDeps["now"]
 }
 
-export function guestReviewerConfig(container: Container): GuestRsvpServiceDeps["reviewer"] {
+function guestReviewerConfig(container: Container): GuestRsvpServiceDeps["reviewer"] {
   const code = container.env.REVIEWER_OTP_CODE
   if (!container.env.REVIEWER_OTP_BYPASS || code === undefined || code.length === 0) {
     return undefined
   }
   return { email: REVIEWER_OTP_EMAIL, code }
+}
+
+function containerRegistrationBridge(
+  container: Container,
+  logger: GuestRsvpServiceDeps["logger"],
+): GuestRegistrationBridge {
+  return {
+    register: (input, subject) =>
+      makeContainerRegistrationServices(container, undefined, logger).registrations.register(
+        input,
+        subject,
+      ),
+    assertInputValid: (cleanupId, fields) =>
+      makeContainerRegistrationServices(
+        container,
+        undefined,
+        logger,
+      ).registrations.assertInputValid({
+        id: cleanupId,
+        ...(fields.ticketTypeId !== undefined ? { ticketTypeId: fields.ticketTypeId } : {}),
+        ...(fields.answers !== undefined ? { answers: fields.answers } : {}),
+        ...(fields.consent !== undefined ? { consent: fields.consent } : {}),
+      }),
+    registrationGate: async (cleanupId) => {
+      const { repo: registrationRepo } = makeContainerRegistrationServices(
+        container,
+        undefined,
+        logger,
+      )
+      const [event, ticketTypes] = await Promise.all([
+        registrationRepo.eventContext(cleanupId),
+        registrationRepo.listTicketTypes(cleanupId),
+      ])
+      if (event === null) return null
+      return {
+        registrationOpensAt: event.registrationOpensAt,
+        registrationClosesAt: event.registrationClosesAt,
+        ticketTypes: ticketTypes.map((t) => ({
+          id: t.id,
+          visibility: t.visibility,
+          salesOpensAt: t.salesOpensAt,
+          salesClosesAt: t.salesClosesAt,
+        })),
+      }
+    },
+  }
 }
 
 export function makeContainerGuestRsvpService(
@@ -45,26 +92,12 @@ export function makeContainerGuestRsvpService(
     (async (cleanupId: string, userId: string) => {
       await requireCapability(container.getDb().sql, cleanupId, userId, "view_guest_contact")
     })
-  const registrations: GuestRsvpServiceDeps["registrations"] = overrides?.registrations ?? {
-    register: (input, subject) =>
-      makeContainerRegistrationServices(container, undefined, logger).registrations.register(
-        input,
-        subject,
-      ),
-    assertInputValid: (cleanupId, fields) =>
-      makeContainerRegistrationServices(container, undefined, logger).registrations.assertInputValid(
-        {
-          id: cleanupId,
-          ...(fields.ticketTypeId !== undefined ? { ticketTypeId: fields.ticketTypeId } : {}),
-          ...(fields.answers !== undefined ? { answers: fields.answers } : {}),
-          ...(fields.consent !== undefined ? { consent: fields.consent } : {}),
-        },
-      ),
-  }
+  const registrations: GuestRsvpServiceDeps["registrations"] =
+    overrides?.registrations ?? containerRegistrationBridge(container, logger)
   const audit: GuestRsvpServiceDeps["audit"] =
     overrides?.audit ??
     (async (input) => {
-      await writeAudit(container.getDb().sql, {
+      await insertAuditRow(container.getDb().sql, {
         actorId: input.actorId,
         action: input.action,
         target: input.target,
@@ -84,7 +117,7 @@ export function makeContainerGuestRsvpService(
     counters: overrides?.counters ?? container.getCounterStore(),
     smsGuestEnabled: container.env.SMS_GUEST_ENABLED,
     smsDailyCap: container.env.SMS_DAILY_CAP,
-    manageLinkBase: guestManageLinkBase(container.env.WEB_ORIGINS),
+    manageLinkBase: webBaseUrlOf(container.env),
     ...(reviewer !== undefined ? { reviewer } : {}),
     ...(overrides?.now !== undefined ? { now: overrides.now } : {}),
     ...(logger !== undefined ? { logger } : {}),

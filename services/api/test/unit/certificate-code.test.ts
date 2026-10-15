@@ -1,5 +1,5 @@
 /**
- * The printed capability (DP §5.1). The code is what a registrar types off paper, so the tests care
+ * The printed capability. The code is what a registrar types off paper, so the tests care
  * about two things: the shape survives the round trip through the shared normalizer, and the draw is a
  * real CSPRNG draw over the whole alphabet.
  */

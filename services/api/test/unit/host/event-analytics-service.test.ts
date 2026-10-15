@@ -15,9 +15,9 @@ import {
 import type {
   AnalyticsRepository,
   EventClockRecord,
-} from "../../../src/services/host/analytics-repository.drizzle.js"
-import type { EventAnalyticsRepository } from "../../../src/services/host/event-analytics-repository.drizzle.js"
-import type { MetricsRepository } from "../../../src/services/host/metrics-repository.drizzle.js"
+} from "../../../src/services/host/analytics-repository.js"
+import type { EventAnalyticsRepository } from "../../../src/services/host/event-analytics-repository.js"
+import type { MetricsRepository } from "../../../src/services/host/metrics-repository.js"
 
 const EVENT = "00000000-0000-0000-0000-0000000000ee"
 const HOST = "00000000-0000-0000-0000-0000000000aa"
@@ -168,7 +168,12 @@ describe("analyticsPhaseOf", () => {
   it("reads an unfinished event as upcoming", () => {
     expect(
       analyticsPhaseOf(
-        clock({ status: "upcoming", completedAt: null, endsAt: new Date("2026-03-01T00:00:00Z"), scheduledAt: new Date("2026-03-01T00:00:00Z") }),
+        clock({
+          status: "upcoming",
+          completedAt: null,
+          endsAt: new Date("2026-03-01T00:00:00Z"),
+          scheduledAt: new Date("2026-03-01T00:00:00Z"),
+        }),
         NOW,
       ),
     ).toBe("upcoming")

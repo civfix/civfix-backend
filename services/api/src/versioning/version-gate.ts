@@ -1,4 +1,3 @@
-
 import { AppError } from "@civfix/shared"
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify"
 import {
@@ -8,6 +7,9 @@ import {
   validateVersionPolicy,
   versionStatus,
 } from "./policy.js"
+
+const DEPRECATION_HEADER = "Deprecation"
+const SUNSET_HEADER = "Sunset"
 
 function firstPathSegment(url: string): string {
   const queryStart = url.indexOf("?")
@@ -55,11 +57,11 @@ export async function registerVersionGate(app: FastifyInstance): Promise<void> {
       case "current":
         return
       case "deprecated":
-        reply.header("Deprecation", "true")
+        reply.header(DEPRECATION_HEADER, "true")
         if (status.sunset) {
           const sunsetDate = new Date(status.sunset)
           if (!Number.isNaN(sunsetDate.getTime())) {
-            reply.header("Sunset", sunsetDate.toUTCString())
+            reply.header(SUNSET_HEADER, sunsetDate.toUTCString())
           }
         }
         return

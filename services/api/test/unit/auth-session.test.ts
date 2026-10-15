@@ -406,7 +406,7 @@ describe("SessionService revoke robustness", () => {
     expect(await store.findById(hash)).not.toBeNull()
   })
 
-  it("H3: revokeAllForUser survives a failed cache eviction — the stranded entry no longer authenticates", async () => {
+  it("H3: revokeAllForUser survives a failed cache eviction; the stranded entry no longer authenticates", async () => {
     const { service, store, cache } = makeFlakyService()
     const token = await service.createSession(USER, ["gov_admin"])
     const hash = await sha256Hex(token)
@@ -709,7 +709,7 @@ describe("sliding expiry is coarse-grained, so a hot session does not UPDATE on 
     expect(spy).toHaveBeenCalledTimes(2)
   })
 
-  it("the session still slides — it never expires under continuous use", async () => {
+  it("the session still slides; it never expires under continuous use", async () => {
     const { service, store, advance } = slidingService(60_000)
     const token = await service.createSession(USER, ["citizen"])
     const hash = await sha256Hex(token)

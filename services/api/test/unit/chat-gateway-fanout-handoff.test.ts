@@ -12,10 +12,10 @@ import { InMemoryChatRepository, MockConnection } from "../helpers/chat.js"
 import { makeGroupChatNotifier } from "../../src/services/group-chat-notifier.js"
 import { makeReportChatNotifier } from "../../src/services/report-chat-notifier.js"
 import {
-  CHAT_ROOM_FANOUT_JOB,
   makeRoomFanoutDispatcher,
   roomFanoutSingletonKey,
 } from "../../src/services/chat-fanout-jobs.js"
+import { CHAT_ROOM_FANOUT_JOB } from "../../src/lib/queue-names.js"
 import { ROOM_FANOUT_THROTTLE_MS } from "../../src/services/chat-room-fanout-notifier.js"
 import { roomKeyFor } from "../../src/ws/gateway.js"
 import { roomFanoutMode } from "../../src/routes/chat-gateway-wiring.js"
@@ -56,9 +56,9 @@ function probe(): FanoutProbe {
 function notifierDeps(p: FanoutProbe) {
   return {
     notificationService: {
-      createNotifications: (recipients: string[]) => {
+      createNotificationsReportingFailures: (recipients: string[]) => {
         p.notified.push(recipients)
-        return Promise.resolve()
+        return Promise.resolve({ failed: [] })
       },
     },
     isMuted: () => Promise.resolve(false),
@@ -104,10 +104,7 @@ describe("H19 over the WS send lane: a burst enqueues one job, never fans out in
       dispatchToJob: makeRoomFanoutDispatcher(p.jobs, "group"),
     })
     const conn = new MockConnection("A")
-    const s = session(
-      { onGroupMessage: (groupId, message) => notify(groupId, message) },
-      conn,
-    )
+    const s = session({ onGroupMessage: (groupId, message) => notify(groupId, message) }, conn)
     await handleClientFrame(
       s,
       JSON.stringify({ type: "join", cleanupId: GROUP, roomKind: "group" }),
@@ -134,7 +131,7 @@ describe("H19 over the WS send lane: a burst enqueues one job, never fans out in
     expect(p.notified).toEqual([])
   })
 
-  it("the enqueued job carries ids only — no body, no sender name reaches pgboss.job", async () => {
+  it("the enqueued job carries ids only: no body, no sender name reaches pgboss.job", async () => {
     const p = probe()
     const notify = makeGroupChatNotifier({
       ...notifierDeps(p),
@@ -186,7 +183,13 @@ describe("H19 over the WS send lane: a burst enqueues one job, never fans out in
     )
     await handleClientFrame(
       s,
-      JSON.stringify({ type: "send", cleanupId: GROUP, roomKind: "group", body: "x", clientId: "c1" }),
+      JSON.stringify({
+        type: "send",
+        cleanupId: GROUP,
+        roomKind: "group",
+        body: "x",
+        clientId: "c1",
+      }),
     )
     await flush()
 
@@ -210,7 +213,10 @@ describe("H19 over the WS send lane: a burst enqueues one job, never fans out in
     const conn = new MockConnection("A")
     const s = session(
       {
-        reportChat: { isMember: () => Promise.resolve(true), advanceReadWatermark: () => Promise.resolve() },
+        reportChat: {
+          isMember: () => Promise.resolve(true),
+          advanceReadWatermark: () => Promise.resolve(),
+        },
         onReportMessage: (reportId, message) => notify(reportId, message),
       },
       conn,
@@ -240,10 +246,12 @@ describe("H19 over the WS send lane: a burst enqueues one job, never fans out in
   })
 
   it("USE_FAKE_JOBS never queues: FakeJobs registers no chat.room.fanout handler, so bells must stay inline", () => {
-    expect(roomFanoutMode({ useFakeChat: false, useFakeJobs: false, usesRealRedis: true })).toEqual({
-      queued: true,
-      claimed: true,
-    })
+    expect(roomFanoutMode({ useFakeChat: false, useFakeJobs: false, usesRealRedis: true })).toEqual(
+      {
+        queued: true,
+        claimed: true,
+      },
+    )
     expect(roomFanoutMode({ useFakeChat: false, useFakeJobs: true, usesRealRedis: true })).toEqual({
       queued: false,
       claimed: true,
@@ -252,7 +260,9 @@ describe("H19 over the WS send lane: a burst enqueues one job, never fans out in
       queued: false,
       claimed: false,
     })
-    expect(roomFanoutMode({ useFakeChat: false, useFakeJobs: false, usesRealRedis: false })).toEqual({
+    expect(
+      roomFanoutMode({ useFakeChat: false, useFakeJobs: false, usesRealRedis: false }),
+    ).toEqual({
       queued: false,
       claimed: false,
     })
@@ -282,7 +292,13 @@ describe("H19 over the WS send lane: a burst enqueues one job, never fans out in
     )
     await handleClientFrame(
       s,
-      JSON.stringify({ type: "send", cleanupId: GROUP, roomKind: "group", body: "x", clientId: "c1" }),
+      JSON.stringify({
+        type: "send",
+        cleanupId: GROUP,
+        roomKind: "group",
+        body: "x",
+        clientId: "c1",
+      }),
     )
     await flush()
 
@@ -312,7 +328,13 @@ describe("H19 over the WS send lane: a burst enqueues one job, never fans out in
     )
     await handleClientFrame(
       s,
-      JSON.stringify({ type: "send", cleanupId: GROUP, roomKind: "group", body: "x", clientId: "c1" }),
+      JSON.stringify({
+        type: "send",
+        cleanupId: GROUP,
+        roomKind: "group",
+        body: "x",
+        clientId: "c1",
+      }),
     )
     await flush()
 

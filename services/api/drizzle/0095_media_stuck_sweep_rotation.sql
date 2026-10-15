@@ -19,7 +19,7 @@
 --
 -- The sweep also narrows to `finalized_at IS NOT NULL` (0087's marker, wired by
 -- this change set): a row is created 'validating' at PRESIGN time, before any
--- bytes exist, so an unfinalized row is an upload intent — the ORPHAN sweep's
+-- bytes exist, so an unfinalized row is an upload intent; the ORPHAN sweep's
 -- job, never the stuck sweep's. Rows finalized BEFORE 0087 was wired carry a
 -- NULL finalized_at, which would put them out of the sweep's scope forever --
 -- and findOrphans skips any BOUND row, so a bound pre-0087 asset stuck at
@@ -39,7 +39,7 @@
 -- The finalize watermark is also load-bearing for CLAIMS: every media bind
 -- predicate (report create, anon held-report create, post attach, chat/DM
 -- attachment) accepts a 'validating' row only when finalized_at IS NOT NULL, so
--- a bearer of an upload id cannot bind a never-finalized intent — a row with no
+-- a bearer of an upload id cannot bind a never-finalized intent: a row with no
 -- bytes, no job, and (bound) no orphan-sweep coverage. 'ready' rows are accepted
 -- unconditionally because a pre-0087 'ready' row can legitimately carry a NULL
 -- finalized_at; 'ready' is post-pipeline by definition. Together with the
@@ -52,7 +52,7 @@
 -- checked -> highest priority). The one backfill here is on finalized_at, and
 -- it only ever writes rows where it is NULL -- nothing is overwritten.
 --
--- The partial index serves the sweep's exact claim query — the ORDER BY is
+-- The partial index serves the sweep's exact claim query; the ORDER BY is
 -- `stuck_checked_at ASC NULLS FIRST, finalized_at` over a tiny slice of a large,
 -- write-heavy table, so without it every run sorts all validating rows; carrying
 -- finalized_at in the index also serves the `finalized_at < cutoff` filter from
@@ -62,7 +62,7 @@
 --
 -- Conventions: additive ADD COLUMN IF NOT EXISTS + CREATE INDEX IF NOT EXISTS;
 -- one transaction per file (src/db/migrate.ts); non-CONCURRENTLY build accepted
--- (pre-launch, trivial rows) — on a live-traffic box this index would be built
+-- (pre-launch, trivial rows); on a live-traffic box this index would be built
 -- out-of-band with CONCURRENTLY first, leaving that statement an idempotent
 -- no-op. Forward-only, no down.
 --

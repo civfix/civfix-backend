@@ -4,8 +4,8 @@ import type { ChatMessageDTO } from "@civfix/shared"
 import type { FastifyInstance } from "fastify"
 import type { Container } from "../../src/di.js"
 import type { OnReportMessage } from "../../src/ws/types.js"
-import type { ReportChatRepository } from "../../src/services/report-chat-repository.drizzle.js"
-import type { DiscussionReportView } from "../../src/services/discussion-types.js"
+import type { ReportChatRepository } from "../../src/services/report-chat-repository.js"
+import type { DiscussionReportView } from "../../src/services/discussion-repository.js"
 import type {
   AppendOutboundInput,
   SendReportInput,
@@ -26,6 +26,7 @@ import {
 } from "../../src/services/report-city-forward.js"
 
 const { captured, sent } = vi.hoisted(() => ({
+  // eslint-disable-next-line @typescript-eslint/no-unnecessary-type-assertion -- the assertion is the field's declared type: vi.hoisted infers the record from this literal
   captured: {} as { onReportMessage?: OnReportMessage },
   sent: [] as { threadId: string; input: AppendOutboundInput }[],
 }))
@@ -62,7 +63,8 @@ vi.mock("../../src/services/discussion-repository.drizzle.js", () => ({
 }))
 
 vi.mock("../../src/services/admin/outbound-mail-service.js", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("../../src/services/admin/outbound-mail-service.js")>()
+  const actual =
+    await importOriginal<typeof import("../../src/services/admin/outbound-mail-service.js")>()
   return {
     ...actual,
     makeOutboundMailService: () => ({
@@ -83,8 +85,8 @@ vi.mock("../../src/services/admin/outbound-mail-service.js", async (importOrigin
   }
 })
 
-vi.mock("../../src/services/report-forward-audit.drizzle.js", () => ({
-  makeReportForwardAudit: () => ({
+vi.mock("../../src/services/report-forward-audit-repository.drizzle.js", () => ({
+  makeDrizzleReportForwardAuditRepository: () => ({
     recordMention: () => Promise.resolve(),
     markForwarded: () => Promise.resolve(),
   }),
@@ -112,15 +114,15 @@ function reportChatStub(): ReportChatRepository {
   }
   return {
     isMember: () => Promise.resolve(true),
-    roleOf: notImpl("roleOf") as never,
+    roleOf: notImpl("roleOf"),
     advanceReadWatermark: () => Promise.resolve(),
-    markRead: notImpl("markRead") as never,
-    join: notImpl("join") as never,
-    leave: notImpl("leave") as never,
-    insertSystemMessage: notImpl("insertSystemMessage") as never,
+    markRead: notImpl("markRead"),
+    join: notImpl("join"),
+    leave: notImpl("leave"),
+    insertSystemMessage: notImpl("insertSystemMessage"),
     listMemberIds: () => Promise.resolve([]),
-    countMembers: notImpl("countMembers") as never,
-    listMembers: notImpl("listMembers") as never,
+    countMembers: notImpl("countMembers"),
+    listMembers: notImpl("listMembers"),
   }
 }
 
@@ -182,7 +184,7 @@ describe("chat-gateway-wiring: the LIVE @city forward gate is the durable thrott
     expect(sent[0]!.input.toAddr).toBe("fix@sf.gov")
   })
 
-  it("caps one sender across DISTINCT reports — rotating report ids no longer buys a fresh email", async () => {
+  it("caps one sender across DISTINCT reports: rotating report ids no longer buys a fresh email", async () => {
     const onReportMessage = wire(new InMemoryCounterStore())
 
     for (let i = 0; i < CITY_FORWARD_PER_SENDER_PER_HOUR + 5; i++) {
@@ -217,7 +219,7 @@ describe("chat-gateway-wiring: the LIVE @city forward gate is the durable thrott
     expect(keys).toContain("citfwd:geoid:0600001")
   })
 
-  it("FAILS CLOSED — no government email leaves when the shared counter store is down", async () => {
+  it("FAILS CLOSED: no government email leaves when the shared counter store is down", async () => {
     const broken = new InMemoryCounterStore()
     vi.spyOn(broken, "incr").mockRejectedValue(new Error("redis down"))
     const onReportMessage = wire(broken)

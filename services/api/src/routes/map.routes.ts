@@ -1,4 +1,3 @@
-
 import {
   ResolveAddressRequestSchema,
   ResolveJurisdictionRequestSchema,
@@ -23,26 +22,53 @@ import {
   makeCachedAddressResolver,
   makeRouteJurisdictionService,
 } from "../services/route-geo-helpers.js"
-import {
-  makeCleanupMapRepository,
-  MAP_CLEANUPS_LIMIT,
-} from "../services/cleanup-map-repository.js"
-import { writeAudit } from "../services/admin/audit.js"
+import { makeDrizzleCleanupMapRepository } from "../services/cleanup-map-repository.drizzle.js"
+import { insertAuditRow } from "../services/admin/audit-repository.drizzle.js"
 import { CappedBBoxQueryParam } from "./query-encoding.js"
 import { parse, trimTextFields } from "./_validate.js"
 import { route } from "../versioning/route.js"
 
-export { MAP_CLEANUPS_LIMIT }
-
-export const CARTO_VOYAGER_RASTER_URL =
+const CARTO_VOYAGER_RASTER_URL =
   "https://a.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png"
+const CARTO_ATTRIBUTION = "(c) OpenStreetMap contributors, (c) CARTO"
+const TILE_INFO_CACHE_CONTROL = "public, max-age=3600"
+const MAP_CLEANUPS_CACHE_CONTROL = "public, max-age=60"
+const CONTACT_SUGGESTED_AUDIT_ACTION = "discovery.contact_suggested"
 
 const CleanupsQuerySchema = z.object({
   bbox: CappedBBoxQueryParam,
   when: z.enum(["upcoming", "past"]).optional(),
 })
 
-const GeoidParamsSchema = z.object({ geoid: z.string().min(1) }).strict()
+const GEOID_MAX_LENGTH = 64
+
+const GeoidParamsSchema = z.object({ geoid: z.string().min(1).max(GEOID_MAX_LENGTH) }).strict()
+
+const CONTACT_EMAIL_MAX_LENGTH = 254
+
+const CONTACT_FORM_URL_MAX_LENGTH = 2048
+
+const SUGGEST_CONTACT_BODY_LIMIT = 16384
+
+function isHttpUrl(value: string): boolean {
+  try {
+    const { protocol } = new URL(value)
+    return protocol === "https:" || protocol === "http:"
+  } catch {
+    return false
+  }
+}
+
+// Anyone can write these fields into audit_log and the operator discovery notes, and the shared
+// contract leaves email and formUrl unbounded, so the backend caps them after the contract parse.
+const SuggestContactBoundsSchema = z.object({
+  email: z.string().max(CONTACT_EMAIL_MAX_LENGTH, "That email address is too long.").optional(),
+  formUrl: z
+    .string()
+    .max(CONTACT_FORM_URL_MAX_LENGTH, "That link is too long.")
+    .refine(isHttpUrl, "Use a link that starts with http:// or https://.")
+    .optional(),
+})
 
 export const SuggestPlacesBodySchema = trimTextFields(SuggestPlacesRequestSchema, "q")
 
@@ -84,12 +110,12 @@ export async function registerMapRoutes(app: FastifyInstance, container: Contain
     const payload: TileInfoResponse = {
       pmtilesUrl: "",
       rasterUrl: env.TILES_RASTER_URL ?? CARTO_VOYAGER_RASTER_URL,
-      attribution: "(c) OpenStreetMap contributors, (c) CARTO",
+      attribution: CARTO_ATTRIBUTION,
       minZoom: env.TILES_MIN_ZOOM,
       maxZoom: env.TILES_MAX_ZOOM,
       bounds: env.TILES_BOUNDS,
     }
-    reply.header("Cache-Control", "public, max-age=3600")
+    reply.header("Cache-Control", TILE_INFO_CACHE_CONTROL)
     reply.status(200).send(payload)
   })
 
@@ -118,10 +144,10 @@ export async function registerMapRoutes(app: FastifyInstance, container: Contain
 
   /**
    * The street-level preview the creation flows call once a pin settles. `reverseLabel` above stays
-   * exactly as it is for already-deployed clients — it answers only TIGER's "City, ST", which is why
-   * pin previews were vague; this one walks the whole ladder and says which rung it reached, so the UI
-   * can prefill a confirmed address (street/intersection/landmark) or ask the host to type one
-   * (locality/null) without ever guessing. `cityStateLabel` is populated either way as the hint line.
+   * as it is for already-deployed clients and answers only TIGER's "City, ST"; this one walks the whole
+   * ladder and says which rung it reached, so the UI can prefill a confirmed address
+   * (street/intersection/landmark) or ask the host to type one (locality/null) without guessing.
+   * `cityStateLabel` is populated either way as the hint line.
    *
    * Same rate-limit bucket as the other geocoder surfaces, and the read-through cache means a dragged
    * pin and the create that follows it share one provider call.
@@ -142,26 +168,21 @@ export async function registerMapRoutes(app: FastifyInstance, container: Contain
     },
   )
 
-  route(
-    app,
-    "suggest",
-    { config: { rateLimit: GEOCODER_RATE_LIMIT } },
-    async (request, reply) => {
-      const { q, proximity, proximityZoom, limit, language } = parse(
-        SuggestPlacesBodySchema,
-        request.body,
-      )
-      const suggestions = await suggestAddresses(q, {
-        ...(proximity ? { proximity } : {}),
-        ...(proximityZoom != null ? { proximityZoom } : {}),
-        ...(limit != null ? { limit } : {}),
-        ...(language ? { language } : {}),
-        ...(container.env.MAPBOX_TOKEN ? { mapboxToken: container.env.MAPBOX_TOKEN } : {}),
-      })
-      const payload: SuggestPlacesResponse = { suggestions }
-      reply.status(200).send(payload)
-    },
-  )
+  route(app, "suggest", { config: { rateLimit: GEOCODER_RATE_LIMIT } }, async (request, reply) => {
+    const { q, proximity, proximityZoom, limit, language } = parse(
+      SuggestPlacesBodySchema,
+      request.body,
+    )
+    const suggestions = await suggestAddresses(q, {
+      ...(proximity ? { proximity } : {}),
+      ...(proximityZoom != null ? { proximityZoom } : {}),
+      ...(limit != null ? { limit } : {}),
+      ...(language ? { language } : {}),
+      ...(container.env.MAPBOX_TOKEN ? { mapboxToken: container.env.MAPBOX_TOKEN } : {}),
+    })
+    const payload: SuggestPlacesResponse = { suggestions }
+    reply.status(200).send(payload)
+  })
 
   route(
     app,
@@ -177,10 +198,10 @@ export async function registerMapRoutes(app: FastifyInstance, container: Contain
         ...(q.when !== undefined ? { when: q.when } : {}),
       })
 
-      const repo = makeCleanupMapRepository(container.getDb().sql)
+      const repo = makeDrizzleCleanupMapRepository(container.getDb().sql)
       const pins = await repo.listCleanupPins(bbox, when)
       const payload: MapCleanupsResponse = { pins }
-      reply.header("Cache-Control", "public, max-age=60")
+      reply.header("Cache-Control", MAP_CLEANUPS_CACHE_CONTROL)
       reply.status(200).send(payload)
     },
   )
@@ -188,21 +209,22 @@ export async function registerMapRoutes(app: FastifyInstance, container: Contain
   route(
     app,
     "suggestJurisdictionContact",
-    { config: { rateLimit: SUGGEST_CONTACT_RATE_LIMIT } },
+    { bodyLimit: SUGGEST_CONTACT_BODY_LIMIT, config: { rateLimit: SUGGEST_CONTACT_RATE_LIMIT } },
     async (request, reply) => {
       const { geoid } = parse(GeoidParamsSchema, request.params)
       const body = parse(SuggestContactRequestSchema, {
         ...(request.body as Record<string, unknown> | undefined),
         geoid,
       })
+      parse(SuggestContactBoundsSchema, { email: body.email, formUrl: body.formUrl })
 
       if (!(await jurisdictionService().exists(geoid))) {
         throw AppError.notFound("Jurisdiction not found")
       }
 
-      await writeAudit(container.getDb().sql, {
+      await insertAuditRow(container.getDb().sql, {
         actorId: null,
-        action: "discovery.contact_suggested",
+        action: CONTACT_SUGGESTED_AUDIT_ACTION,
         target: `jurisdiction:${geoid}`,
         meta: {
           email: body.email ?? null,

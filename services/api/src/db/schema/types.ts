@@ -1,4 +1,3 @@
-
 import { customType } from "drizzle-orm/pg-core"
 
 export type GeometrySubtype = "Point" | "MultiPolygon" | "Polygon" | "Geometry"
@@ -8,10 +7,12 @@ export interface GeometryConfig {
   srid?: number
 }
 
+const WGS84_SRID = 4326
+
 export const geometry = customType<{ data: unknown; driverData: string; config: GeometryConfig }>({
   dataType(config) {
     const subtype = config?.subtype ?? "Geometry"
-    const srid = config?.srid ?? 4326
+    const srid = config?.srid ?? WGS84_SRID
     return `geometry(${subtype},${srid})`
   },
 })
@@ -130,17 +131,11 @@ export const ABUSE_SOURCE_VALUES = ["worker", "api", "user_report"] as const
 
 export const DISCOVERY_STATUS_VALUES = ["open", "in_progress", "done"] as const
 
-
 export const GOV_METHOD_VALUES = ["email", "cold_outreach"] as const
 
 export const GOV_CLAIM_STATUS_VALUES = ["pending", "approved", "rejected"] as const
 
-export const VERIFICATION_STATUS_VALUES = [
-  "unverified",
-  "pending",
-  "verified",
-  "rejected",
-] as const
+export const VERIFICATION_STATUS_VALUES = ["unverified", "pending", "verified", "rejected"] as const
 
 export const USER_ACCOUNT_STATUS_VALUES = ["active", "suspended", "review", "banned"] as const
 

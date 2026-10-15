@@ -1,5 +1,10 @@
-
 import type { SystemHealthResponse, SystemService } from "@civfix/shared"
+import {
+  PG_INVALID_AUTHORIZATION,
+  PG_INVALID_CATALOG_NAME,
+  PG_INVALID_PASSWORD,
+  PG_UNDEFINED_TABLE,
+} from "../../db/pg-errors.js"
 
 export type HealthStatus = "ok" | "warn" | "down" | "not_deployed"
 
@@ -34,6 +39,10 @@ export interface SystemHealthService {
 
 export const MEDIA_WORKER_BACKLOG_WARN = 50
 
+const NO_PROBE: { status: HealthStatus; val: string } = { status: "down", val: "No probe" }
+
+const ROUTING_NOT_DEPLOYED_VAL = "Phase 3"
+
 async function probeRow(
   name: string,
   probe: (() => Promise<ProbeResult>) | undefined,
@@ -51,12 +60,13 @@ async function probeRow(
 }
 
 function classifyProbeError(err: unknown): string {
-  const code = typeof err === "object" && err !== null ? (err as { code?: unknown }).code : undefined
+  const code =
+    typeof err === "object" && err !== null ? (err as { code?: unknown }).code : undefined
   const message = err instanceof Error ? err.message : String(err)
   if (message.includes("timed out") || code === "ETIMEDOUT") return "Timed out"
   if (code === "ECONNREFUSED" || code === "ENOTFOUND" || code === "ECONNRESET") return "Unreachable"
-  if (code === "28P01" || code === "28000") return "Auth failed"
-  if (code === "42P01" || code === "3D000") return "Not provisioned"
+  if (code === PG_INVALID_PASSWORD || code === PG_INVALID_AUTHORIZATION) return "Auth failed"
+  if (code === PG_UNDEFINED_TABLE || code === PG_INVALID_CATALOG_NAME) return "Not provisioned"
   return "Unavailable"
 }
 
@@ -67,15 +77,15 @@ export function makeSystemHealthService(deps: SystemHealthServiceDeps): SystemHe
       const api: SystemService = { name: "API", status: "ok", val: "Responding" }
 
       const [postgres, redis, mediaWorker, ociEmail] = await Promise.all([
-        probeRow("Postgres", probes.postgres, { status: "down", val: "No probe" }, log),
-        probeRow("Redis", probes.redis, { status: "down", val: "No probe" }, log),
+        probeRow("Postgres", probes.postgres, NO_PROBE, log),
+        probeRow("Redis", probes.redis, NO_PROBE, log),
         probeRow(
           "Media worker",
           env.jobsIsFake ? undefined : probes.mediaWorker,
           { status: "not_deployed", val: "Jobs queue not wired" },
           log,
         ),
-        probeRow("OCI Email", probes.ociEmail, { status: "down", val: "No probe" }, log),
+        probeRow("OCI Email", probes.ociEmail, NO_PROBE, log),
       ])
 
       const ociEmailRow: SystemService =
@@ -94,20 +104,11 @@ export function makeSystemHealthService(deps: SystemHealthServiceDeps): SystemHe
       const routing: SystemService = {
         name: "Routing (VRP)",
         status: "not_deployed",
-        val: "Phase 3",
+        val: ROUTING_NOT_DEPLOYED_VAL,
       }
 
       return {
-        services: [
-          api,
-          postgres,
-          redis,
-          mediaWorker,
-          ociEmailRow,
-          glitchTip,
-          tileCdn,
-          routing,
-        ],
+        services: [api, postgres, redis, mediaWorker, ociEmailRow, glitchTip, tileCdn, routing],
       }
     },
   }

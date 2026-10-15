@@ -2,8 +2,8 @@ import { afterEach, describe, expect, it, vi } from "vitest"
 import { FakeInboundMail, FakeJobs, FakeStorage } from "@civfix/shared/fakes"
 import type { InboundMail } from "@civfix/shared/interfaces"
 import { CfInboundMail } from "../../src/adapters/inbound-mail.cf.js"
-import { InMemoryMailRepository } from "../../src/services/admin/mail-repository.memory.js"
-import { InMemoryInboundRepository } from "../../src/services/admin/inbound-repository.memory.js"
+import { InMemoryMailRepository } from "../helpers/admin/mail-repository.memory.js"
+import { InMemoryInboundRepository } from "../helpers/admin/inbound-repository.memory.js"
 import {
   processInboundObject,
   INBOUND_PENDING_PREFIX,
@@ -24,7 +24,9 @@ function domainOf(address: string): string {
 function rfc822(opts: { from: string; to: string; body?: string; messageId?: string }): Buffer {
   const lines = [`From: ${opts.from}`, `To: ${opts.to}`]
   if (opts.messageId !== undefined) lines.push(`Message-ID: ${opts.messageId}`)
-  lines.push(`Authentication-Results: mx.cloudflare.net; dmarc=pass header.from=${domainOf(opts.from)}`)
+  lines.push(
+    `Authentication-Results: mx.cloudflare.net; dmarc=pass header.from=${domainOf(opts.from)}`,
+  )
   lines.push("", opts.body ?? "")
   return Buffer.from(lines.join("\n"), "utf8")
 }
@@ -53,7 +55,10 @@ interface Ctx {
   db: FakeSqlControl
 }
 
-function ctx(inboundMail: InboundMail = new FakeInboundMail(), sqlHandlers: SqlHandler[] = []): Ctx {
+function ctx(
+  inboundMail: InboundMail = new FakeInboundMail(),
+  sqlHandlers: SqlHandler[] = [],
+): Ctx {
   const storage = new FakeStorage()
   const mailRepo = new InMemoryMailRepository()
   const inboundRepo = new InMemoryInboundRepository()

@@ -8,10 +8,9 @@ import {
 } from "../../src/adapters/reverse-geocode.photon.js"
 
 /**
- * Unit tests for the best-effort Photon reverse geocoder. The factory takes an injected `fetchImpl`, so
- * the whole thing runs offline against canned responses. The contract under test: a usable result is
- * formatted into a one-line address; EVERYTHING else (bad coords, HTTP error, network throw, empty
- * result) resolves to null so report creation is never blocked.
+ * The Photon reverse geocoder is best-effort: a usable result is formatted into a one-line address;
+ * EVERYTHING else (bad coords, HTTP error, network throw, empty result) resolves to null so report
+ * creation is never blocked.
  */
 
 describe("formatPhotonReverse", () => {
@@ -29,7 +28,12 @@ describe("formatPhotonReverse", () => {
 
   it("falls back to the place name and keeps a non-US country", () => {
     expect(
-      formatPhotonReverse({ name: "Stanley Park", city: "Vancouver", state: "BC", country: "Canada" }),
+      formatPhotonReverse({
+        name: "Stanley Park",
+        city: "Vancouver",
+        state: "BC",
+        country: "Canada",
+      }),
     ).toBe("Stanley Park, Vancouver, BC, Canada")
   })
 
@@ -38,10 +42,12 @@ describe("formatPhotonReverse", () => {
   })
 })
 
-/** A fake fetch returning a single Photon feature with the given properties. */
 function okFetch(props: unknown): typeof fetch {
-  return (async () =>
-    ({ ok: true, json: async () => ({ features: [{ properties: props }] }) }) as unknown as Response) as unknown as typeof fetch
+  return async () =>
+    ({
+      ok: true,
+      json: async () => ({ features: [{ properties: props }] }),
+    }) as unknown as Response
 }
 
 describe("makePhotonReverseGeocode", () => {
@@ -70,7 +76,10 @@ describe("makePhotonReverseGeocode", () => {
 
   it("returns null when Photon has no features", async () => {
     const fetchImpl = (async () =>
-      ({ ok: true, json: async () => ({ features: [] }) }) as unknown as Response) as unknown as typeof fetch
+      ({
+        ok: true,
+        json: async () => ({ features: [] }),
+      }) as unknown as Response) as unknown as typeof fetch
     expect(await makePhotonReverseGeocode({ fetchImpl })(1, 2)).toBeNull()
   })
 
@@ -96,7 +105,10 @@ describe("makePhotonReverseGeocode", () => {
 const PIN = { lat: 34.05, lng: -118.25 }
 
 /** A feature at an offset in metres roughly north of the pin. */
-function featureAt(props: Record<string, unknown>, northMeters: number): {
+function featureAt(
+  props: Record<string, unknown>,
+  northMeters: number,
+): {
   properties: Record<string, unknown>
   geometry: { coordinates: [number, number] }
 } {
@@ -116,12 +128,18 @@ describe("distanceMeters", () => {
 
 describe("isResidentialName", () => {
   it("flags a building or a place=house, which can carry an occupant name", () => {
-    expect(isResidentialName({ osm_key: "building", osm_value: "residential", name: "The Smiths" })).toBe(true)
-    expect(isResidentialName({ osm_key: "place", osm_value: "house", name: "Rose Cottage" })).toBe(true)
+    expect(
+      isResidentialName({ osm_key: "building", osm_value: "residential", name: "The Smiths" }),
+    ).toBe(true)
+    expect(isResidentialName({ osm_key: "place", osm_value: "house", name: "Rose Cottage" })).toBe(
+      true,
+    )
   })
 
   it("does not flag a public amenity", () => {
-    expect(isResidentialName({ osm_key: "leisure", osm_value: "park", name: "Vista Hermosa Park" })).toBe(false)
+    expect(
+      isResidentialName({ osm_key: "leisure", osm_value: "park", name: "Vista Hermosa Park" }),
+    ).toBe(false)
   })
 })
 
@@ -131,7 +149,13 @@ describe("composePhotonReverse ladder", () => {
       [
         featureAt({ osm_key: "leisure", name: "Some Park", city: "Los Angeles", state: "CA" }, 5),
         featureAt(
-          { housenumber: "123", street: "Main St", city: "Inglewood", state: "CA", osm_key: "place" },
+          {
+            housenumber: "123",
+            street: "Main St",
+            city: "Inglewood",
+            state: "CA",
+            osm_key: "place",
+          },
           12,
         ),
       ],
@@ -148,7 +172,10 @@ describe("composePhotonReverse ladder", () => {
       ],
       PIN,
     )
-    expect(composed).toEqual({ line: "Main St & 5th Ave, Inglewood, CA", precision: "intersection" })
+    expect(composed).toEqual({
+      line: "Main St & 5th Ave, Inglewood, CA",
+      precision: "intersection",
+    })
   })
 
   it("intersection: one road alone degrades to the bare street, never an invented number", () => {

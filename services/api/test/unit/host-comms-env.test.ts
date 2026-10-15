@@ -1,7 +1,10 @@
 import { describe, expect, it } from "vitest"
 import { loadCommsEnv } from "../../src/env/comms-env.js"
 
-function load(source: NodeJS.ProcessEnv): { env: ReturnType<typeof loadCommsEnv>; errors: string[] } {
+function load(source: NodeJS.ProcessEnv): {
+  env: ReturnType<typeof loadCommsEnv>
+  errors: string[]
+} {
   const errors: string[] = []
   return { env: loadCommsEnv(source, errors), errors }
 }
@@ -84,8 +87,10 @@ describe("loadCommsEnv defaults", () => {
   })
 
   it("parses the link allowlist as a lowercased comma list", () => {
-    expect(load({ BROADCAST_LINK_ALLOWED_HOSTS: "Civfix.org, example.ORG" }).env
-      .BROADCAST_LINK_ALLOWED_HOSTS).toEqual(["civfix.org", "example.org"])
+    expect(
+      load({ BROADCAST_LINK_ALLOWED_HOSTS: "Civfix.org, example.ORG" }).env
+        .BROADCAST_LINK_ALLOWED_HOSTS,
+    ).toEqual(["civfix.org", "example.org"])
   })
 })
 

@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest"
 import { FakeMailer } from "@civfix/shared/fakes"
 import { InMemoryCounterStore, type CounterStore } from "../../src/abuse/counter-store.js"
-import { InMemoryBroadcastRepository } from "../../src/services/host/broadcast-repository.memory.js"
+import { InMemoryBroadcastRepository } from "../helpers/host/broadcast-repository.memory.js"
 import {
   BroadcastCapError,
   capError,
@@ -111,10 +111,76 @@ describe("broadcast caps", () => {
     )
   })
 
+  it("does not spend the host's cooldown on a send the per-event limit refused", async () => {
+    const counters = new InMemoryCounterStore()
+    const first = build({ config: { perEventPerDay: 1 }, counters })
+    const secondHost = "00000000-0000-0000-0000-0000000000bb"
+    first.repo.seedHost(secondHost, { accountCreatedAt: new Date("2020-01-01T00:00:00Z") })
+    await first.service.reserveSendSlot(EVENT, HOST)
+    expect(await capKind(() => first.service.reserveSendSlot(EVENT, secondHost))).toBe(
+      "per_event_per_day",
+    )
+
+    const roomier = build({ config: { perEventPerDay: 2 }, counters })
+    roomier.repo.seedHost(secondHost, { accountCreatedAt: new Date("2020-01-01T00:00:00Z") })
+    expect(await capKind(() => roomier.service.reserveSendSlot(EVENT, secondHost))).toBe("none")
+  })
+
+  it("does not charge the per-event limit for a send it refused", async () => {
+    const counters = new InMemoryCounterStore()
+    const first = build({ config: { perEventPerDay: 1 }, counters })
+    const hosts = ["00000000-0000-0000-0000-0000000000bb", "00000000-0000-0000-0000-0000000000cc"]
+    for (const host of hosts) {
+      first.repo.seedHost(host, { accountCreatedAt: new Date("2020-01-01T00:00:00Z") })
+    }
+    await first.service.reserveSendSlot(EVENT, HOST)
+    expect(await capKind(() => first.service.reserveSendSlot(EVENT, hosts[0]!))).toBe(
+      "per_event_per_day",
+    )
+
+    const roomier = build({ config: { perEventPerDay: 2 }, counters })
+    roomier.repo.seedHost(hosts[1]!, { accountCreatedAt: new Date("2020-01-01T00:00:00Z") })
+    expect(await capKind(() => roomier.service.reserveSendSlot(EVENT, hosts[1]!))).toBe("none")
+  })
+
+  it("leaves no cooldown behind when a double click is refused on both counters", async () => {
+    const counters = new InMemoryCounterStore()
+    const first = build({ config: { perEventPerDay: 1 }, counters })
+    const secondHost = "00000000-0000-0000-0000-0000000000bb"
+    first.repo.seedHost(secondHost, { accountCreatedAt: new Date("2020-01-01T00:00:00Z") })
+    await first.service.reserveSendSlot(EVENT, HOST)
+    const kinds = await Promise.all([
+      capKind(() => first.service.reserveSendSlot(EVENT, secondHost)),
+      capKind(() => first.service.reserveSendSlot(EVENT, secondHost)),
+    ])
+    expect(kinds.sort()).toEqual(["cooldown", "per_event_per_day"])
+
+    const roomier = build({ config: { perEventPerDay: 2 }, counters })
+    roomier.repo.seedHost(secondHost, { accountCreatedAt: new Date("2020-01-01T00:00:00Z") })
+    expect(await capKind(() => roomier.service.reserveSendSlot(EVENT, secondHost))).toBe("none")
+  })
+
+  it("keeps the per-event refusal when the cooldown cannot be given back", async () => {
+    const memory = new InMemoryCounterStore()
+    const counters: CounterStore = {
+      incr: (key, ttl) => memory.incr(key, ttl),
+      incrBy: (key, by, ttl) => memory.incrBy(key, by, ttl),
+      decrBy: () => Promise.reject(new Error("redis down")),
+    }
+    const first = build({ config: { perEventPerDay: 1 }, counters })
+    const secondHost = "00000000-0000-0000-0000-0000000000bb"
+    first.repo.seedHost(secondHost, { accountCreatedAt: new Date("2020-01-01T00:00:00Z") })
+    await first.service.reserveSendSlot(EVENT, HOST)
+    expect(await capKind(() => first.service.reserveSendSlot(EVENT, secondHost))).toBe(
+      "per_event_per_day",
+    )
+  })
+
   it("fails CLOSED when the counter store is unavailable", async () => {
     const broken: CounterStore = {
       incr: () => Promise.reject(new Error("redis down")),
       incrBy: () => Promise.reject(new Error("redis down")),
+      decrBy: () => Promise.reject(new Error("redis down")),
     }
     const { service } = build({ counters: broken })
     expect(await capKind(() => service.reserveSendSlot(EVENT, HOST))).toBe("counter_unavailable")
@@ -124,6 +190,7 @@ describe("broadcast caps", () => {
     const broken: CounterStore = {
       incr: () => Promise.reject(new Error("redis down")),
       incrBy: () => Promise.reject(new Error("redis down")),
+      decrBy: () => Promise.reject(new Error("redis down")),
     }
     const { service } = build({ counters: broken })
     expect(await service.reserveRecipientBudget(HOST, 10)).toBe(false)
@@ -168,7 +235,6 @@ describe("org suspension gate (DECISIONS §32)", () => {
     ).rejects.toMatchObject({ code: "FORBIDDEN" })
     // Nothing moved: the draft is still a draft and no send slot was consumed.
     expect((await repo.findById(draft.id))?.status).toBe("draft")
-    // Lifting the flag restores the lever.
     repo.setEventOrganizationSuspended(EVENT, false)
     const sent = await service.send(EVENT, HOST, draft.id)
     expect(sent.status).toBe("sending")
@@ -247,10 +313,7 @@ describe("broadcast content gates", () => {
 
   it("counts the CTA url toward the link cap", async () => {
     const { service } = build()
-    const fiveLinks = Array.from(
-      { length: 5 },
-      (_, i) => `https://civfix.org/${i}`,
-    ).join(" and ")
+    const fiveLinks = Array.from({ length: 5 }, (_, i) => `https://civfix.org/${i}`).join(" and ")
     await expect(
       service.create(EVENT, HOST, {
         id: EVENT,

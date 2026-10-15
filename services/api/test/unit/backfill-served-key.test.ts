@@ -22,7 +22,10 @@ function scripted(pages: Row[][], updated: Row[][], remaining: number): FakeSqlC
   ])
 }
 
-function statementsMatching(fake: FakeSqlControl, re: RegExp): { sql: string; values: unknown[] }[] {
+function statementsMatching(
+  fake: FakeSqlControl,
+  re: RegExp,
+): { sql: string; values: unknown[] }[] {
   return fake.statements.filter((s) => re.test(s.sql))
 }
 

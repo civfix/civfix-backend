@@ -1,11 +1,8 @@
-
 import { describe, it, expect, vi, beforeEach } from "vitest"
 import { AppError, ErrorCode, MailSendError } from "@civfix/shared"
 import type { OutboundEmail } from "@civfix/shared/interfaces"
-import {
-  OciMailer,
-  OCI_MAILER_DEFAULT_TIMEOUT_MS,
-} from "../../src/adapters/mailer.oci.js"
+import { OciMailer } from "../../src/adapters/mailer.oci.js"
+import { OCI_MAILER_DEFAULT_TIMEOUT_MS } from "../../src/adapters/mailer-defaults.js"
 import { mailFailure } from "../../src/adapters/mail-failure.js"
 
 interface SentMailArgs {
@@ -47,7 +44,7 @@ function outbound(overrides: Partial<OutboundEmail> = {}): OutboundEmail {
     subject: "Case ABC123",
     text: "A pothole was reported.",
     ...overrides,
-  } as OutboundEmail
+  }
 }
 
 beforeEach(() => {
@@ -130,7 +127,7 @@ describe("OciMailer error classification", () => {
     await mailer.sendOutbound(outbound()).catch((err: AppError) => {
       expect(err.message).toBe(
         "Email not sent: the sending address is not an approved sender. In OCI Email Delivery, " +
-          "add an Approved Sender for the whole domain (@civfix.org) once DKIM is active — this covers " +
+          "add an Approved Sender for the whole domain (@civfix.org) once DKIM is active. That covers " +
           "every per-thread reply address. (550 5.7.1 relay access denied)",
       )
     })

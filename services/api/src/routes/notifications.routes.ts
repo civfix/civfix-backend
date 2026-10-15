@@ -1,4 +1,3 @@
-
 import {
   PaginationQuerySchema,
   MarkReadRequestSchema,
@@ -18,9 +17,9 @@ import type { Container } from "../di.js"
 import { requireAuth } from "../auth/context.js"
 import {
   makeNotificationService,
-  type NotificationRepository,
   type NotificationService,
 } from "../services/notification-service.js"
+import type { NotificationRepository } from "../services/notification-repository.js"
 import { makeRouteNotificationService } from "../services/route-notifier.js"
 import { perIdentity } from "../plugins/rate-limit.js"
 import { route } from "../versioning/route.js"
@@ -29,6 +28,8 @@ import { parse } from "./_validate.js"
 export const MARK_NOTIFICATIONS_READ_MAX_IDS = 200
 
 export const PUSH_TOKEN_RATE_LIMIT = perIdentity({ max: 10, timeWindow: "1 minute" })
+
+const DeviceIdSchema = z.string().uuid()
 
 export const MarkNotificationsReadBodySchema = MarkReadRequestSchema.extend({
   ids: MarkReadRequestSchema.shape.ids.max(MARK_NOTIFICATIONS_READ_MAX_IDS),
@@ -95,7 +96,10 @@ export async function registerNotificationRoutes(
     async (request, reply) => {
       const userId = requireAuth(request)
       const pagination = parse(PaginationQuerySchema, request.query)
-      const payload: ListNotificationsResponse = await service().listNotifications(userId, pagination)
+      const payload: ListNotificationsResponse = await service().listNotifications(
+        userId,
+        pagination,
+      )
       reply.status(200).send(payload)
     },
   )
@@ -129,7 +133,10 @@ export async function registerNotificationRoutes(
       const body = parse(RegisterPushTokenRequestSchema, request.body)
       const deviceId = normalizeDeviceId(body.deviceId)
       if (body.deviceId !== undefined && deviceId === undefined) {
-        request.log.warn({ userId }, "registerPush: malformed deviceId dropped (device-claim skipped)")
+        request.log.warn(
+          { userId },
+          "registerPush: malformed deviceId dropped (device-claim skipped)",
+        )
       }
       const { deviceId: _raw, ...rest } = body
       const payload: RegisterPushTokenResponse = await service().registerPushToken(userId, {
@@ -158,5 +165,3 @@ export function normalizeDeviceId(raw: string | undefined): string | undefined {
   const parsed = DeviceIdSchema.safeParse(raw.trim().toLowerCase())
   return parsed.success ? parsed.data : undefined
 }
-
-const DeviceIdSchema = z.string().uuid()

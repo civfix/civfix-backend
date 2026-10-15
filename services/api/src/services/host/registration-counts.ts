@@ -1,6 +1,6 @@
 import type { Sql } from "../../db/client.js"
 import { makeDrizzleHostRegistrationRepository } from "./registration-repository.drizzle.js"
-import type { HostedEventCounts } from "./registration-repository.types.js"
+import type { HostedEventCounts } from "./registration-repository.js"
 
 export type { HostedEventCounts }
 

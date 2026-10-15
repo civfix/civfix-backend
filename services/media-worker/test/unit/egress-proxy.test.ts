@@ -1,4 +1,3 @@
-
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import type { Storage } from "@civfix/shared/interfaces"
 import { makeDownloader } from "../../src/download.js"
@@ -25,7 +24,7 @@ function fakeStorage(): Storage {
     put: () => Promise.resolve(),
     list: () => Promise.resolve({ keys: [] }),
     getObject: () => Promise.resolve(null),
-  } as unknown as Storage
+  }
 }
 
 function okResponse(): Response {
@@ -41,7 +40,7 @@ let globalFetch: typeof fetch
 beforeEach(() => {
   undiciFetch.mockReset()
   EnvHttpProxyAgent.mockReset()
-  globalFetch = vi.fn(() => Promise.resolve(okResponse())) as unknown as typeof fetch
+  globalFetch = vi.fn(() => Promise.resolve(okResponse()))
   vi.stubGlobal("fetch", globalFetch)
 })
 

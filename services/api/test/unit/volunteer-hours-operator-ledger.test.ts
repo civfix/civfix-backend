@@ -1,9 +1,9 @@
 import { describe, expect, it } from "vitest"
 import { CIVFIX_OFFICIAL_USER_ID } from "../../src/auth/official-account.js"
-import { parseTimeCursor } from "../../src/db/cursor-helpers.js"
+import { parseKeysetCursor } from "../../src/db/cursor-helpers.js"
 import { buildTranscriptModel } from "../../src/services/certificate-model.js"
-import { InMemoryCertificateRepository } from "../../src/services/certificate-repository.memory.js"
-import { InMemoryVolunteerHoursRepository } from "../../src/services/volunteer-hours-repository.memory.js"
+import { InMemoryCertificateRepository } from "../helpers/certificate-repository.memory.js"
+import { InMemoryVolunteerHoursRepository } from "../helpers/volunteer-hours-repository.memory.js"
 import {
   DAILY_HOURS_CAP,
   MANUAL_CREDIT_REPEAT_WINDOW_MS,
@@ -512,7 +512,7 @@ describe("operator ledger read", () => {
 
     const second = await repo.listOperatorLedger({
       userId: BOB,
-      cursor: parseTimeCursor(first.nextCursor!),
+      cursor: parseKeysetCursor(first.nextCursor),
       limit: 2,
     })
     expect(second.items.map((i) => [i.source, i.creditedBy?.id, i.operator])).toEqual([

@@ -8,7 +8,6 @@ import {
 } from "../../src/services/threads-service.js"
 import { InMemoryThreadsRepository } from "../helpers/chat.js"
 
-
 const ME = "11111111-1111-1111-1111-111111111111"
 const OTHER = "22222222-2222-2222-2222-222222222222"
 const REPORT_A = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
@@ -31,15 +30,13 @@ function mutesSource(muted: Array<{ roomKind: "cleanup" | "dm" | "report"; roomI
     source: {
       mutedRoomIdsFor: (_userId, roomKind, roomIds) => {
         calls.push({ roomKind, roomIds })
-        return Promise.resolve(
-          new Set(roomIds.filter((id) => set.has(`${roomKind}:${id}`))),
-        )
+        return Promise.resolve(new Set(roomIds.filter((id) => set.has(`${roomKind}:${id}`))))
       },
     },
   }
 }
 
-describe("threads service — report half (DB-free)", () => {
+describe("threads service: report half (DB-free)", () => {
   it("projects a report aggregate into a kind:'report' DTO with muted:false by default", async () => {
     const report: ReportThreadAggregateView = {
       reportId: REPORT_A,
@@ -158,7 +155,7 @@ describe("threads service — report half (DB-free)", () => {
   })
 })
 
-describe("threads service — real per-conversation muted on ALL families (DB-free)", () => {
+describe("threads service: real per-conversation muted on ALL families (DB-free)", () => {
   it("stamps muted per-family from the mutes source (cleanup + report muted, others not)", async () => {
     const repo = new InMemoryThreadsRepository()
     const c1 = repo.seedCleanup("Muted cleanup", CLEANUP_ID)

@@ -1,4 +1,3 @@
-
 import { TEST_TICKET_SIGNER } from "../helpers/ticket-signer.js"
 import { afterAll, beforeAll, describe, expect, it } from "vitest"
 import { randomUUID } from "node:crypto"
@@ -10,6 +9,12 @@ import { makeCleanupService } from "../../src/services/cleanup-service.js"
 import type { PresignMedia } from "../../src/services/media-presign.js"
 
 const pg = await withPg()
+
+// An upload the send cannot claim refuses the whole send, as posts and reports do.
+const UNAVAILABLE = {
+  httpStatus: 422,
+  fields: { mediaUploadIds: "One or more media uploads are unavailable." },
+}
 
 const fakePresign: PresignMedia = (r2Key, thumbKey) =>
   Promise.resolve({
@@ -79,7 +84,9 @@ describe.skipIf(!pg)("chat media attach (integration)", () => {
     )
     expect(dto.attachments).toHaveLength(1)
 
-    const [row] = await h.sql<{ chat_message_id: string | null; chat_message_created_at: Date | null }[]>`
+    const [row] = await h.sql<
+      { chat_message_id: string | null; chat_message_created_at: Date | null }[]
+    >`
       SELECT chat_message_id, chat_message_created_at FROM media_assets WHERE upload_id = ${uploadId}
     `
     expect(row!.chat_message_id).toBe(messageId)
@@ -99,11 +106,12 @@ describe.skipIf(!pg)("chat media attach (integration)", () => {
     )
 
     const secondId = randomUUID()
-    const second = await chatRepo.insertMessage(
-      { cleanupId, userId: organizerId, body: "second", mediaUploadIds: [uploadId] },
-      secondId,
-    )
-    expect(second.attachments ?? []).toHaveLength(0)
+    await expect(
+      chatRepo.insertMessage(
+        { cleanupId, userId: organizerId, body: "second", mediaUploadIds: [uploadId] },
+        secondId,
+      ),
+    ).rejects.toMatchObject(UNAVAILABLE)
 
     const [row] = await h.sql<{ chat_message_id: string | null }[]>`
       SELECT chat_message_id FROM media_assets WHERE upload_id = ${uploadId}
@@ -126,11 +134,12 @@ describe.skipIf(!pg)("chat media attach (integration)", () => {
     })
 
     const chatRepo = makeDrizzleChatRepository(h.sql, fakePresign)
-    const refused = await chatRepo.insertMessage(
-      { cleanupId, userId: organizerId, body: "too early", mediaUploadIds: [uploadId] },
-      randomUUID(),
-    )
-    expect(refused.attachments ?? []).toHaveLength(0)
+    await expect(
+      chatRepo.insertMessage(
+        { cleanupId, userId: organizerId, body: "too early", mediaUploadIds: [uploadId] },
+        randomUUID(),
+      ),
+    ).rejects.toMatchObject(UNAVAILABLE)
     const [unbound] = await h.sql<{ chat_message_id: string | null }[]>`
       SELECT chat_message_id FROM media_assets WHERE upload_id = ${uploadId}
     `

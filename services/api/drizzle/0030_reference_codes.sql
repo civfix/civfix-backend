@@ -27,20 +27,20 @@
 -- index tolerates any number of NULLs). The DATA backfill that fills these codes
 -- is a SEPARATE keyset-batched script (db:backfill:reference-codes), NOT run
 -- inside this migration's transaction (a long table rewrite would block boot).
--- reference_code stays NULLABLE forever — never add NOT NULL.
+-- reference_code stays NULLABLE forever; never add NOT NULL.
 -- =============================================================================
 
 -- -----------------------------------------------------------------------------
 -- jurisdiction code (D2): ONE Postgres sequence is the single source of truth.
 -- Backfilled rows get a stable ordinal by geoid here; lazily-upserted rows get
 -- nextval(jurisdiction_code_seq) later (wired into jurisdiction-service by a
--- separate agent — this migration only creates the sequence + column + index).
+-- separate agent; this migration only creates the sequence + column + index).
 -- -----------------------------------------------------------------------------
 CREATE SEQUENCE IF NOT EXISTS jurisdiction_code_seq;
 
 ALTER TABLE jurisdictions ADD COLUMN IF NOT EXISTS code integer;
 
--- Assign a stable ordinal by geoid (jurisdictions is ~28k rows — small, OK
+-- Assign a stable ordinal by geoid (jurisdictions is ~28k rows, small, OK
 -- in-migration). Only touches rows still NULL, so a repeat apply is a no-op.
 UPDATE jurisdictions j
 SET code = sub.rn
@@ -109,7 +109,7 @@ ALTER TABLE user_moderation ADD COLUMN IF NOT EXISTS report_verified_at timestam
 ALTER TABLE user_moderation ADD COLUMN IF NOT EXISTS report_verified_by uuid REFERENCES users (id);
 
 -- -----------------------------------------------------------------------------
--- grandfather (D8) — run ONCE here. user_moderation rows are created LAZILY (on
+-- grandfather (D8), run ONCE here. user_moderation rows are created LAZILY (on
 -- the first moderation action for a user), so a plain UPDATE would miss every
 -- already-trusted user who has never been moderated. We therefore UPSERT: insert
 -- a fresh row (relying on user_moderation's column DEFAULTS for account_status /

@@ -1,11 +1,17 @@
 import { sql } from "drizzle-orm"
-import { check, index, jsonb, pgTable, text, timestamp, uniqueIndex, uuid } from "drizzle-orm/pg-core"
+import {
+  check,
+  index,
+  jsonb,
+  pgTable,
+  text,
+  timestamp,
+  uniqueIndex,
+  uuid,
+} from "drizzle-orm/pg-core"
 import { users } from "./users.js"
 import { citext } from "./types.js"
-import type {
-  ORG_VERIFICATION_KIND_VALUES,
-  ORG_VERIFICATION_STATUS_VALUES,
-} from "./types-host.js"
+import type { ORG_VERIFICATION_KIND_VALUES, ORG_VERIFICATION_STATUS_VALUES } from "./types-host.js"
 
 type OrgVerificationStatus = (typeof ORG_VERIFICATION_STATUS_VALUES)[number]
 type OrgVerificationKind = (typeof ORG_VERIFICATION_KIND_VALUES)[number]
@@ -30,7 +36,7 @@ export const organizations = pgTable(
     verifiedKind: text("verified_kind").$type<OrgVerificationKind>(),
     verifiedAt: timestamp("verified_at", { withTimezone: true }),
     createdBy: uuid("created_by").references(() => users.id),
-    // Operator suspension flag (0162): reversible, independent of verified_status and deleted_at.
+    // Reversible, and independent of verified_status and deleted_at.
     suspendedAt: timestamp("suspended_at", { withTimezone: true }),
     suspendedReason: text("suspended_reason"),
     suspendedBy: uuid("suspended_by").references(() => users.id),

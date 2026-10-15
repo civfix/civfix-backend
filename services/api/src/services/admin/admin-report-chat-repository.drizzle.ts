@@ -1,18 +1,30 @@
-import type { Sql } from "../../db/client.js"
-import { writeAudit } from "./audit.js"
+import type { RoomKind } from "@civfix/shared"
+import type { Queryable, Sql } from "../../db/client.js"
+import { insertAuditRow } from "./audit-repository.drizzle.js"
+import type {
+  AdminReportChatRepository,
+  RemoveReportMessageInput,
+} from "./admin-report-chat-repository.js"
 
-export interface RemoveReportMessageInput {
-  reason: string | null
-  actorId: string | null
-}
-
-export interface AdminReportChatRepository {
-  reportExists(reportId: string): Promise<boolean>
-  removeMessage(
-    reportId: string,
-    messageId: string,
-    input: RemoveReportMessageInput,
-  ): Promise<boolean>
+export async function findMessageRoom(
+  sql: Queryable,
+  messageId: string,
+): Promise<{ kind: RoomKind; id: string } | null> {
+  const rows = await sql<{ room_kind: RoomKind; room_id: string }[]>`
+    SELECT 'dm'::text AS room_kind, thread_id::text AS room_id
+      FROM dm_messages WHERE id = ${messageId}
+    UNION ALL
+    SELECT CASE
+             WHEN report_id IS NOT NULL THEN 'report'
+             WHEN group_id IS NOT NULL THEN 'group'
+             ELSE 'cleanup'
+           END AS room_kind,
+           COALESCE(report_id, group_id, cleanup_id)::text AS room_id
+      FROM chat_messages WHERE id = ${messageId}
+    LIMIT 1
+  `
+  const row = rows[0]
+  return row === undefined ? null : { kind: row.room_kind, id: row.room_id }
 }
 
 export function makeDrizzleAdminReportChatRepository(sql: Sql): AdminReportChatRepository {
@@ -38,7 +50,7 @@ export function makeDrizzleAdminReportChatRepository(sql: Sql): AdminReportChatR
           RETURNING id
         `
         if (removed.length === 0) return false
-        await writeAudit(tx, {
+        await insertAuditRow(tx, {
           actorId: input.actorId,
           action: "report_message.removed",
           target: `message:${messageId}`,

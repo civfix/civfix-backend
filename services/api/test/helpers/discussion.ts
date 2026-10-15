@@ -10,7 +10,7 @@ import { randomUUID } from "node:crypto"
 import type {
   DiscussionReportView,
   DiscussionRepository,
-} from "../../src/services/discussion-types.js"
+} from "../../src/services/discussion-repository.js"
 
 /** A seeded jurisdiction (name/handle/contact resolved for a report). */
 export interface SeededJurisdiction {
@@ -20,7 +20,6 @@ export interface SeededJurisdiction {
   contactEmail: string | null
 }
 
-/** An in-memory DiscussionRepository faithful to the Drizzle impl's observable report lookup. */
 export class InMemoryDiscussionRepository implements DiscussionRepository {
   /** Reports keyed by id (the visibility handle + resolved jurisdiction). */
   readonly reports = new Map<string, DiscussionReportView>()

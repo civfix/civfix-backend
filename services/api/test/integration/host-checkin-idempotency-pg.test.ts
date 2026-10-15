@@ -1,4 +1,3 @@
-
 import { afterAll, beforeAll, describe, expect, it } from "vitest"
 import { randomUUID } from "node:crypto"
 import type { CleanupStatus } from "@civfix/shared"
@@ -9,7 +8,7 @@ import { makeTicketTokenSigner } from "../../src/services/host/ticket-token.js"
 import type {
   HostRegistrationRepository,
   SeatDraft,
-} from "../../src/services/host/registration-repository.types.js"
+} from "../../src/services/host/registration-repository.js"
 
 const pg = await withPg()
 const tokens = makeTicketTokenSigner("integration-checkin-secret-long-enough")

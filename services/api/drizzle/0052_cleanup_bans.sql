@@ -4,8 +4,8 @@
 -- SECURITY (audit 2026-07-24, M17): removing an event attendee was unenforceable.
 --
 -- removeMember only DELETEd the cleanup_members row and joinCleanupTx was an
--- unconditional self-service INSERT, so the removed user simply re-joined — in a
--- loop, instantly, with no cooldown — and walked straight back into the event
+-- unconditional self-service INSERT, so the removed user simply re-joined (in a
+-- loop, instantly, with no cooldown) and walked straight back into the event
 -- group chat (cleanup_members is what gates chat access). There was no ban record
 -- of any kind anywhere in the schema.
 --
@@ -24,7 +24,7 @@
 -- Conventions (match the rest of the suite): timestamptz, additive
 -- IF NOT EXISTS so a partial or repeat apply is safe; the migrate runner
 -- (src/db/migrate.ts) records applied files and wraps each file in one
--- transaction. Forward-only — there is no down migration in this suite.
+-- transaction. Forward-only: there is no down migration in this suite.
 --
 -- Ordering rules: requires 0001_core.sql (users, cleanups, cleanup_members).
 -- =============================================================================
@@ -44,7 +44,7 @@ CREATE TABLE IF NOT EXISTS cleanup_bans (
   PRIMARY KEY (cleanup_id, user_id)
 );
 
--- "Which events is this user banned from" — the reverse lookup, for a future
+-- "Which events is this user banned from": the reverse lookup, for a future
 -- moderation view. The join-path probe rides the composite PK.
 CREATE INDEX IF NOT EXISTS cleanup_bans_user_idx ON cleanup_bans (user_id);
 

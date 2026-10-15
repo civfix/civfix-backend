@@ -1,16 +1,22 @@
-
 import type { AbuseChecks } from "@civfix/shared/interfaces"
 import type { MediaKind, MediaStatus } from "@civfix/shared"
-import type { WorkerAbuseReason } from "@civfix/api/media-repo"
+import type { WorkerAbuseReason } from "@civfix/api/media-worker-repository"
 import type { FindPhashDuplicateFn } from "@civfix/api/adapters/abuse-checks"
 import type { WorkerLimits } from "../config.js"
 import { ALLOWED_VIDEO_CODECS, SERVED_VIDEO_MAX_EDGE, SERVED_VIDEO_MAX_FPS } from "../config.js"
 import type { ExifGps } from "../sandbox/image.js"
 import { processImageLane } from "../sandbox/image-lane.js"
 import { SandboxSpawnError } from "../sandbox/exec.js"
+import { ScratchSetupError } from "../sandbox/tmp.js"
 import { probeBytes, type ProbeResult } from "../sandbox/ffprobe.js"
 import { grabFrameJpeg, remuxStripMetadata } from "../sandbox/ffmpeg-remux.js"
 import { transcodeToServedMp4 } from "../sandbox/ffmpeg-transcode.js"
+
+const MAX_NOTE_CHARS = 300
+const SERVED_VIDEO_CONTENT_TYPE = "video/mp4"
+const SERVED_VIDEO_CODEC = "h264"
+const FRAME_GRAB_MAX_OFFSET_SEC = 1
+const NSFW_SCORE_DIGITS = 3
 
 export interface PipelineFlag {
   reason: WorkerAbuseReason
@@ -44,7 +50,13 @@ export interface ProcessDeps {
   findPhashDuplicate?: FindPhashDuplicateFn
 }
 
-export function rejected(note: string): MediaProcessResult {
+// A decoder that could not start or a scratch dir the worker could not build says nothing about the
+// bytes: these escape so media.checks retries them as infrastructure instead of rejecting the upload.
+function isSandboxInfraFailure(err: unknown): err is SandboxSpawnError | ScratchSetupError {
+  return err instanceof SandboxSpawnError || err instanceof ScratchSetupError
+}
+
+function rejected(note: string): MediaProcessResult {
   return {
     status: "rejected",
     width: null,
@@ -63,7 +75,7 @@ export function rejected(note: string): MediaProcessResult {
 
 export function errNote(prefix: string, err: unknown): string {
   const msg = err instanceof Error ? err.message : String(err)
-  return `${prefix}: ${msg}`.slice(0, 300)
+  return `${prefix}: ${msg}`.slice(0, MAX_NOTE_CHARS)
 }
 
 function hasNsfwScorer(checks: unknown): boolean {
@@ -94,7 +106,11 @@ async function applyAbuseSeams(
     }
   }
   if (scorerAvailable && nsfw >= deps.limits.nsfwHoldThreshold) {
-    return { status: "held", flags: [{ reason: "nsfw" }], note: `nsfw score ${nsfw.toFixed(3)}` }
+    return {
+      status: "held",
+      flags: [{ reason: "nsfw" }],
+      note: `nsfw score ${nsfw.toFixed(NSFW_SCORE_DIGITS)}`,
+    }
   }
   if (!scorerAvailable) {
     const unscored = "nsfw scorer not configured (no verdict)"
@@ -133,7 +149,7 @@ async function processImageBytes(
   try {
     img = await processImageLane(bytes, deps.limits)
   } catch (err) {
-    if (err instanceof SandboxSpawnError) throw err
+    if (isSandboxInfraFailure(err)) throw err
     return rejected(errNote("image decode/guard failed", err))
   }
   const phash = img.phash
@@ -163,8 +179,9 @@ function nominal(value: number): number {
   return Math.round(value)
 }
 
-function videoGeometryNote(
+function videoLimitNote(
   probe: {
+    durationSec: number
     width: number | null
     height: number | null
     fps: number | null
@@ -172,6 +189,12 @@ function videoGeometryNote(
   },
   limits: WorkerLimits,
 ): string | null {
+  if (probe.durationSec <= 0) {
+    return `duration ${probe.durationSec}s is not positive`
+  }
+  if (nominal(probe.durationSec) > limits.maxVideoDurationSec) {
+    return `duration ${probe.durationSec}s exceeds the cap of ${limits.maxVideoDurationSec}s`
+  }
   const { width, height } = probe
   if (width === null || height === null || width <= 0 || height <= 0) {
     return "video reports no usable resolution"
@@ -210,7 +233,7 @@ const PLAYABLE_H264_PROFILES: ReadonlySet<string> = new Set([
 export function servedVideoPlan(probe: ProbeResult, limits: WorkerLimits): ServedVideoPlan {
   const capFps = probe.fps === null || probe.fps > SERVED_VIDEO_MAX_FPS
   const withinSpec =
-    probe.codec?.toLowerCase() === "h264" &&
+    probe.codec?.toLowerCase() === SERVED_VIDEO_CODEC &&
     probe.pixFmt !== null &&
     PLAYABLE_PIX_FMTS.has(probe.pixFmt) &&
     probe.profile !== null &&
@@ -224,15 +247,47 @@ export function servedVideoPlan(probe: ProbeResult, limits: WorkerLimits): Serve
   return withinSpec ? { transcode: false } : { transcode: true, capFps }
 }
 
+// A frame that cannot be grabbed is no verdict on the video: without one it is held for review, not rejected.
+async function grabPosterFrame(
+  bytes: Uint8Array,
+  durationSec: number,
+  limits: WorkerLimits,
+): Promise<Buffer | null> {
+  try {
+    return await grabFrameJpeg(bytes, Math.min(FRAME_GRAB_MAX_OFFSET_SEC, durationSec / 2), limits)
+  } catch (err) {
+    if (isSandboxInfraFailure(err)) throw err
+    return null
+  }
+}
+
+async function posterThumbnail(
+  frameJpeg: Buffer | null,
+  limits: WorkerLimits,
+): Promise<{ thumbnailBytes: Buffer | null; thumbnailContentType: string | null }> {
+  const none = { thumbnailBytes: null, thumbnailContentType: null }
+  if (!frameJpeg) return none
+  try {
+    const thumb = await processImageLane(frameJpeg, limits)
+    return {
+      thumbnailBytes: thumb.thumbnailBytes,
+      thumbnailContentType: thumb.thumbnailContentType,
+    }
+  } catch (err) {
+    if (isSandboxInfraFailure(err)) throw err
+    return none
+  }
+}
+
 async function processVideoBytes(
   bytes: Uint8Array,
   deps: ProcessDeps,
 ): Promise<MediaProcessResult> {
-  let probe: Awaited<ReturnType<typeof probeBytes>>
+  let probe: ProbeResult
   try {
     probe = await probeBytes(bytes, deps.limits)
   } catch (err) {
-    if (err instanceof SandboxSpawnError) throw err
+    if (isSandboxInfraFailure(err)) throw err
     return rejected(errNote("ffprobe failed", err))
   }
   if (!probe.isVideo) {
@@ -241,17 +296,9 @@ async function processVideoBytes(
   if (probe.codec === null || !ALLOWED_VIDEO_CODECS.has(probe.codec.toLowerCase())) {
     return rejected(`unsupported codec: ${probe.codec ?? "unknown"}`)
   }
-  if (probe.durationSec <= 0) {
-    return rejected(`duration ${probe.durationSec}s is not positive`)
-  }
-  if (nominal(probe.durationSec) > deps.limits.maxVideoDurationSec) {
-    return rejected(
-      `duration ${probe.durationSec}s exceeds the cap of ${deps.limits.maxVideoDurationSec}s`,
-    )
-  }
-  const geometryNote = videoGeometryNote(probe, deps.limits)
-  if (geometryNote !== null) {
-    return rejected(geometryNote)
+  const limitNote = videoLimitNote(probe, deps.limits)
+  if (limitNote !== null) {
+    return rejected(limitNote)
   }
 
   const plan = servedVideoPlan(probe, deps.limits)
@@ -268,32 +315,12 @@ async function processVideoBytes(
       served = await remuxStripMetadata(bytes, deps.limits)
     }
   } catch (err) {
-    if (err instanceof SandboxSpawnError) throw err
+    if (isSandboxInfraFailure(err)) throw err
     return rejected(errNote(plan.transcode ? "transcode failed" : "remux failed", err))
   }
 
-  let frameJpeg: Buffer | null = null
-  try {
-    const at = Math.min(1, probe.durationSec / 2)
-    frameJpeg = await grabFrameJpeg(bytes, at, deps.limits)
-  } catch (err) {
-    if (err instanceof SandboxSpawnError) throw err
-    frameJpeg = null
-  }
-
-  let thumbnailBytes: Buffer | null = null
-  let thumbnailContentType: string | null = null
-  if (frameJpeg) {
-    try {
-      const thumb = await processImageLane(frameJpeg, deps.limits)
-      thumbnailBytes = thumb.thumbnailBytes
-      thumbnailContentType = thumb.thumbnailContentType
-    } catch (err) {
-      if (err instanceof SandboxSpawnError) throw err
-      thumbnailBytes = null
-      thumbnailContentType = null
-    }
-  }
+  const frameJpeg = await grabPosterFrame(bytes, probe.durationSec, deps.limits)
+  const thumbnail = await posterThumbnail(frameJpeg, deps.limits)
 
   const seam = frameJpeg
     ? await applyAbuseSeams(frameJpeg, null, deps)
@@ -307,12 +334,12 @@ async function processVideoBytes(
     status: seam.status,
     width: servedWidth,
     height: servedHeight,
-    codec: "h264",
+    codec: SERVED_VIDEO_CODEC,
     phash: null,
     processedBytes: served,
-    processedContentType: "video/mp4",
-    thumbnailBytes,
-    thumbnailContentType,
+    processedContentType: SERVED_VIDEO_CONTENT_TYPE,
+    thumbnailBytes: thumbnail.thumbnailBytes,
+    thumbnailContentType: thumbnail.thumbnailContentType,
     exifGps: null,
     flags: seam.flags,
     note: seam.note,
@@ -337,7 +364,7 @@ export async function processMedia(
     }
     return await processVideoBytes(input.bytes, deps)
   } catch (err) {
-    if (err instanceof SandboxSpawnError) throw err
+    if (isSandboxInfraFailure(err)) throw err
     return rejected(errNote("unexpected processing error", err))
   }
 }

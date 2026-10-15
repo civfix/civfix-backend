@@ -3,7 +3,7 @@
 -- -----------------------------------------------------------------------------
 -- First-class social POSTS + interaction tables (like / save / mention) for the
 -- X-style civic feed. Repost / quote / reply are POSTS rows (kind + repost_of/
--- reply_to), NOT separate tables — keeps the timeline a single scan. Post media
+-- reply_to), NOT separate tables, which keeps the timeline a single scan. Post media
 -- reuses media_assets via a new post_id column + purpose='post'. Attachable event
 -- (cleanups) / report (reports) cards are FK columns hydrated into LinkedEventRef
 -- / LinkedReportRef.
@@ -15,11 +15,11 @@
 --
 -- Unlike chat_message_reactions/mentions (which cannot FK the RANGE-partitioned
 -- chat/dm message tables), post_likes/saves/mentions DO FK posts (a plain uuid PK)
--- with ON DELETE CASCADE — cleaner than the chat precedent. Counts are
+-- with ON DELETE CASCADE, cleaner than the chat precedent. Counts are
 -- denormalized on posts and bumped in the SAME txn as the interaction insert/
 -- delete (precedent: cleanups.bags, report chat counts).
 --
--- Also adds notification_prefs.post_interactions (DEFAULT true) — the per-user
+-- Also adds notification_prefs.post_interactions (DEFAULT true): the per-user
 -- toggle gating the post_like/post_repost/post_reply/post_quote bells (post_mention
 -- rides the existing `mentions` toggle). Additive with a TRUE default so existing
 -- users keep receiving interaction notifications (plan §8.9).
@@ -118,7 +118,7 @@ CREATE INDEX IF NOT EXISTS media_assets_post_idx
   ON media_assets (post_id) WHERE post_id IS NOT NULL;
 
 -- -----------------------------------------------------------------------------
--- notification_prefs.post_interactions — per-user toggle for the like/repost/
+-- notification_prefs.post_interactions: per-user toggle for the like/repost/
 -- reply/quote bells. DEFAULT true so existing rows keep receiving them (§8.9).
 -- -----------------------------------------------------------------------------
 ALTER TABLE notification_prefs

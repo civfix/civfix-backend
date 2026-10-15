@@ -1,4 +1,3 @@
-
 import type { ChatMessageDTO } from "@civfix/shared"
 
 export function toTombstoneDTO(dto: ChatMessageDTO, deletedAt: Date): ChatMessageDTO {

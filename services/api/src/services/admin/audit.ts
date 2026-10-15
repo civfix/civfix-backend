@@ -1,12 +1,15 @@
-import type { Queryable } from "../../db/client.js"
-
 export type AdminAuditAction =
   | "operator.login"
   | "operator.logout"
+  | "operator.login_denied"
+  | "account.deleted"
+  | "data_export.undeliverable"
+  | "auth.otp_refused_unverified_account"
   | "discovery.contacts_saved"
   | "discovery.draft_saved"
   | "discovery.note_added"
   | "discovery.flagged"
+  | "discovery.contact_suggested"
   | "jurisdiction.patched"
   | "report.status_changed"
   | "report.flagged"
@@ -15,11 +18,18 @@ export type AdminAuditAction =
   | "report.followup_sent"
   | "report.message_posted"
   | "report.routed"
+  | "report.verdict_set"
+  | "report.takedown_requested"
+  | "report_message.removed"
   | "event.status_changed"
   | "event.flagged"
   | "event.unflagged"
   | "event.cancelled"
   | "event.message_posted"
+  | "event.outcome_logged"
+  | "event.reports_linked"
+  | "event.report_unlinked"
+  | "event.announcement_sent"
   | "user.flagged"
   | "user.unflagged"
   | "user.status_changed"
@@ -27,8 +37,11 @@ export type AdminAuditAction =
   | "user.role_changed"
   | "user.verified"
   | "user.unverified"
+  | "user.report_verified"
+  | "user.report_unverified"
   | "user.hours_credited"
   | "user.hours_voided"
+  | "message.removed"
   | "gov_claim.verified"
   | "gov_claim.approved"
   | "gov_claim.rejected"
@@ -71,6 +84,7 @@ export type AdminAuditAction =
   | "org.invite_created"
   | "org.invite_revoked"
   | "org.invite_accepted"
+  | "org.invite_declined"
   | "org.list_viewed"
   | "org.members_viewed"
   | "org.events_viewed"
@@ -97,7 +111,6 @@ export type AdminAuditAction =
   | "event.roster_exported"
   | "host.messaging_suspended"
   | "host.messaging_restored"
-  | (string & {})
 
 export const AUDIT_READ_ACTIONS: readonly AdminAuditAction[] = [
   "user.detail_viewed",
@@ -121,18 +134,4 @@ export interface WriteAuditInput {
   action: AdminAuditAction
   target?: string | null
   meta?: Record<string, unknown> | null
-}
-
-export async function writeAudit(db: Queryable, input: WriteAuditInput): Promise<string> {
-  const actorId = input.actorId ?? null
-  const target = input.target ?? null
-  const meta = input.meta == null ? null : db.json(input.meta as Parameters<typeof db.json>[0])
-  const rows = await db<{ id: string }[]>`
-    INSERT INTO audit_log (actor_id, action, target, meta)
-    VALUES (${actorId}, ${input.action}, ${target}, ${meta})
-    RETURNING id
-  `
-  const id = rows[0]?.id
-  if (id === undefined) throw new Error("writeAudit: insert returned no row")
-  return id
 }

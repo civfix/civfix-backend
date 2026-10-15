@@ -6,8 +6,11 @@ import {
 } from "../../src/adapters/reverse-geocode.mapbox.js"
 
 function okFetch(props: unknown): typeof fetch {
-  return (async () =>
-    ({ ok: true, json: async () => ({ features: [{ properties: props }] }) }) as unknown as Response) as unknown as typeof fetch
+  return async () =>
+    ({
+      ok: true,
+      json: async () => ({ features: [{ properties: props }] }),
+    }) as unknown as Response
 }
 
 describe("formatMapboxReverse", () => {
@@ -47,7 +50,11 @@ describe("makeMapboxReverseGeocode", () => {
       fetchImpl: okFetch({
         feature_type: "address",
         name: "1 Main St",
-        context: { place: { name: "Springfield" }, region: { region_code: "IL" }, country: { country_code: "us" } },
+        context: {
+          place: { name: "Springfield" },
+          region: { region_code: "IL" },
+          country: { country_code: "us" },
+        },
       }),
     })
     expect(await geocode(39.8, -89.6)).toEqual({
@@ -59,23 +66,27 @@ describe("makeMapboxReverseGeocode", () => {
   it("returns null on non-ok HTTP", async () => {
     const geocode = makeMapboxReverseGeocode({
       token: "pk.test",
-      fetchImpl: (async () => ({ ok: false }) as unknown as Response) as unknown as typeof fetch,
+      fetchImpl: async () => ({ ok: false }) as unknown as Response,
     })
     expect(await geocode(39.8, -89.6)).toBeNull()
   })
   it("returns null when fetch throws", async () => {
     const geocode = makeMapboxReverseGeocode({
       token: "pk.test",
-      fetchImpl: (async () => {
+      fetchImpl: async () => {
         throw new Error("net")
-      }) as unknown as typeof fetch,
+      },
     })
     expect(await geocode(39.8, -89.6)).toBeNull()
   })
   it("returns null for empty features", async () => {
     const geocode = makeMapboxReverseGeocode({
       token: "pk.test",
-      fetchImpl: (async () => ({ ok: true, json: async () => ({ features: [] }) }) as unknown as Response) as unknown as typeof fetch,
+      fetchImpl: async () =>
+        ({
+          ok: true,
+          json: async () => ({ features: [] }),
+        }) as unknown as Response,
     })
     expect(await geocode(39.8, -89.6)).toBeNull()
   })
@@ -83,10 +94,10 @@ describe("makeMapboxReverseGeocode", () => {
     let called = false
     const geocode = makeMapboxReverseGeocode({
       token: "pk.test",
-      fetchImpl: (async () => {
+      fetchImpl: async () => {
         called = true
         return { ok: true, json: async () => ({}) } as unknown as Response
-      }) as unknown as typeof fetch,
+      },
     })
     expect(await geocode(Number.NaN, -89.6)).toBeNull()
     expect(called).toBe(false)
@@ -112,9 +123,9 @@ describe("makeMapboxReverseGeocode", () => {
  */
 describe("mapboxPrecision", () => {
   it("claims street only with a house number", () => {
-    expect(mapboxPrecision({ context: { address: { address_number: "123", name: "123 Main St" } } })).toBe(
-      "street",
-    )
+    expect(
+      mapboxPrecision({ context: { address: { address_number: "123", name: "123 Main St" } } }),
+    ).toBe("street")
     expect(mapboxPrecision({ feature_type: "address", name: "123 Main St" })).toBe("street")
   })
 
@@ -136,7 +147,9 @@ describe("mapboxPrecision", () => {
   })
 
   it("claims NOTHING for a place-only hit, so the chain keeps going", () => {
-    expect(mapboxPrecision({ name: "Los Angeles", context: { place: { name: "Los Angeles" } } })).toBeNull()
+    expect(
+      mapboxPrecision({ name: "Los Angeles", context: { place: { name: "Los Angeles" } } }),
+    ).toBeNull()
     expect(mapboxPrecision({})).toBeNull()
   })
 })

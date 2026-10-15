@@ -32,7 +32,7 @@
 -- the new columns are never filtered on their own. ADD COLUMN of a nullable
 -- column with no default is a catalog-only change.
 --
--- CANONICAL DDL: mirrored in src/db/schema/volunteer-hours.ts.
+-- CANONICAL DDL: mirrored in src/db/schema/volunteer_hours.ts.
 --
 -- Conventions: IF NOT EXISTS columns and pg_constraint-guarded constraints, so a
 -- repeat apply is a no-op; one transaction per file (src/db/migrate.ts), no

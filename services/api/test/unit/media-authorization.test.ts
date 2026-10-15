@@ -7,9 +7,9 @@ import {
   MEDIA_GET_URL_TTL_SEC,
   quotaSubjects,
   type MediaIntakeService,
-  type MediaAssetView,
   type MediaOwner,
 } from "../../src/services/media-intake-service.js"
+import type { MediaAssetView } from "../../src/services/media-repository.js"
 import {
   makeUnboundOnlyMediaViewAuthorizer,
   UNBOUND_GRACE_MS,
@@ -19,7 +19,6 @@ import {
 import { InMemoryByteMeter } from "../../src/services/media-byte-quota.js"
 import { InMemoryMediaRepository } from "../helpers/media.js"
 
-
 const SHA = "c".repeat(64)
 
 function imageReq(over: Partial<CreateMediaUploadRequest> = {}): CreateMediaUploadRequest {
@@ -28,7 +27,11 @@ function imageReq(over: Partial<CreateMediaUploadRequest> = {}): CreateMediaUplo
 
 class RecordingStorage extends FakeStorage {
   readonly presignCalls: { key: string; ttlSec: number; forceSigned: boolean }[] = []
-  override presignGet(key: string, ttlSec: number, opts?: { forceSigned?: boolean }): Promise<string> {
+  override presignGet(
+    key: string,
+    ttlSec: number,
+    opts?: { forceSigned?: boolean },
+  ): Promise<string> {
     this.presignCalls.push({ key, ttlSec, forceSigned: opts?.forceSigned === true })
     return super.presignGet(key, ttlSec)
   }
@@ -142,7 +145,7 @@ describe("makeUnboundOnlyMediaViewAuthorizer (the fail-closed default)", () => {
     createdAt: new Date(),
   }
 
-  it("DENIES every bound asset — a wiring that forgets the real authorizer serves nothing", async () => {
+  it("DENIES every bound asset: a wiring that forgets the real authorizer serves nothing", async () => {
     const auth = makeUnboundOnlyMediaViewAuthorizer()
     for (const binding of [
       { reportId: "r1" },
@@ -162,7 +165,10 @@ describe("makeUnboundOnlyMediaViewAuthorizer (the fail-closed default)", () => {
 })
 
 describe("presigned-byte quota (M10)", () => {
-  function quotaService(meter: { add: (s: string, b: number) => Promise<number> }, limitBytes: number): MediaIntakeService {
+  function quotaService(
+    meter: { add: (s: string, b: number) => Promise<number> },
+    limitBytes: number,
+  ): MediaIntakeService {
     return makeMediaIntakeService({
       repo: new InMemoryMediaRepository(),
       storage: new FakeStorage(),
@@ -262,12 +268,7 @@ describe("presigned-byte quota (M10)", () => {
         ipKey: "203.0.113.9",
       }),
     ).rejects.toMatchObject({ code: "RATE_LIMITED" })
-    expect(charged).toEqual([
-      "a:a1",
-      "ip:203.0.113.9",
-      "a:a1",
-      "ip:203.0.113.9",
-    ])
+    expect(charged).toEqual(["a:a1", "ip:203.0.113.9", "a:a1", "ip:203.0.113.9"])
   })
 
   it("meters a signed-in user on the account bucket ONLY (no IP bucket to share with strangers)", async () => {

@@ -1,4 +1,3 @@
-
 export interface FederalLand {
   geoid: string
   name: string

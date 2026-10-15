@@ -14,6 +14,7 @@ import type {
   WaitlistStatus,
 } from "@civfix/shared"
 import type { Queryable } from "../../db/client.js"
+import { publicServedKeyExpr } from "../media-served-key.js"
 import type {
   AnswerRecord,
   PageRecord,
@@ -23,51 +24,17 @@ import type {
   SeatRecord,
   TicketTypeRecord,
   WaitlistRecord,
-} from "./registration-repository.types.js"
+} from "./registration-repository.js"
+import { isCheckViolationOn } from "../../db/pg-errors.js"
 
-export const PG_UNIQUE_VIOLATION = "23505"
+const RESERVED_SEATS_BACKSTOP_CONSTRAINT = "cleanup_ticket_types_reserved_bounds"
 
-export const PG_CHECK_VIOLATION = "23514"
-
-export const RESERVED_SEATS_BACKSTOP_CONSTRAINT = "cleanup_ticket_types_reserved_bounds"
-
-export const ANSWER_PREVIEW_MAX = 120
-
-export interface PgErrorShape {
-  code?: unknown
-  constraint_name?: unknown
-}
-
-export function pgErrorConstraint(err: unknown): { code: string; constraint: string } | null {
-  if (typeof err !== "object" || err === null) return null
-  const e = err as PgErrorShape
-  if (typeof e.code !== "string") return null
-  return {
-    code: e.code,
-    constraint: typeof e.constraint_name === "string" ? e.constraint_name : "",
-  }
-}
-
-export function isUniqueViolationOn(err: unknown, ...constraints: string[]): boolean {
-  const parsed = pgErrorConstraint(err)
-  if (parsed === null || parsed.code !== PG_UNIQUE_VIOLATION) return false
-  return constraints.length === 0 || constraints.includes(parsed.constraint)
-}
+const ANSWER_PREVIEW_MAX = 120
 
 export const SALES_WINDOW_CONSTRAINT = "cleanup_ticket_types_sales_window"
 
-export function isCheckViolationOn(err: unknown, constraint: string): boolean {
-  const parsed = pgErrorConstraint(err)
-  return parsed !== null && parsed.code === PG_CHECK_VIOLATION && parsed.constraint === constraint
-}
-
 export function isReservedSeatsBackstopViolation(err: unknown): boolean {
-  const parsed = pgErrorConstraint(err)
-  return (
-    parsed !== null &&
-    parsed.code === PG_CHECK_VIOLATION &&
-    parsed.constraint === RESERVED_SEATS_BACKSTOP_CONSTRAINT
-  )
+  return isCheckViolationOn(err, RESERVED_SEATS_BACKSTOP_CONSTRAINT)
 }
 
 export interface TicketTypeRowSelect {
@@ -244,7 +211,17 @@ export interface RegistrationRowSelect {
   person_deleted_at: Date | null
 }
 
-function toIdentity(r: RegistrationRowSelect): RegistrantIdentity | null {
+type RegistrantColumns = Pick<
+  RegistrationRowSelect,
+  | "user_id"
+  | "person_display_name"
+  | "person_handle"
+  | "person_bio"
+  | "person_avatar_url"
+  | "person_deleted_at"
+>
+
+function toIdentity(r: RegistrantColumns): RegistrantIdentity | null {
   if (r.user_id === null) return null
   return {
     userId: r.user_id,
@@ -335,7 +312,7 @@ export interface AnswerRowSelect {
   question_id: string
   prompt: string
   value_text: string | null
-  value_json: unknown | null
+  value_json: unknown
   scrubbed_at: Date | null
 }
 
@@ -379,17 +356,7 @@ export function toWaitlistRecord(r: WaitlistRowSelect): WaitlistRecord {
     userId: r.user_id,
     guestId: r.guest_id,
     guestName: r.guest_name,
-    identity:
-      r.user_id === null
-        ? null
-        : {
-            userId: r.user_id,
-            displayName: r.person_display_name,
-            handle: r.person_handle,
-            bio: r.person_bio,
-            avatarUrl: r.person_avatar_url,
-            deletedAt: r.person_deleted_at,
-          },
+    identity: toIdentity(r),
     partySize: r.party_size,
     status: r.status,
     position: r.position,
@@ -422,6 +389,14 @@ export function waitlistColumns(tag: Queryable) {
   `
 }
 
+/** Backstop for a waiting row whose user was banned by a path that did not cancel it. */
+export function waitlistEntryNotBanned(tag: Queryable, alias: "w" | "w2" = "w") {
+  return tag`NOT EXISTS (
+    SELECT 1 FROM cleanup_bans b
+     WHERE b.cleanup_id = ${tag(alias)}.cleanup_id AND b.user_id = ${tag(alias)}.user_id
+  )`
+}
+
 export function waitlistJoins(tag: Queryable) {
   return tag`
     LEFT JOIN cleanup_ticket_types tt ON tt.id = w.ticket_type_id
@@ -433,6 +408,7 @@ export function waitlistJoins(tag: Queryable) {
        WHERE w2.ticket_type_id = w.ticket_type_id
          AND w2.status = 'waiting'
          AND (w2.created_at, w2.id) < (w.created_at, w.id)
+         AND ${waitlistEntryNotBanned(tag, "w2")}
     ) pos ON w.status = 'waiting'
   `
 }
@@ -454,7 +430,32 @@ export interface PageRowSelect {
   view_count: string | number
 }
 
-export const DEFAULT_PAGE_SEO: EventPageSeo = { noindex: false }
+export function pageColumns(tag: Queryable) {
+  return tag`
+    c.id AS cleanup_id,
+    c.page_slug AS slug,
+    COALESCE(p.status, 'draft') AS status,
+    COALESCE(p.theme_accent, 'bloom') AS theme_accent,
+    p.blocks,
+    p.seo,
+    c.cover_media_id,
+    ${publicServedKeyExpr(tag, "m")} AS cover_key,
+    c.visibility,
+    p.published_at,
+    p.updated_at,
+    p.flagged_at,
+    p.flag_reason,
+    COALESCE(p.view_count, 0) AS view_count`
+}
+
+export function pageJoins(tag: Queryable) {
+  return tag`
+    LEFT JOIN cleanup_pages p ON p.cleanup_id = c.id
+    LEFT JOIN media_assets m ON m.id = c.cover_media_id AND m.status = 'ready'
+  `
+}
+
+const DEFAULT_PAGE_SEO: EventPageSeo = { noindex: false }
 
 export function toPageRecord(r: PageRowSelect): PageRecord {
   return {
@@ -473,19 +474,4 @@ export function toPageRecord(r: PageRowSelect): PageRecord {
     flagReason: r.flag_reason,
     viewCount: typeof r.view_count === "string" ? Number(r.view_count) : r.view_count,
   }
-}
-
-export async function hostTeamUserIds(
-  tag: Queryable,
-  cleanupId: string,
-  limit: number,
-): Promise<string[]> {
-  const rows = await tag<{ user_id: string }[]>`
-    SELECT user_id FROM cleanup_members
-     WHERE cleanup_id = ${cleanupId}
-       AND role IN ('organizer', 'cohost', 'coordinator', 'staff')
-     ORDER BY joined_at
-     LIMIT ${limit}
-  `
-  return rows.map((r) => r.user_id)
 }

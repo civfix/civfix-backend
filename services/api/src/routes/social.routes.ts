@@ -1,4 +1,3 @@
-
 import {
   ListPeopleRequestSchema,
   FollowSuggestionsRequestSchema,
@@ -19,16 +18,19 @@ import { requireAuth } from "../auth/context.js"
 import { makeContainerSuggestionsCache } from "../services/social-suggestions-wiring.js"
 import {
   makeSocialService,
+  PERSON_NOT_FOUND_MESSAGE,
   type SocialNotifier,
-  type SocialRepository,
   type SocialService,
+  type SocialServiceDeps,
   type SocialViewer,
 } from "../services/social-service.js"
+import type { SocialRepository } from "../services/social-repository.js"
 import { makeDrizzleSocialRepository } from "../services/social-repository.drizzle.js"
 import { makeRouteNotificationService } from "../services/route-notifier.js"
 import { MEDIA_GET_URL_TTL_SEC } from "../services/media-intake-service.js"
 import { perIdentity } from "../plugins/rate-limit.js"
 import { route } from "../versioning/route.js"
+import { isUuid } from "../db/cursor-helpers.js"
 import { parse } from "./_validate.js"
 
 export const FOLLOW_RATE_LIMIT = perIdentity({ max: 30, timeWindow: "1 minute" })
@@ -52,8 +54,6 @@ const PERSON_REF_MAX = 40
 
 const PersonRefParamsSchema = z.object({ id: z.string().min(1).max(PERSON_REF_MAX) }).strict()
 
-const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
-
 const FOLLOW_SUGGESTIONS_DEFAULT_LIMIT = 10
 
 export async function registerSocialRoutes(
@@ -76,36 +76,28 @@ export async function registerSocialRoutes(
 
   const suggestionsCache = makeContainerSuggestionsCache(container)
 
+  function containerDeps(): Omit<SocialServiceDeps, "repo" | "logger" | "notifier"> {
+    return {
+      affiliations: container.getAffiliationLoader(),
+      ...(suggestionsCache !== undefined ? { suggestionsCache } : {}),
+      presignAvatar: (k: string) => container.storage.presignGet(k, MEDIA_GET_URL_TTL_SEC),
+      volunteerHoursTotalFor: (userId: string) =>
+        container.getVolunteerHoursRepo().totalHoursFor(userId),
+      isBlockedEitherWay: (viewerId: string, targetId: string) =>
+        container.getBlocksRepo().isBlockedEitherWay(viewerId, targetId),
+      blockState: (viewerId: string, targetId: string) =>
+        container.getBlocksRepo().blockState(viewerId, targetId),
+    }
+  }
+
   function service(withNotifier = false): SocialService {
     const n = withNotifier ? notifier() : undefined
-    const cache = app.socialOverrides ? undefined : suggestionsCache
-    const presignAvatar = app.socialOverrides
-      ? undefined
-      : (k: string) => container.storage.presignGet(k, MEDIA_GET_URL_TTL_SEC)
-    const volunteerHoursTotalFor = app.socialOverrides
-      ? undefined
-      : (userId: string) => container.getVolunteerHoursRepo().totalHoursFor(userId)
-    const isBlockedEitherWay = app.socialOverrides
-      ? undefined
-      : (viewerId: string, targetId: string) =>
-          container.getBlocksRepo().isBlockedEitherWay(viewerId, targetId)
-    const blockState = app.socialOverrides
-      ? undefined
-      : (viewerId: string, targetId: string) =>
-          container.getBlocksRepo().blockState(viewerId, targetId)
-    const affiliations = app.socialOverrides
-      ? undefined
-      : container.getAffiliationLoader()
+    const wired = app.socialOverrides ? {} : containerDeps()
     return makeSocialService({
       repo: repo(),
       logger: app.log,
-      ...(affiliations !== undefined ? { affiliations } : {}),
-      ...(cache !== undefined ? { suggestionsCache: cache } : {}),
+      ...wired,
       ...(n !== undefined ? { notifier: n } : {}),
-      ...(presignAvatar !== undefined ? { presignAvatar } : {}),
-      ...(volunteerHoursTotalFor !== undefined ? { volunteerHoursTotalFor } : {}),
-      ...(isBlockedEitherWay !== undefined ? { isBlockedEitherWay } : {}),
-      ...(blockState !== undefined ? { blockState } : {}),
     })
   }
 
@@ -117,12 +109,12 @@ export async function registerSocialRoutes(
   }
 
   async function resolvePersonId(ref: string): Promise<string> {
-    if (UUID_RE.test(ref)) {
+    if (isUuid(ref)) {
       const person = await repo().findPersonById(ref)
-      if (person === null) throw AppError.notFound("Person not found")
+      if (person === null) throw AppError.notFound(PERSON_NOT_FOUND_MESSAGE)
       return ref
     }
-    if (ref.length > PERSON_REF_MAX) throw AppError.notFound("Person not found")
+    if (ref.length > PERSON_REF_MAX) throw AppError.notFound(PERSON_NOT_FOUND_MESSAGE)
     return service().resolveHandleToId(ref)
   }
 
@@ -136,34 +128,49 @@ export async function registerSocialRoutes(
     reply.status(200).send(payload)
   })
 
-  route(app, "followSuggestions", { config: { rateLimit: FOLLOW_SUGGESTIONS_RATE_LIMIT } }, async (request, reply) => {
-    const userId = requireAuth(request)
-    const q = parse(FollowSuggestionsRequestSchema, request.query)
-    const payload: FollowSuggestionsResponse = await service().followSuggestions(
-      userId,
-      q.limit ?? FOLLOW_SUGGESTIONS_DEFAULT_LIMIT,
-    )
-    reply.status(200).send(payload)
-  })
+  route(
+    app,
+    "followSuggestions",
+    { config: { rateLimit: FOLLOW_SUGGESTIONS_RATE_LIMIT } },
+    async (request, reply) => {
+      const userId = requireAuth(request)
+      const q = parse(FollowSuggestionsRequestSchema, request.query)
+      const payload: FollowSuggestionsResponse = await service().followSuggestions(
+        userId,
+        q.limit ?? FOLLOW_SUGGESTIONS_DEFAULT_LIMIT,
+      )
+      reply.status(200).send(payload)
+    },
+  )
 
-  route(app, "followPerson", { preHandler: csrfProtect, config: { rateLimit: FOLLOW_RATE_LIMIT } }, async (request, reply) => {
-    const userId = requireAuth(request)
-    const { id } = parse(PersonIdParamsSchema, request.params)
-    const payload: FollowPersonResponse = await service(true).followPerson(userId, id)
-    reply.status(200).send(payload)
-  })
+  route(
+    app,
+    "followPerson",
+    { preHandler: csrfProtect, config: { rateLimit: FOLLOW_RATE_LIMIT } },
+    async (request, reply) => {
+      const userId = requireAuth(request)
+      const { id } = parse(PersonIdParamsSchema, request.params)
+      const payload: FollowPersonResponse = await service(true).followPerson(userId, id)
+      reply.status(200).send(payload)
+    },
+  )
 
-  route(app, "unfollowPerson", { preHandler: csrfProtect, config: { rateLimit: FOLLOW_RATE_LIMIT } }, async (request, reply) => {
-    const userId = requireAuth(request)
-    const { id } = parse(PersonIdParamsSchema, request.params)
-    const payload: FollowPersonResponse = await service().unfollowPerson(userId, id)
-    reply.status(200).send(payload)
-  })
+  route(
+    app,
+    "unfollowPerson",
+    { preHandler: csrfProtect, config: { rateLimit: FOLLOW_RATE_LIMIT } },
+    async (request, reply) => {
+      const userId = requireAuth(request)
+      const { id } = parse(PersonIdParamsSchema, request.params)
+      const payload: FollowPersonResponse = await service().unfollowPerson(userId, id)
+      reply.status(200).send(payload)
+    },
+  )
 
   route(app, "getProfile", async (request, reply) => {
     const { id } = parse(PersonRefParamsSchema, request.params)
     const svc = service()
-    const payload: GetProfileResponse = UUID_RE.test(id)
+    const payload: GetProfileResponse = isUuid(id)
       ? await svc.getProfile(id, viewerOf(request))
       : await svc.getProfileByHandle(id, viewerOf(request))
     reply.status(200).send(payload)

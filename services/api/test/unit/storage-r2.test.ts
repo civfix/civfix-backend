@@ -2,10 +2,9 @@ import { describe, it, expect } from "vitest"
 import { R2Storage, R2_PUT_TTL_SEC } from "../../src/adapters/storage.r2.js"
 
 /**
- * Unit tests for the real R2 adapter that need NO network. The AWS SigV4 presigner computes URLs
- * locally (it never calls R2), so presignPut/presignGet can be asserted offline against fake creds.
- * head/delete/put DO hit the network and are therefore exercised only against real R2 in deployment,
- * not here. The DI test separately asserts R2Storage is selected when USE_FAKE_STORAGE is off.
+ * The AWS SigV4 presigner computes URLs locally (it never calls R2), so presignPut/presignGet can be
+ * asserted offline against fake creds. head/delete/put DO hit the network and are exercised only against
+ * real R2 in deployment.
  */
 
 const config = {
@@ -23,11 +22,9 @@ describe("R2Storage.presignPut", () => {
       byteSize: 1234,
     })
 
-    // URL points at the R2 account endpoint, path-style bucket, and the key.
     expect(res.url).toContain(
       "https://acct123.r2.cloudflarestorage.com/civfix-media/uploads/2026/05/abc",
     )
-    // Signed request -> a SigV4 query string is present.
     expect(res.url).toContain("X-Amz-Signature=")
     expect(res.url).toContain(`X-Amz-Expires=${R2_PUT_TTL_SEC}`)
     // content-length is part of the signed headers (the size is pinned).

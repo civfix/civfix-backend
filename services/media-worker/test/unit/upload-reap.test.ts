@@ -1,4 +1,3 @@
-
 import { describe, expect, it } from "vitest"
 import { FakeStorage } from "@civfix/shared/fakes"
 import { servedKey } from "../../src/jobs/media-keys.js"
@@ -8,11 +7,11 @@ import {
   runUploadReapJob,
   uploadReapDelaySec,
 } from "../../src/jobs/upload-reap.js"
-import { InMemoryWorkerRepo } from "../helpers/in-memory-repo.js"
+import { InMemoryMediaWorkerRepository } from "../helpers/in-memory-media-worker-repository.js"
 
 function env() {
   const storage = new FakeStorage()
-  const repo = new InMemoryWorkerRepo()
+  const repo = new InMemoryMediaWorkerRepository()
   return {
     storage,
     repo,
@@ -22,7 +21,7 @@ function env() {
 
 async function seedPublished(
   storage: FakeStorage,
-  repo: InMemoryWorkerRepo,
+  repo: InMemoryMediaWorkerRepository,
   over: { status?: "ready" | "held" | "rejected" | "validating"; servedKey?: string | null } = {},
 ) {
   const id = "m1"
@@ -75,9 +74,9 @@ describe("media.upload.reap", () => {
     const r2Key = "uploads/2026/09/ghost"
     await storage.put(r2Key, Buffer.from([9]), { contentType: "image/jpeg" })
 
-    expect(
-      await runUploadReapJob({ mediaId: "gone", uploadId: "gone", r2Key }, deps),
-    ).toBe("deleted")
+    expect(await runUploadReapJob({ mediaId: "gone", uploadId: "gone", r2Key }, deps)).toBe(
+      "deleted",
+    )
     expect(storage.get(r2Key)).toBeNull()
   })
 
@@ -94,9 +93,9 @@ describe("media.upload.reap", () => {
     })
     await storage.put(r2Key, Buffer.from([1]), { contentType: "image/jpeg" })
 
-    expect(
-      await runUploadReapJob({ mediaId: "legacy", uploadId: "legacy-u", r2Key }, deps),
-    ).toBe("kept")
+    expect(await runUploadReapJob({ mediaId: "legacy", uploadId: "legacy-u", r2Key }, deps)).toBe(
+      "kept",
+    )
     expect(storage.get(r2Key)).not.toBeNull()
   })
 
@@ -140,9 +139,9 @@ describe("media.upload.reap", () => {
     repo.findById = () => Promise.reject(new Error("db down"))
     repo.findByUploadId = () => Promise.reject(new Error("db down"))
 
-    await expect(
-      runUploadReapJob({ mediaId: id, uploadId, r2Key }, deps),
-    ).rejects.toBeInstanceOf(UploadReapInfraError)
+    await expect(runUploadReapJob({ mediaId: id, uploadId, r2Key }, deps)).rejects.toBeInstanceOf(
+      UploadReapInfraError,
+    )
     expect(storage.get(r2Key)).not.toBeNull()
   })
 
@@ -152,9 +151,9 @@ describe("media.upload.reap", () => {
     await storage.put(r2Key, Buffer.from([1]), { contentType: "image/jpeg" })
     repo.r2KeyReferencedByOthers = () => Promise.reject(new Error("db down"))
 
-    await expect(
-      runUploadReapJob({ mediaId: id, uploadId, r2Key }, deps),
-    ).rejects.toBeInstanceOf(UploadReapInfraError)
+    await expect(runUploadReapJob({ mediaId: id, uploadId, r2Key }, deps)).rejects.toBeInstanceOf(
+      UploadReapInfraError,
+    )
     expect(storage.get(r2Key)).not.toBeNull()
   })
 

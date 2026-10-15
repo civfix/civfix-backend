@@ -1,4 +1,3 @@
-
 import { sql } from "drizzle-orm"
 import { boolean, index, inet, integer, pgTable, text, timestamp, uuid } from "drizzle-orm/pg-core"
 import { users } from "./users.js"

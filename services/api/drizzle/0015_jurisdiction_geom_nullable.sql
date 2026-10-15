@@ -14,7 +14,7 @@
 -- The Census API returns an identity (GEOID + NAME) but NOT the boundary polygon,
 -- so these rows have geom = NULL. The original 0001_core.sql declared geom
 -- NOT NULL (every row was a self-hosted boundary), which would reject the lazy
--- upsert — this migration drops that constraint.
+-- upsert; this migration drops that constraint.
 --
 -- WHY THIS IS SAFE for the resolver + index:
 --   * ST_Contains(NULL, point) is NULL (never true), so a NULL-geom row can NEVER
@@ -25,7 +25,7 @@
 --     index NULL geometries, and the resolver's ranked ORDER BY is untouched.
 --   * No data migration: every EXISTING row already has a non-NULL geom (they were
 --     inserted under the old NOT NULL constraint), so dropping NOT NULL changes no
---     existing data — it only PERMITS future NULL-geom (API-sourced) rows.
+--     existing data; it only PERMITS future NULL-geom (API-sourced) rows.
 --
 -- TRANSACTION NOTE: the runner (src/db/migrate.ts) wraps each file in ONE
 -- transaction, so the single ALTER below commits atomically.

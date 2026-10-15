@@ -4,12 +4,12 @@
  *
  *   - the LOST-RACE branch: the meta resolves live but the sender-gated UPDATE matches nothing
  *     (e.g. tombstoned between the gate ladder and the write) -> 409;
- *   - mention re-resolution REPLACES the recorded set — an edit that drops every @mention records
+ *   - mention re-resolution REPLACES the recorded set: an edit that drops every @mention records
  *     an EMPTY replace (clearing the stale rows), and the resolver sees the parsed handles;
  *   - the DM room-send re-check: a blocked-either-way peer is a plain 403 (before any state gate);
  *   - the slur filter runs on the edited body -> 422.
  *
- * Uses the in-memory repos (the same fakes the dm route tests use) — no DB, no server boot.
+ * Uses the in-memory repos (the same fakes the dm route tests use); no DB, no server boot.
  */
 
 import { describe, it, expect } from "vitest"
@@ -43,7 +43,10 @@ function dmHarness() {
 describe("chat-edit-service (offline branches)", () => {
   it("409s the LOST RACE: meta resolves live but the sender-gated UPDATE matches nothing", async () => {
     const chat = cleanupHarness()
-    const msg = await chat.insertMessage({ cleanupId: ROOM, userId: ALICE, body: "hi" }, randomUUID())
+    const msg = await chat.insertMessage(
+      { cleanupId: ROOM, userId: ALICE, body: "hi" },
+      randomUUID(),
+    )
     // Simulate the row being tombstoned between findMessageMeta and the gated UPDATE: the meta still
     // reads live, but the edit write matches nothing.
     chat.editMessage = () => Promise.resolve(null)
@@ -65,7 +68,10 @@ describe("chat-edit-service (offline branches)", () => {
 
   it("REPLACES the mention set: dropping every @mention records an EMPTY replace", async () => {
     const chat = cleanupHarness()
-    const msg = await chat.insertMessage({ cleanupId: ROOM, userId: ALICE, body: "hey @bob" }, randomUUID())
+    const msg = await chat.insertMessage(
+      { cleanupId: ROOM, userId: ALICE, body: "hey @bob" },
+      randomUUID(),
+    )
 
     const resolveInputs: { handles: string[]; userIds: string[] }[] = []
     const recorded: { messageId: string; ids: string[] }[] = []
@@ -100,7 +106,10 @@ describe("chat-edit-service (offline branches)", () => {
 
   it("passes parsed @handles from the edited body to the mention resolver", async () => {
     const chat = cleanupHarness()
-    const msg = await chat.insertMessage({ cleanupId: ROOM, userId: ALICE, body: "plain" }, randomUUID())
+    const msg = await chat.insertMessage(
+      { cleanupId: ROOM, userId: ALICE, body: "plain" },
+      randomUUID(),
+    )
 
     const resolveInputs: { handles: string[] }[] = []
     const service = makeChatEditService({

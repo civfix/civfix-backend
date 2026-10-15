@@ -16,7 +16,6 @@ describe("auth crypto", () => {
     const node = createHash("sha256").update(input, "utf8").digest("hex")
     expect(ours).toBe(node)
     expect(ours).toMatch(/^[0-9a-f]{64}$/)
-    // Stable across calls.
     expect(await sha256Hex(input)).toBe(ours)
   })
 
@@ -24,7 +23,6 @@ describe("auth crypto", () => {
     const a = generateToken()
     const b = generateToken()
     expect(a).not.toBe(b)
-    // base64url of 32 bytes (no padding) decodes back to 32 bytes.
     expect(Buffer.from(a, "base64url").length).toBe(TOKEN_BYTES)
     expect(a).toMatch(/^[A-Za-z0-9_-]+$/)
   })

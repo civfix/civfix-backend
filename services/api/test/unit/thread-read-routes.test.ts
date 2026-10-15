@@ -2,11 +2,11 @@ import { describe, it, expect, afterEach, vi } from "vitest"
 import { readFileSync } from "node:fs"
 import type { FastifyInstance } from "fastify"
 import { FakeMailer } from "@civfix/shared/fakes"
-import { buildServer } from "../../src/server.js"
+import { makeServer } from "../../src/server.js"
 import { loadEnv } from "../../src/env.js"
 import { InMemoryCacheClient } from "../../src/auth/cache.js"
 import { makeInMemoryStores } from "../../src/auth/stores.js"
-import { buildAuthServices } from "../../src/auth/auth-services.js"
+import { makeAuthServices } from "../../src/auth/auth-services.js"
 import { StubJwksVerifier } from "../helpers/auth.js"
 import { InMemoryThreadsRepository } from "../helpers/chat.js"
 import {
@@ -18,10 +18,9 @@ import {
   THREAD_READ_RATE_LIMIT,
   type ConversationRoutesOverrides,
 } from "../../src/routes/conversations.routes.js"
-import type { ConversationMutesRepository } from "../../src/services/conversation-mutes-repository.drizzle.js"
-import type { ReportChatRepository } from "../../src/services/report-chat-repository.drizzle.js"
-import type { ChatGroupRepository } from "../../src/services/chat-group-repository.drizzle.js"
-
+import type { ConversationMutesRepository } from "../../src/services/conversation-mutes-repository.js"
+import type { ReportChatRepository } from "../../src/services/report-chat-repository.js"
+import type { ChatGroupRepository } from "../../src/services/chat-group-repository.js"
 
 const ROOM = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
 const OTHER = "99999999-9999-9999-9999-999999999999"
@@ -41,14 +40,14 @@ function fakeReportChat(markRead: ReportChatRepository["markRead"]): ReportChatR
   return {
     isMember: () => Promise.resolve(true),
     roleOf: () => Promise.resolve("member" as const),
-    join: notImpl("join") as never,
-    leave: notImpl("leave") as never,
-    advanceReadWatermark: notImpl("advanceReadWatermark") as never,
+    join: notImpl("join"),
+    leave: notImpl("leave"),
+    advanceReadWatermark: notImpl("advanceReadWatermark"),
     markRead,
-    insertSystemMessage: notImpl("insertSystemMessage") as never,
-    listMemberIds: notImpl("listMemberIds") as never,
-    countMembers: notImpl("countMembers") as never,
-    listMembers: notImpl("listMembers") as never,
+    insertSystemMessage: notImpl("insertSystemMessage"),
+    listMemberIds: notImpl("listMemberIds"),
+    countMembers: notImpl("countMembers"),
+    listMembers: notImpl("listMembers"),
   }
 }
 
@@ -74,7 +73,7 @@ async function makeHarness(participates = true): Promise<Harness> {
   const stores = makeInMemoryStores()
   const cache = new InMemoryCacheClient(() => Date.now())
   const mailer = new FakeMailer()
-  const authServices = buildAuthServices({
+  const authServices = makeAuthServices({
     stores,
     cache,
     mailer,
@@ -104,7 +103,7 @@ async function makeHarness(participates = true): Promise<Harness> {
     participates: gate,
   }
 
-  const app = await buildServer({ env, authServices, chatOverrides, conversationRoutesOverrides })
+  const app = await makeServer({ env, authServices, chatOverrides, conversationRoutesOverrides })
   current = app
 
   const email = "reader@example.com"
@@ -224,7 +223,7 @@ describe("PUT /threads/read", () => {
   })
 })
 
-describe("PUT /threads/read — participation gate (L9)", () => {
+describe("PUT /threads/read: participation gate (L9)", () => {
   it("403s a room the caller does not participate in, and writes NOTHING", async () => {
     const { app, token, dmRepo, reportMarkRead, groupMarkRead } = await makeHarness(false)
     const spy = vi.spyOn(dmRepo, "markRead")
@@ -250,11 +249,15 @@ describe("PUT /threads/read — participation gate (L9)", () => {
   })
 })
 
-describe("PUT /threads/read — abuse controls", () => {
+describe("PUT /threads/read: abuse controls", () => {
   it("carries a per-identity rate limit and the csrf guard", () => {
     expect(THREAD_READ_RATE_LIMIT).toMatchObject({ max: 60, timeWindow: "1 minute" })
-    const src = readFileSync(new URL("../../src/routes/conversations.routes.ts", import.meta.url), "utf8")
-    const readRoute = src.slice(src.indexOf('route(\n    app,\n    "markThreadRead"'))
+    // Whitespace-collapsed so the assertion pins the declaration, not the formatter's line breaks.
+    const src = readFileSync(
+      new URL("../../src/routes/conversations.routes.ts", import.meta.url),
+      "utf8",
+    ).replace(/\s+/g, " ")
+    const readRoute = src.slice(src.indexOf('"markThreadRead",'))
     expect(readRoute.slice(0, 260)).toContain("preHandler: csrfProtect")
     expect(readRoute.slice(0, 260)).toContain("rateLimit: THREAD_READ_RATE_LIMIT")
   })

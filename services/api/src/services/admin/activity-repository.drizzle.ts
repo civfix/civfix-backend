@@ -1,59 +1,57 @@
 /**
- * Postgres-backed ActivityRepository (Phase 2): the merged recent-activity feed (#6, enumeration 4.9).
+ * One UNION ALL over audit_log, reports, cleanups and mail_events.
  *
- * ONE union query across the four sources, capped at `limit`:
- *   - audit_log    (operator / gov actions) -> source 'audit'   (action + actor name + target); the L4
- *                  read audits are excluded here (see AUDIT_READ_ACTIONS)
- *   - reports      (a citizen dropped a pin) -> source 'report' (category subject + jurisdiction place +
- *                  reporter name); `visibility = 'public' AND deleted_at IS NULL` only. NOT the
- *                  publicReportFilter status set: an operator feed reports the pin DROP, so a `submitted`
- *                  or `held` report is exactly what the operator needs to see, and the queue it feeds is
- *                  operator-only. The two terms that ARE applied are the owner's opt-out and the delete.
- *   - cleanups     (a cleanup was planned)   -> source 'cleanup' (title subject + organizer name)
- *   - mail_events  (delivery events)         -> source 'mail_event' (type + thread org/jurisdiction)
+ * Reports use `visibility = 'public' AND deleted_at IS NULL` only, not the publicReportFilter status set:
+ * the operator feed reports the pin drop, so a `submitted` or `held` report is exactly what the operator
+ * needs to see. The two terms applied are the owner's opt-out and the delete.
  *
- * Each branch projects the SAME column set so the UNION ALL aligns; the outer query applies the ORDER BY
- * and the page cut. To bound the per-source scan each branch carries the SAME search predicate, keyset
- * predicate, ORDER BY and `limit + 1` cut as the outer query — a branch can therefore contribute at most
- * `limit + 1` rows, which is exactly what the outer has-more probe needs (a per-branch `limit` would make
- * the probe row unreachable whenever a single branch dominates the window, i.e. nextCursor would always be
- * null).
+ * Each branch carries the same search predicate, keyset predicate, ORDER BY and `limit + 1` cut as the
+ * outer query, which bounds the per-source scan. A per-branch `limit` would make the outer has-more probe
+ * row unreachable whenever one branch dominates the window, so nextCursor would always be null.
  *
- * KEYSET: (ts, id) with `id` compared AS TEXT in both the branch predicate and the outer ORDER BY. Every
- * source's pk is a uuid, so text order and uuid order coincide, and one text tuple gives the four sources a
- * single TOTAL order — without the id term two rows sharing a millisecond across sources could repeat or
- * skip across a page boundary.
+ * Keyset: (ts, id) with `id` compared as text in both the branch predicate and the outer ORDER BY. Every
+ * source's pk is a uuid, so text and uuid order coincide and one text tuple gives the four sources a
+ * single total order. The cursor carries ts at microsecond precision (`cursor_at`) because a millisecond
+ * anchor would re-include the previous page's last row on `oldest` and skip same-millisecond rows on
+ * `newest`.
  *
- * FILTERING: `filter` is an ActivityKind, which is a SERVICE-side classification. Rather than re-typing the
- * action prefixes in SQL, the branch set comes from `sourcesForKind` and the audit predicate is BUILT from
- * `AUDIT_ACTION_RULES` (activity-service.ts) — one vocabulary, so a chip can never filter out a row it also
- * labels. The catch-all kind (AUDIT_FALLBACK_KIND) is defined by exclusion and negates every rule.
- *
- * The service does the kind/hue/what classification; this repo only NORMALIZES and pages the rows.
+ * `filter` is a service-side classification, so the branch set comes from `sourcesForKind` and the audit
+ * predicate is built from `AUDIT_ACTION_RULES` rather than re-typing prefixes in SQL: a chip can never
+ * filter out a row it also labels.
  */
 
-import type { Sql } from "../../db/client.js"
-import { clampLimit, decodeCursor, paginate } from "./pagination.js"
+import type { Sql, SqlFragment } from "../../db/client.js"
+import { clampLimit } from "./pagination.js"
+import {
+  keysetInstant,
+  keysetPredicate,
+  paginateKeyset,
+  parseKeysetCursor,
+  type KeysetCursor,
+} from "../../db/cursor-helpers.js"
 import { AUDIT_READ_ACTIONS } from "./audit.js"
-import { ilikeAnyOf, type SqlFragment } from "./sql-fragments.js"
+import { likePrefix } from "../../db/like.js"
+import { anyOf, ilikeAnyOf } from "./sql-fragments.js"
 import {
   AUDIT_ACTION_RULES,
   AUDIT_FALLBACK_KIND,
   MAIL_BOUNCE_EVENT_TYPES,
   auditRulesForKind,
   sourcesForKind,
-  type ActivityRepository,
   type AuditActionRule,
-  type ActivitySource,
-  type ActivitySourceRecord,
-  type ListActivityArgs,
 } from "./activity-service.js"
+import type {
+  ActivityRepository,
+  ActivitySource,
+  ActivitySourceRecord,
+  ListActivityArgs,
+} from "./activity-repository.js"
 
-/** A unioned activity row as selected back (snake_case; the common projection across all sources). */
 interface ActivityRowSelect {
   source: ActivitySource
   id: string
   ts: Date
+  cursor_at: string
   who: string | null
   actorless: boolean
   where_label: string | null
@@ -76,137 +74,160 @@ function toRecord(r: ActivityRowSelect): ActivitySourceRecord {
   }
 }
 
-/** Construct the production ActivityRepository over the raw postgres-js tag (`container.getDb().sql`). */
-export function makeDrizzleActivityRepository(sql: Sql): ActivityRepository {
-  /**
-   * The audit branch's kind predicate. For a kind that OWNS rules, match any of them; for the catch-all
-   * kind, match NONE of them (that is what "everything else" means, and it must stay derived from the one
-   * rule table or the chip drifts from the label).
-   */
-  function auditKindFilter(args: ListActivityArgs): SqlFragment {
-    if (args.filter === "all") return sql``
-    const own = auditRulesForKind(args.filter)
-    if (own.length > 0) return sql`AND ${anyRule(own)}`
-    if (args.filter === AUDIT_FALLBACK_KIND) return sql`AND NOT ${anyRule(AUDIT_ACTION_RULES)}`
-    // The kind cannot come from the audit branch at all; sourcesForKind already pruned it, so this is
-    // unreachable defense rather than a filter.
-    return sql`AND false`
-  }
+interface PageSpec {
+  anchor: KeysetCursor | null
+  desc: boolean
+  limit: number
+}
 
-  /** `(action LIKE 'p.%' OR action = 'x' OR ...)` over a rule list. */
-  function anyRule(rules: readonly AuditActionRule[]): SqlFragment {
-    // Prefixes are compile-time literals from AUDIT_ACTION_RULES, never user input, but they still ride as
-    // bound parameters — LIKE's own metacharacters are not special in these dotted namespaces.
-    const branches = rules.map((rule) =>
+type BranchBuilder = (sql: Sql, args: ListActivityArgs, page: PageSpec) => SqlFragment
+
+// The catch-all kind matches none of the rules; it must stay derived from the one rule table or the chip
+// drifts from the label.
+function auditKindFilter(sql: Sql, args: ListActivityArgs): SqlFragment {
+  if (args.filter === "all") return sql``
+  const own = auditRulesForKind(args.filter)
+  if (own.length > 0) return sql`AND ${anyRule(sql, own)}`
+  if (args.filter === AUDIT_FALLBACK_KIND) return sql`AND NOT ${anyRule(sql, AUDIT_ACTION_RULES)}`
+  // The kind cannot come from the audit branch at all; sourcesForKind already pruned it, so this is
+  // unreachable defense rather than a filter.
+  return sql`AND false`
+}
+
+function anyRule(sql: Sql, rules: readonly AuditActionRule[]): SqlFragment {
+  // The prefixes contain `_` (gov_claim.), a LIKE wildcard, so they are escaped to match literally, as
+  // the service classifier's startsWith does.
+  return anyOf(
+    sql,
+    rules.map((rule) =>
       rule.exact !== undefined
         ? sql`a.action = ${rule.exact}`
-        : sql`a.action LIKE ${`${rule.prefix}%`}`,
-    )
-    const first = branches[0]
-    if (first === undefined) return sql`(false)`
-    return sql`(${branches.slice(1).reduce<SqlFragment>((acc, b) => sql`${acc} OR ${b}`, first)})`
-  }
+        : sql`a.action LIKE ${likePrefix(rule.prefix)} ESCAPE '\\'`,
+    ),
+  )
+}
 
-  /** The mail branch's kind predicate (bounced/failed vs everything else on the same type column). */
-  function mailKindFilter(args: ListActivityArgs): SqlFragment {
-    const types = [...MAIL_BOUNCE_EVENT_TYPES]
-    if (args.filter === "outreach_bounce") return sql`AND e.type = ANY(${types}::text[])`
-    if (args.filter === "outreach_open") return sql`AND e.type <> ALL(${types}::text[])`
-    return sql``
-  }
+function mailKindFilter(sql: Sql, args: ListActivityArgs): SqlFragment {
+  const types = [...MAIL_BOUNCE_EVENT_TYPES]
+  if (args.filter === "outreach_bounce") return sql`AND e.type = ANY(${types}::text[])`
+  if (args.filter === "outreach_open") return sql`AND e.type <> ALL(${types}::text[])`
+  return sql``
+}
 
-  return {
-    async list(
-      args: ListActivityArgs,
-    ): Promise<{ records: ActivitySourceRecord[]; nextCursor: string | null }> {
-      const limit = clampLimit(args.limit)
-      // requireUuid is FALSE: the keyset compares `id::text`, never `${id}::uuid`, so a non-uuid id in a
-      // hand-made cursor cannot raise a 22P02 — it simply anchors past every real row.
-      const anchor = decodeCursor(args.cursor)
-      const desc = args.sort === "newest"
-      const sources = args.filter === "all" ? null : new Set(sourcesForKind(args.filter))
-      const wants = (source: ActivitySource): boolean => sources === null || sources.has(source)
+function pageWindow(
+  sql: Sql,
+  page: PageSpec,
+  tsCol: SqlFragment,
+  idText: SqlFragment,
+): SqlFragment {
+  const keyset =
+    page.anchor === null
+      ? sql``
+      : sql`AND ${keysetPredicate(sql, tsCol, idText, page.anchor, {
+          direction: page.desc ? "desc" : "asc",
+          idType: "text",
+        })}`
+  const order = page.desc
+    ? sql`ORDER BY ${tsCol} DESC, ${idText} DESC`
+    : sql`ORDER BY ${tsCol} ASC, ${idText} ASC`
+  return sql`${keyset} ${order} LIMIT ${page.limit + 1}`
+}
 
-      /** The per-branch keyset + ORDER BY tail, parameterized on the branch's own ts/id expressions. */
-      const pageWindow = (tsCol: SqlFragment, idText: SqlFragment): SqlFragment => {
-        const keyset =
-          anchor === null
-            ? sql``
-            : desc
-              ? sql`AND (${tsCol}, ${idText}) < (${anchor.createdAt}, ${anchor.id}::text)`
-              : sql`AND (${tsCol}, ${idText}) > (${anchor.createdAt}, ${anchor.id}::text)`
-        const order = desc
-          ? sql`ORDER BY ${tsCol} DESC, ${idText} DESC`
-          : sql`ORDER BY ${tsCol} ASC, ${idText} ASC`
-        return sql`${keyset} ${order} LIMIT ${limit + 1}`
-      }
+function searchFilter(sql: Sql, q: string | null, columns: readonly SqlFragment[]): SqlFragment {
+  return q === null ? sql`` : sql`AND ${ilikeAnyOf(sql, columns, q)}`
+}
 
-      const search = (columns: readonly SqlFragment[]): SqlFragment =>
-        args.q === null ? sql`` : sql`AND ${ilikeAnyOf(sql, columns, args.q)}`
-
-      const branches: SqlFragment[] = []
-
-      if (wants("audit")) {
-        branches.push(sql`(
+function auditBranch(sql: Sql, args: ListActivityArgs, page: PageSpec): SqlFragment {
+  return sql`(
           SELECT 'audit'::text AS source, a.id::text AS id, a.created_at AS ts,
+                 ${keysetInstant(sql, sql`a.created_at`)} AS cursor_at,
                  u.display_name AS who, a.actor_id IS NULL AS actorless, a.target AS where_label,
                  a.action AS action, NULL::text AS event_type, a.target AS subject
           FROM audit_log a
           LEFT JOIN users u ON u.id = a.actor_id
-          -- audit_log carries the L4 read audits too (one row per sensitive PAGE VIEW). Those are
-          -- navigation, not activity: unfiltered they fill this branch's whole per-source window and evict
-          -- every real action from the feed. They remain in the audit-log view.
+          -- Read audits (one row per sensitive page view) are navigation, not activity: unfiltered they
+          -- fill this branch's whole per-source window and evict every real action from the feed. They
+          -- remain in the audit-log view.
           WHERE a.action <> ALL(${[...AUDIT_READ_ACTIONS]})
-          ${auditKindFilter(args)}
-          ${search([sql`a.action`, sql`u.display_name`, sql`a.target`])}
-          ${pageWindow(sql`a.created_at`, sql`a.id::text`)}
-        )`)
-      }
+          ${auditKindFilter(sql, args)}
+          ${searchFilter(sql, args.q, [sql`a.action`, sql`u.display_name`, sql`a.target`])}
+          ${pageWindow(sql, page, sql`a.created_at`, sql`a.id::text`)}
+        )`
+}
 
-      if (wants("report")) {
-        branches.push(sql`(
+function reportBranch(sql: Sql, args: ListActivityArgs, page: PageSpec): SqlFragment {
+  return sql`(
           SELECT 'report'::text AS source, r.id::text AS id, r.created_at AS ts,
+                 ${keysetInstant(sql, sql`r.created_at`)} AS cursor_at,
                  ru.display_name AS who, false AS actorless, j.name AS where_label,
                  NULL::text AS action, NULL::text AS event_type, r.category AS subject
           FROM reports r
           LEFT JOIN users ru ON ru.id = r.reporter_user_id
           LEFT JOIN jurisdictions j ON j.geoid = r.jurisdiction_geoid
           WHERE r.deleted_at IS NULL AND r.visibility = 'public'
-          ${search([sql`r.category`, sql`ru.display_name`, sql`j.name`])}
+          ${searchFilter(sql, args.q, [sql`r.category`, sql`ru.display_name`, sql`j.name`])}
           -- reports.created_at is DEFAULT now() (effectively non-null on every row), so ordering on the
           -- bare column lets the (created_at) index serve the sort instead of a seq-scan+top-N heap sort.
-          ${pageWindow(sql`r.created_at`, sql`r.id::text`)}
-        )`)
-      }
+          ${pageWindow(sql, page, sql`r.created_at`, sql`r.id::text`)}
+        )`
+}
 
-      if (wants("cleanup")) {
-        branches.push(sql`(
+function cleanupBranch(sql: Sql, args: ListActivityArgs, page: PageSpec): SqlFragment {
+  return sql`(
           SELECT 'cleanup'::text AS source, c.id::text AS id, c.created_at AS ts,
+                 ${keysetInstant(sql, sql`c.created_at`)} AS cursor_at,
                  cu.display_name AS who, false AS actorless, c.address AS where_label,
                  NULL::text AS action, NULL::text AS event_type, c.title AS subject
           FROM cleanups c
           LEFT JOIN users cu ON cu.id = c.organizer_user_id
           WHERE true
-          ${search([sql`c.title`, sql`cu.display_name`, sql`c.address`])}
+          ${searchFilter(sql, args.q, [sql`c.title`, sql`cu.display_name`, sql`c.address`])}
           -- cleanups.created_at is DEFAULT now() (set on insert, effectively non-null), so ordering on the
           -- bare column lets the (created_at) index serve the sort.
-          ${pageWindow(sql`c.created_at`, sql`c.id::text`)}
-        )`)
-      }
+          ${pageWindow(sql, page, sql`c.created_at`, sql`c.id::text`)}
+        )`
+}
 
-      if (wants("mail_event")) {
-        branches.push(sql`(
+function mailEventBranch(sql: Sql, args: ListActivityArgs, page: PageSpec): SqlFragment {
+  return sql`(
           SELECT 'mail_event'::text AS source, e.id::text AS id, e.created_at AS ts,
+                 ${keysetInstant(sql, sql`e.created_at`)} AS cursor_at,
                  t.org AS who, false AS actorless, COALESCE(t.org, t.jurisdiction_geoid) AS where_label,
                  NULL::text AS action, e.type AS event_type, t.subject AS subject
           FROM mail_events e
           LEFT JOIN mail_threads t ON t.id = e.thread_id
           WHERE true
-          ${mailKindFilter(args)}
-          ${search([sql`e.type`, sql`t.org`, sql`t.jurisdiction_geoid`, sql`t.subject`])}
-          ${pageWindow(sql`e.created_at`, sql`e.id::text`)}
-        )`)
+          ${mailKindFilter(sql, args)}
+          ${searchFilter(sql, args.q, [sql`e.type`, sql`t.org`, sql`t.jurisdiction_geoid`, sql`t.subject`])}
+          ${pageWindow(sql, page, sql`e.created_at`, sql`e.id::text`)}
+        )`
+}
+
+// Union order is fixed so the statement text is the same for every request that selects the same sources.
+const SOURCE_BRANCHES: readonly (readonly [ActivitySource, BranchBuilder])[] = [
+  ["audit", auditBranch],
+  ["report", reportBranch],
+  ["cleanup", cleanupBranch],
+  ["mail_event", mailEventBranch],
+]
+
+export function makeDrizzleActivityRepository(sql: Sql): ActivityRepository {
+  return {
+    async list(
+      args: ListActivityArgs,
+    ): Promise<{ records: ActivitySourceRecord[]; nextCursor: string | null }> {
+      const limit = clampLimit(args.limit)
+      // requireUuid is false: the keyset compares `id::text`, never `${id}::uuid`, so a non-uuid id in a
+      // hand-made cursor cannot raise a 22P02; it simply anchors past every real row.
+      const page: PageSpec = {
+        anchor: parseKeysetCursor(args.cursor, { requireUuid: false }),
+        desc: args.sort === "newest",
+        limit,
       }
+      const sources = args.filter === "all" ? null : new Set(sourcesForKind(args.filter))
+      const branches = SOURCE_BRANCHES.filter(
+        ([source]) => sources === null || sources.has(source),
+      ).map(([, build]) => build(sql, args, page))
 
       const first = branches[0]
       // No branch can produce the requested kind (today: filter=claim). An empty union is not valid SQL, so
@@ -216,7 +237,7 @@ export function makeDrizzleActivityRepository(sql: Sql): ActivityRepository {
         .slice(1)
         .reduce<SqlFragment>((acc, branch) => sql`${acc} UNION ALL ${branch}`, first)
 
-      const outerOrder = desc
+      const outerOrder = page.desc
         ? sql`ORDER BY feed.ts DESC, feed.id DESC`
         : sql`ORDER BY feed.ts ASC, feed.id ASC`
       // The union is wrapped in a FROM subquery (rather than trailing the branches with a bare ORDER BY) so
@@ -226,7 +247,10 @@ export function makeDrizzleActivityRepository(sql: Sql): ActivityRepository {
         ${outerOrder}
         LIMIT ${limit + 1}
       `
-      const { items, nextCursor } = paginate(rows, limit, (r) => ({ at: r.ts, id: r.id }))
+      const { items, nextCursor } = paginateKeyset(rows, limit, (r) => ({
+        atText: r.cursor_at,
+        id: r.id,
+      }))
       return { records: items.map(toRecord), nextCursor }
     },
   }

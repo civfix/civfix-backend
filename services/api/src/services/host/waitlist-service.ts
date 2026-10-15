@@ -20,7 +20,7 @@ import type {
   HostRegistrationRepository,
   RegistrationSubject,
   WaitlistOffer,
-} from "./registration-repository.types.js"
+} from "./registration-repository.js"
 import type {
   RegistrationAudit,
   RegistrationNotifier,
@@ -29,11 +29,11 @@ import type {
 
 export const WAITLIST_CLAIM_WINDOW_MS = 24 * 60 * 60 * 1000
 
-export const WAITLIST_EXPIRE_BATCH = 500
+const WAITLIST_EXPIRE_BATCH = 500
 
-export const WAITLIST_PROMOTE_MAX_PER_RUN = 50
+const WAITLIST_PROMOTE_MAX_PER_RUN = 50
 
-export const WAITLIST_DEFAULT_LIMIT = 25
+const WAITLIST_DEFAULT_LIMIT = 25
 
 export interface WaitlistServiceDeps {
   repo: HostRegistrationRepository
@@ -62,10 +62,7 @@ export interface WaitlistService {
     input: ClaimWaitlistOfferRequest,
     subject: RegistrationSubject,
   ): Promise<ClaimWaitlistOfferResponse>
-  promote(
-    input: PromoteFromWaitlistRequest,
-    actorId: string,
-  ): Promise<PromoteFromWaitlistResponse>
+  promote(input: PromoteFromWaitlistRequest, actorId: string): Promise<PromoteFromWaitlistResponse>
   runPromote(job: WaitlistPromoteJob): Promise<number>
   runExpireSweep(): Promise<number>
 }
@@ -125,6 +122,8 @@ export function makeWaitlistService(deps: WaitlistServiceDeps): WaitlistService 
           throw AppError.validation({ accessCode: "that code is not valid for this ticket type" })
         case "ticket_type_not_found":
           throw AppError.notFound("Ticket type not found")
+        case "banned":
+          throw AppError.forbidden("A host removed you from this event.")
         case "closed":
           throw AppError.conflict("This event is closed.")
         case "ended":

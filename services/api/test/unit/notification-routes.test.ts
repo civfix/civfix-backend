@@ -2,12 +2,12 @@ import { describe, it, expect, afterEach } from "vitest"
 import type { FastifyInstance } from "fastify"
 import { FakeMailer } from "@civfix/shared/fakes"
 import type { FakePushSender } from "@civfix/shared/fakes"
-import { buildServer } from "../../src/server.js"
-import { buildContainer } from "../../src/di.js"
+import { makeServer } from "../../src/server.js"
+import { makeContainer } from "../../src/di.js"
 import { loadEnv } from "../../src/env.js"
 import { InMemoryCacheClient } from "../../src/auth/cache.js"
 import { makeInMemoryStores } from "../../src/auth/stores.js"
-import { buildAuthServices } from "../../src/auth/auth-services.js"
+import { makeAuthServices } from "../../src/auth/auth-services.js"
 import { StubJwksVerifier } from "../helpers/auth.js"
 import { InMemoryNotificationRepository } from "../helpers/notifications.js"
 import {
@@ -15,7 +15,6 @@ import {
   type NotificationServiceOverrides,
 } from "../../src/routes/notifications.routes.js"
 import { randomUUID } from "node:crypto"
-
 
 const DEVICE_TOKEN = "a1".repeat(32)
 const DEVICE_TOKEN_WILD = "b2".repeat(32)
@@ -33,14 +32,16 @@ interface Harness {
 
 let current: Harness | undefined
 
-async function makeHarness(seed?: (repo: InMemoryNotificationRepository) => void): Promise<Harness> {
+async function makeHarness(
+  seed?: (repo: InMemoryNotificationRepository) => void,
+): Promise<Harness> {
   const env = loadEnv({ NODE_ENV: "test" })
 
   const stores = makeInMemoryStores()
   const cache = new InMemoryCacheClient(() => Date.now())
   const mailer = new FakeMailer()
   const verifier = new StubJwksVerifier()
-  const authServices = buildAuthServices({
+  const authServices = makeAuthServices({
     stores,
     cache,
     mailer,
@@ -53,10 +54,10 @@ async function makeHarness(seed?: (repo: InMemoryNotificationRepository) => void
   if (seed) seed(repo)
   const notificationOverrides: NotificationServiceOverrides = { repo }
 
-  const container = buildContainer(env)
+  const container = makeContainer(env)
   const push = container.pushSender as FakePushSender
 
-  const app = await buildServer({ env, container, authServices, notificationOverrides })
+  const app = await makeServer({ env, container, authServices, notificationOverrides })
 
   const { token, userId } = await signIn(app, mailer, "notif@example.com")
 
@@ -97,8 +98,20 @@ describe("GET /notifications", () => {
   it("lists the caller's notifications newest-first (auth)", async () => {
     const { app, token, userId } = await makeHarness()
     const { repo } = current!
-    await repo.insertNotification({ userId, type: "system", title: "older", body: null, link: null })
-    await repo.insertNotification({ userId, type: "system", title: "newer", body: null, link: null })
+    await repo.insertNotification({
+      userId,
+      type: "system",
+      title: "older",
+      body: null,
+      link: null,
+    })
+    await repo.insertNotification({
+      userId,
+      type: "system",
+      title: "newer",
+      body: null,
+      link: null,
+    })
 
     const res = await app.inject({ method: "GET", url: "/v1/notifications", headers: auth(token) })
     expect(res.statusCode).toBe(200)
@@ -192,7 +205,9 @@ describe("POST /notifications/read", () => {
       payload: { ids },
     })
     expect(res.statusCode).toBe(200)
-    expect(repo.notifications.filter((n) => n.userId === userId && n.readAt === null)).toHaveLength(0)
+    expect(repo.notifications.filter((n) => n.userId === userId && n.readAt === null)).toHaveLength(
+      0,
+    )
   })
 })
 
@@ -260,7 +275,9 @@ describe("GET + PUT /notifications/prefs", () => {
 
   it("401s anonymously", async () => {
     const { app } = await makeHarness()
-    expect((await app.inject({ method: "GET", url: "/v1/notifications/prefs" })).statusCode).toBe(401)
+    expect((await app.inject({ method: "GET", url: "/v1/notifications/prefs" })).statusCode).toBe(
+      401,
+    )
   })
 })
 
@@ -277,7 +294,11 @@ describe("POST /push/register", () => {
     expect(res.json()).toEqual({ ok: true })
 
     expect(current!.repo.pushTokens).toHaveLength(1)
-    expect(current!.repo.pushTokens[0]).toMatchObject({ userId, platform: "ios", token: DEVICE_TOKEN })
+    expect(current!.repo.pushTokens[0]).toMatchObject({
+      userId,
+      platform: "ios",
+      token: DEVICE_TOKEN,
+    })
     expect(push.tokens.some((t) => t.token === DEVICE_TOKEN)).toBe(true)
   })
 
@@ -328,7 +349,11 @@ describe("POST /push/register", () => {
         method: "POST",
         url: "/v1/push/register",
         headers: auth(token),
-        payload: { platform: "android", token: `${"ab".repeat(30)}${String(i).padStart(4, "0")}`, deviceId },
+        payload: {
+          platform: "android",
+          token: `${"ab".repeat(30)}${String(i).padStart(4, "0")}`,
+          deviceId,
+        },
       })
       expect(res.statusCode, deviceId.slice(0, 24)).toBe(200)
       expect(current!.repo.pushTokens[0]?.deviceId, deviceId.slice(0, 24)).toBeNull()
@@ -398,7 +423,11 @@ describe("POST /push/unregister (F083)", () => {
       headers: auth(token),
       payload: { platform: "ios", token: DEVICE_TOKEN },
     })
-    expect(current!.repo.pushTokens[0]).toMatchObject({ userId, token: DEVICE_TOKEN, revokedAt: null })
+    expect(current!.repo.pushTokens[0]).toMatchObject({
+      userId,
+      token: DEVICE_TOKEN,
+      revokedAt: null,
+    })
 
     const res = await app.inject({
       method: "POST",

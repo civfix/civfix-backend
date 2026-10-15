@@ -2,11 +2,9 @@ import { index, pgTable, text, timestamp } from "drizzle-orm/pg-core"
 import type { AddressPrecision } from "@civfix/shared"
 
 /**
- * Mirror of drizzle/0179_address_resolution.sql. Read-through cache of reverse geocodes keyed by the
- * shared 5-decimal point key (@civfix/shared `geocodePointKey`). A row with a NULL `address` is a
- * NEGATIVE entry: the providers answered nothing, and it expires on a much shorter TTL than a hit so a
- * provider outage cannot poison the point. TTL is applied on read (services/geocode-cache.ts), never by
- * a cron.
+ * Read-through reverse-geocode cache keyed by the shared `geocodePointKey`. A NULL `address` is a negative
+ * entry with a much shorter TTL than a hit, so a provider outage cannot poison the point. TTL is applied
+ * on read (services/geocode-cache.ts), never by a cron.
  */
 export const geocodeCache = pgTable(
   "geocode_cache",

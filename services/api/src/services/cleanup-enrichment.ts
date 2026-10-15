@@ -3,7 +3,7 @@ import type { Container } from "../di.js"
 import { attachRegistrationFields } from "./host/registration-dto.js"
 import { withAffiliation } from "./affiliation.js"
 
-export async function attachOrganizerAffiliations(
+async function attachOrganizerAffiliations(
   container: Container,
   dtos: CleanupDTO[],
   viewerUserId: string | null,

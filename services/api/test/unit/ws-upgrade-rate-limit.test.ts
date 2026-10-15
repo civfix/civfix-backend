@@ -55,7 +55,8 @@ describe("/ws upgrade rate limit", () => {
   it("keys the upgrade bucket per IP under its own namespace", async () => {
     app = await buildApp()
     const blocked = async (ip: string) => {
-      for (let i = 0; i < 60; i++) await app!.inject({ method: "GET", url: "/ws", remoteAddress: ip })
+      for (let i = 0; i < 60; i++)
+        await app!.inject({ method: "GET", url: "/ws", remoteAddress: ip })
       return app!.inject({ method: "GET", url: "/ws", remoteAddress: ip })
     }
     expect((await blocked("203.0.113.9")).statusCode).toBe(429)

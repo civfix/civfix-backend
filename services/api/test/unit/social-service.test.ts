@@ -8,20 +8,15 @@ import {
   PROFILE_PAST_EVENTS_LIMIT,
   type SocialNotifier,
   type SocialService,
-  type SocialRepository,
-  type PersonView,
 } from "../../src/services/social-service.js"
+import type { PersonView, SocialRepository } from "../../src/services/social-repository.js"
 import {
   toPersonView,
   SUGGEST_CANDIDATE_POOL,
   type PersonRowSelect,
 } from "../../src/services/social-repository.drizzle.js"
 import { InMemoryCacheClient } from "../../src/auth/cache.js"
-import {
-  InMemorySocialRepository,
-  makeCleanupRecord,
-} from "../helpers/social.js"
-
+import { InMemorySocialRepository, makeCleanupRecord } from "../helpers/social.js"
 
 const A = "11111111-1111-1111-1111-111111111111"
 const B = "22222222-2222-2222-2222-222222222222"
@@ -47,7 +42,6 @@ function makeHarness(): {
   const service = makeSocialService({ repo, notifier })
   return { repo, notifier, service }
 }
-
 
 describe("avatarGradient", () => {
   it("is deterministic: same seed yields the same pair across calls", () => {
@@ -133,7 +127,6 @@ describe("toPersonDTO", () => {
     expect(toPersonDTO(view, false).avatarUrl).toBe("https://cdn.example.test/avatars/jane.jpg")
   })
 })
-
 
 describe("listPeople", () => {
   it("excludes the viewer and soft-deleted users", async () => {
@@ -248,7 +241,6 @@ describe("listPeople", () => {
   })
 })
 
-
 describe("followPerson", () => {
   it("follows, is idempotent, and returns the new follower count", async () => {
     const { repo, service } = makeHarness()
@@ -361,7 +353,6 @@ describe("unfollowPerson", () => {
     expect(notifier.calls).toHaveLength(0)
   })
 })
-
 
 describe("getProfile", () => {
   it("returns followers/following, isFollowing, stats, and recent-first pastEvents", async () => {
@@ -495,7 +486,7 @@ describe("getProfile: volunteer-hours privacy tri-state (C18)", () => {
     return { repo, service, calls }
   }
 
-  it("NULL (never chosen): hours present, flag ABSENT — byte-identical to the pre-column response", async () => {
+  it("NULL (never chosen): hours present, flag ABSENT, byte-identical to the pre-column response", async () => {
     const { repo, service, calls } = makeHoursHarness()
     repo.seedUser({ id: A, displayName: "Alice" })
     repo.seedUser({ id: C, displayName: "Carol" })
@@ -605,7 +596,7 @@ describe("getProfile: volunteer-hours privacy tri-state (C18)", () => {
       expect(toPersonView(row).showVolunteerHours).toBe(false)
     })
 
-    it("still passes the real tri-state through verbatim — null must NOT collapse to false", () => {
+    it("still passes the real tri-state through verbatim; null must NOT collapse to false", () => {
       const nullArm = { ...rowWithoutTheColumn(), show_volunteer_hours: null } as PersonRowSelect
       const trueArm = { ...rowWithoutTheColumn(), show_volunteer_hours: true } as PersonRowSelect
       const falseArm = { ...rowWithoutTheColumn(), show_volunteer_hours: false } as PersonRowSelect
@@ -1036,7 +1027,7 @@ describe("followSuggestions", () => {
     expect((await service.followSuggestions(B, 10)).results.map((r) => r.id)).toEqual([A])
   })
 
-  it("R4-B2: a Redis fault during block invalidation is swallowed — the block itself must not fail", async () => {
+  it("R4-B2: a Redis fault during block invalidation is swallowed; the block itself must not fail", async () => {
     const throwing = {
       get: () => Promise.reject(new Error("redis down")),
       set: () => Promise.reject(new Error("redis down")),
@@ -1046,7 +1037,7 @@ describe("followSuggestions", () => {
     await expect(dropSuggestionsFor(undefined, [A, B])).resolves.toBeUndefined()
   })
 
-  it("H18: a cache that throws is not an error path — suggestions still compute", async () => {
+  it("H18: a cache that throws is not an error path; suggestions still compute", async () => {
     const repo = new InMemorySocialRepository()
     const service = makeSocialService({
       repo,
@@ -1288,7 +1279,9 @@ describe("profile events block gate", () => {
     const { repo, service } = makeBlockedHarness([{ blocker: A, blocked: B }])
     repo.seedUser({ id: A, displayName: "Alice" })
     repo.seedUser({ id: B, displayName: "Bob" })
-    repo.seedCleanup(makeCleanupRecord({ organizerUserId: B, title: "Past", scheduledAt: pastAt(3) }))
+    repo.seedCleanup(
+      makeCleanupRecord({ organizerUserId: B, title: "Past", scheduledAt: pastAt(3) }),
+    )
     const page = await service.listProfileEvents(B, { userId: A }, {})
     expect(page).toEqual({ items: [], nextCursor: null })
   })

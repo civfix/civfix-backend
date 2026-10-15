@@ -1,4 +1,5 @@
 import { quantizeFeedScore, type FeedRankingConfig } from "@civfix/shared"
+import { MS_PER_HOUR, MS_PER_SECOND } from "../lib/time.js"
 
 export interface FeedCandidate {
   id: string
@@ -24,10 +25,8 @@ export interface RankedCandidate {
   score: number
 }
 
-const MS_PER_HOUR = 3_600_000
-
 export function quantizeClock(nowMs: number, clockBucketSeconds: number): number {
-  const bucketMs = Math.max(1, Math.trunc(clockBucketSeconds)) * 1000
+  const bucketMs = Math.max(1, Math.trunc(clockBucketSeconds)) * MS_PER_SECOND
   return Math.floor(nowMs / bucketMs) * bucketMs
 }
 
@@ -91,6 +90,8 @@ export function rawScore(candidate: FeedCandidate, cfg: FeedRankingConfig): numb
 const FNV_OFFSET_BASIS = 2_166_136_261
 const FNV_PRIME = 16_777_619
 const UINT32_SPAN = 4_294_967_296
+const MURMUR3_FMIX_C1 = 2_246_822_507
+const MURMUR3_FMIX_C2 = 3_266_489_909
 
 function fnv1a32(text: string): number {
   let hash = FNV_OFFSET_BASIS
@@ -104,9 +105,9 @@ function fnv1a32(text: string): number {
 function avalanche(value: number): number {
   let hash = value >>> 0
   hash ^= hash >>> 16
-  hash = Math.imul(hash, 2_246_822_507)
+  hash = Math.imul(hash, MURMUR3_FMIX_C1)
   hash ^= hash >>> 13
-  hash = Math.imul(hash, 3_266_489_909)
+  hash = Math.imul(hash, MURMUR3_FMIX_C2)
   hash ^= hash >>> 16
   return hash >>> 0
 }

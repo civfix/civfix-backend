@@ -1,4 +1,3 @@
-
 import { readdirSync, readFileSync } from "node:fs"
 import { dirname, join } from "node:path"
 import { fileURLToPath } from "node:url"
@@ -6,7 +5,7 @@ import { describe, expect, it } from "vitest"
 
 const HERE = dirname(fileURLToPath(import.meta.url))
 const DRIZZLE_DIR = join(HERE, "..", "..", "drizzle")
-const WORKER_REPO = join(HERE, "..", "..", "src", "services", "media-worker-repo.ts")
+const WORKER_REPO = join(HERE, "..", "..", "src", "services", "media-worker-repository.drizzle.ts")
 
 function orphanBindingColumns(): string[] {
   const src = readFileSync(WORKER_REPO, "utf8")
@@ -57,7 +56,7 @@ describe("F147: dropping a media binding column must re-point its rows first", (
       )
       expect(
         repoint.test(before),
-        `${drop.file} drops media_assets.${drop.column} without re-pointing the bound rows first — ` +
+        `${drop.file} drops media_assets.${drop.column} without re-pointing the bound rows first: ` +
           "every row bound only by it becomes orphan-sweep bait (row DELETEd, R2 object deleted)",
       ).toBe(true)
     }

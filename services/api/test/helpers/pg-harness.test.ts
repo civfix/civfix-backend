@@ -33,7 +33,7 @@ describe.skipIf(!pg)("pg harness: per-file database", () => {
   it("came from the ONE globalSetup container, not a per-file boot", () => {
     // globalSetup decides from the CLI filters whether any selected file needs Postgres; a file that
     // imports this harness must be recognized, so the shared container is what served it. (withPg's
-    // fallback would still make the tests pass — silently paying a container boot per file, which is the
+    // fallback would still make the tests pass, silently paying a container boot per file, which is the
     // regression this whole harness exists to prevent.)
     expect(inject("civfixPg")?.kind).toBe("ready")
   })
@@ -51,7 +51,7 @@ describe.skipIf(!pg)("pg harness: per-file database", () => {
     // One container now serves every worker at once (each test file holds a 4-connection raw pool + a
     // 2-connection Drizzle pool), so the default max_connections=100 would start refusing connections
     // under parallel load. fsync off is what makes 60 migrations + ~44 clones cheap. Both ride on
-    // withCommand — if a testcontainers upgrade ever drops it, this fails instead of flaking later.
+    // withCommand: if a testcontainers upgrade ever drops it, this fails instead of flaking later.
     const [row] = await h.sql<{ mc: string; fsync: string }[]>`
       SELECT current_setting('max_connections') AS mc, current_setting('fsync') AS fsync
     `
@@ -104,7 +104,7 @@ describe.skipIf(!pg)("pg harness: per-file database", () => {
   it("does not share writes with another clone of the same template", async () => {
     const h = pg!
     // A second clone off the same template, created through this file's own connection (same server,
-    // same credentials) — the exact mechanism another test FILE would get its database by.
+    // same credentials): the exact mechanism another test FILE would get its database by.
     const otherDb = uniqueTestDbName()
     await createDatabase(h.uri, otherDb, TEMPLATE_DB)
     const other = postgres(uriWithDatabase(h.uri, otherDb), { max: 1, onnotice: () => {} })

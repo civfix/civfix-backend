@@ -20,9 +20,9 @@ import {
   makeVolunteerHoursService,
   type CleanupHoursLookup,
   type HoursModerationSink,
-  type VolunteerHoursRepository,
   type VolunteerHoursService,
 } from "../services/volunteer-hours-service.js"
+import type { VolunteerHoursRepository } from "../services/volunteer-hours-repository.js"
 import { toHoursAnomalyModerationItem } from "../services/volunteer-hours-anomaly.js"
 import { makeModerationService } from "../services/admin/moderation-service.js"
 import { makeDrizzleModerationRepository } from "../services/admin/moderation-repository.drizzle.js"
@@ -47,8 +47,14 @@ declare module "fastify" {
   }
 }
 
+const GEOID_MAX_CHARS = 64
+
+const ANONYMOUS_CACHE_CONTROL = "public, max-age=60"
+
+const VIEWER_CACHE_CONTROL = "private, max-age=0, no-store"
+
 const CleanupIdParamsSchema = z.object({ id: IdSchema }).strict()
-const GeoidParamsSchema = z.object({ geoid: z.string().min(1).max(64) }).strict()
+const GeoidParamsSchema = z.object({ geoid: z.string().min(1).max(GEOID_MAX_CHARS) }).strict()
 const UserIdParamsSchema = z.object({ id: IdSchema }).strict()
 
 const LEADERBOARD_RATE_LIMIT = { max: 60, timeWindow: "1 minute" } as const
@@ -59,7 +65,11 @@ const LOG_EVENT_HOURS_RATE_LIMIT = { max: 10, timeWindow: "1 minute" } as const
 
 function appendVary(reply: FastifyReply, ...fields: readonly string[]): void {
   const existing = reply.getHeader("Vary")
-  const raw = Array.isArray(existing) ? existing.join(",") : typeof existing === "string" ? existing : ""
+  const raw = Array.isArray(existing)
+    ? existing.join(",")
+    : typeof existing === "string"
+      ? existing
+      : ""
   const current = raw
     .split(",")
     .map((s) => s.trim())
@@ -68,6 +78,12 @@ function appendVary(reply: FastifyReply, ...fields: readonly string[]): void {
     if (!current.some((c) => c.toLowerCase() === field.toLowerCase())) current.push(field)
   }
   reply.header("Vary", current.join(", "))
+}
+
+// The body differs per viewer (blocks, own rank), so a shared cache may only hold the anonymous copy.
+function setViewerCacheHeaders(reply: FastifyReply, viewerId: string | null): void {
+  appendVary(reply, "Cookie", "Authorization")
+  reply.header("Cache-Control", viewerId === null ? ANONYMOUS_CACHE_CONTROL : VIEWER_CACHE_CONTROL)
 }
 
 export async function registerVolunteerHoursRoutes(
@@ -145,7 +161,10 @@ export async function registerVolunteerHoursRoutes(
   route(app, "getMyHoursEntries", async (request, reply) => {
     const userId = requireAuth(request)
     const query = parse(MyVolunteerHoursEntriesQuerySchema, request.query ?? {})
-    const payload: MyVolunteerHoursEntriesResponse = await service().getMyHoursEntries(userId, query)
+    const payload: MyVolunteerHoursEntriesResponse = await service().getMyHoursEntries(
+      userId,
+      query,
+    )
     reply.status(200).send(payload)
   })
 
@@ -162,11 +181,7 @@ export async function registerVolunteerHoursRoutes(
       const viewerId = request.auth?.userId ?? null
       const payload: PublicVolunteerHoursResponse = await service().getPublicHours(query, viewerId)
 
-      appendVary(reply, "Cookie", "Authorization")
-      reply.header(
-        "Cache-Control",
-        viewerId === null ? "public, max-age=60" : "private, max-age=0, no-store",
-      )
+      setViewerCacheHeaders(reply, viewerId)
       reply.status(200).send(payload)
     },
   )
@@ -212,11 +227,7 @@ export async function registerVolunteerHoursRoutes(
       const viewerId = request.auth?.userId ?? null
       const payload: LeaderboardResponse = await service().leaderboard(geoid, query, viewerId)
 
-      appendVary(reply, "Cookie", "Authorization")
-      reply.header(
-        "Cache-Control",
-        viewerId === null ? "public, max-age=60" : "private, max-age=0, no-store",
-      )
+      setViewerCacheHeaders(reply, viewerId)
       reply.status(200).send(payload)
     },
   )

@@ -4,7 +4,6 @@ import { withPg, type PgHarness } from "../helpers/pg.js"
 import { seedCleanup } from "../helpers/cleanups.js"
 import { PgUserStore } from "../../src/auth/pg-stores.js"
 
-
 const pg = await withPg()
 
 async function user(h: PgHarness, name: string): Promise<string> {
@@ -113,7 +112,7 @@ describe.skipIf(!pg)("erasure: the host-transfer ladder", () => {
     await pg?.teardown()
   })
 
-  it("does NOT cancel a sole-owner organization's events — the promoted admin takes them over", async () => {
+  it("does NOT cancel a sole-owner organization's events: the promoted admin takes them over", async () => {
     const h = pg!
     const owner = await user(h, "owner-sole")
     const admin = await user(h, "admin-successor")
@@ -178,7 +177,9 @@ describe.skipIf(!pg)("erasure: the host-transfer ladder", () => {
     `
     expect(orgRows[0]!.deleted_at).not.toBeNull()
 
-    const eventRows = await h.sql<{ organization_id: string | null; donation_url: string | null }[]>`
+    const eventRows = await h.sql<
+      { organization_id: string | null; donation_url: string | null }[]
+    >`
       SELECT organization_id, donation_url FROM cleanups WHERE id = ${orgEvent}
     `
     expect(eventRows[0]!.organization_id).toBeNull()
@@ -223,6 +224,46 @@ describe.skipIf(!pg)("erasure: the host-transfer ladder", () => {
     expect(rows[0]!.status).toBe("revoked")
     expect(rows[0]!.invited_email).toBeNull()
     expect(rows[0]!.email_scrubbed_at).not.toBeNull()
+  })
+
+  it("revokes the pending organization invites the departing user sent or received, audited", async () => {
+    const h = pg!
+    const orgOwner = await user(h, "org-invite-owner")
+    const leavingAdmin = await user(h, "org-invite-admin")
+    const bystander = await user(h, "org-invite-bystander")
+    const orgId = await organization(h, `org-invites-${Date.now()}`, orgOwner)
+    await addOrgMember(h, orgId, leavingAdmin, "admin", 3)
+    const stamp = Date.now()
+    const [sent, received, unrelated] = await h.sql<{ id: string }[]>`
+      INSERT INTO organization_invites
+        (organization_id, email, user_id, role, token_hash, status, invited_by, expires_at)
+      VALUES
+        (${orgId}, 'sock@example.test', NULL, 'admin', ${`sent-${stamp}`}, 'pending',
+         ${leavingAdmin}, now() + interval '14 days'),
+        (${orgId}, NULL, ${leavingAdmin}, 'member', ${`received-${stamp}`}, 'pending',
+         ${orgOwner}, now() + interval '14 days'),
+        (${orgId}, NULL, ${bystander}, 'member', ${`unrelated-${stamp}`}, 'pending',
+         ${orgOwner}, now() + interval '14 days')
+      RETURNING id
+    `
+
+    await new PgUserStore(h.db).softDeleteAndAnonymize(leavingAdmin)
+
+    const statuses = await h.sql<{ id: string; status: string; revoked_at: Date | null }[]>`
+      SELECT id, status, revoked_at FROM organization_invites WHERE organization_id = ${orgId}
+    `
+    const statusOfInvite = (id: string) => statuses.find((row) => row.id === id)
+    expect(statusOfInvite(sent!.id)?.status).toBe("revoked")
+    expect(statusOfInvite(sent!.id)?.revoked_at).not.toBeNull()
+    expect(statusOfInvite(received!.id)?.status).toBe("revoked")
+    expect(statusOfInvite(unrelated!.id)?.status).toBe("pending")
+
+    const audits = await h.sql<{ meta: Record<string, unknown> }[]>`
+      SELECT meta FROM audit_log
+       WHERE action = 'org.invite_revoked' AND target = ${`organization:${orgId}`}
+    `
+    expect(audits.map((a) => a.meta.inviteId).sort()).toEqual([sent!.id, received!.id].sort())
+    expect(audits.every((a) => a.meta.reason === "account_deleted")).toBe(true)
   })
 
   it("releases the seats an OFFERED waitlist entry reserved, and only those", async () => {
@@ -289,7 +330,12 @@ describe.skipIf(!pg)("erasure: the host-transfer ladder", () => {
     await new PgUserStore(h.db).softDeleteAndAnonymize(donor)
 
     const rows = await h.sql<
-      { id: string; user_id: string | null; profile_unlinked_at: Date | null; donor_email: string | null }[]
+      {
+        id: string
+        user_id: string | null
+        profile_unlinked_at: Date | null
+        donor_email: string | null
+      }[]
     >`SELECT id, user_id, profile_unlinked_at, donor_email FROM donations WHERE organization_id = ${org}`
     const byId = new Map(rows.map((row) => [row.id, row]))
 
@@ -385,6 +431,28 @@ describe.skipIf(!pg)("erasure: the host-transfer ladder", () => {
     expect(await statusOf(h, doomed)).toBe("cancelled")
   })
 
+  it("audits an organization-owner move and a cohost move in the same erasure, one row each", async () => {
+    const h = pg!
+    const host = await user(h, "host-audited-both")
+    const orgOwner = await user(h, "org-owner-audited")
+    const cohost = await user(h, "cohost-audited-both")
+    const org = await organization(h, `audited-both-${Date.now()}`, orgOwner)
+    const orgEvent = await event(h, { organizerId: host, organizationId: org })
+    const cohostEvent = await event(h, { organizerId: host })
+    await addEventMember(h, cohostEvent, cohost, "cohost", 3)
+
+    await new PgUserStore(h.db).softDeleteAndAnonymize(host)
+
+    const rows = await h.sql<{ target: string; meta: Record<string, unknown> }[]>`
+      SELECT target, meta FROM audit_log
+       WHERE actor_id = ${host} AND action = 'event.host_transferred'
+    `
+    const byTarget = new Map(rows.map((row) => [row.target, row.meta.newOrganizerId]))
+    expect(rows).toHaveLength(2)
+    expect(byTarget.get(`cleanup:${orgEvent}`)).toBe(orgOwner)
+    expect(byTarget.get(`cleanup:${cohostEvent}`)).toBe(cohost)
+  })
+
   it("never hands the event to a coordinator - the successor ladder is org owner then cohost", async () => {
     const h = pg!
     const host = await user(h, "host-with-coordinator")
@@ -415,7 +483,9 @@ describe.skipIf(!pg)("erasure: the host-transfer ladder", () => {
     expect(await eventRoleOf(h, staffed, leaving)).toBe("member")
     expect(await eventRoleOf(h, coordinated, leaving)).toBe("member")
 
-    const rows = await h.sql<{ target: string; actor_id: string | null; meta: Record<string, unknown> }[]>`
+    const rows = await h.sql<
+      { target: string; actor_id: string | null; meta: Record<string, unknown> }[]
+    >`
       SELECT target, actor_id, meta FROM audit_log
        WHERE action = 'event.team_role_changed'
          AND meta->>'targetUserId' = ${leaving}

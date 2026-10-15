@@ -1,12 +1,12 @@
 /**
- * P2 Task 2.5 integration test (Docker-gated): reply bells + re-enabled report-room @mentions (D11),
- * composed from the SAME production pieces the gateway wiring uses — chat-bells notifiers, the
- * report-chat fan-out, the chat-mention resolver, recordChatMentions — over real Postgres rows
+ * Integration test (Docker-gated): reply bells + re-enabled report-room @mentions, composed from the
+ * SAME production pieces the gateway wiring uses (chat-bells notifiers, the report-chat fan-out, the
+ * chat-mention resolver, recordChatMentions) over real Postgres rows
  * (conversation_mutes, notification_prefs, cleanup/report members, notifications):
  *
  *   - a reply bells the replied-to user EVEN when they muted the room (replies pierce mutes);
  *   - prefs.mentions=false suppresses the reply bell (reply urgency is mention-class);
- *   - report-room member fan-out EXCLUDES the reply target — they get exactly ONE bell (the reply);
+ *   - report-room member fan-out EXCLUDES the reply target: they get exactly ONE bell (the reply);
  *   - @mention of a NON-member in a report room resolves empty (no row, no bell); a member resolves,
  *     records the chat_message_mentions row, and bells as report_chat;
  *   - a MUTED dm thread still bells on a reply to the recipient; an unmuted dm reply produces exactly
@@ -37,8 +37,8 @@ import {
   type ChatBellDeps,
 } from "../../src/services/chat-bells.js"
 import { makeChatMentionResolver } from "../../src/services/chat-mention-resolver.js"
-import { recordChatMentions } from "../../src/services/chat-mentions.drizzle.js"
-import { resolveMentionTargets } from "../../src/services/mention-resolver.drizzle.js"
+import { recordChatMentions } from "../../src/services/chat-mentions-repository.drizzle.js"
+import { resolveMentionTargets } from "../../src/services/mention-targets-repository.drizzle.js"
 import { makeReportChatNotifier } from "../../src/services/report-chat-notifier.js"
 import { roomKeyFor } from "../../src/ws/gateway.js"
 
@@ -83,7 +83,6 @@ describe.skipIf(!pg)("reply notifications + report @mentions (integration)", () 
     return created.id
   }
 
-  /** Insert a minimal report and return its id. */
   async function newReport(): Promise<string> {
     const [r] = await h.sql<{ id: string }[]>`
       INSERT INTO reports (idempotency_key, geom, geom_source, category, type, status, h3_cell)
@@ -94,8 +93,12 @@ describe.skipIf(!pg)("reply notifications + report @mentions (integration)", () 
   }
 
   /** All notification rows for a user, oldest-first. */
-  async function bellsFor(userId: string): Promise<Array<{ type: string; title: string; body: string | null; link: string | null }>> {
-    return await h.sql<Array<{ type: string; title: string; body: string | null; link: string | null }>>`
+  async function bellsFor(
+    userId: string,
+  ): Promise<Array<{ type: string; title: string; body: string | null; link: string | null }>> {
+    return await h.sql<
+      Array<{ type: string; title: string; body: string | null; link: string | null }>
+    >`
       SELECT type, title, body, link FROM notifications WHERE user_id = ${userId} ORDER BY created_at ASC
     `
   }
@@ -130,7 +133,7 @@ describe.skipIf(!pg)("reply notifications + report @mentions (integration)", () 
       repo: makeDrizzleCleanupRepository(h.sql),
     }).joinCleanup(cleanupId, actor)
 
-    // Target mutes the room — the normal room/mention bells would be silenced.
+    // Target mutes the room: the normal room/mention bells would be silenced.
     await makeConversationMutesRepository(h.sql).setMuted(target, "cleanup", cleanupId, true)
 
     const chatRepo = makeDrizzleChatRepository(h.sql)
@@ -208,7 +211,7 @@ describe.skipIf(!pg)("reply notifications + report @mentions (integration)", () 
     expect(await bellsFor(target)).toHaveLength(0)
   })
 
-  it("report room: member fan-out EXCLUDES the reply target — they get exactly ONE bell (the reply)", async () => {
+  it("report room: member fan-out EXCLUDES the reply target: they get exactly ONE bell (the reply)", async () => {
     const target = await newUser("Fanout Target")
     const actor = await newUser("Fanout Actor")
     const other = await newUser("Fanout Other")
@@ -224,7 +227,13 @@ describe.skipIf(!pg)("reply notifications + report @mentions (integration)", () 
       randomUUID(),
     )
     const reply = await chatRepo.insertMessage(
-      { cleanupId: reportId, roomKind: "report", userId: actor, body: "report reply", replyToId: original.id },
+      {
+        cleanupId: reportId,
+        roomKind: "report",
+        userId: actor,
+        body: "report reply",
+        replyToId: original.id,
+      },
       randomUUID(),
     )
 
@@ -251,7 +260,7 @@ describe.skipIf(!pg)("reply notifications + report @mentions (integration)", () 
       message: reply,
     })
 
-    // Target: exactly ONE bell — the reply-flavored one, not the fan-out copy.
+    // Target: exactly ONE bell, the reply-flavored one, not the fan-out copy.
     const targetBells = await bellsFor(target)
     expect(targetBells).toHaveLength(1)
     expect(targetBells[0]).toMatchObject({
@@ -259,7 +268,7 @@ describe.skipIf(!pg)("reply notifications + report @mentions (integration)", () 
       title: "Fanout Actor replied to you",
       link: `/messages/report/${reportId}`,
     })
-    // Other member: exactly ONE bell — the plain fan-out copy.
+    // Other member: exactly ONE bell, the plain fan-out copy.
     const otherBells = await bellsFor(other)
     expect(otherBells).toHaveLength(1)
     expect(otherBells[0]).toMatchObject({ type: "report_chat", title: "Fanout Actor" })
@@ -312,7 +321,11 @@ describe.skipIf(!pg)("reply notifications + report @mentions (integration)", () 
       { cleanupId: reportId, roomKind: "report", userId: author, body: `hey @${memberHandle}` },
       randomUUID(),
     )
-    await recordChatMentions(h.sql, message.id, resolved.map((m) => m.id))
+    await recordChatMentions(
+      h.sql,
+      message.id,
+      resolved.map((m) => m.id),
+    )
     const rows = await h.sql<{ mentioned_user_id: string }[]>`
       SELECT mentioned_user_id FROM chat_message_mentions WHERE message_id = ${message.id}
     `
@@ -351,7 +364,12 @@ describe.skipIf(!pg)("reply notifications + report @mentions (integration)", () 
 
     // Reply to B's message: pierces the mute, reply-flavored title.
     const bMsg = await dm.persist({ threadId: thread.id, senderId: b, body: "b's message" })
-    const reply = await dm.persist({ threadId: thread.id, senderId: a, body: "re: b", replyToId: bMsg.id })
+    const reply = await dm.persist({
+      threadId: thread.id,
+      senderId: a,
+      body: "re: b",
+      replyToId: bMsg.id,
+    })
     await onDmDelivered(thread.id, b, reply)
     const bells = await bellsFor(b)
     expect(bells).toHaveLength(1)
@@ -372,7 +390,7 @@ describe.skipIf(!pg)("reply notifications + report @mentions (integration)", () 
     const m3 = await chatRepo.insertMessage({ cleanupId, userId: org, body: "three" }, randomUUID())
     expect(await chatRepo.softDelete(cleanupId, m2.id, org)).not.toBeNull()
 
-    // before=m2 (deleted): must return the page OLDER than m2 (just m1) — not fall back to the newest
+    // before=m2 (deleted): must return the page OLDER than m2 (just m1), not fall back to the newest
     // page (which would start at m3).
     const page = await chatRepo.history(cleanupId, m2.id, 10)
     expect(page.items.map((m) => m.id)).toEqual([m1.id])
@@ -399,7 +417,12 @@ describe.skipIf(!pg)("reply notifications + report @mentions (integration)", () 
 
     const onDmDelivered = makeDmBellNotifier(makeBellDeps())
     const bMsg = await dm.persist({ threadId: thread.id, senderId: b, body: "hello" })
-    const reply = await dm.persist({ threadId: thread.id, senderId: a, body: "re: hello", replyToId: bMsg.id })
+    const reply = await dm.persist({
+      threadId: thread.id,
+      senderId: a,
+      body: "re: hello",
+      replyToId: bMsg.id,
+    })
     await onDmDelivered(thread.id, b, reply)
 
     const bells = await bellsFor(b)

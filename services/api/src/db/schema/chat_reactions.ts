@@ -1,4 +1,3 @@
-
 import { index, pgTable, primaryKey, text, timestamp, uuid } from "drizzle-orm/pg-core"
 import { users } from "./users.js"
 

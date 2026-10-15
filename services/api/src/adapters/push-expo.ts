@@ -1,13 +1,14 @@
 import type { PushLogger, PlatformDispatcher } from "./push-sender.js"
 import { fetchJsonWithTimeout, type FetchJsonResult } from "./http-fetch.js"
-import { mapWithLimit } from "../services/media-presign.js"
+import { sleep } from "../lib/sleep.js"
+import { mapWithLimit } from "../lib/concurrency.js"
 
 export interface ExpoPushConfig {
   accessToken?: string
   endpoint?: string
   timeoutMs?: number
   fetchImpl?: typeof fetch
-  /** Base backoff before the single 429/5xx retry (jitter is added on top). Injectable for tests. */
+  /** Jitter is added on top. */
   retryDelayMs?: number
 }
 
@@ -17,18 +18,19 @@ const EXPO_TIMEOUT_MS = 4000
 const EXPO_SPLIT_CONCURRENCY = 8
 /** Expo asks senders to back off and retry a 429 / 5xx rather than dropping the batch. */
 const EXPO_RETRY_DELAY_MS = 250
+const EXPO_SOUND = "default"
+const EXPO_TOKEN_PREFIXES = ["ExponentPushToken[", "ExpoPushToken["] as const
+const EXPO_UNREGISTERED_ERROR = "DeviceNotRegistered"
 
-/** True for the HTTP statuses Expo documents as retryable (rate limit / transient server error). */
+const HTTP_TOO_MANY_REQUESTS = 429
+const HTTP_SERVER_ERROR_MIN = 500
+
 function isRetryableStatus(status: number): boolean {
-  return status === 429 || status >= 500
-}
-
-function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms))
+  return status === HTTP_TOO_MANY_REQUESTS || status >= HTTP_SERVER_ERROR_MIN
 }
 
 export function isExpoPushToken(token: string): boolean {
-  return token.startsWith("ExponentPushToken[") || token.startsWith("ExpoPushToken[")
+  return EXPO_TOKEN_PREFIXES.some((prefix) => token.startsWith(prefix))
 }
 
 export interface ExpoTicket {
@@ -38,9 +40,8 @@ export interface ExpoTicket {
 }
 
 /**
- * Walk one chunk's tickets, returning the tokens Expo says are dead (DeviceNotRegistered -> prune) and
- * logging every other ticket error. Pure + exported so the prune-vs-warn matrix is unit-testable without
- * an HTTP round trip. `tickets` is index-aligned with `chunk`.
+ * Only DeviceNotRegistered prunes a token; every other ticket error is logged. `tickets` is index-aligned
+ * with `chunk`.
  */
 export function collectExpoInvalidTokens(
   tickets: readonly ExpoTicket[],
@@ -51,7 +52,7 @@ export function collectExpoInvalidTokens(
   tickets.forEach((ticket, idx) => {
     if (ticket?.status !== "error") return
     const token = chunk[idx]
-    if (ticket.details?.error === "DeviceNotRegistered" && typeof token === "string") {
+    if (ticket.details?.error === EXPO_UNREGISTERED_ERROR && typeof token === "string") {
       invalid.push(token)
     } else {
       logger.warn(
@@ -85,7 +86,7 @@ export function makeExpoDispatcher(config: ExpoPushConfig, logger: PushLogger): 
         to,
         title: payload.title,
         ...(payload.body !== undefined ? { body: payload.body } : {}),
-        sound: "default",
+        sound: EXPO_SOUND,
         ...(hasData ? { data } : {}),
       }))
       const send = (): Promise<FetchJsonResult<{ data?: ExpoTicket[] }>> =>

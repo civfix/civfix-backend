@@ -1,31 +1,30 @@
 /**
- * P9 signup slots — the HTTP surface, through `app.inject` with an injected in-memory repository (no
- * database, no Redis).
+ * Signup slots, the HTTP surface, through `app.inject` with an injected in-memory repository.
  *
  * The service suites own the rules; this file owns the things that only exist at the route layer and
  * that a service test can never catch:
  *
  *   - `claimEventSlot` is actually REGISTERED at `PUT /v1/cleanups/:id/slot` (the shared registry is
  *     frozen, so the method+path have to match it exactly);
- *   - the `{ ...body, id }` path-param merge — the typed client extracts `id` into the path, so a route
+ *   - the `{ ...body, id }` path-param merge: the typed client extracts `id` into the path, so a route
  *     that forgot the merge would 422 on every single call;
  *   - the CSRF preHandler is present on the mutation (a cookie-session browser client is the reason it
  *     exists at all);
  *   - the per-IP rate limit is configured at 30/min;
  *   - the response really is a CleanupDTO carrying the REFRESHED `slots`, so the client needs no
- *     refetch — and `slotCount` (not `slots`) is what the list read carries.
+ *     refetch, and `slotCount` (not `slots`) is what the list read carries.
  */
 
 import { describe, it, expect, afterEach } from "vitest"
 import type { FastifyInstance } from "fastify"
 import { FakeMailer } from "@civfix/shared/fakes"
 import { endpoints, versionedPath } from "@civfix/shared/client"
-import { buildServer } from "../../src/server.js"
-import { buildContainer } from "../../src/di.js"
+import { makeServer } from "../../src/server.js"
+import { makeContainer } from "../../src/di.js"
 import { loadEnv } from "../../src/env.js"
 import { InMemoryCacheClient } from "../../src/auth/cache.js"
 import { makeInMemoryStores } from "../../src/auth/stores.js"
-import { buildAuthServices } from "../../src/auth/auth-services.js"
+import { makeAuthServices } from "../../src/auth/auth-services.js"
 import { StubJwksVerifier } from "../helpers/auth.js"
 import { InMemoryCleanupRepository } from "../helpers/cleanups.js"
 import type { CleanupServiceOverrides } from "../../src/routes/cleanups.routes.js"
@@ -44,7 +43,7 @@ async function makeHarness(): Promise<Harness> {
   const stores = makeInMemoryStores()
   const cache = new InMemoryCacheClient(() => Date.now())
   const mailer = new FakeMailer()
-  const authServices = buildAuthServices({
+  const authServices = makeAuthServices({
     stores,
     cache,
     mailer,
@@ -55,8 +54,8 @@ async function makeHarness(): Promise<Harness> {
 
   const repo = new InMemoryCleanupRepository()
   const cleanupOverrides: CleanupServiceOverrides = { repo }
-  const container = buildContainer(env)
-  const app = await buildServer({ env, container, authServices, cleanupOverrides })
+  const container = makeContainer(env)
+  const app = await makeServer({ env, container, authServices, cleanupOverrides })
 
   const email = "host@example.com"
   await app.inject({ method: "POST", url: "/v1/auth/otp/request", payload: { email } })
@@ -88,7 +87,6 @@ afterEach(async () => {
 
 const FUTURE = new Date(Date.now() + 7 * 86_400_000).toISOString()
 
-/** Create an event WITH a slot board and return { id, slots }. */
 async function createWithSlots(
   app: FastifyInstance,
   token: string,
@@ -137,14 +135,16 @@ describe("PUT /cleanups/:id/slot", () => {
 
     expect(res.statusCode).toBe(200)
     const dto = res.json()
-    // C5 reuses GetCleanupResponseSchema precisely so this is possible: the caller updates its cache
-    // straight from the mutation response instead of refetching the event.
+    // The claim reuses GetCleanupResponseSchema precisely so this is possible: the caller updates
+    // its cache straight from the mutation response instead of refetching the event.
     expect(dto.id).toBe(id)
-    expect(dto.slots.map((s: { title: string; claimed: number; mine?: boolean }) => [
-      s.title,
-      s.claimed,
-      s.mine ?? false,
-    ])).toEqual([
+    expect(
+      dto.slots.map((s: { title: string; claimed: number; mine?: boolean }) => [
+        s.title,
+        s.claimed,
+        s.mine ?? false,
+      ]),
+    ).toEqual([
       ["Grill", 1, true],
       ["Sign-in", 0, false],
     ])
@@ -258,19 +258,23 @@ describe("route configuration", () => {
       payload: { slotId: null },
     })
     expect(wrongVerb.statusCode).toBe(404)
-    expect((wrongVerb.json() as { message?: string }).message?.startsWith("Route POST ")).toBe(true)
+    expect(wrongVerb.json<{ message?: string }>().message?.startsWith("Route POST ")).toBe(true)
   })
 
   it("declares the rate limit and CSRF in the source (the two configs a copy-paste route loses)", async () => {
     const { readFile } = await import("node:fs/promises")
-    const src = await readFile(
+    const raw = await readFile(
       new URL("../../src/routes/cleanups.routes.ts", import.meta.url),
       "utf8",
     )
-    // B29c: the OUTER, per-IP layer. The inner per-(event, user) budget is asserted behaviorally in
+    // Whitespace-collapsed so the assertions pin the declarations, not the formatter's line breaks.
+    const src = raw.replace(/\s+/g, " ")
+    // The OUTER, per-IP layer. The inner per-(event, user) budget is asserted behaviorally in
     // cleanup-slots-claim.test.ts; this one would otherwise be untested until production.
-    expect(src).toContain("const CLAIM_SLOT_RATE_LIMIT = { max: 30, timeWindow: \"1 minute\" } as const")
-    const claimRoute = src.slice(src.indexOf('route(app, "claimEventSlot"'))
+    expect(src).toContain(
+      'const CLAIM_SLOT_RATE_LIMIT = { max: 30, timeWindow: "1 minute" } as const',
+    )
+    const claimRoute = src.slice(src.indexOf('"claimEventSlot",'))
     expect(claimRoute.slice(0, 200)).toContain("preHandler: csrfProtect")
     expect(claimRoute.slice(0, 200)).toContain("rateLimit: CLAIM_SLOT_RATE_LIMIT")
   })
@@ -281,12 +285,16 @@ describe("the other cleanup reads carry the slot fields", () => {
     const { app, token } = await makeHarness()
     const { id } = await createWithSlots(app, token)
 
-    const detail = await app.inject({ method: "GET", url: `/v1/cleanups/${id}`, headers: auth(token) })
+    const detail = await app.inject({
+      method: "GET",
+      url: `/v1/cleanups/${id}`,
+      headers: auth(token),
+    })
     expect(detail.json().slots.map((s: { title: string }) => s.title)).toEqual(["Grill", "Sign-in"])
 
     const list = await app.inject({ method: "GET", url: "/v1/cleanups", headers: auth(token) })
     const card = list.json().items.find((c: { id: string }) => c.id === id)
-    // A feed card renders no board, so the list read pays for one aggregate instead of a join — and
+    // A feed card renders no board, so the list read pays for one aggregate instead of a join, and
     // `slotCount` is what keeps the empty `slots` from being ambiguous.
     expect(card.slots).toEqual([])
     expect(card.slotCount).toBe(2)
@@ -392,7 +400,7 @@ describe("slot windows over the wire", () => {
       },
     })
     expect(res.statusCode).toBe(422)
-    const body = res.json() as { code: string; fields: Record<string, string> }
+    const body = res.json<{ code: string; fields: Record<string, string> }>()
     expect(body.code).toBe("VALIDATION")
     expect(body.fields["slots.0.endsAt"]).toBe("set both a start and an end, or neither")
   })
@@ -420,7 +428,7 @@ describe("slot windows over the wire", () => {
       },
     })
     expect(res.statusCode).toBe(422)
-    expect((res.json() as { fields: Record<string, string> }).fields["slots.0.endsAt"]).toBe(
+    expect(res.json<{ fields: Record<string, string> }>().fields["slots.0.endsAt"]).toBe(
       "must be at least 15 minutes after startsAt",
     )
   })

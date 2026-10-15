@@ -18,6 +18,7 @@ import {
   OUTBOUND_SEND_MIN_THROUGHPUT_BPS,
   OUTBOUND_SEND_PHASE_BUDGET_MS,
 } from "./outbound-send-policy.js"
+import { passThroughRejection, settleWithin } from "../../lib/timeout.js"
 
 export interface OutboundMailEnv {
   MAIL_FROM_OUTREACH: string
@@ -117,9 +118,13 @@ export interface OutboundMailServiceDeps {
   sendMinThroughputBytesPerSec?: number
 }
 
-export const OUTBOUND_DEADLINE_REASON = "deadline"
+const OUTBOUND_DEADLINE_REASON = "deadline"
 
 const THREAD_STATUS_CLEARED_BY_DELIVERY: readonly MailStatus[] = ["needs_action", "bounced"]
+
+const REFERENCES_HEADER_MAX = 10
+
+const MAIL_THREAD_NOT_FOUND = "Mail thread not found"
 
 export class OutboundSendDeadlineError extends AppError {
   readonly outboundSendDeadline = true
@@ -128,8 +133,8 @@ export class OutboundSendDeadlineError extends AppError {
   constructor(deadlineMs: number) {
     super(
       ErrorCode.CONFLICT,
-      "The send to this jurisdiction is still in progress. Check back shortly — the outcome will " +
-        "appear on the outreach trail once the mail server answers.",
+      "The send to this jurisdiction is still in progress. Its outcome will appear on the outreach " +
+        "trail once the mail server answers, so check back shortly.",
     )
     this.deadlineMs = deadlineMs
   }
@@ -147,13 +152,159 @@ export function outboundPayloadBytes(input: { body: string; html?: string | unde
 }
 
 function raceDeadline<T>(work: Promise<T>, ms: number): Promise<T> {
-  let timer: ReturnType<typeof setTimeout> | undefined
-  const deadline = new Promise<never>((_resolve, reject) => {
-    timer = setTimeout(() => reject(new OutboundSendDeadlineError(ms)), ms)
+  return settleWithin(work, ms, {
+    timeoutError: () => new OutboundSendDeadlineError(ms),
+    normalizeError: passThroughRejection,
   })
-  return Promise.race([work, deadline]).finally(() => {
-    if (timer !== undefined) clearTimeout(timer)
-  }) as Promise<T>
+}
+
+interface DeliveryArgs {
+  threadId: string
+  messageId: string
+  fromHeader: string
+  toAddr: string
+  subject: string
+  body: string
+  html?: string
+  eventMeta?: Record<string, unknown>
+  onLateSuccess?: (() => Promise<void>) | undefined
+}
+
+interface DeliveryContext {
+  repo: MailRepository
+  logger: OutboundMailLogger
+}
+
+// A long thread's References keeps its root plus the most recent replies, so the header stays bounded
+// while a client can still place the message in the conversation.
+function threadingHeaders(priorIds: string[]): {
+  inReplyTo: string | undefined
+  references: string[]
+} {
+  const inReplyTo = priorIds.length > 0 ? priorIds[priorIds.length - 1] : undefined
+  const references =
+    priorIds.length > REFERENCES_HEADER_MAX
+      ? [priorIds[0] as string, ...priorIds.slice(-(REFERENCES_HEADER_MAX - 1))]
+      : priorIds
+  return { inReplyTo, references }
+}
+
+async function recordFailed(
+  { repo, logger }: DeliveryContext,
+  args: DeliveryArgs,
+  err: unknown,
+  extra: Record<string, unknown>,
+): Promise<void> {
+  const error = err instanceof Error ? err.message : String(err)
+  const reportId = args.eventMeta?.reportId
+  try {
+    await repo.recordSendFailure({
+      threadId: args.threadId,
+      messageId: args.messageId,
+      meta: {
+        from: args.fromHeader,
+        to: args.toAddr,
+        error,
+        ...extra,
+        ...(args.eventMeta ?? {}),
+      },
+      ...(typeof reportId === "string" && reportId.length > 0
+        ? {
+            audit: {
+              actorId: null,
+              action: "mail.send_failed" as const,
+              target: `report:${reportId}`,
+              meta: {
+                threadId: args.threadId,
+                messageId: args.messageId,
+                to: args.toAddr,
+                reportId,
+                error,
+              },
+            },
+          }
+        : {}),
+    })
+  } catch (recordErr) {
+    logger.warn(
+      { err: recordErr, threadId: args.threadId, messageId: args.messageId },
+      "outbound mail send failed AND recording the 'failed' event failed",
+    )
+  }
+}
+
+async function recordSent(
+  ctx: DeliveryContext,
+  args: DeliveryArgs,
+  result: SentMail,
+  extra: Record<string, unknown>,
+): Promise<void> {
+  await ctx.repo.setMessageMessageId(args.messageId, result.messageId)
+  await ctx.repo.recordEvent({
+    threadId: args.threadId,
+    messageId: args.messageId,
+    type: "sent",
+    meta: {
+      from: args.fromHeader,
+      to: args.toAddr,
+      ...extra,
+      ...(args.eventMeta ?? {}),
+    },
+  })
+  await clearDeliveryFailureStatus(ctx, args)
+}
+
+async function clearDeliveryFailureStatus(
+  { repo, logger }: DeliveryContext,
+  args: DeliveryArgs,
+): Promise<void> {
+  try {
+    const fresh = await repo.getThreadRecord(args.threadId)
+    if (fresh === null || !THREAD_STATUS_CLEARED_BY_DELIVERY.includes(fresh.status)) return
+    if (fresh.status === "needs_action" && (await repo.hasWithheldReply(args.threadId))) return
+    await repo.setThreadStatus(args.threadId, "sent")
+  } catch (err) {
+    logger.warn(
+      { err, threadId: args.threadId, messageId: args.messageId },
+      "outbound mail delivered but clearing the thread's failure status failed",
+    )
+  }
+}
+
+function attachLateSettlement(
+  ctx: DeliveryContext,
+  args: DeliveryArgs,
+  send: Promise<SentMail>,
+  failureWrite: Promise<void>,
+  deadlineMs: number,
+): void {
+  const { logger } = ctx
+  void send.then(
+    async (late: SentMail) => {
+      try {
+        // The caller already awaits failureWrite and sees its error; here it only orders the
+        // late 'sent' after the 'failed' row.
+        await failureWrite.catch(() => {})
+        await recordSent(ctx, args, late, { late: true })
+        if (args.onLateSuccess !== undefined) await args.onLateSuccess()
+        logger.warn(
+          { threadId: args.threadId, messageId: args.messageId, deadlineMs },
+          "outbound mail delivered AFTER its deadline; recorded 'sent' (late)",
+        )
+      } catch (recordErr) {
+        logger.warn(
+          { err: recordErr, threadId: args.threadId, messageId: args.messageId },
+          "outbound mail delivered late but recording the 'sent' event failed",
+        )
+      }
+    },
+    (lateErr: unknown) => {
+      logger.warn(
+        { err: lateErr, threadId: args.threadId, messageId: args.messageId, deadlineMs },
+        "outbound mail rejected AFTER its deadline; the 'failed' event already recorded stands",
+      )
+    },
+  )
 }
 
 export function makeOutboundMailService(deps: OutboundMailServiceDeps): OutboundMailService {
@@ -170,22 +321,20 @@ export function makeOutboundMailService(deps: OutboundMailServiceDeps): Outbound
     return `"civfix" <reply-${token}@${domain}>`
   }
 
-  async function deliverAndRecord(args: {
-    threadId: string
-    messageId: string
-    fromHeader: string
-    toAddr: string
-    subject: string
-    body: string
-    html?: string
-    eventMeta?: Record<string, unknown>
-    onLateSuccess?: (() => Promise<void>) | undefined
-  }): Promise<string> {
+  async function deliverAndRecord(args: DeliveryArgs): Promise<string> {
+    const ctx: DeliveryContext = { repo, logger }
     const rfcMessageId = `<out-${args.messageId}@${domainOf(env.MAIL_FROM_OUTREACH)}>`
-    const priorIds = await repo.priorOutboundMessageIds(args.threadId).catch(() => [] as string[])
-    const inReplyTo = priorIds.length > 0 ? priorIds[priorIds.length - 1] : undefined
-    const references =
-      priorIds.length > 10 ? [priorIds[0] as string, ...priorIds.slice(-9)] : priorIds
+    // Threading headers are a courtesy to the city's mail client; losing them must not block the send.
+    const priorIds = await repo
+      .priorOutboundMessageIds(args.threadId)
+      .catch((err: unknown): string[] => {
+        logger.warn(
+          { err, threadId: args.threadId },
+          "outbound mail: prior Message-IDs unreadable; sending without In-Reply-To/References",
+        )
+        return []
+      })
+    const { inReplyTo, references } = threadingHeaders(priorIds)
     const bytes = outboundPayloadBytes({ body: args.body, html: args.html })
     const deadlineMs =
       deps.sendDeadlineMs ??
@@ -206,117 +355,25 @@ export function makeOutboundMailService(deps: OutboundMailServiceDeps): Outbound
       ...(references.length > 0 ? { references } : {}),
     })
 
-    async function recordFailed(err: unknown, extra: Record<string, unknown>): Promise<void> {
-      const error = err instanceof Error ? err.message : String(err)
-      const reportId = args.eventMeta?.reportId
-      try {
-        await repo.recordSendFailure({
-          threadId: args.threadId,
-          messageId: args.messageId,
-          meta: {
-            from: args.fromHeader,
-            to: args.toAddr,
-            error,
-            ...extra,
-            ...(args.eventMeta ?? {}),
-          },
-          ...(typeof reportId === "string" && reportId.length > 0
-            ? {
-                audit: {
-                  actorId: null,
-                  action: "mail.send_failed" as const,
-                  target: `report:${reportId}`,
-                  meta: {
-                    threadId: args.threadId,
-                    messageId: args.messageId,
-                    to: args.toAddr,
-                    reportId,
-                    error,
-                  },
-                },
-              }
-            : {}),
-        })
-      } catch (recordErr) {
-        logger.warn(
-          { err: recordErr, threadId: args.threadId, messageId: args.messageId },
-          "outbound mail send failed AND recording the 'failed' event failed",
-        )
-      }
-    }
-
-    async function recordSent(result: SentMail, extra: Record<string, unknown>): Promise<void> {
-      await repo.setMessageMessageId(args.messageId, result.messageId)
-      await repo.recordEvent({
-        threadId: args.threadId,
-        messageId: args.messageId,
-        type: "sent",
-        meta: {
-          from: args.fromHeader,
-          to: args.toAddr,
-          ...extra,
-          ...(args.eventMeta ?? {}),
-        },
-      })
-      await clearDeliveryFailureStatus()
-    }
-
-    async function clearDeliveryFailureStatus(): Promise<void> {
-      try {
-        const fresh = await repo.getThreadRecord(args.threadId)
-        if (fresh === null || !THREAD_STATUS_CLEARED_BY_DELIVERY.includes(fresh.status)) return
-        if (fresh.status === "needs_action" && (await repo.hasWithheldReply(args.threadId))) return
-        await repo.setThreadStatus(args.threadId, "sent")
-      } catch (err) {
-        logger.warn(
-          { err, threadId: args.threadId, messageId: args.messageId },
-          "outbound mail delivered but clearing the thread's failure status failed",
-        )
-      }
-    }
-
     let sent: SentMail
     try {
       sent = await raceDeadline(send, deadlineMs)
     } catch (err) {
       if (!isOutboundSendDeadlineError(err)) {
-        await recordFailed(err, {})
+        await recordFailed(ctx, args, err, {})
         throw err
       }
-      const failureWrite = recordFailed(err, {
+      const failureWrite = recordFailed(ctx, args, err, {
         reason: OUTBOUND_DEADLINE_REASON,
         deadlineMs,
         bytes,
       })
-      void send.then(
-        async (late: SentMail) => {
-          try {
-            await failureWrite.catch(() => {})
-            await recordSent(late, { late: true })
-            if (args.onLateSuccess !== undefined) await args.onLateSuccess()
-            logger.warn(
-              { threadId: args.threadId, messageId: args.messageId, deadlineMs },
-              "outbound mail delivered AFTER its deadline; recorded 'sent' (late)",
-            )
-          } catch (recordErr) {
-            logger.warn(
-              { err: recordErr, threadId: args.threadId, messageId: args.messageId },
-              "outbound mail delivered late but recording the 'sent' event failed",
-            )
-          }
-        },
-        (lateErr: unknown) => {
-          logger.warn(
-            { err: lateErr, threadId: args.threadId, messageId: args.messageId, deadlineMs },
-            "outbound mail rejected AFTER its deadline; the 'failed' event already recorded stands",
-          )
-        },
-      )
+      attachLateSettlement(ctx, args, send, failureWrite, deadlineMs)
       await failureWrite
       throw err
     }
     try {
-      await recordSent(sent, {})
+      await recordSent(ctx, args, sent, {})
     } catch (err) {
       logger.warn(
         { err, threadId: args.threadId, messageId: args.messageId },
@@ -387,7 +444,9 @@ export function makeOutboundMailService(deps: OutboundMailServiceDeps): Outbound
     })
     return {
       thread,
-      async deliver(opts?: DeliverOptions): Promise<{ thread: MailThreadRecord; messageId: string }> {
+      async deliver(
+        opts?: DeliverOptions,
+      ): Promise<{ thread: MailThreadRecord; messageId: string }> {
         const messageId = await deliverAndRecord({
           ...(opts?.onLateSuccess !== undefined ? { onLateSuccess: opts.onLateSuccess } : {}),
           threadId: thread.id,
@@ -528,7 +587,7 @@ export function makeOutboundMailService(deps: OutboundMailServiceDeps): Outbound
     async appendOutbound(threadId: string, input: AppendOutboundInput): Promise<MailThreadRecord> {
       const thread = await repo.getThreadRecord(threadId)
       if (!thread) {
-        throw AppError.notFound("Mail thread not found")
+        throw AppError.notFound(MAIL_THREAD_NOT_FOUND)
       }
       const subject = input.subject ?? replySubject(thread.subject)
       const fromHeader = fromHeaderForThread(thread)
@@ -563,7 +622,10 @@ type OutboundMailContainer = {
   mailer: Mailer
   env: Pick<
     Env,
-    "MAIL_FROM_OUTREACH" | "MAIL_REPLY_DOMAIN" | "OCI_EMAIL_SMTP_TIMEOUT_MS" | "OUTBOUND_SEND_MIN_THROUGHPUT_BPS"
+    | "MAIL_FROM_OUTREACH"
+    | "MAIL_REPLY_DOMAIN"
+    | "OCI_EMAIL_SMTP_TIMEOUT_MS"
+    | "OUTBOUND_SEND_MIN_THROUGHPUT_BPS"
   >
 }
 

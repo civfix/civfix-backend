@@ -1,4 +1,3 @@
-
 import type { Role } from "@civfix/shared"
 
 export type RevokeAllSessions = (userId: string) => Promise<number>

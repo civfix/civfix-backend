@@ -4,7 +4,7 @@ import { FakeMailer } from "@civfix/shared/fakes"
 import type { Container } from "../../src/di.js"
 import { InMemoryCounterStore } from "../../src/abuse/counter-store.js"
 import { registerUnsubscribeRoutes } from "../../src/routes/host/unsubscribe.routes.js"
-import { InMemoryBroadcastRepository } from "../../src/services/host/broadcast-repository.memory.js"
+import { InMemoryBroadcastRepository } from "../helpers/host/broadcast-repository.memory.js"
 import {
   makeBroadcastService,
   type BroadcastConfig,
@@ -212,7 +212,10 @@ describe("GET /v1/broadcasts/unsubscribe", () => {
     })
     expect(wrongKey.headers.location).toBe("https://civfix.org/unsubscribe")
 
-    const tooShort = await instance.inject({ method: "GET", url: "/v1/broadcasts/unsubscribe?t=nope" })
+    const tooShort = await instance.inject({
+      method: "GET",
+      url: "/v1/broadcasts/unsubscribe?t=nope",
+    })
     expect(tooShort.statusCode).toBe(302)
     expect(tooShort.headers.location).toBe("https://civfix.org/unsubscribe")
 

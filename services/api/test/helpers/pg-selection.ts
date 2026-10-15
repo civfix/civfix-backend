@@ -1,7 +1,7 @@
 /**
  * "Does this vitest run need the shared Postgres container at all?"
  *
- * globalSetup runs for EVERY invocation, including `npx vitest run test/unit/foo.test.ts` — and booting
+ * globalSetup runs for EVERY invocation, including `npx vitest run test/unit/foo.test.ts`, and booting
  * PostGIS + applying 60 migrations to serve a run that never touches the database would tax every unit
  * test run on a machine that happens to have Docker up. vitest resolves its file list AFTER globalSetup,
  * and hands globalSetup no view of it, so the decision is made from the CLI's own positional file
@@ -9,7 +9,7 @@
  *
  * BIAS: every ambiguous case answers "start it". A filter we cannot resolve to a known test file (a
  * space-separated flag value such as the `dot` in `--reporter dot`, a typo, `--related`'s source paths)
- * makes this return true, so the worst outcome of a misread argv is a container nobody uses — never a
+ * makes this return true, so the worst outcome of a misread argv is a container nobody uses, never a
  * silently-skipped integration suite. And withPg() still falls back to booting its own container if it
  * finds no shared one, so this module can only ever affect speed, not correctness.
  */
@@ -30,7 +30,7 @@ const SUBCOMMANDS = new Set([
  * Extract the positional file filters from a vitest argv (`process.argv.slice(2)`).
  *
  * Flags are dropped; a leading subcommand is dropped. The VALUE of a space-separated flag
- * (`--reporter dot`) is indistinguishable from a filter here and is deliberately kept — it resolves to
+ * (`--reporter dot`) is indistinguishable from a filter here and is deliberately kept: it resolves to
  * no test file, which `selectSharedPgStart` treats as "unrecognized, start anyway".
  */
 export function cliFileFilters(argv: readonly string[]): string[] {

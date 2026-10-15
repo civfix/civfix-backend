@@ -1,59 +1,54 @@
-/**
- * Task D-E1: per-conversation mute store (conversation_mutes, migration 0042).
- *
- * A user may mute notifications for a single room (a cleanup group chat, a DM thread, or a report
- * chat) without leaving/muting globally. Composite PK(user_id, room_kind, room_id) means "muted" is
- * simply "a row exists" -- no separate boolean column. See src/db/schema/conversation_mutes.ts for the
- * full column rationale (in particular why room_id is NOT a foreign key).
- *
- * Written against the raw postgres-js tag (`Sql`) to match the rest of the backend (e.g.
- * report-chat-repository.drizzle.ts).
- */
+// "Muted" means a row exists; there is no boolean column. src/db/schema/conversation_mutes.ts records
+// why room_id is NOT a foreign key.
 
+import type { FastifyBaseLogger } from "fastify"
 import type { Sql } from "../db/client.js"
 import type { ConversationMuteRoomKind } from "../db/schema/conversation_mutes.js"
+import type { ConversationMutesRepository } from "./conversation-mutes-repository.js"
 
-export interface ConversationMutesRepository {
-  /** Whether `userId` has muted this room. */
-  isMuted(userId: string, roomKind: ConversationMuteRoomKind, roomId: string): Promise<boolean>
-  /**
-   * Set the mute state for a room. `muted: true` upserts the mute row (idempotent: ON CONFLICT DO
-   * NOTHING, so re-muting an already-muted room is a no-op rather than an error). `muted: false`
-   * deletes the row (also idempotent: deleting an absent row is a no-op).
-   */
-  setMuted(
-    userId: string,
-    roomKind: ConversationMuteRoomKind,
-    roomId: string,
-    muted: boolean,
-  ): Promise<void>
-  /**
-   * Batch lookup for a threads list: of the given `roomIds` (all the same `roomKind`), which ones has
-   * `userId` muted? Returns a Set for O(1) membership checks. Empty `roomIds` short-circuits to an
-   * empty Set with NO query -- callers (e.g. rendering an empty threads page) should not pay for a
-   * round trip that can only ever return nothing.
-   */
-  mutedRoomIdsFor(
-    userId: string,
-    roomKind: ConversationMuteRoomKind,
-    roomIds: string[],
-  ): Promise<Set<string>>
-  /**
-   * The INVERSE batch shape, for a room fan-out: of the given `userIds`, which ones have muted THIS room?
-   * Same short-circuit on an empty list. OPTIONAL on the interface so the offline fakes that predate it
-   * still satisfy it; callers must therefore probe (`repo.mutedUserIdsFor?.(...)`) and fall back to the
-   * per-user `isMuted`.
-   */
-  mutedUserIdsFor?(
-    roomKind: ConversationMuteRoomKind,
-    roomId: string,
-    userIds: string[],
-  ): Promise<Set<string>>
+export type FailOpenMuteCheck = (
+  userId: string,
+  roomKind: ConversationMuteRoomKind,
+  roomId: string,
+) => Promise<boolean>
+
+export function makeFailOpenMuteCheck(
+  repo: Pick<ConversationMutesRepository, "isMuted"> | undefined,
+  logger?: Pick<FastifyBaseLogger, "warn">,
+): FailOpenMuteCheck {
+  return async (userId, roomKind, roomId) => {
+    if (!repo) return false
+    try {
+      return await repo.isMuted(userId, roomKind, roomId)
+    } catch (err) {
+      // A mute is a comfort setting: a lookup outage must not silence the room for everyone.
+      logger?.warn({ err, kind: roomKind }, "conversation mute lookup failed; notifying anyway")
+      return false
+    }
+  }
+}
+
+/**
+ * Probed, never bound to an empty-Set default: the fan-out treats a present `mutedUserIdsFor` as
+ * authoritative and skips the per-user `isMuted`, so a `new Set()` fallback would silently unmute the
+ * whole room over a mutes store without the batch method.
+ */
+export function bindMutedUserIdsFor(
+  repo: ConversationMutesRepository | undefined,
+  roomKind: ConversationMuteRoomKind,
+): ((roomId: string, userIds: string[]) => Promise<Set<string>>) | undefined {
+  const batch = repo?.mutedUserIdsFor
+  if (!repo || !batch) return undefined
+  return (roomId, userIds) => batch.call(repo, roomKind, roomId, userIds)
 }
 
 export function makeConversationMutesRepository(sql: Sql): ConversationMutesRepository {
   return {
-    async isMuted(userId: string, roomKind: ConversationMuteRoomKind, roomId: string): Promise<boolean> {
+    async isMuted(
+      userId: string,
+      roomKind: ConversationMuteRoomKind,
+      roomId: string,
+    ): Promise<boolean> {
       const rows = await sql<{ exists: boolean }[]>`
         SELECT EXISTS (
           SELECT 1 FROM conversation_mutes

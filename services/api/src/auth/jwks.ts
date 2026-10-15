@@ -1,7 +1,23 @@
-
-import { createHash } from "node:crypto"
 import { AppError, ErrorCode } from "@civfix/shared"
+import { exposeMessage } from "../errors/exposed-message.js"
 import { constantTimeStringEqual } from "./crypto.js"
+import { sha256HexSync } from "../lib/hash.js"
+
+const JWKS_CACHE_TTL_MS = 60 * 60 * 1000
+
+/**
+ * Floor between two forced refetches for an unknown `kid`, so a stream of tokens naming forged kids cannot
+ * turn into a fetch storm against the provider.
+ */
+const JWKS_FORCE_REFRESH_FLOOR_MS = 60 * 1000
+
+const JWKS_FETCH_TIMEOUT_MS = 5000
+
+const ID_TOKEN_ALG = "RS256"
+
+const RSA_SIGNATURE_ALGORITHM = "RSASSA-PKCS1-v1_5"
+
+const JWT_SEGMENT_COUNT = 3
 
 export interface VerifiedIdToken {
   sub: string
@@ -71,23 +87,22 @@ export class RemoteJwksVerifier implements JwksVerifier {
   private readonly cache = new Map<string, CachedJwks>()
   private readonly lastForceRefreshAtMs = new Map<string, number>()
   private readonly inFlight = new Map<string, Promise<Jwk[]>>()
-  private static readonly FORCE_REFRESH_FLOOR_MS = 60 * 1000
 
   constructor(opts: RemoteJwksVerifierOptions = {}) {
     this.fetchImpl = opts.fetchImpl ?? defaultFetch
-    this.cacheTtlMs = opts.cacheTtlMs ?? 60 * 60 * 1000
+    this.cacheTtlMs = opts.cacheTtlMs ?? JWKS_CACHE_TTL_MS
     this.now = opts.now ?? Date.now
   }
 
   async verify(idToken: string, params: VerifyParams): Promise<VerifiedIdToken> {
     const parts = idToken.split(".")
-    if (parts.length !== 3) {
+    if (parts.length !== JWT_SEGMENT_COUNT) {
       throw AppError.unauthorized("Malformed identity token.")
     }
     const [headerB64, payloadB64, signatureB64] = parts as [string, string, string]
 
     const header = decodeJsonSegment<JwtHeader>(headerB64)
-    if (!header || header.alg !== "RS256" || !header.kid) {
+    if (!header || header.alg !== ID_TOKEN_ALG || !header.kid) {
       throw AppError.unauthorized("Unsupported identity token algorithm.")
     }
 
@@ -109,7 +124,7 @@ export class RemoteJwksVerifier implements JwksVerifier {
     let match = keys.find((k) => k.kid === kid)
     if (!match) {
       const last = this.lastForceRefreshAtMs.get(jwksUrl)
-      if (last === undefined || this.now() - last >= RemoteJwksVerifier.FORCE_REFRESH_FLOOR_MS) {
+      if (last === undefined || this.now() - last >= JWKS_FORCE_REFRESH_FLOOR_MS) {
         this.lastForceRefreshAtMs.set(jwksUrl, this.now())
         keys = await this.getKeys(jwksUrl, true)
         match = keys.find((k) => k.kid === kid)
@@ -138,13 +153,15 @@ export class RemoteJwksVerifier implements JwksVerifier {
   private async fetchKeys(jwksUrl: string): Promise<Jwk[]> {
     const res = await this.fetchImpl(jwksUrl)
     if (!res.ok) {
-      // NOT 401: we could not reach Apple/Google, which says nothing about the presented credential.
-      // Reporting it as "unauthorized" told the client to re-authenticate during a provider outage —
-      // and every retry burns another single-use sign-in nonce. 503 says "retry", not "sign in again".
+      // Not 401: failing to reach Apple or Google says nothing about the presented credential. A 401 tells
+      // the client to re-authenticate during a provider outage, and every retry burns another single-use
+      // sign-in nonce. 503 says "retry", not "sign in again".
       // A genuinely unknown `kid` still yields 401 (resolveKey).
-      throw new AppError(ErrorCode.INTERNAL, "Could not reach the identity provider.", {
-        httpStatus: 503,
-      })
+      throw exposeMessage(
+        new AppError(ErrorCode.INTERNAL, "Could not reach the identity provider.", {
+          httpStatus: 503,
+        }),
+      )
     }
     const body = (await res.json()) as { keys?: Jwk[] }
     const keys = Array.isArray(body.keys) ? body.keys : []
@@ -152,8 +169,6 @@ export class RemoteJwksVerifier implements JwksVerifier {
     return keys
   }
 }
-
-const JWKS_FETCH_TIMEOUT_MS = 5000
 
 const defaultFetch: FetchLike = async (url: string) => {
   const controller = new AbortController()
@@ -164,6 +179,8 @@ const defaultFetch: FetchLike = async (url: string) => {
     const body = await res.json()
     return { ok: true, json: () => Promise.resolve(body) }
   } catch {
+    // Timeout, DNS failure and an unparseable body all mean "provider unreachable", which fetchKeys
+    // answers with a retryable 503 rather than a 401 that would tell the client to sign in again.
     return { ok: false, json: () => Promise.resolve(null) }
   } finally {
     clearTimeout(timer)
@@ -181,7 +198,7 @@ function decodeJsonSegment<T>(segment: string): T | null {
 
 function nonceMatches(claimNonce: string | undefined, expected: string): boolean {
   if (typeof claimNonce !== "string" || claimNonce.length === 0) return false
-  const expectedHash = createHash("sha256").update(expected).digest("hex")
+  const expectedHash = sha256HexSync(expected)
   return (
     constantTimeStringEqual(claimNonce, expected) ||
     constantTimeStringEqual(claimNonce, expectedHash)
@@ -192,14 +209,14 @@ async function verifyRs256(jwk: Jwk, signingInput: string, signatureB64: string)
   if (jwk.kty !== "RSA" || !jwk.n || !jwk.e) return false
   const key = await crypto.subtle.importKey(
     "jwk",
-    { kty: "RSA", n: jwk.n, e: jwk.e, alg: "RS256", ext: true },
-    { name: "RSASSA-PKCS1-v1_5", hash: "SHA-256" },
+    { kty: "RSA", n: jwk.n, e: jwk.e, alg: ID_TOKEN_ALG, ext: true },
+    { name: RSA_SIGNATURE_ALGORITHM, hash: "SHA-256" },
     false,
     ["verify"],
   )
   const signature = Buffer.from(signatureB64, "base64url")
   const data = new TextEncoder().encode(signingInput)
-  return crypto.subtle.verify("RSASSA-PKCS1-v1_5", key, signature, data)
+  return crypto.subtle.verify(RSA_SIGNATURE_ALGORITHM, key, signature, data)
 }
 
 /**

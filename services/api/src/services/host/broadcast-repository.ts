@@ -1,5 +1,12 @@
-import type { BroadcastKind, BroadcastSegment, BroadcastStatus, DeliveryStatus } from "@civfix/shared"
-import type { NotificationPrefsRecord } from "../notification-service.js"
+import type {
+  BroadcastKind,
+  BroadcastSegment,
+  BroadcastStatus,
+  DeliveryStatus,
+} from "@civfix/shared"
+import type { KeysetCursor } from "../../db/cursor-helpers.js"
+import type { NotificationPrefsRecord } from "../notification-repository.js"
+import type { WriteAuditInput } from "../admin/audit.js"
 import type {
   AdminBroadcastRow,
   AdminHostListParams,
@@ -21,7 +28,7 @@ import type {
 export interface BroadcastListQuery {
   cleanupId: string
   status?: BroadcastStatus
-  cursor: { createdAt: Date; id: string } | null
+  cursor: KeysetCursor | null
   limit: number
 }
 
@@ -29,7 +36,7 @@ export interface DeliveryListQuery {
   broadcastId: string
   status?: DeliveryStatus
   channel?: string
-  cursor: { createdAt: Date; id: string } | null
+  cursor: KeysetCursor | null
   limit: number
 }
 
@@ -52,15 +59,18 @@ export interface AdminBroadcastListQuery {
   createdBy?: string
   from?: Date
   to?: Date
-  cursor: { createdAt: Date; id: string } | null
+  cursor: KeysetCursor | null
   limit: number
 }
 
 export interface AnnouncementListQuery {
   cleanupId: string
-  cursor: { createdAt: Date; id: string } | null
+  cursor: KeysetCursor | null
   limit: number
 }
+
+/** A listed row plus its keyset instant rendered at microsecond precision, for the next cursor. */
+export type KeysetRow<T> = T & { cursorAt: string }
 
 export interface AudiencePageQuery {
   cleanupId: string
@@ -69,6 +79,13 @@ export interface AudiencePageQuery {
   afterMember: string | null
   afterGuest: string | null
   limit: number
+}
+
+export interface AudienceCountQuery {
+  cleanupId: string
+  segment: BroadcastSegment
+  kind: BroadcastKind
+  cap: number
 }
 
 export interface AnnouncementCap {
@@ -86,11 +103,12 @@ export interface BroadcastRepository {
 
   findById(broadcastId: string): Promise<BroadcastRecord | null>
   findForEvent(cleanupId: string, broadcastId: string): Promise<BroadcastRecord | null>
-  list(query: BroadcastListQuery): Promise<BroadcastRecord[]>
-  listAnnouncements(query: AnnouncementListQuery): Promise<BroadcastRecord[]>
+  findEventCancellation(cleanupId: string): Promise<BroadcastRecord | null>
+  list(query: BroadcastListQuery): Promise<KeysetRow<BroadcastRecord>[]>
+  listAnnouncements(query: AnnouncementListQuery): Promise<KeysetRow<BroadcastRecord>[]>
   countAnnouncementsSince(cleanupId: string, since: Date): Promise<number>
-  listAdmin(query: AdminBroadcastListQuery): Promise<AdminBroadcastRow[]>
-  listAdminHosts(params: AdminHostListParams): Promise<AdminHostRow[]>
+  listAdmin(query: AdminBroadcastListQuery): Promise<KeysetRow<AdminBroadcastRow>[]>
+  listAdminHosts(params: AdminHostListParams): Promise<KeysetRow<AdminHostRow>[]>
 
   updateDraft(
     cleanupId: string,
@@ -134,7 +152,7 @@ export interface BroadcastRepository {
   suppressRemaining(broadcastId: string, reason: string): Promise<number>
   deliveryCounts(broadcastId: string): Promise<DeliveryCounts>
   refreshCounts(broadcastId: string): Promise<BroadcastRecord | null>
-  listDeliveries(query: DeliveryListQuery): Promise<DeliveryListRow[]>
+  listDeliveries(query: DeliveryListQuery): Promise<KeysetRow<DeliveryListRow>[]>
 
   memberContacts(userIds: readonly string[]): Promise<Map<string, MemberContact>>
   pushPrefs(userIds: readonly string[]): Promise<Map<string, NotificationPrefsRecord>>
@@ -146,8 +164,15 @@ export interface BroadcastRepository {
   }): Promise<Map<string, string>>
 
   eventContext(cleanupId: string): Promise<EventBroadcastContext | null>
+  /** Contexts keyed by cleanup id; an id with no event is absent from the map. */
+  eventContexts(cleanupIds: readonly string[]): Promise<Map<string, EventBroadcastContext>>
   hostMessagingState(userId: string): Promise<HostMessagingState | null>
-  setHostMessagingSuspended(userId: string, suspended: boolean): Promise<boolean>
+  /** Writes `audit` in the same transaction as the flag; false (and no audit row) for an unknown user. */
+  setHostMessagingSuspended(
+    userId: string,
+    suspended: boolean,
+    audit: WriteAuditInput,
+  ): Promise<boolean>
 
   isEmailSuppressed(emailHash: string): Promise<boolean>
   suppressedEmailHashes(emailHashes: readonly string[]): Promise<Set<string>>
@@ -172,6 +197,8 @@ export interface BroadcastRepository {
   }): Promise<DueReminder[]>
 
   audiencePage(query: AudiencePageQuery): Promise<{ members: string[]; guests: string[] }>
+  /** Distinct members plus guests in the audience, each side counted up to `cap`. */
+  audienceCount(query: AudienceCountQuery): Promise<number>
 
   scrubBroadcastContent(cutoff: Date, batchSize: number): Promise<number>
   deleteOldDeliveries(cutoff: Date, batchSize: number): Promise<number>

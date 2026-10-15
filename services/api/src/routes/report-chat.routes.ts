@@ -20,23 +20,22 @@ import { route } from "../versioning/route.js"
 import { roomKeyFor } from "../ws/gateway.js"
 import {
   chatHistoryPayload,
+  clampChatHistoryLimit,
   deleteMessageWithPowers,
-  neutralizeChatViewerFields,
+  REPORT_NOT_FOUND,
 } from "./chat-route-helpers.js"
-import {
-  makeDrizzleChatRepository,
-  type ChatRepository,
-} from "../services/chat-repository.drizzle.js"
-import {
-  makeReportChatRepository,
-  type ReportChatRepository,
-} from "../services/report-chat-repository.drizzle.js"
+import { neutralizeChatViewerFields } from "../services/chat-viewer-fields.js"
+import { makeDrizzleChatRepository } from "../services/chat-repository.drizzle.js"
+import type { ChatRepository } from "../services/chat-repository.js"
+import type { ReportChatRepository } from "../services/report-chat-repository.js"
+import { makeReportChatRepository } from "../services/report-chat-repository.drizzle.js"
 import { makeDrizzleDiscussionRepository } from "../services/discussion-repository.drizzle.js"
-import type { DiscussionRepository } from "../services/discussion-types.js"
+import type { DiscussionRepository } from "../services/discussion-repository.js"
 import { isReportVisibleTo } from "../services/report-visibility.js"
 import { makePrivateMediaPresigner } from "../services/media-presign.js"
 import { withAffiliation } from "../services/affiliation.js"
 import { makeChatReactionService } from "../services/chat-reaction-service.js"
+import { nudgeThreads } from "../services/threads-nudge.js"
 import { wireChatPowers } from "./chat-powers-wiring.js"
 
 export interface DiscussionServiceOverrides {
@@ -51,9 +50,6 @@ declare module "fastify" {
 
 const ReportChatIdParamsSchema = z.object({ id: IdSchema }).strict()
 const ReportChatMessageParamsSchema = z.object({ id: IdSchema, messageId: IdSchema }).strict()
-
-const REPORT_CHAT_HISTORY_DEFAULT = 30
-const REPORT_CHAT_HISTORY_MAX = 50
 
 export const REPORT_REACTION_RATE_LIMIT = perIdentity({ max: 60, timeWindow: "1 minute" })
 
@@ -78,10 +74,7 @@ export async function registerReportChatRoutes(
   let reportChatRepo: ReportChatRepository | undefined
   const getReportChatRepo = (): ReportChatRepository =>
     app.chatOverrides?.reportChat ??
-    (reportChatRepo ??= makeReportChatRepository(
-      container.getDb().sql,
-      makePrivateMediaPresigner(container.storage),
-    ))
+    (reportChatRepo ??= makeReportChatRepository(container.getDb().sql))
 
   let discussionRepo: DiscussionRepository | undefined
   const getReportRepo = (): DiscussionRepository =>
@@ -93,16 +86,13 @@ export async function registerReportChatRoutes(
     viewerUserId: string | null,
   ): Promise<void> => {
     const report = await getReportRepo().findReportForDiscussion(reportId)
-    if (!isReportVisibleTo(report, viewerUserId)) throw AppError.notFound("Report not found")
+    if (!isReportVisibleTo(report, viewerUserId)) throw AppError.notFound(REPORT_NOT_FOUND)
   }
 
   route(app, "reportMessages", async (request, reply) => {
     const { id } = parse(ReportChatIdParamsSchema, request.params)
     const q = parse(ReportChatHistoryRequestSchema, { ...(request.query as object), id })
-    const limit = Math.min(
-      Math.max(q.limit ?? REPORT_CHAT_HISTORY_DEFAULT, 1),
-      REPORT_CHAT_HISTORY_MAX,
-    )
+    const limit = clampChatHistoryLimit(q.limit)
     const viewerUserId = request.auth?.userId ?? null
     await requireVisibleReport(id, viewerUserId)
     const payload: ChatHistoryResponse = await chatHistoryPayload(
@@ -191,9 +181,7 @@ export async function registerReportChatRoutes(
       parse(JoinReportChatRequestSchema, { id })
       await requireVisibleReport(id, userId)
       await getReportChatRepo().join(id, userId, "member")
-      void Promise.resolve(
-        container.userChannel?.publishToUser(userId, { topic: "threads" }),
-      ).catch(() => {})
+      nudgeThreads(container.userChannel, userId)
       reply.status(200).send({ ok: true })
     },
   )
@@ -231,9 +219,7 @@ export async function registerReportChatRoutes(
       const { id } = parse(ReportChatIdParamsSchema, request.params)
       parse(LeaveReportChatRequestSchema, { id })
       await getReportChatRepo().leave(id, userId)
-      void Promise.resolve(
-        container.userChannel?.publishToUser(userId, { topic: "threads" }),
-      ).catch(() => {})
+      nudgeThreads(container.userChannel, userId)
       reply.status(200).send({ ok: true })
     },
   )

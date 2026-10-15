@@ -1,14 +1,13 @@
-
 import { randomUUID } from "node:crypto"
+import type { CreateNotificationInput } from "../../src/services/notification-service.js"
 import type {
-  CreateNotificationInput,
   NewNotificationArgs,
   NotificationPrefsPatch,
   NotificationPrefsRecord,
   NotificationRecord,
   NotificationRepository,
   PushTokenUpsertOutcome,
-} from "../../src/services/notification-service.js"
+} from "../../src/services/notification-repository.js"
 import { DEFAULT_PREFS, isFeedVisibleType } from "../../src/services/notification-service.js"
 import { MAX_ACTIVE_PUSH_TOKENS_PER_USER } from "../../src/services/notification-repository.drizzle.js"
 import { paginate, parseTimeCursor } from "../../src/db/cursor-helpers.js"
@@ -234,13 +233,10 @@ export class InMemoryNotificationRepository implements NotificationRepository {
     return Promise.resolve()
   }
 
-  findRecentDuplicate(args: {
-    userId: string
-    type: NotificationType
-    link: string | null
-    body: string | null
-    since: Date
-  }): Promise<NotificationRecord | null> {
+  // Find and insert run in one synchronous step, the single-threaded twin of the SQL key lock.
+  insertUnlessRecentDuplicate(
+    args: NewNotificationArgs & { since: Date },
+  ): Promise<{ record: NotificationRecord; deduped: boolean }> {
     const match = this.notifications
       .filter(
         (n) =>
@@ -251,7 +247,14 @@ export class InMemoryNotificationRepository implements NotificationRepository {
           n.createdAt.getTime() > args.since.getTime(),
       )
       .sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime())[0]
-    return Promise.resolve(match ?? null)
+    if (match) return Promise.resolve({ record: match, deduped: true })
+    return this.insertNotification({
+      userId: args.userId,
+      type: args.type,
+      title: args.title,
+      body: args.body,
+      link: args.link,
+    }).then((record) => ({ record, deduped: false }))
   }
 
   refreshUnreadNotification(args: {
@@ -325,4 +328,3 @@ export class InMemoryNotificationRepository implements NotificationRepository {
     return Promise.resolve(out)
   }
 }
-

@@ -2,13 +2,12 @@ import {
   ANALYTICS_SUPPRESSION_K,
   MAX_PORTFOLIO_TOP_VOLUNTEERS,
   type AnalyticsRange,
-  type BreakdownRow,
+  type BroadcastChannel,
   type EventAnalyticsBroadcastsResponse,
   type EventAnalyticsCheckinsResponse,
   type EventAnalyticsOverviewResponse,
   type EventAnalyticsRegistrationsResponse,
   type EventAnalyticsSourcesResponse,
-  type FunnelStep,
   type HostAnalyticsSummaryResponse,
   type HostedEventsAnalyticsResponse,
   type Panel,
@@ -28,28 +27,50 @@ import {
   suppressRate,
   type DayCount,
   type DayRange,
-  type DerivedBreakdownRow,
-  type DerivedPanel,
   type KeyCount,
-  type SeriesClosure,
 } from "@civfix/shared/host"
-import type { AnalyticsRepository, LabeledKeyCount } from "./analytics-repository.drizzle.js"
+import type { AnalyticsRepository, LabeledKeyCount } from "./analytics-repository.js"
+import type { MetricRow, MetricsRepository } from "./metrics-repository.js"
 import { leaderboardEntryOf } from "../volunteer-hours-service.js"
-import type { MetricRow, MetricsRepository } from "./metrics-repository.drizzle.js"
 import { hostAnalyticsCacheKey, type HostAnalyticsCache } from "./host-analytics-cache.js"
 import { eventDayKey } from "./event-day.js"
 import { DEFAULT_EVENT_TIME_ZONE } from "./event-fields.js"
+import {
+  METRIC_BROADCAST_FAILED,
+  METRIC_BROADCAST_RECIPIENTS,
+  METRIC_BROADCAST_SENT,
+  METRIC_BROADCAST_SUPPRESSED,
+  METRIC_DONATION_CLICKS,
+  METRIC_PAGE_VIEWS,
+  METRIC_REGISTRATIONS,
+  METRIC_SOURCE,
+  METRIC_UNSUBSCRIBES,
+} from "./event-metric-names.js"
+import {
+  PORTFOLIO_EVENT_LIMIT,
+  closureAllowsTotal,
+  emptyRate,
+  isoDayOf,
+  metricTotal,
+  seriesOf,
+  shiftDayKey,
+  toFunnelSteps,
+  toPanel,
+  toRate,
+  toSeries,
+  toSuppressedRate,
+} from "./host-analytics-shaping.js"
+import { MS_PER_DAY } from "../../lib/time.js"
 
-function shiftDayKey(day: string, deltaDays: number): string {
-  const [year, month, date] = day.split("-").map(Number)
-  const shifted = new Date(Date.UTC(year ?? 1970, (month ?? 1) - 1, date ?? 1) + deltaDays * 86_400_000)
-  return shifted.toISOString().slice(0, 10)
-}
-
-export const PORTFOLIO_EVENT_LIMIT = 200
 export const ARRIVAL_SAMPLE_LIMIT = 20_000
+const PORTFOLIO_BY_EVENT_LIMIT = 50
 
-const RANGE_DAYS: Record<AnalyticsRange, number | null> = { "7d": 7, "30d": 30, "90d": 90, all: null }
+const RANGE_DAYS: Record<AnalyticsRange, number | null> = {
+  "7d": 7,
+  "30d": 30,
+  "90d": 90,
+  all: null,
+}
 const PORTFOLIO_RANGE_DAYS: Record<PortfolioAnalyticsRange, number | null> = {
   "30d": 30,
   "90d": 90,
@@ -61,6 +82,8 @@ const ALL_RANGE_DAYS = 365
 
 const EXACT_K = 1
 
+const BROADCAST_CHANNELS: readonly BroadcastChannel[] = ["inapp", "push", "email", "sms"]
+
 export interface AnalyticsServiceDeps {
   analytics: AnalyticsRepository
   metrics: MetricsRepository
@@ -69,7 +92,11 @@ export interface AnalyticsServiceDeps {
 }
 
 export interface AnalyticsService {
-  overview(cleanupId: string, range: AnalyticsRange, viewerScope: string): Promise<EventAnalyticsOverviewResponse>
+  overview(
+    cleanupId: string,
+    range: AnalyticsRange,
+    viewerScope: string,
+  ): Promise<EventAnalyticsOverviewResponse>
   registrations(
     cleanupId: string,
     range: AnalyticsRange,
@@ -110,8 +137,8 @@ export function makeAnalyticsService(deps: AnalyticsServiceDeps): AnalyticsServi
   function utcRangeWindow(days: number | null): { from: string; to: string } {
     const to = now()
     const span = days ?? ALL_RANGE_DAYS
-    const from = new Date(to.getTime() - (span - 1) * 86_400_000)
-    return { from: from.toISOString().slice(0, 10), to: to.toISOString().slice(0, 10) }
+    const from = new Date(to.getTime() - (span - 1) * MS_PER_DAY)
+    return { from: isoDayOf(from), to: isoDayOf(to) }
   }
 
   function eventRangeWindow(days: number | null, timezone: string): { from: string; to: string } {
@@ -150,15 +177,15 @@ export function makeAnalyticsService(deps: AnalyticsServiceDeps): AnalyticsServi
           deps.analytics.eventKpis(cleanupId),
           deps.metrics.read(
             cleanupId,
-            ["page_views", "donation_clicks"],
+            [METRIC_PAGE_VIEWS, METRIC_DONATION_CLICKS],
             window.from,
             window.to,
           ),
           deps.analytics.registrationsByDay(cleanupId, timezone, window.from, window.to),
         ])
         const registeredPublishable = closureAllowsTotal(closureOf(registrationDays, window))
-        const pageViews = metricTotal(metricRows, "page_views")
-        const donationClicks = metricTotal(metricRows, "donation_clicks")
+        const pageViews = metricTotal(metricRows, METRIC_PAGE_VIEWS)
+        const donationClicks = metricTotal(metricRows, METRIC_DONATION_CLICKS)
         const steps: KeyCount[] = [
           ...(pageViews === null ? [] : [{ key: "page_views", count: pageViews }]),
           { key: "registered", count: kpis.registered },
@@ -213,7 +240,9 @@ export function makeAnalyticsService(deps: AnalyticsServiceDeps): AnalyticsServi
           cumulative: toSeries(closure.cumulative),
           byTicketType: toPanel(breakdown(byType, { totalPublishable: registeredPublishable })),
           byAudience: toPanel(breakdown(byAudience, { totalPublishable: registeredPublishable })),
-          cancellations: toSeries(dailySeries(cancellations, window, { suppressPoints: true }).points),
+          cancellations: toSeries(
+            dailySeries(cancellations, window, { suppressPoints: true }).points,
+          ),
           waitlistConversion: toRate(waitlist.promoted, waitlist.joined),
         }
       })
@@ -258,41 +287,33 @@ export function makeAnalyticsService(deps: AnalyticsServiceDeps): AnalyticsServi
           deps.metrics.read(
             cleanupId,
             [
-              "broadcast_recipients",
-              "broadcast_sent",
-              "broadcast_failed",
-              "broadcast_suppressed",
-              "unsubscribes",
+              METRIC_BROADCAST_RECIPIENTS,
+              METRIC_BROADCAST_SENT,
+              METRIC_BROADCAST_FAILED,
+              METRIC_BROADCAST_SUPPRESSED,
+              METRIC_UNSUBSCRIBES,
             ],
             window.from,
             window.to,
           ),
           deps.analytics.broadcastsSent(cleanupId, timezone, window.from, window.to),
         ])
-        const recipients = sumMetric(rows, "broadcast_recipients")
-        const channels: Array<"inapp" | "push" | "email" | "sms"> = [
-          "inapp",
-          "push",
-          "email",
-          "sms",
-        ]
-        const sentByChannel = channelColumn(rows, "broadcast_sent", channels)
-        const failedByChannel = channelColumn(rows, "broadcast_failed", channels)
-        const suppressedByChannel = channelColumn(rows, "broadcast_suppressed", channels)
+        const recipients = sumMetric(rows, METRIC_BROADCAST_RECIPIENTS)
+        const sentByChannel = channelColumn(rows, METRIC_BROADCAST_SENT)
+        const failedByChannel = channelColumn(rows, METRIC_BROADCAST_FAILED)
+        const suppressedByChannel = channelColumn(rows, METRIC_BROADCAST_SUPPRESSED)
         return {
           ...envelope(range),
           broadcastsSent,
           recipients: suppressCount(recipients).value,
-          unsubscribes: suppressCount(sumMetric(rows, "unsubscribes")).value,
-          byChannel: channels.map((channel) => ({
+          unsubscribes: suppressCount(sumMetric(rows, METRIC_UNSUBSCRIBES)).value,
+          byChannel: BROADCAST_CHANNELS.map((channel) => ({
             channel,
             sent: sentByChannel.get(channel) ?? null,
             failed: failedByChannel.get(channel) ?? null,
             suppressed: suppressedByChannel.get(channel) ?? null,
           })),
-          series: toSeries(
-            dailySeries(seriesOf(rows, "broadcast_sent"), window).points,
-          ),
+          series: toSeries(dailySeries(seriesOf(rows, METRIC_BROADCAST_SENT), window).points),
         }
       })
     },
@@ -303,22 +324,20 @@ export function makeAnalyticsService(deps: AnalyticsServiceDeps): AnalyticsServi
         const window = eventRangeWindow(RANGE_DAYS[range], timezone)
         const rows = await deps.metrics.read(
           cleanupId,
-          ["page_views", "source", "donation_clicks"],
+          [METRIC_PAGE_VIEWS, METRIC_SOURCE, METRIC_DONATION_CLICKS],
           window.from,
           window.to,
         )
         const byBucket = new Map<string, number>()
         for (const row of rows) {
-          if (row.metric !== "source") continue
+          if (row.metric !== METRIC_SOURCE) continue
           byBucket.set(row.bucket, (byBucket.get(row.bucket) ?? 0) + row.value)
         }
         return {
           ...envelope(range),
-          pageViews: toSeries(dailySeries(seriesOf(rows, "page_views"), window).points),
-          bySource: toPanel(
-            breakdown([...byBucket].map(([key, count]) => ({ key, count }))),
-          ),
-          donationClicks: suppressCount(sumMetric(rows, "donation_clicks")).value,
+          pageViews: toSeries(dailySeries(seriesOf(rows, METRIC_PAGE_VIEWS), window).points),
+          bySource: toPanel(breakdown([...byBucket].map(([key, count]) => ({ key, count })))),
+          donationClicks: suppressCount(sumMetric(rows, METRIC_DONATION_CLICKS)).value,
         }
       })
     },
@@ -334,9 +353,9 @@ export function makeAnalyticsService(deps: AnalyticsServiceDeps): AnalyticsServi
         )
         const [totals, byEvent, dayTime, metricRows, hours, topVolunteers] = await Promise.all([
           deps.analytics.portfolioTotals(cleanupIds),
-          deps.analytics.portfolioByEvent(cleanupIds, 50),
+          deps.analytics.portfolioByEvent(cleanupIds, PORTFOLIO_BY_EVENT_LIMIT),
           deps.analytics.portfolioDayTime(cleanupIds),
-          deps.metrics.readMany(cleanupIds, ["registrations"], window.from, window.to),
+          deps.metrics.readMany(cleanupIds, [METRIC_REGISTRATIONS], window.from, window.to),
           deps.analytics.hoursTotals(cleanupIds),
           deps.analytics.topVolunteers(cleanupIds, MAX_PORTFOLIO_TOP_VOLUNTEERS),
         ])
@@ -353,7 +372,7 @@ export function makeAnalyticsService(deps: AnalyticsServiceDeps): AnalyticsServi
           totalHours: round2(hours.credited),
           volunteersCredited: hours.volunteersCredited,
           topVolunteers: topVolunteers.map((row, index) => leaderboardEntryOf(row, index + 1)),
-          series: exactSeries(seriesOf(metricRows, "registrations"), window),
+          series: exactSeries(seriesOf(metricRows, METRIC_REGISTRATIONS), window),
           byEvent: exactPanel(byEvent),
           repeatAttendance: exactRate(totals.repeatAttendees, totals.uniqueAttendees),
           averageCheckInRate: exactRate(totals.checkIns, totals.registrations),
@@ -383,7 +402,7 @@ export function makeAnalyticsService(deps: AnalyticsServiceDeps): AnalyticsServi
           deps.analytics.activityTotals(cleanupIds, bounds.from, bounds.to),
           deps.analytics.heldEventTotals(cleanupIds, bounds.from, bounds.to),
           deps.analytics.signupsByDayAcross(cleanupIds, window.from, window.to),
-          deps.metrics.readMany(cleanupIds, ["donation_clicks"], window.from, window.to),
+          deps.metrics.readMany(cleanupIds, [METRIC_DONATION_CLICKS], window.from, window.to),
         ])
         return {
           ...envelope,
@@ -395,7 +414,7 @@ export function makeAnalyticsService(deps: AnalyticsServiceDeps): AnalyticsServi
             reportsLinked: activity.reportsLinked,
             reportsResolved: activity.reportsResolved,
             postsCreated: activity.postsCreated,
-            donationClicks: sumMetric(metricRows, "donation_clicks"),
+            donationClicks: sumMetric(metricRows, METRIC_DONATION_CLICKS),
           },
           eventsHeld: {
             count: held.events,
@@ -416,7 +435,7 @@ export function makeAnalyticsService(deps: AnalyticsServiceDeps): AnalyticsServi
 
 function dayBounds(window: DayRange): { from: Date; to: Date } {
   const from = new Date(`${window.from}T00:00:00.000Z`)
-  const to = new Date(Date.parse(`${window.to}T00:00:00.000Z`) + 86_400_000)
+  const to = new Date(Date.parse(`${window.to}T00:00:00.000Z`) + MS_PER_DAY)
   return { from, to }
 }
 
@@ -504,17 +523,12 @@ function closureOf(points: readonly DayCount[], window: { from: string; to: stri
   return seriesClosure(points, window, { suppressPoints: true })
 }
 
-function closureAllowsTotal(closure: SeriesClosure): boolean {
-  return closure.panelSuppressed || closure.totalPublishable
-}
-
-function channelColumn(
-  rows: readonly MetricRow[],
-  metric: string,
-  channels: readonly string[],
-): Map<string, number | null> {
+function channelColumn(rows: readonly MetricRow[], metric: string): Map<string, number | null> {
   const panel = breakdown(
-    channels.map((channel) => ({ key: channel, count: sumMetric(rows, metric, channel) })),
+    BROADCAST_CHANNELS.map((channel) => ({
+      key: channel,
+      count: sumMetric(rows, metric, channel),
+    })),
   )
   return new Map(panel.rows.map((row) => [row.key, row.value]))
 }
@@ -523,74 +537,4 @@ function sumMetric(rows: readonly MetricRow[], metric: string, bucket?: string):
   return rows
     .filter((row) => row.metric === metric && (bucket === undefined || row.bucket === bucket))
     .reduce((acc, row) => acc + row.value, 0)
-}
-
-function metricTotal(rows: readonly MetricRow[], metric: string): number | null {
-  const matching = rows.filter((row) => row.metric === metric)
-  if (matching.length === 0) return null
-  return matching.reduce((acc, row) => acc + row.value, 0)
-}
-
-function seriesOf(rows: readonly MetricRow[], metric: string): DayCount[] {
-  const byDay = new Map<string, number>()
-  for (const row of rows) {
-    if (row.metric !== metric) continue
-    byDay.set(row.day, (byDay.get(row.day) ?? 0) + row.value)
-  }
-  return [...byDay].map(([day, count]) => ({ day, count }))
-}
-
-function toSeries(
-  points: readonly { day: string; value: number | null; suppressed: boolean }[],
-): SeriesPoint[] {
-  return points.map((point) => ({
-    day: point.day,
-    value: point.value,
-    suppressed: point.suppressed,
-  }))
-}
-
-function toPanel(panel: DerivedPanel<DerivedBreakdownRow>): Panel {
-  return {
-    panelSuppressed: panel.panelSuppressed,
-    rows: panel.rows.map(
-      (row): BreakdownRow => ({
-        key: row.key,
-        label: row.key,
-        value: row.value,
-        suppressed: row.suppressed,
-      }),
-    ),
-  }
-}
-
-function toFunnelSteps(panel: DerivedPanel<{ key: string; value: number | null; suppressed: boolean }>): FunnelStep[] {
-  return panel.rows.map((row) => ({
-    step: row.key,
-    label: row.key,
-    value: row.value,
-    suppressed: row.suppressed,
-  }))
-}
-
-function toRate(numerator: number, denominator: number): SuppressedRate {
-  const ratio = suppressRate(numerator, denominator)
-  return toSuppressedRate(ratio, numerator, denominator)
-}
-
-function toSuppressedRate(
-  ratio: { value: number | null; suppressed: boolean },
-  numerator: number,
-  denominator: number,
-): SuppressedRate {
-  return {
-    value: ratio.value,
-    numerator: ratio.suppressed ? null : numerator,
-    denominator: ratio.suppressed ? null : denominator,
-    suppressed: ratio.suppressed,
-  }
-}
-
-function emptyRate(): SuppressedRate {
-  return { value: null, numerator: null, denominator: null, suppressed: true }
 }

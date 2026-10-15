@@ -20,7 +20,7 @@ const BOB = "22222222-2222-2222-2222-222222222222"
 
 // ioredis-mock is structurally an ioredis client; cast through unknown at this adapter-test boundary.
 function makeMockRedis(): RedisClient {
-  return new RedisMock() as unknown as RedisClient
+  return new RedisMock()
 }
 
 const created: Array<{ close: () => Promise<void>; redis: RedisClient }> = []
@@ -42,14 +42,16 @@ describe("RedisChatPubSub over ioredis-mock", () => {
     const received: string[] = []
     const unsubscribe = await pubsub.subscribe(chatChannel(ROOM), (p) => received.push(p))
 
-    await pubsub.publish(chatChannel(ROOM), JSON.stringify({ type: "message", message: { body: "hi" } }))
+    await pubsub.publish(
+      chatChannel(ROOM),
+      JSON.stringify({ type: "message", message: { body: "hi" } }),
+    )
     // Allow the mock's async message delivery to flush.
     await new Promise((r) => setTimeout(r, 20))
 
     expect(received).toHaveLength(1)
     expect(JSON.parse(received[0]!).message.body).toBe("hi")
 
-    // After unsubscribe, a further publish is not delivered.
     await unsubscribe()
     await pubsub.publish(chatChannel(ROOM), "ignored")
     await new Promise((r) => setTimeout(r, 20))
@@ -61,13 +63,13 @@ describe("RedisChatPubSub over ioredis-mock", () => {
     // the root for each worker's pub/sub to emulate two nodes on one Redis.
     const root = makeMockRedis()
 
-    const redis1 = root.duplicate() as unknown as RedisClient
+    const redis1 = root.duplicate()
     const pubsub1 = new RedisChatPubSub(redis1)
     const repo1 = new InMemoryChatRepository()
     repo1.registerSender({ id: ALICE, displayName: "Alice" })
     const worker1 = new WsChatService({ repo: repo1, pubsub: pubsub1 })
 
-    const redis2 = root.duplicate() as unknown as RedisClient
+    const redis2 = root.duplicate()
     const pubsub2 = new RedisChatPubSub(redis2)
     const repo2 = new InMemoryChatRepository()
     const worker2 = new WsChatService({ repo: repo2, pubsub: pubsub2 })
@@ -76,14 +78,17 @@ describe("RedisChatPubSub over ioredis-mock", () => {
     created.push({ close: () => worker2.close(), redis: redis2 })
     created.push({ close: () => Promise.resolve(), redis: root })
 
-    // Bob's socket is on worker 2.
     const bConn = new MockConnection("B")
     await worker2.joinRoom(ROOM, bConn, BOB)
     // Give the subscribe a tick to register on the mock.
     await new Promise((r) => setTimeout(r, 20))
 
-    // Alice sends from worker 1.
-    const msg = await worker1.persist({ cleanupId: ROOM, userId: ALICE, body: "cross-node", clientId: "c1" })
+    const msg = await worker1.persist({
+      cleanupId: ROOM,
+      userId: ALICE,
+      body: "cross-node",
+      clientId: "c1",
+    })
     await worker1.broadcast(ROOM, msg)
     await new Promise((r) => setTimeout(r, 20))
 

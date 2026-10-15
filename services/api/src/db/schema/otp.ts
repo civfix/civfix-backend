@@ -1,4 +1,3 @@
-
 import { sql } from "drizzle-orm"
 import { index, integer, pgTable, text, timestamp, uuid } from "drizzle-orm/pg-core"
 import { citext } from "./types.js"

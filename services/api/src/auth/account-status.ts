@@ -13,16 +13,14 @@ export const SUSPENDED_MESSAGE =
 
 const READ_ONLY_METHODS: ReadonlySet<string> = new Set(["GET", "HEAD", "OPTIONS"])
 
-export function isSuspendedWrite(request: FastifyRequest): boolean {
+function isSuspendedWrite(request: FastifyRequest): boolean {
   if (request.accountStatus !== "suspended") return false
   if (READ_ONLY_METHODS.has(request.method)) return false
   return request.routeOptions?.config?.allowSuspended !== true
 }
 
 export type SocketStatusCheck =
-  | { kind: "live"; status: AccountStatus }
-  | { kind: "revoked" }
-  | { kind: "unknown" }
+  { kind: "live"; status: AccountStatus } | { kind: "revoked" } | { kind: "unknown" }
 
 export type SocketWriteVerdict = "allow" | "suspended" | "revoked"
 

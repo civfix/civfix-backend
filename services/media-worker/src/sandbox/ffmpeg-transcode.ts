@@ -1,14 +1,10 @@
-import { runTool, sandboxIdentity } from "./exec.js"
-import { mediaToolPath } from "./binaries.js"
-import { makeScratch, readScratchOutput } from "./tmp.js"
 import {
   SERVED_VIDEO_MAX_EDGE,
   SERVED_VIDEO_MAX_FPS,
   videoDecoderMaxPixels,
   type WorkerLimits,
 } from "../config.js"
-
-const SAFE_INPUT_ARGS = ["-protocol_whitelist", "file", "-f", "mov"] as const
+import { QUIET_ARGS, runFfmpegToScratchOutput, SAFE_INPUT_ARGS } from "./ffmpeg-remux.js"
 
 const TRANSCODE_OUTPUT = "out.mp4"
 
@@ -46,18 +42,16 @@ export async function transcodeToServedMp4(
   opts: TranscodeOptions,
   limits: WorkerLimits,
 ): Promise<Buffer> {
-  return inTranscodeSlot(async () => {
-    const scratch = await makeScratch(bytes, "bin")
-    const out = scratch.outPath(TRANSCODE_OUTPUT)
-    try {
-      const threads = String(limits.transcodeThreads)
-      const maxrate = String(limits.servedVideoMaxBitrateBps)
-      const bufsize = String(limits.servedVideoMaxBitrateBps * 2)
-      const args = [
-        "-hide_banner",
-        "-loglevel",
-        "error",
-        "-nostdin",
+  const threads = String(limits.transcodeThreads)
+  const maxrate = String(limits.servedVideoMaxBitrateBps)
+  const bufsize = String(limits.servedVideoMaxBitrateBps * 2)
+  return inTranscodeSlot(() =>
+    runFfmpegToScratchOutput(
+      bytes,
+      TRANSCODE_OUTPUT,
+      limits,
+      (inputPath, out) => [
+        ...QUIET_ARGS,
         "-filter_threads",
         "1",
         ...SAFE_INPUT_ARGS,
@@ -66,7 +60,7 @@ export async function transcodeToServedMp4(
         "-threads",
         threads,
         "-i",
-        scratch.inputPath,
+        inputPath,
         "-map_metadata",
         "-1",
         "-map_metadata:s",
@@ -103,22 +97,8 @@ export async function transcodeToServedMp4(
         "mp4",
         "-y",
         out,
-      ]
-      await runTool("ffmpeg", await mediaToolPath("ffmpeg"), args, {
-        timeoutMs: limits.transcodeTimeoutMs,
-        maxStdoutBytes: limits.maxToolStdoutBytes,
-        cwd: scratch.dir,
-        lowPriority: true,
-      })
-      await scratch.seal()
-      return await readScratchOutput(
-        scratch.dir,
-        TRANSCODE_OUTPUT,
-        sandboxIdentity()?.uid ?? null,
-        limits.maxChildOutputBytes,
-      )
-    } finally {
-      await scratch.cleanup()
-    }
-  })
+      ],
+      { timeoutMs: limits.transcodeTimeoutMs, lowPriority: true },
+    ),
+  )
 }

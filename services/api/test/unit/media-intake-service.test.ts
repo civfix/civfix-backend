@@ -6,11 +6,10 @@ import {
   makeMediaIntakeService,
   precheckUpload,
   buildR2Key,
-  MEDIA_CHECKS_JOB,
   type MediaIntakeService,
 } from "../../src/services/media-intake-service.js"
+import { MEDIA_CHECKS_JOB } from "../../src/lib/queue-names.js"
 import { InMemoryMediaRepository } from "../helpers/media.js"
-
 
 const SHA = "a".repeat(64)
 
@@ -18,7 +17,13 @@ function imageReq(over: Partial<CreateMediaUploadRequest> = {}): CreateMediaUplo
   return { kind: "image", contentType: "image/jpeg", byteSize: 32 * 1024, sha256: SHA, ...over }
 }
 function videoReq(over: Partial<CreateMediaUploadRequest> = {}): CreateMediaUploadRequest {
-  return { kind: "video", contentType: "video/mp4", byteSize: 4 * 1024 * 1024, sha256: SHA, ...over }
+  return {
+    kind: "video",
+    contentType: "video/mp4",
+    byteSize: 4 * 1024 * 1024,
+    sha256: SHA,
+    ...over,
+  }
 }
 
 function makeHarness(over: { logger?: { warn(obj: unknown, msg?: string): void } } = {}) {
@@ -89,7 +94,9 @@ describe("createUpload", () => {
     const row = [...repo.byId.values()][0]!
     expect(row.status).toBe("validating")
     expect(row.uploadId).toBe(res.uploadId)
-    expect(row.r2Key).toBe(`uploads/${row.r2Key.split("/")[1]}/${row.r2Key.split("/")[2]}/${res.uploadId}`)
+    expect(row.r2Key).toBe(
+      `uploads/${row.r2Key.split("/")[1]}/${row.r2Key.split("/")[2]}/${res.uploadId}`,
+    )
     expect(row.r2Key.endsWith(res.uploadId)).toBe(true)
     expect(row.byteSize).toBe(32 * 1024)
 
@@ -195,9 +202,9 @@ describe("finalize", () => {
   it("rejects when the uploaded object is missing in storage", async () => {
     const { jobs, service } = makeHarness()
     const created = await service.createUpload(imageReq(), {})
-    await expect(
-      service.finalize({ uploadId: created.uploadId }, {}),
-    ).rejects.toMatchObject({ code: "MEDIA_REJECTED" })
+    await expect(service.finalize({ uploadId: created.uploadId }, {})).rejects.toMatchObject({
+      code: "MEDIA_REJECTED",
+    })
     expect(jobs.jobsFor(MEDIA_CHECKS_JOB)).toHaveLength(0)
   })
 
@@ -206,9 +213,9 @@ describe("finalize", () => {
     const created = await service.createUpload(imageReq(), {})
     const asset = await row(created.uploadId)
     await storage.put(asset.r2Key, new Uint8Array(1), { contentType: "image/jpeg" })
-    await expect(
-      service.finalize({ uploadId: created.uploadId }, {}),
-    ).rejects.toMatchObject({ code: "MEDIA_REJECTED" })
+    await expect(service.finalize({ uploadId: created.uploadId }, {})).rejects.toMatchObject({
+      code: "MEDIA_REJECTED",
+    })
   })
 })
 

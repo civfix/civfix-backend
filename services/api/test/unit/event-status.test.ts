@@ -3,12 +3,9 @@ import { toEventStatus } from "../../src/services/admin/event-status.js"
 import { EventStatusSchema } from "@civfix/shared"
 
 /**
- * Unit tests for the one-way event-status bridge (event-status.ts), which maps the DERIVED public
- * CleanupStatus (0.46.0, computed from scheduled_at/ends_at) to the admin EventStatus wire enum. These
- * prove:
- *   - every derived CleanupStatus maps to a valid EventStatus, with the two renames;
- *   - a legacy or leaked Phase-2 value still resolves rather than escaping as an invalid enum;
- *   - garbage degrades to the safe default.
+ * The one-way bridge from the DERIVED public CleanupStatus (computed from scheduled_at/ends_at since
+ * 0.46.0) to the admin EventStatus wire enum. A legacy value already stored in admin vocabulary, or
+ * garbage, must still resolve to a valid EventStatus rather than escape as an invalid enum.
  */
 
 describe("event-status mapping", () => {

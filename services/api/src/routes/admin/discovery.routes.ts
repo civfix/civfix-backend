@@ -1,11 +1,5 @@
-/**
- * Admin discovery (jurisdiction onboarding queue) routes: list / detail + the note / flag / draft
- * mutations. The acting operator's userId is recorded on every audit write.
- *
- * NOTES STORAGE: operator notes are persisted as audit_log rows (action discovery.note_added) and read
- * back from there - the discovery task has no notes column and the foundation schema is frozen. See
- * discovery-service.ts / discovery-repository.drizzle.ts.
- */
+// The discovery task has no notes column, so operator notes are stored and read back as audit_log rows
+// (action discovery.note_added); see discovery-repository.drizzle.ts.
 
 import {
   AddNoteRequestSchema,
@@ -14,7 +8,6 @@ import {
   SaveDraftRequestSchema,
   type DiscoveryListResponse,
   type DiscoveryTaskDetailDTO,
-  type ReportCategory,
 } from "@civfix/shared"
 import type { FastifyInstance } from "fastify"
 import type { Container } from "../../di.js"
@@ -29,16 +22,14 @@ import {
   sendOk,
   spreadNow,
 } from "./_route-utils.js"
-import {
-  makeDiscoveryService,
-  type DiscoveryRepository,
-} from "../../services/admin/discovery-service.js"
+import { makeDiscoveryService } from "../../services/admin/discovery-service.js"
+import type { DiscoveryRepository } from "../../services/admin/discovery-repository.js"
 import { makeDrizzleDiscoveryRepository } from "../../services/admin/discovery-repository.drizzle.js"
 
-/**
- * Optional injected discovery-service dependencies (tests). When present the routes build the service
- * from these (an in-memory repo) instead of the container, so the whole HTTP flow runs offline.
- */
+const FALLBACK_OPERATOR_LABEL = "operator"
+const ACTOR_ID_LABEL_CHARS = 8
+
+/** Test-only: an in-memory repo so the whole HTTP flow runs offline. */
 export interface DiscoveryRouteOverrides {
   repo: DiscoveryRepository
   now?: () => Date
@@ -46,7 +37,6 @@ export interface DiscoveryRouteOverrides {
 
 declare module "fastify" {
   interface FastifyInstance {
-    /** Injected discovery-route overrides (tests). See DiscoveryRouteOverrides. */
     discoveryOverrides?: DiscoveryRouteOverrides
   }
 }
@@ -57,7 +47,6 @@ export async function registerAdminDiscoveryRoutes(
 ): Promise<void> {
   const csrfProtect = container.csrf.protect
 
-  /** Build the discovery service from injected overrides (tests) or the container (production). */
   const service = overridableService(
     app,
     "discoveryOverrides",
@@ -84,8 +73,7 @@ export async function registerAdminDiscoveryRoutes(
     const actorId = requireOperator(request)
     const { id, body } = parseBodyWithId(AddNoteRequestSchema, request)
     const who = await operatorLabel(app, actorId)
-    // addNote persists the note AS the audit_log discovery.note_added row (the note store), so the write
-    // is atomic + audited in one place; no separate writeAudit here.
+    // The note IS its audit_log row, so there is no separate insertAuditRow here.
     await service().addNote(id, { text: body.text, actorId, who })
     sendOk(reply)
   })
@@ -101,9 +89,9 @@ export async function registerAdminDiscoveryRoutes(
     const actorId = requireOperator(request)
     const { id, body } = parseBodyWithId(SaveDraftRequestSchema, request)
     await service().saveDraft(id, {
-      contacts: (body.contacts ?? {}) as Partial<Record<ReportCategory, string | null>>,
+      contacts: body.contacts ?? {},
       defaultEmails: body.defaultEmails ?? [],
-      // L7: reject javascript:/data: URIs the shared `.url()` schema lets through (see httpUrlField).
+      // The shared `.url()` schema lets javascript:/data: URIs through.
       formUrl: httpUrlField(body.formUrl, "formUrl"),
       actorId,
     })
@@ -111,17 +99,13 @@ export async function registerAdminDiscoveryRoutes(
   })
 }
 
-/**
- * Resolve a human "who" label for an operator note from the operator's user record: @handle (the canonical
- * identifier), else display name, else email, else a short id. Falls back to "operator" when the user
- * record cannot be read.
- */
+/** The @handle leads because it is the operator's canonical identifier. */
 async function operatorLabel(app: FastifyInstance, actorId: string): Promise<string> {
   try {
     const user = await app.authServices.users.findById(actorId)
-    if (!user) return "operator"
-    return user.handle ?? user.displayName ?? user.email ?? actorId.slice(0, 8)
+    if (!user) return FALLBACK_OPERATOR_LABEL
+    return user.handle ?? user.displayName ?? user.email ?? actorId.slice(0, ACTOR_ID_LABEL_CHARS)
   } catch {
-    return "operator"
+    return FALLBACK_OPERATOR_LABEL
   }
 }

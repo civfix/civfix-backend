@@ -1,3 +1,4 @@
+import { collapseWhitespace } from "@civfix/shared"
 
 export const PREVIEW_LEN = 140
 
@@ -6,10 +7,10 @@ export const PREVIEW_SOURCE_CHARS = 400
 export const HTML_PREVIEW_SOURCE_CHARS = 4096
 
 export function toPreview(body: string | null | undefined, html?: string | null): string {
-  const fromText = collapse(body ?? "")
+  const fromText = collapseWhitespace(body ?? "")
   if (fromText.length > 0) return truncate(fromText)
   if (html === undefined || html === null || html.length === 0) return ""
-  return truncate(collapse(htmlToText(html)))
+  return truncate(collapseWhitespace(htmlToText(html)))
 }
 
 const RAW_TEXT_ELEMENTS = new Set(["script", "style"])
@@ -21,6 +22,15 @@ const BLOCK_ELEMENTS = new Set(
 const LINK_HREF_RE = /\shref\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s"'>]+))/i
 
 const HTML_TAG_NAME_RE = /[a-zA-Z][^\s/>]{0,16}/y
+
+const ABSOLUTE_HTTP_URL_RE = /^https?:\/\//i
+
+const EXTRA_BLANK_LINES_RE = /\n{3,}/g
+
+const MAX_CODE_POINT = 0x10ffff
+const SURROGATE_MIN = 0xd800
+const SURROGATE_MAX = 0xdfff
+const REPLACEMENT_CHARACTER = 0xfffd
 
 function tagNameAt(html: string, at: number): { name: string; end: number } | null {
   HTML_TAG_NAME_RE.lastIndex = at
@@ -47,7 +57,7 @@ export function htmlToText(html: string): string {
   let href: string | null = null
   let anchorText = ""
   const breakLine = (): void => {
-    const text = line.replace(/\s+/g, " ").trim()
+    const text = collapseWhitespace(line)
     lines.push(quoteDepth > 0 && text !== "" ? `> ${text}` : text)
     line = ""
   }
@@ -90,7 +100,7 @@ export function htmlToText(html: string): string {
         href = m === null ? null : decodeTextEntities(m[1] ?? m[2] ?? m[3] ?? "")
         anchorText = ""
       } else if (href !== null) {
-        if (/^https?:\/\//i.test(href) && anchorText.trim() !== href) line += ` (${href})`
+        if (ABSOLUTE_HTTP_URL_RE.test(href) && anchorText.trim() !== href) line += ` (${href})`
         href = null
       }
       continue
@@ -103,31 +113,59 @@ export function htmlToText(html: string): string {
     i = closeGt + 1
   }
   breakLine()
-  return lines.join("\n").replace(/\n{3,}/g, "\n\n").trim()
+  return lines.join("\n").replace(EXTRA_BLANK_LINES_RE, "\n\n").trim()
 }
 
+const TEXT_NAMED_ENTITIES: ReadonlyMap<string, string> = new Map(
+  Object.entries({
+    nbsp: " ",
+    lt: "<",
+    gt: ">",
+    quot: '"',
+    apos: "'",
+    amp: "&",
+    lsquo: "\u2018",
+    rsquo: "\u2019",
+    sbquo: "\u201a",
+    ldquo: "\u201c",
+    rdquo: "\u201d",
+    bdquo: "\u201e",
+    ndash: "\u2013",
+    mdash: "\u2014",
+    hellip: "\u2026",
+    bull: "\u2022",
+    middot: "\u00b7",
+    laquo: "\u00ab",
+    raquo: "\u00bb",
+    copy: "\u00a9",
+    reg: "\u00ae",
+    trade: "\u2122",
+    deg: "\u00b0",
+    euro: "\u20ac",
+  }),
+)
+
+const TEXT_ENTITY_RE = /&(?:#x([0-9a-f]{1,6})|#([0-9]{1,7})|([a-z]{2,8}));/gi
+
+// One pass, so "&amp;lt;" decodes to the text "&lt;" and never to "<".
 function decodeTextEntities(text: string): string {
-  return text
-    .replace(/&nbsp;/gi, " ")
-    .replace(/&lt;/gi, "<")
-    .replace(/&gt;/gi, ">")
-    .replace(/&quot;/gi, '"')
-    .replace(/&#(?:x([0-9a-f]{1,6})|([0-9]{1,7}));/gi, (_m, hex?: string, dec?: string) =>
-      codePointText(hex !== undefined ? Number.parseInt(hex, 16) : Number(dec)),
-    )
-    .replace(/&apos;/gi, "'")
-    .replace(/&amp;/gi, "&")
+  return text.replace(
+    TEXT_ENTITY_RE,
+    (whole, hex: string | undefined, dec: string | undefined, named: string | undefined) => {
+      if (hex !== undefined) return codePointText(Number.parseInt(hex, 16))
+      if (dec !== undefined) return codePointText(Number(dec))
+      const key = named ?? ""
+      return TEXT_NAMED_ENTITIES.get(key) ?? TEXT_NAMED_ENTITIES.get(key.toLowerCase()) ?? whole
+    },
+  )
 }
 
 function codePointText(code: number): string {
-  const invalid = code === 0 || code > 0x10ffff || (code >= 0xd800 && code <= 0xdfff)
-  return String.fromCodePoint(invalid ? 0xfffd : code)
-}
-
-function collapse(value: string): string {
-  return value.replace(/\s+/g, " ").trim()
+  const invalid =
+    code === 0 || code > MAX_CODE_POINT || (code >= SURROGATE_MIN && code <= SURROGATE_MAX)
+  return String.fromCodePoint(invalid ? REPLACEMENT_CHARACTER : code)
 }
 
 function truncate(value: string): string {
-  return value.length > PREVIEW_LEN ? value.slice(0, PREVIEW_LEN) : value
+  return value.slice(0, PREVIEW_LEN)
 }

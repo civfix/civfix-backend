@@ -1,4 +1,3 @@
-
 import { describe, expect, it, vi } from "vitest"
 import { FakeAbuseChecks } from "@civfix/shared/fakes"
 import { loadLimits, type WorkerLimits } from "../../src/config.js"
@@ -16,6 +15,7 @@ type StubProbe = {
 }
 
 const stub = vi.hoisted(() => ({
+  // eslint-disable-next-line @typescript-eslint/no-unnecessary-type-assertion -- the assertion is the field's declared type: vi.hoisted infers the record from this literal
   probe: {
     durationSec: 10,
     codec: "h264",
@@ -37,7 +37,7 @@ const stub = vi.hoisted(() => ({
     pixFmt: "yuv420p",
     profile: "High",
     isVideo: true,
-  } as StubProbe,
+  },
   remuxCalls: 0,
   frameCalls: 0,
   transcodes: [] as { capFps: boolean }[],
@@ -255,7 +255,11 @@ describe("served video: remux what is already within spec, transcode the rest", 
       { transcode: true, capFps: false },
     ],
     ["High 10", { profile: "High 10", pixFmt: "yuv420p10le" }, { transcode: true, capFps: false }],
-    ["4:2:2 chroma", { profile: "High 4:2:2", pixFmt: "yuv422p" }, { transcode: true, capFps: false }],
+    [
+      "4:2:2 chroma",
+      { profile: "High 4:2:2", pixFmt: "yuv422p" },
+      { transcode: true, capFps: false },
+    ],
     ["10-bit under a High label", { pixFmt: "yuv420p10le" }, { transcode: true, capFps: false }],
     ["the Extended profile", { profile: "Extended" }, { transcode: true, capFps: false }],
     ["an unknown pixel format", { pixFmt: null }, { transcode: true, capFps: false }],

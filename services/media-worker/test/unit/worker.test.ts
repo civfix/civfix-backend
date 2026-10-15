@@ -1,18 +1,23 @@
-
 import { afterEach, describe, it, expect, vi } from "vitest"
+import { makeWorker } from "../../src/worker.js"
 import {
-  buildWorker,
-  ORPHAN_SWEEP_JOB,
-  CHAT_PARTITION_JOB,
   ANON_HOLD_RELEASE_JOB,
   ANON_HOLD_RELEASE_SWEEP_JOB,
-  RETENTION_SWEEP_JOB,
+  CHAT_PARTITION_JOB,
+  MEDIA_CHECKS_JOB,
   MEDIA_STUCK_SWEEP_JOB,
-} from "../../src/worker.js"
-import { buildJobs, IN_FLIGHT_GRACE_MS, type JobsHandle, type ScheduleOptions } from "../../src/jobs.js"
+  MEDIA_UPLOAD_REAP_JOB,
+  ORPHAN_SWEEP_JOB,
+  RETENTION_SWEEP_JOB,
+} from "@civfix/api/queue-names"
+import {
+  IN_FLIGHT_GRACE_MS,
+  makeJobs,
+  type JobsHandle,
+  type ScheduleOptions,
+} from "../../src/worker-jobs.js"
 import { resetSandboxStopped, runTool, SandboxSpawnError } from "../../src/sandbox/exec.js"
-import { MEDIA_UPLOAD_REAP_JOB } from "../../src/jobs/upload-reap.js"
-import { buildSeams, type WorkerSeams } from "../../src/seams.js"
+import { makeSeams, type WorkerSeams } from "../../src/seams.js"
 import {
   CHAT_PARTITION_CRON,
   HOLD_RELEASE_SWEEP_CRON,
@@ -22,27 +27,29 @@ import {
   loadLimits,
 } from "../../src/config.js"
 import { makeDownloader } from "../../src/download.js"
-import { MEDIA_CHECKS_JOB } from "@civfix/api/media-repo"
-import type { AnonHoldReleaseRepo, HeldReportView } from "@civfix/api/anon-hold-release"
+import type {
+  AnonHoldReleaseRepository,
+  HeldReportView,
+} from "@civfix/api/anon-hold-release-repository"
 import { FakeJobs, FakeStorage, FakeAbuseChecks } from "@civfix/shared/fakes"
-import { InMemoryWorkerRepo } from "../helpers/in-memory-repo.js"
+import { InMemoryMediaWorkerRepository } from "../helpers/in-memory-media-worker-repository.js"
 import * as fx from "../fixtures/make.js"
 
 describe("media-worker wiring", () => {
   it("builds a worker over the fake Jobs seam", async () => {
-    const handle = buildJobs()
+    const handle = makeJobs()
     expect(handle.jobs).toBeInstanceOf(FakeJobs)
-    const seams = await buildSeams()
-    const worker = await buildWorker(handle, seams)
+    const seams = await makeSeams()
+    const worker = await makeWorker(handle, seams)
     expect(worker.jobs).toBe(handle.jobs)
     await seams.close()
   })
 
   it("start() registers the media.checks handler + both cron schedules, stop() resolves", async () => {
-    const handle = buildJobs()
+    const handle = makeJobs()
     const fake = handle.jobs as unknown as FakeJobs
-    const seams = await buildSeams()
-    const worker = await buildWorker(handle, seams)
+    const seams = await makeSeams()
+    const worker = await makeWorker(handle, seams)
 
     await expect(worker.start()).resolves.toBeUndefined()
 
@@ -63,7 +70,7 @@ describe("media-worker wiring", () => {
   })
 
   it("registers media.checks with a bounded retry policy so infra throws retry (not dead-letter)", async () => {
-    const handle = buildJobs()
+    const handle = makeJobs()
     const calls: {
       name: string
       options?: { retryLimit?: number; retryBackoff?: boolean; policy?: string }
@@ -73,22 +80,28 @@ describe("media-worker wiring", () => {
       calls.push({ name, ...(options ? { options } : {}) })
       return original(name, options)
     }
-    const seams = await buildSeams()
-    const worker = await buildWorker(handle, seams)
+    const seams = await makeSeams()
+    const worker = await makeWorker(handle, seams)
     await worker.start()
 
     const mediaQueue = calls.find((c) => c.name === MEDIA_CHECKS_JOB)
     expect(mediaQueue?.options).toEqual({ policy: "short", retryLimit: 5, retryBackoff: true })
-    expect(calls.find((c) => c.name === ANON_HOLD_RELEASE_JOB)?.options).toEqual({ policy: "short" })
+    expect(calls.find((c) => c.name === ANON_HOLD_RELEASE_JOB)?.options).toEqual({
+      policy: "short",
+    })
     expect(calls.find((c) => c.name === ORPHAN_SWEEP_JOB)?.options).toEqual({ policy: "singleton" })
-    expect(calls.find((c) => c.name === RETENTION_SWEEP_JOB)?.options).toEqual({ policy: "singleton" })
-    expect(calls.find((c) => c.name === MEDIA_STUCK_SWEEP_JOB)?.options).toEqual({ policy: "singleton" })
+    expect(calls.find((c) => c.name === RETENTION_SWEEP_JOB)?.options).toEqual({
+      policy: "singleton",
+    })
+    expect(calls.find((c) => c.name === MEDIA_STUCK_SWEEP_JOB)?.options).toEqual({
+      policy: "singleton",
+    })
 
     await worker.stop()
   })
 
   it("creates a queue for EVERY job it registers a handler on (pg-boss v10 requires it first)", async () => {
-    const handle = buildJobs()
+    const handle = makeJobs()
     const queues: string[] = []
     const worked = new Set<string>()
     const originalCreate = handle.jobs.createQueue.bind(handle.jobs)
@@ -106,8 +119,8 @@ describe("media-worker wiring", () => {
       worked.add(name)
       return originalPlainWork(name, handler)
     }
-    const seams = await buildSeams()
-    const worker = await buildWorker(handle, seams)
+    const seams = await makeSeams()
+    const worker = await makeWorker(handle, seams)
     await worker.start()
 
     const expected = [
@@ -127,15 +140,15 @@ describe("media-worker wiring", () => {
   })
 
   it("schedules ALL FIVE crons with their expressions and single-flight expire/singleton options", async () => {
-    const handle = buildJobs()
+    const handle = makeJobs()
     const scheduled: { name: string; cron: string; data: unknown; options?: ScheduleOptions }[] = []
     const original = handle.jobs.schedule.bind(handle.jobs)
     handle.jobs.schedule = (name, cron, data, options) => {
       scheduled.push({ name, cron, data, ...(options ? { options } : {}) })
       return original(name, cron, data, options)
     }
-    const seams = await buildSeams()
-    const worker = await buildWorker(handle, seams)
+    const seams = await makeSeams()
+    const worker = await makeWorker(handle, seams)
     await worker.start()
 
     const opts = { expireInSeconds: 1500, singletonKey: "" }
@@ -183,7 +196,7 @@ describe("stop(): jobs in flight get IN_FLIGHT_GRACE_MS, then the sandbox is sto
   })
 
   async function workerWithSlowStop(): Promise<{ stop: () => Promise<void>; release: () => void }> {
-    const base = buildJobs()
+    const base = makeJobs()
     let release!: () => void
     const handle: JobsHandle = {
       jobs: base.jobs,
@@ -193,7 +206,7 @@ describe("stop(): jobs in flight get IN_FLIGHT_GRACE_MS, then the sandbox is sto
           release = resolve
         }),
     }
-    const worker = await buildWorker(handle, await buildSeams())
+    const worker = await makeWorker(handle, await makeSeams())
     return { stop: () => worker.stop(), release: () => release() }
   }
 
@@ -242,7 +255,7 @@ describe("F25: post-success hold-release hook is gated on anon+held report state
     }
   }
 
-  function makeAnonHoldRepo(report: HeldReportView): AnonHoldReleaseRepo {
+  function makeAnonHoldRepo(report: HeldReportView): AnonHoldReleaseRepository {
     return {
       findReport: () => Promise.resolve(report),
       findMedia: () => Promise.resolve([{ id: "m1", status: "ready" }]),
@@ -253,12 +266,12 @@ describe("F25: post-success hold-release hook is gated on anon+held report state
   }
 
   async function runMediaJobWith(
-    anonHoldRepo: AnonHoldReleaseRepo,
-  ): Promise<{ fake: FakeJobs; repo: InMemoryWorkerRepo }> {
-    const handle = buildJobs()
+    anonHoldRepo: AnonHoldReleaseRepository,
+  ): Promise<{ fake: FakeJobs; repo: InMemoryMediaWorkerRepository }> {
+    const handle = makeJobs()
     const fake = handle.jobs as unknown as FakeJobs
     const storage = new FakeStorage()
-    const repo = new InMemoryWorkerRepo()
+    const repo = new InMemoryMediaWorkerRepository()
     const reportId = "report-1"
     repo.seed({
       id: "m1",
@@ -285,7 +298,7 @@ describe("F25: post-success hold-release hook is gated on anon+held report state
       report: () => {},
       close: () => Promise.resolve(),
     }
-    const worker = await buildWorker(handle, seams)
+    const worker = await makeWorker(handle, seams)
     await worker.start()
 
     await handle.jobs.enqueue(MEDIA_CHECKS_JOB, {
@@ -346,20 +359,20 @@ describe("F25: post-success hold-release hook is gated on anon+held report state
   })
 })
 
-describe("buildSeams production storage guard", () => {
+describe("makeSeams production storage guard", () => {
   it("THROWS when USE_FAKE_STORAGE is on in production (would silently lose media, issue #39)", async () => {
-    await expect(
-      buildSeams({ NODE_ENV: "production", USE_FAKE_STORAGE: "1" } as NodeJS.ProcessEnv),
-    ).rejects.toThrow(/USE_FAKE_STORAGE must be 0 in production/)
+    await expect(makeSeams({ NODE_ENV: "production", USE_FAKE_STORAGE: "1" })).rejects.toThrow(
+      /USE_FAKE_STORAGE must be 0 in production/,
+    )
   })
 
   it("fires on fake storage even when USE_FAKE_ABUSE_NSFW is off (abuse seam is not what is guarded)", async () => {
     await expect(
-      buildSeams({
+      makeSeams({
         NODE_ENV: "production",
         USE_FAKE_STORAGE: "1",
         USE_FAKE_ABUSE_NSFW: "0",
-      } as NodeJS.ProcessEnv),
+      }),
     ).rejects.toThrow(/USE_FAKE_STORAGE/)
   })
 })
