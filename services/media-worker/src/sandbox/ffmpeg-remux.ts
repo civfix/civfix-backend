@@ -1,26 +1,27 @@
-import { runTool, sandboxIdentity } from "./exec.js"
+import { runTool, sandboxIdentity, type RunOptions } from "./exec.js"
 import { mediaToolPath } from "./binaries.js"
 import { makeScratch, readScratchOutput } from "./tmp.js"
-import type { WorkerLimits } from "../config.js"
+import { videoDecoderMaxPixels, type WorkerLimits } from "../config.js"
 
-const QUIET_ARGS = ["-hide_banner", "-loglevel", "error", "-nostdin"] as const
-const SAFE_INPUT_ARGS = ["-protocol_whitelist", "file", "-f", "mov"] as const
+export const QUIET_ARGS = ["-hide_banner", "-loglevel", "error", "-nostdin"] as const
+export const SAFE_INPUT_ARGS = ["-protocol_whitelist", "file", "-f", "mov"] as const
 
 const REMUX_OUTPUT = "out.mp4"
 const FRAME_OUTPUT = "frame.jpg"
 const SEEK_DECIMALS = 3
 
-async function runFfmpegToScratchOutput(
+export async function runFfmpegToScratchOutput(
   bytes: Uint8Array,
   outputName: string,
   limits: WorkerLimits,
   buildArgs: (inputPath: string, outPath: string) => string[],
+  run: Pick<RunOptions, "timeoutMs" | "lowPriority"> = { timeoutMs: limits.ffmpegTimeoutMs },
 ): Promise<Buffer> {
   const scratch = await makeScratch(bytes, "bin")
   const out = scratch.outPath(outputName)
   try {
     await runTool("ffmpeg", await mediaToolPath("ffmpeg"), buildArgs(scratch.inputPath, out), {
-      timeoutMs: limits.ffmpegTimeoutMs,
+      ...run,
       maxStdoutBytes: limits.maxToolStdoutBytes,
       cwd: scratch.dir,
     })
@@ -77,7 +78,7 @@ export async function grabFrameJpeg(
     ...QUIET_ARGS,
     ...SAFE_INPUT_ARGS,
     "-max_pixels",
-    String(limits.maxVideoPixels),
+    String(videoDecoderMaxPixels(limits)),
     "-threads",
     "1",
     "-ss",

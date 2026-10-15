@@ -376,4 +376,56 @@ describe.skipIf(!pg)("reports (integration: real transaction path)", () => {
     const all = await service.listReportsInBBox(STREET_BBOX, null, null, 16)
     expect(all.pins.map((p) => p.id)).toContain(graffiti.id)
   })
+
+  it("counts a report's REJECTED media for its reporter only; held and other reports' media are not counted", async () => {
+    const [stranger] = await h.sql<{ id: string }[]>`
+      INSERT INTO users (display_name) VALUES ('Stranger') RETURNING id
+    `
+    const [ready, validating, rejected, held] = [
+      await seedMedia(),
+      await seedMedia(),
+      await seedMedia(),
+      await seedMedia(),
+    ]
+    const report = await service.createReport(
+      createReq({
+        idempotencyKey: randomUUID(),
+        mediaUploadIds: [ready.uploadId, validating.uploadId, rejected.uploadId, held.uploadId],
+      }),
+      { userId },
+    )
+    await h.sql`
+      UPDATE media_assets SET status = 'ready', served_key = r2_key WHERE id = ${ready.id}
+    `
+    await h.sql`UPDATE media_assets SET status = 'rejected' WHERE id = ${rejected.id}`
+    await h.sql`UPDATE media_assets SET status = 'held' WHERE id = ${held.id}`
+
+    // A rejected item on ANOTHER report must not leak into this one's count.
+    const otherMedia = await seedMedia()
+    await service.createReport(
+      createReq({ idempotencyKey: randomUUID(), mediaUploadIds: [otherMedia.uploadId] }),
+      { userId },
+    )
+    await h.sql`UPDATE media_assets SET status = 'rejected' WHERE id = ${otherMedia.id}`
+
+    const repo = makeDrizzleReportRepository(h.sql)
+    expect(await repo.countMediaStatesForReport(report.id)).toEqual({ validating: 1, rejected: 1 })
+
+    const asOwner = await service.getReport(report.id, { userId })
+    expect(asOwner.mediaRejected).toBe(1)
+    expect(asOwner.mediaPending).toBe(0)
+    expect(asOwner.media.map((m) => m.id).sort()).toEqual([ready.id, validating.id].sort())
+
+    const asStranger = await service.getReport(report.id, { userId: stranger!.id })
+    expect(asStranger.mediaRejected).toBe(0)
+    expect(asStranger.media.map((m) => m.id)).toEqual([ready.id])
+
+    const asGuest = await service.getReport(report.id, {})
+    expect(asGuest.mediaRejected).toBe(0)
+    expect(asGuest.media.map((m) => m.id)).toEqual([ready.id])
+
+    // A moderator rejecting the held item makes it count as refused.
+    await h.sql`UPDATE media_assets SET status = 'rejected' WHERE id = ${held.id}`
+    expect((await service.getReport(report.id, { userId })).mediaRejected).toBe(2)
+  })
 })

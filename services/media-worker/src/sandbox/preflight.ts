@@ -4,6 +4,7 @@ import type { SandboxIdentity } from "../config.js"
 import { loadLimits } from "../config.js"
 import { resolveMediaToolPaths } from "./binaries.js"
 import { grabFrameJpeg, remuxStripMetadata } from "./ffmpeg-remux.js"
+import { transcodeToServedMp4 } from "./ffmpeg-transcode.js"
 import { probeBytes } from "./ffprobe.js"
 import { imageLaneEntry, processImageLane } from "./image-lane.js"
 import { dropBoundingSet, runTool, sandboxIdentity } from "./exec.js"
@@ -193,10 +194,13 @@ export async function assertVideoLaneRuns(): Promise<void> {
   for (const [codec, clip] of Object.entries(PREFLIGHT_CLIPS)) {
     let probedCodec: string | null
     let remuxed: Buffer
+    let transcodedCodec: string | null
     let frame: Buffer
     try {
       probedCodec = (await probeBytes(clip, limits)).codec
       remuxed = await remuxStripMetadata(clip, limits)
+      const transcoded = await transcodeToServedMp4(clip, { capFps: true }, limits)
+      transcodedCodec = (await probeBytes(transcoded, limits)).codec
       frame = await grabFrameJpeg(clip, 0, limits)
     } catch (err) {
       throw new Error(
@@ -210,6 +214,12 @@ export async function assertVideoLaneRuns(): Promise<void> {
       throw new Error(
         `media-worker: the sandboxed video lane read the built-in ${codec} clip as ` +
           `${probedCodec ?? "no codec"} or produced empty output`,
+      )
+    }
+    if (transcodedCodec !== "h264") {
+      throw new Error(
+        `media-worker: the sandboxed transcode turned the built-in ${codec} clip into ` +
+          `${transcodedCodec ?? "no codec"}, not h264`,
       )
     }
   }

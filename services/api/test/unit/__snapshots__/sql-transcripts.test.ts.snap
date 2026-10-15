@@ -7438,13 +7438,13 @@ INSERT INTO report_message_forwards (message_id, geoid, forwarded_at) VALUES ($1
 => undefined"
 `;
 
-exports[`sql transcripts > makeDrizzleReportRepository.countValidatingMediaForReport 1`] = `
+exports[`sql transcripts > makeDrizzleReportRepository.countMediaStatesForReport 1`] = `
 "-- empty
-SELECT count(*)::int AS n FROM media_assets WHERE report_id = $1 AND status = 'validating' -- ["reportId-1"]
-=> 0
+SELECT count(*) FILTER (WHERE status = 'validating')::int AS validating, count(*) FILTER (WHERE status = 'rejected')::int AS rejected FROM media_assets WHERE report_id = $1 AND status IN ('validating', 'rejected') -- ["reportId-1"]
+=> {"validating":0,"rejected":0}
 -- row
-SELECT count(*)::int AS n FROM media_assets WHERE report_id = $1 AND status = 'validating' -- ["reportId-1"]
-=> 2"
+SELECT count(*) FILTER (WHERE status = 'validating')::int AS validating, count(*) FILTER (WHERE status = 'rejected')::int AS rejected FROM media_assets WHERE report_id = $1 AND status IN ('validating', 'rejected') -- ["reportId-1"]
+=> {}"
 `;
 
 exports[`sql transcripts > makeDrizzleReportRepository.createReportTx 1`] = `

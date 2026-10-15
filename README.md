@@ -143,9 +143,11 @@ is its job, and it has its own two-seam picker (`services/media-worker/src/seams
 ## Media worker (`services/media-worker`)
 
 The worker consumes the `media.checks` job the API enqueues on finalize and runs the sandboxed,
-untrusted-byte pipeline: decode-guard, EXIF/GPS read + strip, ~400px thumbnail, perceptual hash
-(dHash), NSFW + near-duplicate seams for images; ffprobe validate + stream-copy metadata-strip remux +
-frame-grab thumbnail for video. It also works the `anon.hold.release` and `media.upload.reap` queues
+untrusted-byte pipeline: decode-guard, EXIF/GPS read + strip, JPEG re-encode (long edge capped at
+1920px, transparency flattened onto white), ~400px thumbnail, perceptual hash (dHash), NSFW +
+near-duplicate seams for images; ffprobe validate, then a metadata-strip remux for H.264 that already
+plays everywhere or an H.264 MP4 transcode (720p, at most 30fps, one at a time at low priority) for
+everything else, + frame-grab thumbnail for video. It also works the `anon.hold.release` and `media.upload.reap` queues
 and runs five pg-boss crons (`services/media-worker/src/worker.ts`): `orphan.sweep` (reap
 never-attached media), `chat.partition.maintenance` (keep the chat and DM monthly partitions created
 two months ahead), `anon.hold.release.sweep` (backstop for held anonymous reports), `retention.sweep`
@@ -193,9 +195,10 @@ ffmpeg/ffprobe against crafted fixtures.
 Sandboxing + limits (`services/media-worker/src/config.ts`, overridable by env): ffprobe/ffmpeg run
 via `execa` with an ARGS ARRAY (no shell, no injection), a hard per-tool timeout, `killSignal`
 SIGKILL, and a `maxBuffer` output cap; sharp uses `limitInputPixels` + a wrapped wall-clock timeout.
-`media.checks` concurrency is capped (default 2; `MEDIA_CHECKS_CONCURRENCY`), per-job budget 90s
-(`MEDIA_JOB_TIMEOUT_MS`), download capped at `MEDIA_MAX_DOWNLOAD_BYTES` (default: the contract's
-`MAX_VIDEO_BYTES`). The infra compose additionally caps container CPU.
+`media.checks` concurrency is capped (default 2; `MEDIA_CHECKS_CONCURRENCY`), per-phase job budget
+290s (`MEDIA_JOB_TIMEOUT_MS`, which covers a video's wait for the one-at-a-time transcode slot; see
+`services/media-worker/.env.example`), download capped at `MEDIA_MAX_DOWNLOAD_BYTES` (default: the
+contract's `MAX_VIDEO_BYTES`). The infra compose additionally caps container CPU.
 
 NSFW seam: `AbuseChecks.nsfwScore` stays behind the seam and defaults to `FakeAbuseChecks` (benign)
 outside production (`USE_FAKE_ABUSE_NSFW` defaults on there). The real adapter has no NSFW model wired:
@@ -336,8 +339,9 @@ API drains first (`src/lifecycle.ts`), in three bounded phases:
 3. **Teardown (15s watchdog).** pg-boss, the chat pub/sub subscriber, Redis and the Postgres pool,
    plus the error-reporting flush, all INSIDE the watchdog so nothing trails the budget, then
    exit. (Open WebSockets are not migrated: they stay on the retiring color and are cut when the
-   server closes, then reconnect to the new color.) The worker drains the queue then closes its DB
-   pool.
+   server closes, then reconnect to the new color.) The worker stops taking jobs and gives the ones in
+   flight 30s; it then kills their decoders and hands each back to the queue (it runs again after the
+   restart without spending a retry, and its upload is untouched), then closes its DB pool.
 
 `SHUTDOWN_DRAIN_MS` defaults to **0 (no drain) in every environment, deliberately**: a drain longer
 than the container's `stop_grace_period` gets SIGKILLed mid-teardown, which is worse than not draining

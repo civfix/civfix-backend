@@ -26,12 +26,16 @@ export interface WorkerLimits {
   maxToolStdoutBytes: number
   ffprobeTimeoutMs: number
   ffmpegTimeoutMs: number
+  transcodeTimeoutMs: number
+  transcodeThreads: number
   imageTimeoutMs: number
   jobTimeoutMs: number
   maxVideoDurationSec: number
   maxVideoPixels: number
+  maxVideoEdge: number
   maxVideoFps: number
   maxVideoBitrateBps: number
+  servedVideoMaxBitrateBps: number
   thumbnailMaxEdge: number
   nsfwHoldThreshold: number
   nsfwUnscoredPolicy: "flag" | "hold"
@@ -99,6 +103,20 @@ export function loadHttpsProxy(source: NodeJS.ProcessEnv = process.env): string 
 
 export const ALLOWED_VIDEO_CODECS: ReadonlySet<string> = new Set(["h264", "hevc"])
 
+// The served copy of every upload. The image numbers are the ones the mobile app already compresses
+// to, so a phone photo is re-encoded at the size it arrived in.
+export const SERVED_IMAGE_MAX_EDGE = 1920
+export const SERVED_IMAGE_JPEG_QUALITY = 80
+export const SERVED_VIDEO_MAX_EDGE = 1280
+export const SERVED_VIDEO_MAX_FPS = 30
+
+// The decoders' -max_pixels guard. ffmpeg checks it against the frame buffer, whose width is rounded up
+// to the SIMD stride (a 1080x1920 portrait clip allocates 1088x1920), so the accepted pixel cap itself
+// would refuse a clip that passed it. Any frame within the long-edge cap both ways fits.
+export function videoDecoderMaxPixels(limits: Pick<WorkerLimits, "maxVideoEdge">): number {
+  return limits.maxVideoEdge * limits.maxVideoEdge
+}
+
 const ONE_MB = 1024 * 1024
 
 const DEFAULT_LIMITS = {
@@ -108,12 +126,16 @@ const DEFAULT_LIMITS = {
   maxToolStdoutBytes: ONE_MB,
   ffprobeTimeoutMs: 10_000,
   ffmpegTimeoutMs: 30_000,
+  transcodeTimeoutMs: 90_000,
+  transcodeThreads: 1,
   imageTimeoutMs: 15_000,
-  jobTimeoutMs: 90_000,
-  maxVideoDurationSec: 30,
-  maxVideoPixels: 3840 * 2160,
-  maxVideoFps: 120,
-  maxVideoBitrateBps: 50_000_000,
+  jobTimeoutMs: 290_000,
+  maxVideoDurationSec: 10,
+  maxVideoPixels: 1920 * 1080,
+  maxVideoEdge: 1920,
+  maxVideoFps: 60,
+  maxVideoBitrateBps: 20_000_000,
+  servedVideoMaxBitrateBps: 4_000_000,
   thumbnailMaxEdge: 400,
   nsfwHoldThreshold: 0.8,
   mediaChecksConcurrency: 2,
@@ -152,6 +174,40 @@ function assertImageLaneFitsJobBudget(limits: WorkerLimits): void {
   )
 }
 
+// The slowest accepted video, step by step inside one processing phase: probe, wait out the transcodes of
+// the other jobs in this worker's batch (one runs at a time), transcode, probe the output, grab the poster
+// frame, then the poster thumbnail through the image lane.
+export function videoPathTimeoutMs(
+  limits: Pick<
+    WorkerLimits,
+    | "ffprobeTimeoutMs"
+    | "ffmpegTimeoutMs"
+    | "transcodeTimeoutMs"
+    | "imageTimeoutMs"
+    | "mediaChecksConcurrency"
+  >,
+): number {
+  return (
+    2 * limits.ffprobeTimeoutMs +
+    limits.mediaChecksConcurrency * limits.transcodeTimeoutMs +
+    limits.ffmpegTimeoutMs +
+    imageLaneTimeoutMs(limits)
+  )
+}
+
+// A video whose tools all run to their own timeouts must still finish inside the processing budget: past
+// it the job is retried as infra rather than settled, and the abandoned transcode keeps the one slot busy.
+function assertVideoPathFitsJobBudget(limits: WorkerLimits): void {
+  const pathMs = videoPathTimeoutMs(limits)
+  if (pathMs < limits.jobTimeoutMs) return
+  throw new Error(
+    `media-worker: the slowest video path takes up to ${pathMs}ms (2 x MEDIA_FFPROBE_TIMEOUT_MS + ` +
+      "MEDIA_CHECKS_CONCURRENCY x MEDIA_TRANSCODE_TIMEOUT_MS + MEDIA_FFMPEG_TIMEOUT_MS + the image lane), " +
+      `which must stay below MEDIA_JOB_TIMEOUT_MS=${limits.jobTimeoutMs}. Lower those timeouts or ` +
+      "raise the job timeout.",
+  )
+}
+
 export function loadLimits(source: NodeJS.ProcessEnv = process.env): WorkerLimits {
   const limits: WorkerLimits = {
     maxDownloadBytes: parsePosInt(source.MEDIA_MAX_DOWNLOAD_BYTES, MAX_VIDEO_BYTES),
@@ -167,6 +223,11 @@ export function loadLimits(source: NodeJS.ProcessEnv = process.env): WorkerLimit
     ),
     ffprobeTimeoutMs: parsePosInt(source.MEDIA_FFPROBE_TIMEOUT_MS, DEFAULT_LIMITS.ffprobeTimeoutMs),
     ffmpegTimeoutMs: parsePosInt(source.MEDIA_FFMPEG_TIMEOUT_MS, DEFAULT_LIMITS.ffmpegTimeoutMs),
+    transcodeTimeoutMs: parsePosInt(
+      source.MEDIA_TRANSCODE_TIMEOUT_MS,
+      DEFAULT_LIMITS.transcodeTimeoutMs,
+    ),
+    transcodeThreads: parsePosInt(source.MEDIA_TRANSCODE_THREADS, DEFAULT_LIMITS.transcodeThreads),
     imageTimeoutMs: parsePosInt(source.MEDIA_IMAGE_TIMEOUT_MS, DEFAULT_LIMITS.imageTimeoutMs),
     jobTimeoutMs: parsePosInt(source.MEDIA_JOB_TIMEOUT_MS, DEFAULT_LIMITS.jobTimeoutMs),
     maxVideoDurationSec: parsePosInt(
@@ -174,10 +235,15 @@ export function loadLimits(source: NodeJS.ProcessEnv = process.env): WorkerLimit
       DEFAULT_LIMITS.maxVideoDurationSec,
     ),
     maxVideoPixels: parsePosInt(source.MEDIA_VIDEO_MAX_PIXELS, DEFAULT_LIMITS.maxVideoPixels),
+    maxVideoEdge: parsePosInt(source.MEDIA_VIDEO_MAX_EDGE, DEFAULT_LIMITS.maxVideoEdge),
     maxVideoFps: parsePosInt(source.MEDIA_VIDEO_MAX_FPS, DEFAULT_LIMITS.maxVideoFps),
     maxVideoBitrateBps: parsePosInt(
       source.MEDIA_VIDEO_MAX_BITRATE,
       DEFAULT_LIMITS.maxVideoBitrateBps,
+    ),
+    servedVideoMaxBitrateBps: parsePosInt(
+      source.MEDIA_VIDEO_SERVED_MAX_BITRATE,
+      DEFAULT_LIMITS.servedVideoMaxBitrateBps,
     ),
     thumbnailMaxEdge: parsePosInt(source.MEDIA_THUMBNAIL_MAX_EDGE, DEFAULT_LIMITS.thumbnailMaxEdge),
     nsfwHoldThreshold: clampUnit(
@@ -216,6 +282,7 @@ export function loadLimits(source: NodeJS.ProcessEnv = process.env): WorkerLimit
     ),
   }
   assertImageLaneFitsJobBudget(limits)
+  assertVideoPathFitsJobBudget(limits)
   return limits
 }
 

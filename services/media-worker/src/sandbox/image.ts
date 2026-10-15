@@ -25,7 +25,7 @@
 import sharp, { type Sharp } from "sharp"
 import exifr from "exifr"
 import { settleWithin } from "@civfix/api/timeout"
-import type { WorkerLimits } from "../config.js"
+import { SERVED_IMAGE_JPEG_QUALITY, SERVED_IMAGE_MAX_EDGE, type WorkerLimits } from "../config.js"
 
 sharp.cache(false)
 sharp.concurrency(1)
@@ -33,10 +33,9 @@ sharp.concurrency(1)
 export const ALLOWED_IMAGE_FORMATS = ["jpeg", "png", "webp"] as const
 export type AllowedImageFormat = (typeof ALLOWED_IMAGE_FORMATS)[number]
 
-const PNG_COMPRESSION_LEVEL = 9
-const STRIPPED_QUALITY = 90
 const THUMB_QUALITY = 80
-const THUMB_CONTENT_TYPE = "image/jpeg"
+const JPEG_CONTENT_TYPE = "image/jpeg"
+const WHITE = { r: 255, g: 255, b: 255 }
 const MS_PER_SECOND = 1000
 const MIN_SHARP_TIMEOUT_SEC = 1
 
@@ -59,7 +58,7 @@ export interface ImageMeta {
 
 export interface ProcessedImage {
   meta: ImageMeta
-  /** EXIF-stripped, auto-oriented re-encode of the full image. */
+  /** EXIF-stripped, auto-oriented JPEG re-encode, long edge capped at SERVED_IMAGE_MAX_EDGE. */
   strippedBytes: Buffer
   strippedContentType: string
   /** Also metadata-free. */
@@ -154,26 +153,6 @@ export function guardedSharp(bytes: Uint8Array, limits: WorkerLimits): Sharp {
   })
 }
 
-function chooseOutput(format: string): {
-  apply: (s: Sharp) => Sharp
-  contentType: string
-} {
-  switch (format) {
-    case "png":
-      return {
-        apply: (s) => s.png({ compressionLevel: PNG_COMPRESSION_LEVEL }),
-        contentType: "image/png",
-      }
-    case "webp":
-      return { apply: (s) => s.webp({ quality: STRIPPED_QUALITY }), contentType: "image/webp" }
-    default:
-      return {
-        apply: (s) => s.jpeg({ quality: STRIPPED_QUALITY, mozjpeg: false }),
-        contentType: "image/jpeg",
-      }
-  }
-}
-
 /** Never throws: a parse failure or missing GPS yields null, since absence of location is not an error. */
 export async function readExifGps(bytes: Uint8Array): Promise<ExifGps | null> {
   try {
@@ -204,13 +183,13 @@ export async function processImage(
 ): Promise<ProcessedImage> {
   const meta = await readGuardedMeta(bytes, limits)
   const exifGps = await readExifGps(bytes)
-  const encoded = await encodeStrippedOutputs(bytes, meta.format, limits)
+  const encoded = await encodeStrippedOutputs(bytes, limits)
   return {
-    meta,
+    meta: { width: encoded.width, height: encoded.height, format: meta.format },
     strippedBytes: encoded.strippedBytes,
-    strippedContentType: encoded.strippedContentType,
+    strippedContentType: JPEG_CONTENT_TYPE,
     thumbnailBytes: encoded.thumbnailBytes,
-    thumbnailContentType: THUMB_CONTENT_TYPE,
+    thumbnailContentType: JPEG_CONTENT_TYPE,
     exifGps,
   }
 }
@@ -244,18 +223,31 @@ async function readGuardedMeta(bytes: Uint8Array, limits: WorkerLimits): Promise
 
 async function encodeStrippedOutputs(
   bytes: Uint8Array,
-  format: string,
   limits: WorkerLimits,
-): Promise<{ strippedBytes: Buffer; strippedContentType: string; thumbnailBytes: Buffer }> {
+): Promise<{ strippedBytes: Buffer; width: number; height: number; thumbnailBytes: Buffer }> {
   // Stripped full image AND thumbnail from a SINGLE decode: a fresh guardedSharp() per output would run
   // an independent full libvips decode (roughly doubling per-image CPU + peak surface on this CPU-bound
   // worker). Instead build one guarded pipeline, bake the EXIF orientation into the pixels once
   // (`.rotate()` with no args), then `.clone()` per output so sharp shares the one decoded surface.
   // Neither output calls withMetadata(), so all EXIF/XMP/ICC metadata is dropped on re-encode.
-  const out = chooseOutput(format)
-  const base = guardedSharp(bytes, limits).rotate()
-  const [strippedBytes, thumbnailBytes] = await Promise.all([
-    withTimeout(out.apply(base.clone()).toBuffer(), limits.imageTimeoutMs, "strip"),
+  // JPEG has no alpha channel: transparency goes onto white rather than whatever colour the
+  // transparent pixels happen to hold.
+  const base = guardedSharp(bytes, limits).rotate().flatten({ background: WHITE })
+  const [stripped, thumbnailBytes] = await Promise.all([
+    withTimeout(
+      base
+        .clone()
+        .resize({
+          width: SERVED_IMAGE_MAX_EDGE,
+          height: SERVED_IMAGE_MAX_EDGE,
+          fit: "inside",
+          withoutEnlargement: true,
+        })
+        .jpeg({ quality: SERVED_IMAGE_JPEG_QUALITY, mozjpeg: false })
+        .toBuffer({ resolveWithObject: true }),
+      limits.imageTimeoutMs,
+      "strip",
+    ),
     withTimeout(
       base
         .clone()
@@ -271,7 +263,12 @@ async function encodeStrippedOutputs(
       "thumbnail",
     ),
   ])
-  return { strippedBytes, strippedContentType: out.contentType, thumbnailBytes }
+  return {
+    strippedBytes: stripped.data,
+    width: stripped.info.width,
+    height: stripped.info.height,
+    thumbnailBytes,
+  }
 }
 
 /** Proves the strip worked: true when no GPS survives in the re-encoded bytes. */

@@ -14,7 +14,8 @@ import { releaseAnonHoldIfReady } from "@civfix/api/anon-hold-release"
 import type { HeldReportView } from "@civfix/api/anon-hold-release-repository"
 import {
   makeJobs,
-  stopGraceMsFor,
+  IN_FLIGHT_GRACE_MS,
+  STOP_GRACE_MS,
   type JobsHandle,
   type QueueOptions,
   type WorkerJobs,
@@ -43,7 +44,7 @@ import { runStuckSweep } from "./jobs/stuck-sweep.js"
 import { parseUploadReapPayload, runUploadReapJob, uploadReapDelaySec } from "./jobs/upload-reap.js"
 import { sweepStaleScratchDirs } from "./sandbox/tmp.js"
 import { assertSandboxPreflight } from "./sandbox/preflight.js"
-import { killAllSandboxChildren } from "./sandbox/exec.js"
+import { killAllSandboxChildren, stopSandbox } from "./sandbox/exec.js"
 import { MS_PER_SECOND } from "@civfix/api/time"
 
 const CRON_EXPIRE_SECONDS = 25 * 60
@@ -92,7 +93,11 @@ async function shouldEnqueueHoldRelease(seams: WorkerSeams, reportId: string): P
   return isAnonHeldReport(await seams.anonHoldRepo.findReport(reportId))
 }
 
-function makeMediaChecksHandler(jobs: WorkerJobs, seams: WorkerSeams): JobHandler {
+function makeMediaChecksHandler(
+  jobs: WorkerJobs,
+  seams: WorkerSeams,
+  stopSignal: AbortSignal,
+): JobHandler {
   return async (job) => {
     const payload = parsePayload(job.data)
     if (!payload) {
@@ -115,6 +120,7 @@ function makeMediaChecksHandler(jobs: WorkerJobs, seams: WorkerSeams): JobHandle
       ...(seams.findPhashDuplicate ? { findPhashDuplicate: seams.findPhashDuplicate } : {}),
       ...(seams.publicMediaBase ? { publicMediaBase: seams.publicMediaBase } : {}),
       report: seams.report,
+      stopSignal,
     })
 
     if (outcome.status !== "missing") {
@@ -301,12 +307,13 @@ async function registerHandlers(
   jobs: WorkerJobs,
   seams: WorkerSeams,
   limits: WorkerLimits,
+  stopSignal: AbortSignal,
 ): Promise<void> {
   for (const [name, options] of QUEUES) {
     await jobs.createQueue(name, options)
   }
 
-  await jobs.workWithSettings(MEDIA_CHECKS_JOB, makeMediaChecksHandler(jobs, seams), {
+  await jobs.workWithSettings(MEDIA_CHECKS_JOB, makeMediaChecksHandler(jobs, seams, stopSignal), {
     batchSize: limits.mediaChecksConcurrency,
   })
 
@@ -328,13 +335,12 @@ function cronSchedule(name: string): { expireInSeconds: number; singletonKey: st
   return { expireInSeconds: CRON_EXPIRE_SECONDS, singletonKey: name }
 }
 
-function logStopGraceRequirement(limits: WorkerLimits): void {
-  const graceMs = stopGraceMsFor(limits.jobTimeoutMs)
+function logStopGraceRequirement(): void {
   console.log("media-worker: graceful-stop budget", {
-    jobTimeoutMs: limits.jobTimeoutMs,
-    stopGraceMs: graceMs,
+    inFlightGraceMs: IN_FLIGHT_GRACE_MS,
+    stopGraceMs: STOP_GRACE_MS,
     requiredComposeStopGracePeriodSec:
-      Math.ceil(graceMs / MS_PER_SECOND) + COMPOSE_STOP_GRACE_HEADROOM_SEC,
+      Math.ceil(STOP_GRACE_MS / MS_PER_SECOND) + COMPOSE_STOP_GRACE_HEADROOM_SEC,
   })
 }
 
@@ -355,6 +361,7 @@ export async function makeWorker(
   seams?: WorkerSeams,
 ): Promise<Worker> {
   const resolvedSeams = seams ?? (await makeSeams())
+  const inFlight = new AbortController()
   let started = false
 
   async function start(): Promise<void> {
@@ -363,14 +370,24 @@ export async function makeWorker(
     await assertSandboxPreflight()
     await sweepStaleScratchDirs().catch(() => 0)
     await handle.start()
-    await registerHandlers(handle.jobs, resolvedSeams, resolvedSeams.limits)
-    logStopGraceRequirement(resolvedSeams.limits)
+    await registerHandlers(handle.jobs, resolvedSeams, resolvedSeams.limits, inFlight.signal)
+    logStopGraceRequirement()
     await runBootPartitionMaintenance(resolvedSeams)
     started = true
   }
 
   async function stop(): Promise<void> {
-    await handle.stop()
+    // The jobs layer stops fetching at once; a job still running after the grace is interrupted and
+    // handed back, so a deploy never waits out a whole transcode.
+    const interrupt = setTimeout(() => {
+      inFlight.abort()
+      stopSandbox()
+    }, IN_FLIGHT_GRACE_MS)
+    try {
+      await handle.stop()
+    } finally {
+      clearTimeout(interrupt)
+    }
     await resolvedSeams.close()
     started = false
   }

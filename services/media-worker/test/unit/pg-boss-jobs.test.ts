@@ -28,15 +28,17 @@ interface StubBoss {
   sendCalls: { name: string; data: unknown; opts: Record<string, unknown> }[]
   scheduleCalls: { name: string; cron: string; data: unknown; opts: Record<string, unknown> }[]
   workCalls: { name: string; options: Record<string, unknown> }[]
-  completeCalls: { name: string; id: string }[]
+  completeCalls: { name: string; id: string; output?: unknown }[]
   failCalls: { name: string; id: string; output: unknown }[]
   /** Configurable: what send() resolves to (pg-boss returns null for a deduped singleton). */
   sendResult: string | null
+  /** Configurable: send() rejects with this (a DB blip on the write). */
+  sendError: Error | null
   /** Configurable: ids for which complete()/fail() reject (a DB blip on the outcome write). */
   rejectCompleteFor: string | null
   rejectFailFor: string | null
   /** The batch callback registered by the last work() call. */
-  deliver(jobs: { id: string; data: unknown }[]): Promise<void>
+  deliver(jobs: { id: string; data: unknown; singletonKey?: string | null }[]): Promise<void>
 }
 
 const boxed = vi.hoisted(() => ({ instances: [] as unknown[] }))
@@ -55,6 +57,7 @@ vi.mock("pg-boss", () => {
     completeCalls: unknown[] = []
     failCalls: unknown[] = []
     sendResult: string | null = "job-id-1"
+    sendError: Error | null = null
     rejectCompleteFor: string | null = null
     rejectFailFor: string | null = null
     private handler: ((jobs: unknown[]) => Promise<void>) | undefined
@@ -84,6 +87,7 @@ vi.mock("pg-boss", () => {
       return Promise.resolve()
     }
     send(name: string, data: unknown, opts: unknown): Promise<string | null> {
+      if (this.sendError) return Promise.reject(this.sendError)
       this.sendCalls.push({ name, data, opts })
       return Promise.resolve(this.sendResult)
     }
@@ -100,10 +104,10 @@ vi.mock("pg-boss", () => {
       this.handler = handler
       return Promise.resolve()
     }
-    complete(name: string, id: string): Promise<void> {
+    complete(name: string, id: string, output?: unknown): Promise<void> {
       if (this.rejectCompleteFor === id)
         return Promise.reject(new Error(`complete write failed ${id}`))
-      this.completeCalls.push({ name, id })
+      this.completeCalls.push(output === undefined ? { name, id } : { name, id, output })
       return Promise.resolve()
     }
     fail(name: string, id: string, output: unknown): Promise<void> {
@@ -111,7 +115,7 @@ vi.mock("pg-boss", () => {
       this.failCalls.push({ name, id, output })
       return Promise.resolve()
     }
-    deliver(jobs: { id: string; data: unknown }[]): Promise<void> {
+    deliver(jobs: { id: string; data: unknown; singletonKey?: string | null }[]): Promise<void> {
       if (!this.handler) throw new Error("no work handler registered")
       return this.handler(jobs)
     }
@@ -119,7 +123,7 @@ vi.mock("pg-boss", () => {
   return { default: StubPgBoss }
 })
 
-const { PgBossWorkerJobs, makeJobs, stopGraceMsFor } = await import("../../src/worker-jobs.js")
+const { JobInterruptedError, PgBossWorkerJobs, makeJobs } = await import("../../src/worker-jobs.js")
 
 /** The stub instance created by the most recent start(). */
 function lastBoss(): StubBoss {
@@ -155,14 +159,14 @@ describe("PgBossWorkerJobs lifecycle", () => {
     expect(boxed.instances).toHaveLength(0)
   })
 
-  it("stop() passes the DERIVED graceful timeout (every phase's budget + margin), then forgets the boss", async () => {
-    const jobs = new PgBossWorkerJobs("postgres://stub/civfix", 20_000)
+  // 30s for the jobs in flight, then 15s for an interrupted job to hand itself back: well inside the
+  // compose stop_grace_period of 200s, whatever the job budget is.
+  it("stop() waits 45s for the jobs in flight, then forgets the boss", async () => {
+    const jobs = new PgBossWorkerJobs("postgres://stub/civfix")
     await jobs.start()
     await jobs.stop()
 
-    expect(lastBoss().stopCalls).toEqual([
-      { graceful: true, wait: true, timeout: stopGraceMsFor(20_000) },
-    ])
+    expect(lastBoss().stopCalls).toEqual([{ graceful: true, wait: true, timeout: 45_000 }])
     // A second stop is a no-op (the handle dropped the boss), not a second pg-boss stop.
     await jobs.stop()
     expect(lastBoss().stopCalls).toHaveLength(1)
@@ -172,19 +176,6 @@ describe("PgBossWorkerJobs lifecycle", () => {
     const jobs = new PgBossWorkerJobs("postgres://stub/civfix")
     await expect(jobs.stop()).resolves.toBeUndefined()
     expect(boxed.instances).toHaveLength(0)
-  })
-
-  /**
-   * The grace MUST exceed the per-job budget charged ONCE PER PHASE (download, then processMedia), which is
-   * what a 1x derivation got wrong: SIGTERM abandoned a job that was still inside its own budget and left
-   * the asset `validating`.
-   */
-  it("stopGraceMsFor covers BOTH job phases plus persist margin", () => {
-    expect(stopGraceMsFor(60_000)).toBe(125_000)
-    expect(stopGraceMsFor(1_000)).toBe(7_000)
-    for (const budget of [1_000, 60_000, 300_000]) {
-      expect(stopGraceMsFor(budget)).toBeGreaterThan(2 * budget)
-    }
   })
 })
 
@@ -298,8 +289,8 @@ describe("PgBossWorkerJobs work(): PER-JOB completion of a delivered batch", () 
     await jobs.work("orphan.sweep", () => Promise.resolve())
 
     expect(lastBoss().workCalls).toEqual([
-      { name: QUEUE, options: { batchSize: 2, pollingIntervalSeconds: 4 } },
-      { name: "orphan.sweep", options: {} },
+      { name: QUEUE, options: { includeMetadata: true, batchSize: 2, pollingIntervalSeconds: 4 } },
+      { name: "orphan.sweep", options: { includeMetadata: true } },
     ])
   })
 
@@ -355,6 +346,51 @@ describe("PgBossWorkerJobs work(): PER-JOB completion of a delivered batch", () 
     expect(lastBoss().completeCalls).toEqual([])
     expect(lastBoss().failCalls).toHaveLength(1)
     expect(lastBoss().failCalls[0]!.output).toBeInstanceOf(TypeError)
+  })
+
+  it("hands an interrupted job back as a fresh job (no retry spent) and completes the interrupted one", async () => {
+    await startWithHandler((job) =>
+      job.id === "j2" ? Promise.reject(new JobInterruptedError()) : Promise.resolve(),
+    )
+    lastBoss().sendResult = "j2-again"
+
+    await lastBoss().deliver([
+      { id: "j1", data: { uploadId: "u1" }, singletonKey: "u1" },
+      { id: "j2", data: { uploadId: "u2" }, singletonKey: "u2" },
+    ])
+
+    expect(lastBoss().sendCalls).toEqual([
+      { name: QUEUE, data: { uploadId: "u2" }, opts: { singletonKey: "u2" } },
+    ])
+    expect(lastBoss().completeCalls).toEqual([
+      { name: QUEUE, id: "j1" },
+      { name: QUEUE, id: "j2", output: { interrupted: true, requeuedAs: "j2-again" } },
+    ])
+    expect(lastBoss().failCalls).toEqual([])
+  })
+
+  it("re-sends a job without a singletonKey without one, and completes it when the send dedups", async () => {
+    await startWithHandler(() => Promise.reject(new JobInterruptedError()))
+    lastBoss().sendResult = null
+
+    await lastBoss().deliver([{ id: "j1", data: 1, singletonKey: null }])
+
+    expect(lastBoss().sendCalls).toEqual([{ name: QUEUE, data: 1, opts: {} }])
+    expect(lastBoss().completeCalls).toEqual([
+      { name: QUEUE, id: "j1", output: { interrupted: true, requeuedAs: null } },
+    ])
+  })
+
+  it("RETHROWS when an interrupted job's re-send fails, so pg-boss fails it rather than losing it", async () => {
+    await startWithHandler(() => Promise.reject(new JobInterruptedError()))
+    lastBoss().sendError = new Error("db down")
+
+    await expect(lastBoss().deliver([{ id: "j1", data: 1, singletonKey: "u1" }])).rejects.toThrow(
+      "db down",
+    )
+
+    expect(lastBoss().completeCalls).toEqual([])
+    expect(lastBoss().failCalls).toEqual([])
   })
 
   it("wraps a non-Error rejection so the reason still reaches the job's output column", async () => {
@@ -450,12 +486,11 @@ describe("makeJobs seam selection", () => {
     )
   })
 
-  it("builds the real handle in production and derives its stop grace from MEDIA_JOB_TIMEOUT_MS", async () => {
+  it("builds the real handle in production, its stop grace independent of MEDIA_JOB_TIMEOUT_MS", async () => {
     const handle = makeJobs({
       NODE_ENV: "production",
       DATABASE_URL: "postgres://stub/civfix",
-      MEDIA_JOB_TIMEOUT_MS: "10000",
-      MEDIA_IMAGE_TIMEOUT_MS: "1000",
+      MEDIA_JOB_TIMEOUT_MS: "900000",
     })
     expect(handle.jobs).toBeInstanceOf(PgBossWorkerJobs)
 
@@ -463,6 +498,6 @@ describe("makeJobs seam selection", () => {
     await handle.stop()
 
     expect(lastBoss().connectionString).toBe("postgres://stub/civfix")
-    expect(lastBoss().stopCalls).toEqual([{ graceful: true, wait: true, timeout: 25_000 }])
+    expect(lastBoss().stopCalls).toEqual([{ graceful: true, wait: true, timeout: 45_000 }])
   })
 })

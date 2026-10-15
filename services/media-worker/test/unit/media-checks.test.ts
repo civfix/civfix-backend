@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it } from "vitest"
+import { afterEach, beforeEach, describe, expect, it } from "vitest"
 import { FakeStorage, FakeAbuseChecks } from "@civfix/shared/fakes"
 import { RealAbuseChecks } from "@civfix/api/adapters/abuse-checks"
 import exifr from "exifr"
@@ -10,6 +10,8 @@ import {
   type DownloadedObject,
 } from "../../src/download.js"
 import { perceptualHash } from "../../src/sandbox/phash.js"
+import { resetSandboxStopped, stopSandbox } from "../../src/sandbox/exec.js"
+import { JobInterruptedError } from "../../src/worker-jobs.js"
 import {
   processMedia,
   runMediaChecksJob,
@@ -621,6 +623,83 @@ describe("media.checks orchestration robustness", () => {
     expect(elapsed).toBeLessThan(2_000)
     expect(env.repo.get(id)!.status).toBe("validating")
     expect(env.reports.length).toBeGreaterThan(0)
+  })
+
+  describe("a job the worker interrupts on stop is handed back, never judged", () => {
+    afterEach(() => resetSandboxStopped())
+
+    function expectUntouched(env: ReturnType<typeof makeDeps>, id: string, r2Key: string): void {
+      expect(env.repo.get(id)!.status).toBe("validating")
+      expect(env.repo.get(id)!.servedKey).toBeNull()
+      expect(env.storage.get(r2Key)).not.toBeNull()
+      expect(env.storage.get(`processed/${r2Key}`)).toBeNull()
+      expect(env.repo.flags).toEqual([])
+      expect(env.reports).toEqual([])
+    }
+
+    it("discards a result that finished while the stop landed, the raw upload kept", async () => {
+      const stop = new AbortController()
+      const env = makeDeps({ stopSignal: stop.signal })
+      // The stop lands after the transcode and frame grab, while the frame is being scored.
+      ;(env.abuse as { nsfwScore: (b: Uint8Array) => Promise<number> }).nsfwScore = () => {
+        stop.abort()
+        stopSandbox()
+        return Promise.resolve(0)
+      }
+      const input = await fx.makePhoneClip({ codec: "hevc", width: 1280, height: 720, fps: 30 })
+      const { id, uploadId, r2Key } = await seedAsset(env.storage, env.repo, "video", input)
+
+      await expect(
+        runMediaChecksJob({ mediaId: id, uploadId, r2Key, kind: "video" }, env.deps),
+      ).rejects.toBeInstanceOf(JobInterruptedError)
+
+      expectUntouched(env, id, r2Key)
+    })
+
+    it("a decoder refused because the worker is stopping is not an infra failure", async () => {
+      const stop = new AbortController()
+      const env = makeDeps({ stopSignal: stop.signal })
+      const download = env.deps.download
+      // The stop lands as the download finishes, so the first decoder is refused.
+      env.deps.download = async (key, max, signal) => {
+        const got = await download(key, max, signal)
+        stop.abort()
+        stopSandbox()
+        return got
+      }
+      const input = await fx.makeValidMp4()
+      const { id, uploadId, r2Key } = await seedAsset(env.storage, env.repo, "video", input)
+
+      await expect(
+        runMediaChecksJob({ mediaId: id, uploadId, r2Key, kind: "video" }, env.deps),
+      ).rejects.toBeInstanceOf(JobInterruptedError)
+
+      expectUntouched(env, id, r2Key)
+    })
+
+    it("aborts a download in flight", async () => {
+      const stop = new AbortController()
+      let downloadSignal: AbortSignal | undefined
+      const env = makeDeps({
+        stopSignal: stop.signal,
+        download: (_key, _max, signal) => {
+          downloadSignal = signal
+          return new Promise<DownloadedObject>((_resolve, reject) => {
+            signal?.addEventListener("abort", () => reject(new Error("aborted")))
+          })
+        },
+      })
+      const input = await fx.makeValidPng()
+      const { id, uploadId, r2Key } = await seedAsset(env.storage, env.repo, "image", input)
+
+      const job = runMediaChecksJob({ mediaId: id, uploadId, r2Key, kind: "image" }, env.deps)
+      await new Promise((resolve) => setImmediate(resolve))
+      stop.abort()
+
+      await expect(job).rejects.toBeInstanceOf(JobInterruptedError)
+      expect(downloadSignal?.aborted).toBe(true)
+      expectUntouched(env, id, r2Key)
+    })
   })
 
   it("parsePayload rejects malformed payloads", () => {

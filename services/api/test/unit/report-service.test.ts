@@ -703,6 +703,70 @@ describe("getReport: visibility / held hiding", () => {
   })
 })
 
+describe("getReport: refused media count (mediaRejected)", () => {
+  function seedReportWithMedia() {
+    const { repo, service } = makeHarness()
+    const r = repo.seedReport({
+      reporterUserId: "owner",
+      status: "published",
+      visibility: "public",
+    })
+    const ready = repo.seedMedia({ reportId: r.id, status: "ready" })
+    const validating = repo.seedMedia({ reportId: r.id, status: "validating" })
+    repo.seedMedia({ reportId: r.id, status: "rejected" })
+    repo.seedMedia({ reportId: r.id, status: "rejected" })
+    repo.seedMedia({ reportId: r.id, status: "held" })
+    return { repo, service, report: r, ready, validating }
+  }
+
+  it("tells the reporter how many items were refused, without returning them", async () => {
+    const { service, report, ready, validating } = seedReportWithMedia()
+    const dto = await service.getReport(report.id, { userId: "owner" })
+    expect(dto.mediaRejected).toBe(2)
+    expect(dto.media.map((m) => m.id)).toEqual([ready.id, validating.id])
+  })
+
+  it("is 0 for a signed-in non-owner, who still sees only ready media", async () => {
+    const { service, report, ready } = seedReportWithMedia()
+    const dto = await service.getReport(report.id, { userId: "stranger" })
+    expect(dto.mediaRejected).toBe(0)
+    expect(dto.media.map((m) => m.id)).toEqual([ready.id])
+  })
+
+  it("is 0 for a guest", async () => {
+    const { service, report, ready } = seedReportWithMedia()
+    const dto = await service.getReport(report.id, {})
+    expect(dto.mediaRejected).toBe(0)
+    expect(dto.media.map((m) => m.id)).toEqual([ready.id])
+  })
+
+  it("does not count held or validating items as refused, even for the reporter", async () => {
+    const { repo, service } = makeHarness()
+    const r = repo.seedReport({
+      reporterUserId: "owner",
+      status: "published",
+      visibility: "public",
+    })
+    repo.seedMedia({ reportId: r.id, status: "held" })
+    repo.seedMedia({ reportId: r.id, status: "validating" })
+    const dto = await service.getReport(r.id, { userId: "owner" })
+    expect(dto.mediaRejected).toBe(0)
+    expect(dto.media.map((m) => m.status)).toEqual(["validating"])
+  })
+
+  it("counts only this report's refused items", async () => {
+    const { repo, service, report } = seedReportWithMedia()
+    const other = repo.seedReport({
+      reporterUserId: "owner",
+      status: "published",
+      visibility: "public",
+    })
+    repo.seedMedia({ reportId: other.id, status: "rejected" })
+    expect((await service.getReport(report.id, { userId: "owner" })).mediaRejected).toBe(2)
+    expect((await service.getReport(other.id, { userId: "owner" })).mediaRejected).toBe(1)
+  })
+})
+
 describe("resolveReport (owner status toggle)", () => {
   it("the owner marks their report resolved (status flips + a timeline entry is appended)", async () => {
     const { repo, service } = makeHarness()

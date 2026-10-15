@@ -376,7 +376,7 @@ describe("processAsset: rejected by the pipeline (never throws on bad bytes)", (
 
     await expect(runMediaChecksJob(payload, h.deps)).resolves.toBe("rejected")
 
-    expectRejectedAfterProcessing(h, "video", "duration 3s outside (0, 2]")
+    expectRejectedAfterProcessing(h, "video", "duration 3s exceeds the cap of 2s")
   })
 })
 
@@ -528,7 +528,7 @@ describe("processAsset: infra failures throw MediaInfraError and leave the asset
     expect((err as Error).message).toBe("media.checks infra failure (persist, retryable): put 503")
     expectUntouchedAfterInfraFailure(h)
     expect(h.storage.puts).toEqual([
-      { key: SERVED, contentType: "image/png" },
+      { key: SERVED, contentType: "image/jpeg" },
       { key: THUMB, contentType: "image/jpeg" },
     ])
     expect(await storedKeys(h)).toEqual([R2_KEY])

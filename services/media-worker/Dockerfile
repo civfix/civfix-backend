@@ -20,19 +20,28 @@
 #     `ffmpeg` stage downloads the ffmpeg.org release tarball, checks it against FFMPEG_SHA256 AND
 #     requires a signature by FFmpeg's release signing key, pinned by its fingerprint FFMPEG_KEY_FPR,
 #     then compiles ONLY what src/sandbox uses: the mov demuxer, the mp4 + image2 muxers, the h264/hevc
-#     decoders, the mjpeg encoder for the poster frame and the file protocol (configure adds the filters
-#     the ffmpeg CLI inserts itself). Every other demuxer and decoder, the IAMF audio parser the mov
-#     demuxer would otherwise pull in, the network stack and all autodetected external libraries are
-#     left out, so a hostile upload only reaches the mov demuxer (with its ISO media and RIFF helpers)
-#     and the h264/hevc parsers and decoders. The runtime stage exports FFMPEG_PATH/FFPROBE_PATH, which
-#     sandbox/binaries.ts REQUIRES in production (the npm static packages are devDependencies and are
-#     pruned out of this image by `pnpm --prod deploy`, so there is no silent fallback to the 2018
-#     build), and the boot preflight pushes an h264 and an hevc clip through the real video lane, so a
-#     build missing a component fails the CI smoke job.
+#     decoders, the mjpeg encoder for the poster frame, the libx264 encoder and the scale + fps filters
+#     for the served-video transcode, and the file protocol (configure adds the filters the ffmpeg CLI
+#     inserts itself). No audio decoder or encoder: audio is only ever copied. Every other demuxer and
+#     decoder, the IAMF audio parser the mov demuxer would otherwise pull in, the network stack and all
+#     other external libraries are left out, so a hostile upload only reaches the mov demuxer (with its
+#     ISO media and RIFF helpers) and the h264/hevc parsers and decoders. The runtime stage exports
+#     FFMPEG_PATH/FFPROBE_PATH, which sandbox/binaries.ts REQUIRES in production (the npm static
+#     packages are devDependencies and are pruned out of this image by `pnpm --prod deploy`, so there is
+#     no silent fallback to the 2018 build), and the boot preflight pushes an h264 and an hevc clip
+#     through the real video lane, so a build missing a component fails the CI smoke job.
 #     BUMPING IT: set FFMPEG_VERSION to a newer release from https://ffmpeg.org/releases/, verify its
 #     .asc against https://ffmpeg.org/ffmpeg-devel.asc (`gpg --verify`), and set FFMPEG_SHA256 to the
 #     `sha256sum` of the tarball. A new sandbox feature that needs another format or codec adds it to
 #     the configure line.
+#   * LIBX264 is the H.264 encoder behind the served-video transcode (src/sandbox/ffmpeg-transcode.ts).
+#     Licence: GPL-2.0-or-later, compatible with this repo's AGPL-3.0; it is linked statically into the
+#     separate ffmpeg executable only (hence --enable-gpl), never into the Node process. VideoLAN
+#     publishes no release tarballs, so X264_COMMIT pins a commit of the upstream `stable` branch and
+#     X264_SHA256 pins GitLab's archive of it. It never sees uploaded bytes, only frames the h264/hevc
+#     decoders produced. BUMPING IT: take the head of
+#     https://code.videolan.org/videolan/x264/-/commits/stable, download
+#     https://code.videolan.org/videolan/x264/-/archive/<commit>/x264-<commit>.tar.gz and set both ARGs.
 #   * sharp 0.33.x ships prebuilt linux binaries (@img/sharp-linux-*) that run on glibc, which the
 #     Debian bookworm base provides. No build toolchain or libvips apt package is required.
 #   Both are installed INSIDE this linux image (never copied from the host), so the platform is correct.
@@ -72,9 +81,28 @@ FROM base AS ffmpeg
 ARG FFMPEG_VERSION=8.1.3
 ARG FFMPEG_SHA256=7138d28c96d9d3e3af4ee3d8cad72741f8ffb40da90c1112235dea3ecd3178a3
 ARG FFMPEG_KEY_FPR=FCF986EA15E6E293A5644F10B4322F04D67658D8
+ARG X264_COMMIT=b35605ace3ddf7c1a5d67a2eb553f034aef41d55
+ARG X264_SHA256=cd71a7515b0e9a012e1ac9b1f8415bebcaf6fc97d4db32286642ac4c0fbe24f9
 RUN apt-get update \
- && apt-get install -y --no-install-recommends ca-certificates curl xz-utils gpg gpgv gcc libc6-dev make nasm \
+ && apt-get install -y --no-install-recommends ca-certificates curl xz-utils gpg gpgv gcc libc6-dev make nasm pkgconf \
  && rm -rf /var/lib/apt/lists/*
+# 8-bit 4:2:0 only: the transcode always outputs yuv420p, so the other bit depths and chroma formats
+# would be dead code in the binary.
+WORKDIR /tmp/x264
+RUN curl -fsSL --retry 5 --retry-all-errors -o x264.tar.gz "https://code.videolan.org/videolan/x264/-/archive/${X264_COMMIT}/x264-${X264_COMMIT}.tar.gz" \
+ && echo "${X264_SHA256}  x264.tar.gz" | sha256sum -c - \
+ && tar -xzf x264.tar.gz --strip-components=1 \
+ && ./configure \
+      --prefix=/opt/x264 \
+      --enable-static \
+      --enable-pic \
+      --disable-cli \
+      --disable-opencl \
+      --bit-depth=8 \
+      --chroma-format=420 \
+      --extra-cflags=-fstack-protector-strong \
+ && make -j"$(nproc)" \
+ && make install
 WORKDIR /tmp/ffmpeg
 # --toolchain=hardened: stack protector, FORTIFY_SOURCE, full RELRO and PIE for the one binary that
 # parses attacker-supplied bytes.
@@ -86,8 +114,9 @@ RUN curl -fsSL --retry 5 --retry-all-errors -O "https://ffmpeg.org/releases/ffmp
  && gpgv --keyring ./ffmpeg-devel.gpg --status-fd 1 "ffmpeg-${FFMPEG_VERSION}.tar.xz.asc" "ffmpeg-${FFMPEG_VERSION}.tar.xz" \
       | grep -q "^\[GNUPG:\] VALIDSIG .* ${FFMPEG_KEY_FPR}\$" \
  && tar -xJf "ffmpeg-${FFMPEG_VERSION}.tar.xz" --strip-components=1 \
- && ./configure \
+ && PKG_CONFIG_PATH=/opt/x264/lib/pkgconfig ./configure \
       --toolchain=hardened \
+      --pkg-config-flags=--static \
       --disable-everything \
       --disable-autodetect \
       --disable-network \
@@ -101,8 +130,10 @@ RUN curl -fsSL --retry 5 --retry-all-errors -O "https://ffmpeg.org/releases/ffmp
       --enable-muxer=mp4,image2 \
       --enable-decoder=h264,hevc \
       --enable-parser=h264,hevc \
-      --enable-encoder=mjpeg \
-      --enable-filter=scale \
+      --enable-encoder=mjpeg,libx264 \
+      --enable-filter=scale,fps \
+      --enable-gpl \
+      --enable-libx264 \
  && make -j"$(nproc)" \
  && install -D -m 0755 -t /opt/ffmpeg/bin ffmpeg ffprobe \
  && /opt/ffmpeg/bin/ffprobe -version | head -n 1 | grep -q "version ${FFMPEG_VERSION} " \
@@ -136,6 +167,7 @@ RUN apt-get update \
  && useradd --system --uid 1001 --gid 1001 --no-create-home --shell /usr/sbin/nologin mediatools \
  && usermod --append --groups mediatools node \
  && command -v setpriv >/dev/null \
+ && command -v nice >/dev/null \
  && command -v cat >/dev/null
 COPY --from=ffmpeg /opt/ffmpeg/bin/ffmpeg /opt/ffmpeg/bin/ffprobe /usr/local/bin/
 COPY --from=build --chown=node:node /out /app

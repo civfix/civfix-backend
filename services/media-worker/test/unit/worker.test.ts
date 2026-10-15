@@ -1,4 +1,4 @@
-import { describe, it, expect } from "vitest"
+import { afterEach, describe, it, expect, vi } from "vitest"
 import { makeWorker } from "../../src/worker.js"
 import {
   ANON_HOLD_RELEASE_JOB,
@@ -10,7 +10,13 @@ import {
   ORPHAN_SWEEP_JOB,
   RETENTION_SWEEP_JOB,
 } from "@civfix/api/queue-names"
-import { makeJobs, type ScheduleOptions } from "../../src/worker-jobs.js"
+import {
+  IN_FLIGHT_GRACE_MS,
+  makeJobs,
+  type JobsHandle,
+  type ScheduleOptions,
+} from "../../src/worker-jobs.js"
+import { resetSandboxStopped, runTool, SandboxSpawnError } from "../../src/sandbox/exec.js"
 import { makeSeams, type WorkerSeams } from "../../src/seams.js"
 import {
   CHAT_PARTITION_CRON,
@@ -180,6 +186,57 @@ describe("media-worker wiring", () => {
     ])
 
     await worker.stop()
+  })
+})
+
+describe("stop(): jobs in flight get IN_FLIGHT_GRACE_MS, then the sandbox is stopped", () => {
+  afterEach(() => {
+    resetSandboxStopped()
+    vi.useRealTimers()
+  })
+
+  async function workerWithSlowStop(): Promise<{ stop: () => Promise<void>; release: () => void }> {
+    const base = makeJobs()
+    let release!: () => void
+    const handle: JobsHandle = {
+      jobs: base.jobs,
+      start: base.start,
+      stop: () =>
+        new Promise<void>((resolve) => {
+          release = resolve
+        }),
+    }
+    const worker = await makeWorker(handle, await makeSeams())
+    return { stop: () => worker.stop(), release: () => release() }
+  }
+
+  const probe = () =>
+    runTool("shell", "/bin/sh", ["-c", "exit 0"], { timeoutMs: 5_000, maxStdoutBytes: 1024 })
+
+  it("stops the sandbox when the jobs layer is still waiting at the end of the grace", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] })
+    const { stop, release } = await workerWithSlowStop()
+
+    const stopping = stop()
+    await vi.advanceTimersByTimeAsync(IN_FLIGHT_GRACE_MS)
+
+    await expect(probe()).rejects.toBeInstanceOf(SandboxSpawnError)
+    release()
+    await expect(stopping).resolves.toBeUndefined()
+  })
+
+  it("leaves the sandbox alone when the jobs finish within the grace", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] })
+    const { stop, release } = await workerWithSlowStop()
+
+    const stopping = stop()
+    await vi.advanceTimersByTimeAsync(IN_FLIGHT_GRACE_MS - 1)
+    release()
+    await stopping
+    await vi.advanceTimersByTimeAsync(IN_FLIGHT_GRACE_MS)
+    vi.useRealTimers()
+
+    await expect(probe()).resolves.toMatchObject({ exitCode: 0 })
   })
 })
 

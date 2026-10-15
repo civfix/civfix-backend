@@ -61,6 +61,8 @@ const VALID_PROBE = {
   height: 360,
   fps: 30,
   bitrateBps: 1_000_000,
+  pixFmt: "yuv420p",
+  profile: "High",
   isVideo: true,
 }
 

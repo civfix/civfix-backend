@@ -293,9 +293,12 @@ export class InMemoryReportRepository implements ReportRepository {
     )
   }
 
-  countValidatingMediaForReport(reportId: string): Promise<number> {
-    const n = this.media.filter((m) => m.reportId === reportId && m.status === "validating").length
-    return Promise.resolve(n)
+  countMediaStatesForReport(reportId: string): Promise<{ validating: number; rejected: number }> {
+    const media = this.media.filter((m) => m.reportId === reportId)
+    return Promise.resolve({
+      validating: media.filter((m) => m.status === "validating").length,
+      rejected: media.filter((m) => m.status === "rejected").length,
+    })
   }
 
   async findMediaForReports(

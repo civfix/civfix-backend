@@ -335,13 +335,16 @@ export function makeDrizzleReportRepository(sql: Sql): ReportRepository {
       return media.filter((m) => m.status === "ready" || (ownerView && m.status === "validating"))
     },
 
-    async countValidatingMediaForReport(reportId: string): Promise<number> {
-      const rows = await sql<{ n: number }[]>`
-        SELECT count(*)::int AS n
+    async countMediaStatesForReport(
+      reportId: string,
+    ): Promise<{ validating: number; rejected: number }> {
+      const rows = await sql<{ validating: number; rejected: number }[]>`
+        SELECT count(*) FILTER (WHERE status = 'validating')::int AS validating,
+               count(*) FILTER (WHERE status = 'rejected')::int AS rejected
         FROM media_assets
-        WHERE report_id = ${reportId} AND status = 'validating'
+        WHERE report_id = ${reportId} AND status IN ('validating', 'rejected')
       `
-      return rows[0]?.n ?? 0
+      return rows[0] ?? { validating: 0, rejected: 0 }
     },
 
     async findMediaForReports(

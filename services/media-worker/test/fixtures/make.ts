@@ -368,3 +368,79 @@ export async function makeMp4WithSubtitleAndStreamTags(): Promise<Buffer> {
     await rm(dir, { recursive: true, force: true }).catch(() => {})
   }
 }
+
+export interface PhoneClipOptions {
+  codec: "h264" | "hevc"
+  width: number
+  height: number
+  fps: number
+  durationSec?: number
+  rotation?: number
+  location?: string
+  pixFmt?: string
+}
+
+/** A MOV with an AAC track, shaped like phone footage; `rotation` adds the display matrix phones write. */
+export async function makePhoneClip(opts: PhoneClipOptions): Promise<Buffer> {
+  const bin = ffmpegPath as unknown as string
+  const dir = await mkdtemp(join(tmpdir(), "civfix-fixt-"))
+  const encoded = join(dir, "encoded.mov")
+  const out = join(dir, "clip.mov")
+  const duration = opts.durationSec ?? 1
+  try {
+    await execa(
+      bin,
+      [
+        "-hide_banner",
+        "-loglevel",
+        "error",
+        "-f",
+        "lavfi",
+        "-i",
+        `testsrc=size=${opts.width}x${opts.height}:rate=${opts.fps}:duration=${duration}`,
+        "-f",
+        "lavfi",
+        "-i",
+        `sine=frequency=440:duration=${duration}`,
+        ...(opts.codec === "hevc"
+          ? ["-c:v", "libx265", "-x265-params", "log-level=error", "-tag:v", "hvc1"]
+          : ["-c:v", "libx264"]),
+        "-preset",
+        "ultrafast",
+        "-pix_fmt",
+        opts.pixFmt ?? "yuv420p",
+        "-c:a",
+        "aac",
+        ...(opts.location !== undefined ? ["-metadata", `location=${opts.location}`] : []),
+        "-f",
+        "mov",
+        "-y",
+        encoded,
+      ],
+      { timeout: 60000, reject: true },
+    )
+    if (opts.rotation === undefined) return await readFile(encoded)
+    await execa(
+      bin,
+      [
+        "-hide_banner",
+        "-loglevel",
+        "error",
+        "-display_rotation",
+        String(opts.rotation),
+        "-i",
+        encoded,
+        "-c",
+        "copy",
+        "-f",
+        "mov",
+        "-y",
+        out,
+      ],
+      { timeout: 30000, reject: true },
+    )
+    return await readFile(out)
+  } finally {
+    await rm(dir, { recursive: true, force: true }).catch(() => {})
+  }
+}

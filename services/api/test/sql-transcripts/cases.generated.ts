@@ -9625,9 +9625,9 @@ export const cases: TranscriptCase[] = [
     run: async (sql: any) => (m110 as any).isReportOwnedBy(sql, "reportId-1", "userId-1"),
   },
   {
-    key: "makeDrizzleReportRepository.countValidatingMediaForReport",
+    key: "makeDrizzleReportRepository.countMediaStatesForReport",
     run: async (sql: any) =>
-      (m110 as any).makeDrizzleReportRepository(sql).countValidatingMediaForReport("reportId-1"),
+      (m110 as any).makeDrizzleReportRepository(sql).countMediaStatesForReport("reportId-1"),
   },
   {
     key: "makeDrizzleReportRepository.createReportTx",
