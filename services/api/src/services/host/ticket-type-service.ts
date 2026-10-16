@@ -1,4 +1,4 @@
-import { AppError, MAX_TICKET_TYPES_PER_EVENT } from "@civfix/shared"
+import { AppError, MAX_TICKET_TYPES_PER_EVENT } from "@civfix/contract"
 import type {
   CreateEventTicketTypeRequest,
   DeleteEventTicketTypeRequest,
@@ -8,10 +8,10 @@ import type {
   ReorderEventTicketTypesResponse,
   TicketTypeDTO,
   UpdateEventTicketTypeRequest,
-} from "@civfix/shared"
+} from "@civfix/contract"
 import { sha256Hex } from "../../auth/crypto.js"
 import { assertNoSlur } from "../../abuse/slur-filter.js"
-import type { Jobs } from "@civfix/shared/interfaces"
+import type { Jobs } from "@civfix/seams"
 import type { CounterStore } from "../../abuse/counter-store.js"
 import { toTicketTypeDTO } from "./registration-dto.js"
 import type { InsightsInvalidator } from "./host-analytics-cache.js"

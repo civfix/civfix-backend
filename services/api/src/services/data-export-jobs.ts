@@ -1,4 +1,4 @@
-import { AppError, ErrorCode } from "@civfix/shared"
+import { AppError, ErrorCode } from "@civfix/contract"
 import { mailFailureKind } from "../adapters/mail-failure.js"
 import type { Env } from "../env.js"
 import type { Container } from "../di.js"

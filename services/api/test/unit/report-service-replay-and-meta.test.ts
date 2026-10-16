@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest"
-import type { CreateReportRequest, ReportDTO } from "@civfix/shared"
+import type { CreateReportRequest, ReportDTO } from "@civfix/contract"
 import { makeReportService } from "../../src/services/report-service.js"
 import { InMemoryReportRepository } from "../helpers/reports.js"
 

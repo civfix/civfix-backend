@@ -10,7 +10,7 @@ import {
   LINKED_EVENTS_PER_REPORT_CAP,
   MAX_EVENTS_PER_REPORT,
 } from "../../src/services/cleanup-repository.drizzle.js"
-import { AppError, type CreateCleanupRequest } from "@civfix/shared"
+import { AppError, type CreateCleanupRequest } from "@civfix/contract"
 
 const ORG = "11111111-1111-1111-1111-111111111111"
 const STRANGER = "22222222-2222-2222-2222-222222222222"

@@ -1,4 +1,4 @@
-import { AppError } from "@civfix/shared"
+import { AppError } from "@civfix/contract"
 
 const SLUR_BASES: readonly string[] = [
   "nigger",

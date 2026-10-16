@@ -15,7 +15,7 @@ export default defineConfig({
   sourcemap: true,
   clean: true,
   splitting: false,
-  noExternal: ["@civfix/api", "@civfix/shared"],
+  noExternal: ["@civfix/api", "@civfix/contract", "@civfix/seams"],
   external: [
     "sharp",
     "ffmpeg-static",

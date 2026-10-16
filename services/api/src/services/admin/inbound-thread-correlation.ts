@@ -1,5 +1,5 @@
 import type { Container } from "../../di.js"
-import type { ParsedMail } from "@civfix/shared/interfaces"
+import type { ParsedMail } from "@civfix/seams"
 import type {
   MailAuditInput,
   MailMessageRecord,
@@ -14,7 +14,7 @@ import { makeDrizzleCleanupRepository } from "../cleanup-repository.drizzle.js"
 import type { CleanupRepository } from "../cleanup-service.js"
 import { makeContainerReportChatEmitter } from "../report-chat-emitter.js"
 import type { ReportChatSystemEmitter } from "../report-timeline-event.js"
-import { MESSAGE_BODY_MAX, segmentGraphemes } from "@civfix/shared"
+import { MESSAGE_BODY_MAX, segmentGraphemes } from "@civfix/contract"
 import { sha256HexSync } from "../../lib/hash.js"
 import {
   DEFAULT_REPLY_DOMAIN,

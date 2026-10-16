@@ -1,4 +1,4 @@
-import type { JobHandlerArg } from "@civfix/shared/interfaces"
+import type { JobHandlerArg } from "@civfix/seams"
 
 // The shared Jobs seam hands a handler only { id, data }. The pg-boss adapter adds the retry position so
 // a handler can tell its last attempt apart; any other Jobs implementation leaves it out, which reads as

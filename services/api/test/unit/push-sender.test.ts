@@ -11,7 +11,8 @@ import {
 } from "../../src/adapters/push-sender.js"
 import { PUSH_MAX_PER_USER_PER_MINUTE, allowedByPushRate } from "../../src/adapters/push-sender.js"
 import { InMemoryCounterStore } from "../../src/abuse/counter-store.js"
-import type { PushPayload, PushPlatform } from "@civfix/shared/interfaces"
+import type { PushPayload } from "@civfix/seams"
+import type { PushPlatform } from "@civfix/contract"
 
 function recordingDispatcher(invalid: string[] = []): {
   calls: Array<{ tokens: string[]; payload: PushPayload }>

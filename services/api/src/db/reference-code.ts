@@ -13,7 +13,7 @@
  * acquisition order, so two concurrent creates can never deadlock ABBA.
  */
 
-import { REPORT_TYPE_CODE, type ReportType } from "@civfix/shared"
+import { REPORT_TYPE_CODE, type ReportType } from "@civfix/contract"
 import type { Queryable } from "./client.js"
 import {
   allocateNextSeqIn,

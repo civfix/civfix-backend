@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest"
-import { MAX_BROADCAST_BODY } from "@civfix/shared"
-import { MARKDOWN_SUBSET_MAX_CHARS } from "@civfix/shared/markdown"
+import { MAX_BROADCAST_BODY } from "@civfix/contract"
+import { MARKDOWN_SUBSET_MAX_CHARS } from "@civfix/contract/markdown"
 import {
   assertBroadcastLinkPolicy,
   broadcastLinkWarnings,

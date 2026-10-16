@@ -1,5 +1,5 @@
-import type { SentSms, SmsSender } from "@civfix/shared/interfaces"
-import type { AppError } from "@civfix/shared"
+import type { SentSms, SmsSender } from "@civfix/seams"
+import type { AppError } from "@civfix/contract"
 import { smsFailure } from "../errors/sms-failure.js"
 
 const TWILIO_API_ROOT = "https://api.twilio.com/2010-04-01/Accounts"

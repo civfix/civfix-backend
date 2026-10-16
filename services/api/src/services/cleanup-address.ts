@@ -1,5 +1,5 @@
-import { AppError, MAX_EVENT_ADDRESS_LENGTH, isLocatedPrecision } from "@civfix/shared"
-import type { EventAddressSource } from "@civfix/shared"
+import { AppError, MAX_EVENT_ADDRESS_LENGTH, isLocatedPrecision } from "@civfix/contract"
+import type { EventAddressSource } from "@civfix/contract"
 import type { AddressResolver } from "./address-resolver.js"
 
 /**

@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from "vitest"
-import type { UserMentionDTO } from "@civfix/shared"
+import type { UserMentionDTO } from "@civfix/contract"
 import {
   makeChatMentionResolver,
   resolveAndRecordChatMentions,

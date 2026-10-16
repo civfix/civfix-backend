@@ -1,5 +1,5 @@
 import type { Queryable } from "../db/client.js"
-import type { MediaDTO } from "@civfix/shared"
+import type { MediaDTO } from "@civfix/contract"
 import type { PresignMedia } from "./media-presign.js"
 import {
   loadServableAttachmentsFor,

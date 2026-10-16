@@ -22,7 +22,7 @@
 
 import { TEST_TICKET_SIGNER } from "../helpers/ticket-signer.js"
 import { describe, it, expect, beforeEach } from "vitest"
-import { MAX_EVENT_SLOTS, type AppError } from "@civfix/shared"
+import { MAX_EVENT_SLOTS, type AppError } from "@civfix/contract"
 import { InMemoryCounterStore } from "../../src/abuse/counter-store.js"
 import {
   CANCEL_FANOUT_MEMBER_CAP,

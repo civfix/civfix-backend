@@ -17,8 +17,8 @@
 
 import { describe, it, expect, afterEach } from "vitest"
 import type { FastifyInstance } from "fastify"
-import { FakeMailer } from "@civfix/shared/fakes"
-import { endpoints, versionedPath } from "@civfix/shared/client"
+import { FakeMailer } from "@civfix/seams"
+import { endpoints, versionedPath } from "@civfix/contract/client"
 import { makeServer } from "../../src/server.js"
 import { makeContainer } from "../../src/di.js"
 import { loadEnv } from "../../src/env.js"

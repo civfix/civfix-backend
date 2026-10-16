@@ -1,4 +1,4 @@
-import type { BroadcastKind, BroadcastSegment } from "@civfix/shared"
+import type { BroadcastKind, BroadcastSegment } from "@civfix/contract"
 import type { BroadcastRepository } from "./broadcast-repository.js"
 
 const AUDIENCE_PAGE_SIZE = 1000

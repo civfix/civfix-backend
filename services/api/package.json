@@ -2,7 +2,7 @@
   "name": "@civfix/api",
   "version": "1.4.0",
   "private": true,
-  "description": "civfix Fastify 5 API service. Hosts HTTP + WS endpoints; all external dependencies sit behind the 11 @civfix/shared seam interfaces, selected real-vs-fake in the DI container.",
+  "description": "civfix Fastify 5 API service. Hosts HTTP + WS endpoints; all external dependencies sit behind the 11 @civfix/seams seam interfaces, selected real-vs-fake in the DI container.",
   "license": "AGPL-3.0-only",
   "type": "module",
   "main": "./dist/server.js",
@@ -71,7 +71,8 @@
   "dependencies": {
     "@aws-sdk/client-s3": "^3.1147.0",
     "@aws-sdk/s3-request-presigner": "^3.1147.0",
-    "@civfix/shared": "^0.61.0",
+    "@civfix/contract": "^0.62.0",
+    "@civfix/tokens": "^0.1.0",
     "@fastify/cookie": "^11.1.2",
     "@fastify/cors": "^10.1.0",
     "@fastify/helmet": "^12.0.1",
@@ -102,6 +103,7 @@
   },
   "devDependencies": {
     "@civfix/config": "workspace:*",
+    "@civfix/seams": "workspace:*",
     "@testcontainers/postgresql": "^11.14.0",
     "@types/ioredis-mock": "^8.2.8",
     "@types/mailparser": "^3.9.0",

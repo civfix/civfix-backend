@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest"
-import { FakeStorage } from "@civfix/shared/fakes"
+import { FakeStorage } from "@civfix/seams"
 import { loadLimits, type WorkerLimits } from "../../src/config.js"
 import { runOrphanSweep } from "../../src/jobs/orphan-sweep.js"
 import { servedKey, thumbnailKey } from "../../src/jobs/media-keys.js"

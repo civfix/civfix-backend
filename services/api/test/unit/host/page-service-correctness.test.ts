@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest"
-import { PAGE_SLUG_MAX, PageSlugSchema } from "@civfix/shared"
-import type { EventPageBlock } from "@civfix/shared"
+import { PAGE_SLUG_MAX, PageSlugSchema } from "@civfix/contract"
+import type { EventPageBlock } from "@civfix/contract"
 import { InMemoryCounterStore } from "../../../src/abuse/counter-store.js"
 import { InMemoryHostRegistrationRepository } from "../../helpers/host/registration-repository.memory.js"
 import {

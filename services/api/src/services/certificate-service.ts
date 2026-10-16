@@ -25,15 +25,15 @@ import {
   CERTIFICATE_GET_URL_TTL_SEC,
   MAX_CERTIFICATE_ENTRIES,
   formatCertificateCode,
-} from "@civfix/shared"
+} from "@civfix/contract"
 import type {
   IssueServiceHoursCertificateResponse,
   ListMyCertificatesResponse,
   RevokeCertificateResponse,
   ServiceHoursCertificateDTO,
   VerifyCertificateResponse,
-} from "@civfix/shared"
-import type { StorageHead, StoragePutMeta } from "@civfix/shared/interfaces"
+} from "@civfix/contract"
+import type { StorageHead, StoragePutMeta } from "@civfix/seams"
 import { resolveLocale } from "../i18n/locales.js"
 import { sha256HexSync } from "../lib/hash.js"
 import { MS_PER_SECOND } from "../lib/time.js"

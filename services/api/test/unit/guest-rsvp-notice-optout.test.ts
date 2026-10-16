@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest"
-import { FakeAbuseChecks, FakeMailer, FakeSmsSender } from "@civfix/shared/fakes"
+import { FakeAbuseChecks, FakeMailer, FakeSmsSender } from "@civfix/seams"
 import { InMemoryCacheClient } from "../../src/auth/cache.js"
 import { InMemoryCounterStore } from "../../src/abuse/counter-store.js"
 import { smsFailure } from "../../src/errors/sms-failure.js"

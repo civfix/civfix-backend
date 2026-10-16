@@ -1,6 +1,6 @@
 import type { Container } from "../di.js"
-import type { OAuthProvider, UserDTO } from "@civfix/shared"
-import type { Mailer } from "@civfix/shared/interfaces"
+import type { OAuthProvider, UserDTO } from "@civfix/contract"
+import type { Mailer } from "@civfix/seams"
 import { RedisCacheClient, type CacheClient } from "./cache.js"
 import { SessionService, type SessionLogger } from "./session-service.js"
 import {

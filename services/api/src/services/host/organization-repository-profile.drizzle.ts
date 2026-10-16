@@ -1,5 +1,5 @@
-import { AppError } from "@civfix/shared"
-import type { OrganizationMemberRole, OrgVerificationStatus } from "@civfix/shared"
+import { AppError } from "@civfix/contract"
+import type { OrganizationMemberRole, OrgVerificationStatus } from "@civfix/contract"
 import type { Queryable, Sql, SqlFragment } from "../../db/client.js"
 import { uploadedByClaimant } from "../media-bindings.js"
 import { userUploader } from "../media-uploader.js"

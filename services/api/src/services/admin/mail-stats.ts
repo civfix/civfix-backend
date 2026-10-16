@@ -1,4 +1,4 @@
-import type { MailStatsResponse } from "@civfix/shared"
+import type { MailStatsResponse } from "@civfix/contract"
 
 export interface MailEventCounts {
   sent: number

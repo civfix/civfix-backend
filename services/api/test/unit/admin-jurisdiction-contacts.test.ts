@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest"
-import { FakeJobs, FakeMailer } from "@civfix/shared/fakes"
+import { FakeJobs, FakeMailer } from "@civfix/seams"
 import { InMemoryJurisdictionContactsRepository } from "../helpers/admin/jurisdiction-contacts-repository.memory.js"
 import { InMemoryMailRepository } from "../helpers/admin/mail-repository.memory.js"
 import { InMemoryOutreachRepository } from "../helpers/admin/outreach-repository.memory.js"

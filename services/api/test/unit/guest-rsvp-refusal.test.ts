@@ -5,8 +5,8 @@ import {
   type GuestRsvpRequestRequest,
   type GuestRsvpVerifyRequest,
   type RegisterForEventResponse,
-} from "@civfix/shared"
-import { FakeAbuseChecks, FakeMailer, FakeSmsSender } from "@civfix/shared/fakes"
+} from "@civfix/contract"
+import { FakeAbuseChecks, FakeMailer, FakeSmsSender } from "@civfix/seams"
 import { InMemoryCacheClient } from "../../src/auth/cache.js"
 import { InMemoryCounterStore } from "../../src/abuse/counter-store.js"
 import { InMemoryGuestRsvpRepository } from "../helpers/guest-rsvp.js"

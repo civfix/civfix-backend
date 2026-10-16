@@ -12,7 +12,7 @@ import {
   type ListMyCertificatesResponse,
   type RevokeCertificateResponse,
   type VerifyCertificateResponse,
-} from "@civfix/shared"
+} from "@civfix/contract"
 import { z } from "zod"
 import type { FastifyInstance } from "fastify"
 import { perHost, perIdentity } from "../plugins/rate-limit.js"

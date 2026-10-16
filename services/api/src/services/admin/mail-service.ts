@@ -1,4 +1,4 @@
-import { AppError } from "@civfix/shared"
+import { AppError } from "@civfix/contract"
 import type {
   ComposeRequest,
   MailListQuery,
@@ -7,7 +7,7 @@ import type {
   MailStatsResponse,
   MailStatus,
   MailThreadDTO,
-} from "@civfix/shared"
+} from "@civfix/contract"
 import type { ListThreadsInput, MailRepository } from "./mail-repository.drizzle.js"
 import { domainOf } from "../../adapters/mail-text.js"
 import { SEND_IN_FLIGHT_CONFLICT } from "./admin-report-service.js"

@@ -1,5 +1,5 @@
-import { REPORT_CATEGORY_LABELS } from "@civfix/shared"
-import type { ReportCategory } from "@civfix/shared"
+import { REPORT_CATEGORY_LABELS } from "@civfix/contract"
+import type { ReportCategory } from "@civfix/contract"
 import type { Sql, SqlFragment } from "../db/client.js"
 import type { ConversationHideRoomKind } from "../db/schema/conversation_hides.js"
 import { publicReportFilter } from "./report-sql.js"

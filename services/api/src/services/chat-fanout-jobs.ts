@@ -1,6 +1,6 @@
 import type { FastifyBaseLogger } from "fastify"
-import type { ChatMessageDTO } from "@civfix/shared"
-import type { Jobs } from "@civfix/shared/interfaces"
+import type { ChatMessageDTO } from "@civfix/contract"
+import type { Jobs } from "@civfix/seams"
 import type { Container } from "../di.js"
 import { makeDrizzleChatRepository } from "./chat-repository.drizzle.js"
 import {

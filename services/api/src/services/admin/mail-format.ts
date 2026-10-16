@@ -18,13 +18,13 @@ import {
   forwardTemplateIssues,
   interpolateForwardTemplate,
   templateUsesToken,
-} from "@civfix/shared"
+} from "@civfix/contract"
 import type {
   AdminReportMediaRecord,
   AdminReportRecord,
   AdminReportRoutingRecord,
 } from "./admin-report-repository.js"
-import type { MarkdownInline } from "@civfix/shared/markdown"
+import type { MarkdownInline } from "@civfix/contract/markdown"
 
 export const NO_PHOTO_LINKS = "(none)"
 

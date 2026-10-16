@@ -1,7 +1,7 @@
 import { describe, it, expect } from "vitest"
 import { InMemoryModerationRepository } from "../helpers/admin/moderation-repository.memory.js"
 import { makeModerationService } from "../../src/services/admin/moderation-service.js"
-import type { UserStatus } from "@civfix/shared"
+import type { UserStatus } from "@civfix/contract"
 
 const NOW = new Date("2026-09-03T00:00:00.000Z")
 

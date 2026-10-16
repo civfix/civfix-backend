@@ -15,8 +15,8 @@ import type {
   PushTokenUpsertOutcome,
 } from "./notification-repository.js"
 import { DEFAULT_PREFS, FEED_HIDDEN_NOTIFICATION_TYPES } from "./notification-service.js"
-import { AppError } from "@civfix/shared"
-import type { NotificationType, PushPlatform } from "@civfix/shared"
+import { AppError } from "@civfix/contract"
+import type { NotificationType, PushPlatform } from "@civfix/contract"
 
 const QUIET_TIME_RE = /^([01]\d|2[0-3]):[0-5]\d(:[0-5]\d)?$/
 

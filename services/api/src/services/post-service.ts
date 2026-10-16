@@ -4,7 +4,7 @@ import {
   formatFeedScoreCursor,
   isAfterFeedScoreCursor,
   parseFeedScoreCursor,
-} from "@civfix/shared"
+} from "@civfix/contract"
 import type {
   FeedCountsResponse,
   FeedRankingConfig,
@@ -12,8 +12,8 @@ import type {
   PaginationQuery,
   PostComposeInput,
   PostDTO,
-} from "@civfix/shared"
-import type { UserChannel } from "@civfix/shared/interfaces"
+} from "@civfix/contract"
+import type { UserChannel } from "@civfix/seams"
 import { randomInt } from "node:crypto"
 import type { Sql } from "../db/client.js"
 import { assertNoSlur } from "../abuse/slur-filter.js"

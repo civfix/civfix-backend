@@ -1,5 +1,5 @@
-import type { BroadcastKind, CleanupStatus, RegistrationSource } from "@civfix/shared"
-import type { DayCount, DayTimeCount, KeyCount } from "@civfix/shared/host"
+import type { BroadcastKind, CleanupStatus, RegistrationSource } from "@civfix/contract"
+import type { DayCount, DayTimeCount, KeyCount } from "@civfix/contract/host"
 
 export interface EventKpiRow {
   registered: number

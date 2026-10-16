@@ -1,4 +1,4 @@
-import type { SocialLinks } from "@civfix/shared"
+import type { SocialLinks } from "@civfix/contract"
 import type { CleanupRecord } from "./cleanup-repository.js"
 
 export interface PersonView {

@@ -1,6 +1,6 @@
 // Reads of audit_log are not themselves audited.
 
-import { AuditListQuerySchema, type AuditListResponse } from "@civfix/shared"
+import { AuditListQuerySchema, type AuditListResponse } from "@civfix/contract"
 import type { FastifyInstance } from "fastify"
 import type { Container } from "../../di.js"
 import { overridableService, parse } from "./_route-utils.js"

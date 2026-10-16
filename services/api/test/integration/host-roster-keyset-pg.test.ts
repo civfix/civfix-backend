@@ -9,7 +9,7 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest"
 import { withPg, type PgHarness, testHandle } from "../helpers/pg.js"
 import { seedCleanup } from "../helpers/cleanups.js"
 import { makeDrizzleHostRegistrationRepository } from "../../src/services/host/registration-repository.drizzle.js"
-import type { RegistrationRosterSort } from "@civfix/shared"
+import type { RegistrationRosterSort } from "@civfix/contract"
 
 const pg = await withPg()
 

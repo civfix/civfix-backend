@@ -1,5 +1,5 @@
-import type { HostedEventDTO, HostPortfolioKpis, ListMyHostedEventsResponse } from "@civfix/shared"
-import { hostCapabilities, NO_HOST_STANDING, type HostStanding } from "@civfix/shared/host"
+import type { HostedEventDTO, HostPortfolioKpis, ListMyHostedEventsResponse } from "@civfix/contract"
+import { hostCapabilities, NO_HOST_STANDING, type HostStanding } from "@civfix/contract/host"
 import type { EventMediaPresigner } from "./event-media.js"
 import type {
   HostPortfolioTotals,

@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest"
-import { AppError, DEFAULT_FEED_RANKING } from "@civfix/shared"
-import type { PostComposeInput, PostDTO } from "@civfix/shared"
+import { AppError, DEFAULT_FEED_RANKING } from "@civfix/contract"
+import type { PostComposeInput, PostDTO } from "@civfix/contract"
 import type { Sql } from "../../src/db/client.js"
 import { makePostService } from "../../src/services/post-service.js"
 import { makeFakeSql } from "../helpers/fake-sql.js"

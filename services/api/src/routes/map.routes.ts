@@ -13,8 +13,8 @@ import {
   type SuggestPlacesResponse,
   type MapCleanupsResponse,
   type SuggestContactResponse,
-} from "@civfix/shared"
-import { suggestAddresses } from "@civfix/shared/geocode"
+} from "@civfix/contract"
+import { suggestAddresses } from "@civfix/contract/geocode"
 import { z } from "zod"
 import type { FastifyInstance } from "fastify"
 import type { Container } from "../di.js"

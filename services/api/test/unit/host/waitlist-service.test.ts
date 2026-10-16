@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it } from "vitest"
 import { randomUUID } from "node:crypto"
-import { AppError } from "@civfix/shared"
+import { AppError } from "@civfix/contract"
 import { sha256Hex } from "../../../src/auth/crypto.js"
 import { InMemoryHostRegistrationRepository } from "../../helpers/host/registration-repository.memory.js"
 import {

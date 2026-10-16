@@ -12,7 +12,7 @@ import type {
   GovClaimsRepository,
   ListGovClaimsArgs,
 } from "../../../src/services/admin/gov-claims-repository.js"
-import type { GovCheckStatus, GovVerificationCheck, Role } from "@civfix/shared"
+import type { GovCheckStatus, GovVerificationCheck, Role } from "@civfix/contract"
 
 export class InMemoryGovClaimsRepository implements GovClaimsRepository {
   /** Insertion order is preserved for stable paging. */

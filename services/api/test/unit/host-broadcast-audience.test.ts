@@ -1,5 +1,5 @@
-import type { BroadcastKind, BroadcastSegment } from "@civfix/shared"
-import { FakeMailer } from "@civfix/shared/fakes"
+import type { BroadcastKind, BroadcastSegment } from "@civfix/contract"
+import { FakeMailer } from "@civfix/seams"
 import { describe, expect, it, vi } from "vitest"
 import { InMemoryCounterStore } from "../../src/abuse/counter-store.js"
 import { audiencePages } from "../../src/services/host/broadcast-audience.js"

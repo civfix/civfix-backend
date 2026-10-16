@@ -52,7 +52,7 @@ import {
   type SettleThreadStatusInput,
   type ThreadInit,
 } from "./mail-repository.js"
-import type { MailDirection, MailStatsResponse, MailStatus, MailThreadDTO } from "@civfix/shared"
+import type { MailDirection, MailStatsResponse, MailStatus, MailThreadDTO } from "@civfix/contract"
 
 export * from "./mail-repository.js"
 export { deriveWho, mintThreadToken, toThreadDTO } from "./mail-mappers.js"

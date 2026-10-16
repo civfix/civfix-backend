@@ -1,5 +1,5 @@
 import { afterAll, describe, expect, it } from "vitest"
-import type { CleanupStatus } from "@civfix/shared"
+import type { CleanupStatus } from "@civfix/contract"
 import { withPg, type PgHarness } from "../helpers/pg.js"
 import { seedCleanup } from "../helpers/cleanups.js"
 import { PgUserStore } from "../../src/auth/pg-stores.js"

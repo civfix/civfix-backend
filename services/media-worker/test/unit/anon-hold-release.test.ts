@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest"
-import { FakeStorage, FakeAbuseChecks } from "@civfix/shared/fakes"
-import type { LatLng } from "@civfix/shared"
+import { FakeStorage, FakeAbuseChecks } from "@civfix/seams"
+import type { LatLng } from "@civfix/contract"
 import { makeWorker } from "../../src/worker.js"
 import { makeJobs } from "../../src/worker-jobs.js"
 import { loadLimits } from "../../src/config.js"

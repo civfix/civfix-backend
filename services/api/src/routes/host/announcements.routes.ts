@@ -4,8 +4,8 @@ import {
   ListEventAnnouncementsRequestSchema,
   type AnnouncementDTO,
   type ListEventAnnouncementsResponse,
-} from "@civfix/shared"
-import { can } from "@civfix/shared/host"
+} from "@civfix/contract"
+import { can } from "@civfix/contract/host"
 import type { FastifyInstance } from "fastify"
 import type { Container } from "../../di.js"
 import { requireAuth } from "../../auth/context.js"

@@ -19,7 +19,7 @@ import {
   ownerStatusTransition,
 } from "../../src/services/report-visibility.js"
 import { paginate, parseTimeCursor } from "../../src/db/cursor-helpers.js"
-import { OPEN_REPORT_STATUSES, type ReportDTO } from "@civfix/shared"
+import { OPEN_REPORT_STATUSES, type ReportDTO } from "@civfix/contract"
 
 export interface StoredMediaAsset {
   id: string

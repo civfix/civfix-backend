@@ -6,7 +6,7 @@ import {
   ReportStatusSchema,
   type AnonReportResponse,
   type AnonReportStatusResponse,
-} from "@civfix/shared"
+} from "@civfix/contract"
 import { z } from "zod"
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify"
 import type { Container } from "../di.js"

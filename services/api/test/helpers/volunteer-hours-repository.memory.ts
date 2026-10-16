@@ -1,11 +1,11 @@
 import { randomUUID } from "node:crypto"
-import { AppError, avatarGradient } from "@civfix/shared"
+import { AppError, avatarGradient } from "@civfix/contract"
 import type {
   LeaderboardEntryDTO,
   MyVolunteerHoursDTO,
   OrganizationRefDTO,
   VolunteerHoursSource,
-} from "@civfix/shared"
+} from "@civfix/contract"
 import { CIVFIX_OFFICIAL_USER_ID, isOfficialAccount } from "../../src/auth/official-account.js"
 import { encodeTimeCursor, isBeforeTimeCursor, pageWith } from "../../src/db/cursor-helpers.js"
 import { DEFAULT_EVENT_TIME_ZONE } from "../../src/services/host/event-fields.js"

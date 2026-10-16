@@ -1,4 +1,4 @@
-import type { ActivityKind } from "@civfix/shared"
+import type { ActivityKind } from "@civfix/contract"
 
 export type ActivitySource = "audit" | "report" | "cleanup" | "mail_event"
 

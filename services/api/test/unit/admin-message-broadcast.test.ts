@@ -2,7 +2,7 @@
 // rendering removed content until they refetch history.
 
 import { describe, it, expect } from "vitest"
-import type { ChatMessageDTO, RoomKind } from "@civfix/shared"
+import type { ChatMessageDTO, RoomKind } from "@civfix/contract"
 import { makeFakeSql } from "../helpers/fake-sql.js"
 import type { Sql } from "../../src/db/client.js"
 import {

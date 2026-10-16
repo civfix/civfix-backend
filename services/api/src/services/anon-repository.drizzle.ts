@@ -38,8 +38,8 @@ import {
   type AnonTokenRecord,
   type AnonTokenStore,
 } from "../abuse/anon-token.js"
-import { AppError } from "@civfix/shared"
-import type { AnonReportResponse, ReportStatus } from "@civfix/shared"
+import { AppError } from "@civfix/contract"
+import type { AnonReportResponse, ReportStatus } from "@civfix/contract"
 import { insertModerationItem } from "./admin/moderation-repository.drizzle.js"
 import { claimableAsReportMedia } from "./media-bindings.js"
 import { lockUploadsForClaimIn } from "./media-claim-repository.drizzle.js"

@@ -1,4 +1,4 @@
-import type { BroadcastKind, BroadcastSegment } from "@civfix/shared"
+import type { BroadcastKind, BroadcastSegment } from "@civfix/contract"
 import type postgres from "postgres"
 import type { Queryable } from "../../db/client.js"
 import { CRITICAL_BROADCAST_KINDS, HOST_COMPOSED_BROADCAST_KINDS } from "./broadcast-types.js"

@@ -1,5 +1,5 @@
-import type { BroadcastKind, NotificationType } from "@civfix/shared"
-import type { BroadcastVarValues } from "@civfix/shared/host"
+import type { BroadcastKind, NotificationType } from "@civfix/contract"
+import type { BroadcastVarValues } from "@civfix/contract/host"
 import type { FastifyBaseLogger } from "fastify"
 import { isWithinQuietHours, pushGateAllows, type PushGateMode } from "../notification-helpers.js"
 import type { NotificationService } from "../notification-service.js"

@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it } from "vitest"
-import { AppError } from "@civfix/shared"
+import { AppError } from "@civfix/contract"
 import { InMemoryCounterStore } from "../../../src/abuse/counter-store.js"
 import { sha256Hex } from "../../../src/auth/crypto.js"
 import { InMemoryHostRegistrationRepository } from "../../helpers/host/registration-repository.memory.js"

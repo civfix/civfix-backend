@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto"
-import { AppError } from "@civfix/shared"
+import { AppError, MAX_LINKED_REPORTS } from "@civfix/contract"
 import type { Sql } from "../../src/db/client.js"
 import type {
   AttendeeView,
@@ -38,7 +38,6 @@ import {
   slotWindowKey,
   stripPageBlockMedia,
 } from "../../src/services/cleanup-repository.drizzle.js"
-import { MAX_LINKED_REPORTS } from "@civfix/shared"
 import type {
   CleanupMemberRole,
   EventKind,
@@ -48,8 +47,8 @@ import type {
   OrgVerificationStatus,
   ReportCategory,
   ReportStatus,
-} from "@civfix/shared"
-import { NO_HOST_STANDING, type HostStanding } from "@civfix/shared/host"
+} from "@civfix/contract"
+import { NO_HOST_STANDING, type HostStanding } from "@civfix/contract/host"
 import { eventScopeKey, formatReferenceCode, EVENT_PREFIX } from "../../src/db/reference-code.js"
 import {
   encodeNearCursor,

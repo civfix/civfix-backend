@@ -1,7 +1,7 @@
 import { describe, it, expect, vi } from "vitest"
-import { FakeMailer } from "@civfix/shared/fakes"
-import type { Mailer } from "@civfix/shared/interfaces"
-import { AppError, ErrorCode } from "@civfix/shared"
+import { FakeMailer } from "@civfix/seams"
+import type { Mailer } from "@civfix/seams"
+import { AppError, ErrorCode } from "@civfix/contract"
 import { InMemoryCacheClient } from "../../src/auth/cache.js"
 import {
   InMemoryOAuthIdentityStore,

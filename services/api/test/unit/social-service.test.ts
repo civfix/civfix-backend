@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest"
-import { avatarGradient, stableHash, AVATAR_PALETTE } from "@civfix/shared"
+import { avatarGradient, stableHash, AVATAR_PALETTE } from "@civfix/contract"
 import {
   dropSuggestionsFor,
   makeSocialService,

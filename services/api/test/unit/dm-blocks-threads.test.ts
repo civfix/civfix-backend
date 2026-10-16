@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach } from "vitest"
-import { DELETED_USER_LABEL } from "@civfix/shared"
+import { DELETED_USER_LABEL } from "@civfix/contract"
 import {
   InMemoryBlocksRepository,
   InMemoryDmRepository,

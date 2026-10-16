@@ -1,4 +1,4 @@
-import type { NotificationType } from "@civfix/shared"
+import type { NotificationType } from "@civfix/contract"
 import type { NotificationService } from "./notification-service.js"
 
 export type ConversationBellKind = "dm" | "cleanup" | "report" | "group"

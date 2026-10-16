@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest"
-import { RepostResponseSchema, type PostDTO } from "@civfix/shared"
+import { RepostResponseSchema, type PostDTO } from "@civfix/contract"
 import type { Sql } from "../../src/db/client.js"
 import { makePostService } from "../../src/services/post-service.js"
 import type { PostBrief, PostRepository } from "../../src/services/post-repository.js"

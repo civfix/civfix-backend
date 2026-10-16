@@ -27,7 +27,7 @@ import type { MailThreadRecord } from "../../src/services/admin/mail-repository.
 import type { ReportJurisdictionView } from "../../src/services/discussion-repository.js"
 import { makeServer } from "../../src/server.js"
 import { loadEnv } from "../../src/env.js"
-import { FakeMailer } from "@civfix/shared/fakes"
+import { FakeMailer } from "@civfix/seams"
 import { InMemoryCacheClient } from "../../src/auth/cache.js"
 import { makeInMemoryStores } from "../../src/auth/stores.js"
 import { makeAuthServices } from "../../src/auth/auth-services.js"

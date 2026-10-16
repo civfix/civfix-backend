@@ -1,7 +1,7 @@
 import { describe, it, expect, afterEach } from "vitest"
 import { randomUUID } from "node:crypto"
 import type { FastifyInstance } from "fastify"
-import { FakeAbuseChecks, FakeMailer } from "@civfix/shared/fakes"
+import { FakeAbuseChecks, FakeMailer } from "@civfix/seams"
 import { makeServer } from "../../src/server.js"
 import { loadEnv } from "../../src/env.js"
 import { InMemoryCacheClient } from "../../src/auth/cache.js"

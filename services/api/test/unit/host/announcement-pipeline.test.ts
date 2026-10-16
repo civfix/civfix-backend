@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest"
-import { ANNOUNCEMENT_BROADCAST_KIND } from "@civfix/shared"
+import { ANNOUNCEMENT_BROADCAST_KIND } from "@civfix/contract"
 import { makeFakeSql } from "../../helpers/fake-sql.js"
 import type { Sql } from "../../../src/db/client.js"
 import { makeDrizzleBroadcastRepository } from "../../../src/services/host/broadcast-repository.drizzle.js"

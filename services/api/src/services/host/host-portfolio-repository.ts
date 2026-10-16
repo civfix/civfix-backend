@@ -4,7 +4,7 @@ import type {
   EventPageStatus,
   EventVisibility,
   OrganizationMemberRole,
-} from "@civfix/shared"
+} from "@civfix/contract"
 
 export interface HostedEventRecord {
   id: string

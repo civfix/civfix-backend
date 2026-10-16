@@ -21,8 +21,8 @@ import type {
   PatchContactsInput,
   SaveContactsInput,
 } from "./jurisdiction-contacts-repository.js"
-import { AppError } from "@civfix/shared"
-import type { JurisdictionLayer, ReportCategory } from "@civfix/shared"
+import { AppError } from "@civfix/contract"
+import type { JurisdictionLayer, ReportCategory } from "@civfix/contract"
 import { ilikeAnyOf } from "./sql-fragments.js"
 import { isUniqueViolationOn } from "../../db/pg-errors.js"
 

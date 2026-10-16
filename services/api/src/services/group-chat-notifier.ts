@@ -1,4 +1,4 @@
-import type { ChatMessageDTO } from "@civfix/shared"
+import type { ChatMessageDTO } from "@civfix/contract"
 import { makeRoomChatNotifier, type RoomChatNotifierDeps } from "./room-chat-notifier-adapter.js"
 
 export interface GroupChatNotifierDeps extends RoomChatNotifierDeps<"group"> {

@@ -1,4 +1,4 @@
-import { AppError } from "@civfix/shared"
+import { AppError } from "@civfix/contract"
 import type {
   ListNotificationsResponse,
   NotificationDTO,
@@ -8,8 +8,8 @@ import type {
   RegisterPushTokenRequest,
   UnregisterPushTokenRequest,
   UpdateNotificationPrefsRequest,
-} from "@civfix/shared"
-import type { PushPayload, PushSender, UserChannel } from "@civfix/shared/interfaces"
+} from "@civfix/contract"
+import type { PushPayload, PushSender, UserChannel } from "@civfix/seams"
 import type { FastifyBaseLogger } from "fastify"
 import type { SocialNotifier } from "./social-service.js"
 import type { PersonView } from "./social-repository.js"

@@ -1,4 +1,4 @@
-import { formatCertificateCode } from "@civfix/shared"
+import { formatCertificateCode } from "@civfix/contract"
 import { FONT, fontBuffer, fontFor, type FontFile } from "./certificate-fonts.js"
 import {
   DEFAULT_PAGE_PLAN_OPTIONS,

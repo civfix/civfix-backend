@@ -4,7 +4,7 @@
 import { TEST_TICKET_SIGNER } from "../helpers/ticket-signer.js"
 import { afterAll, beforeAll, describe, expect, it } from "vitest"
 import { randomUUID } from "node:crypto"
-import { FakePushSender } from "@civfix/shared/fakes"
+import { FakePushSender } from "@civfix/seams"
 import { withPg, type PgHarness, testHandle } from "../helpers/pg.js"
 import {
   publishMediaAsReady,

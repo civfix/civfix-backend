@@ -1,6 +1,6 @@
 import type { Sql } from "../db/client.js"
-import { avatarGradient } from "@civfix/shared"
-import type { UserSearchResultDTO } from "@civfix/shared"
+import { avatarGradient } from "@civfix/contract"
+import type { UserSearchResultDTO } from "@civfix/contract"
 import { likeContains, likePrefix } from "../db/like.js"
 import type { UserSearchRepository } from "./user-search-repository.js"
 

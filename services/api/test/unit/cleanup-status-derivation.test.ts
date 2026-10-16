@@ -2,7 +2,7 @@
  * The event status derivation, pinned on BOTH sides of the seam (DECISIONS §40).
  *
  * `cleanupStatusExpr` (SQL, projected into every select that feeds a DTO's `status`) and
- * `deriveCleanupStatus` (TS, from @civfix/shared/host, used by every in-memory repository twin) must
+ * `deriveCleanupStatus` (TS, from @civfix/contract/host, used by every in-memory repository twin) must
  * answer the same question the same way. A divergence between them is invisible to CI otherwise: the
  * unit suite exercises the fakes and only the Docker-gated suite exercises the SQL. So this file
  * asserts the SQL text encodes exactly the branch order the TS helper implements, then walks both
@@ -16,7 +16,7 @@ import { readFileSync, readdirSync } from "node:fs"
 import { join } from "node:path"
 import { fileURLToPath } from "node:url"
 import { describe, expect, it } from "vitest"
-import { deriveCleanupStatus } from "@civfix/shared/host"
+import { deriveCleanupStatus } from "@civfix/contract/host"
 import type { Sql } from "../../src/db/client.js"
 import {
   adminEventStatusExpr,

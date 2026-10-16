@@ -6,8 +6,8 @@ import type {
   ReportCategory,
   ReportStatus,
   ReportType,
-} from "@civfix/shared"
-import { PUBLIC_REPORT_STATUSES } from "@civfix/shared"
+} from "@civfix/contract"
+import { PUBLIC_REPORT_STATUSES } from "@civfix/contract"
 import type {
   ReportMapPoint,
   ReportMediaView,

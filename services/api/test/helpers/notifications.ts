@@ -11,7 +11,7 @@ import type {
 import { DEFAULT_PREFS, isFeedVisibleType } from "../../src/services/notification-service.js"
 import { MAX_ACTIVE_PUSH_TOKENS_PER_USER } from "../../src/services/notification-repository.drizzle.js"
 import { paginate, parseTimeCursor } from "../../src/db/cursor-helpers.js"
-import type { NotificationDTO, NotificationType, PushPlatform } from "@civfix/shared"
+import type { NotificationDTO, NotificationType, PushPlatform } from "@civfix/contract"
 import type { ReporterNotifier } from "../../src/services/admin/admin-report-service.js"
 
 export interface RecordedNotification extends CreateNotificationInput {

@@ -1,4 +1,4 @@
-import { AppError, isCurrent, type ConsentSurface, type EventConsentInput } from "@civfix/shared"
+import { AppError, isCurrent, type ConsentSurface, type EventConsentInput } from "@civfix/contract"
 import type { Queryable } from "../../db/client.js"
 
 export interface EventConsentRow {

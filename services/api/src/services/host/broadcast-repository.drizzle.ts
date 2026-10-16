@@ -1,11 +1,11 @@
-import { ANNOUNCEMENT_BROADCAST_KIND } from "@civfix/shared"
+import { ANNOUNCEMENT_BROADCAST_KIND } from "@civfix/contract"
 import type {
   BroadcastChannel,
   BroadcastKind,
   BroadcastSegment,
   BroadcastStatus,
   DeliveryStatus,
-} from "@civfix/shared"
+} from "@civfix/contract"
 import type { Queryable, Sql, SqlFragment } from "../../db/client.js"
 import { keysetInstant, keysetPredicate } from "../../db/cursor-helpers.js"
 import type { WriteAuditInput } from "../admin/audit.js"

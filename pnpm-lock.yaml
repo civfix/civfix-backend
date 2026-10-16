@@ -66,6 +66,31 @@ importers:
         specifier: ^8.71.1
         version: 8.71.1(eslint@9.39.5(jiti@2.7.0))(typescript@5.9.3)
 
+  packages/seams:
+    dependencies:
+      '@civfix/contract':
+        specifier: ^0.62.0
+        version: 0.62.0
+    devDependencies:
+      '@civfix/config':
+        specifier: workspace:*
+        version: link:../config
+      '@types/node':
+        specifier: ^22.20.5
+        version: 22.20.5
+      eslint:
+        specifier: ^9.39.5
+        version: 9.39.5(jiti@2.7.0)
+      rimraf:
+        specifier: ^6.1.3
+        version: 6.1.3
+      typescript:
+        specifier: ^5.9.3
+        version: 5.9.3
+      vitest:
+        specifier: ^3.2.7
+        version: 3.2.7(@types/node@22.20.5)(jiti@2.7.0)(tsx@4.23.15)(yaml@2.9.1)
+
   services/api:
     dependencies:
       '@aws-sdk/client-s3':
@@ -74,9 +99,12 @@ importers:
       '@aws-sdk/s3-request-presigner':
         specifier: ^3.1147.0
         version: 3.1147.0
-      '@civfix/shared':
-        specifier: ^0.61.0
-        version: 0.61.0
+      '@civfix/contract':
+        specifier: ^0.62.0
+        version: 0.62.0
+      '@civfix/tokens':
+        specifier: ^0.1.0
+        version: 0.1.0
       '@fastify/cookie':
         specifier: ^11.1.2
         version: 11.1.2
@@ -162,6 +190,9 @@ importers:
       '@civfix/config':
         specifier: workspace:*
         version: link:../../packages/config
+      '@civfix/seams':
+        specifier: workspace:*
+        version: link:../../packages/seams
       '@testcontainers/postgresql':
         specifier: ^11.14.0
         version: 11.14.0
@@ -219,9 +250,9 @@ importers:
       '@civfix/api':
         specifier: workspace:*
         version: link:../api
-      '@civfix/shared':
-        specifier: ^0.61.0
-        version: 0.61.0
+      '@civfix/contract':
+        specifier: ^0.62.0
+        version: 0.62.0
       '@sentry/node':
         specifier: ^10.76.1
         version: 10.76.1(@opentelemetry/core@2.12.0(@opentelemetry/api@1.9.1))
@@ -259,6 +290,9 @@ importers:
       '@civfix/config':
         specifier: workspace:*
         version: link:../../packages/config
+      '@civfix/seams':
+        specifier: workspace:*
+        version: link:../../packages/seams
       '@testcontainers/postgresql':
         specifier: ^11.14.0
         version: 11.14.0
@@ -374,8 +408,12 @@ packages:
   '@balena/dockerignore@1.0.2':
     resolution: {integrity: sha512-wMue2Sy4GAVTk6Ic4tJVcnfdau+gx2EnG7S+uAEe+TWJFqE4YoWN4/H8MSLj4eYJKxGg26lZwboEniNiNwZQ6Q==}
 
-  '@civfix/shared@0.61.0':
-    resolution: {integrity: sha512-USoDJUMxZy9Xi0PHcmJAxekPwTE0or2va7SDcAjQABrXrBmBAi+3uU3jcHjJoIGTYH0q1+4OfnzNDJNT34ZG1Q==}
+  '@civfix/contract@0.62.0':
+    resolution: {integrity: sha512-GiToTBdd1L7/Lktq9rNW0Qm5NzVptB0cBzsP4XgaSs8ccwlDkNX3lNhoYuUo+azW02vvli7RwuvCu9IcVNAkUg==}
+    engines: {node: '>=20'}
+
+  '@civfix/tokens@0.1.0':
+    resolution: {integrity: sha512-CSwCLbNl0ojkG6oUBL2SSM73Kw8n+8J2G3GN06ptyjiKVQ0G5KybWIxPXIG0uumtu3iTrMBBh/b7RAx2GjqFpg==}
     engines: {node: '>=20'}
 
   '@derhuerst/http-basic@8.2.4':
@@ -4473,9 +4511,11 @@ snapshots:
 
   '@balena/dockerignore@1.0.2': {}
 
-  '@civfix/shared@0.61.0':
+  '@civfix/contract@0.62.0':
     dependencies:
       zod: 3.25.76
+
+  '@civfix/tokens@0.1.0': {}
 
   '@derhuerst/http-basic@8.2.4':
     dependencies:

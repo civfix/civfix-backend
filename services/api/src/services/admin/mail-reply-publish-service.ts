@@ -1,4 +1,4 @@
-import { AppError, type PublishMailReplyResponse } from "@civfix/shared"
+import { AppError, type PublishMailReplyResponse } from "@civfix/contract"
 import { domainOf } from "../../adapters/inbound-mail.cf.js"
 import type {
   MailAuditInput,

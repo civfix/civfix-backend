@@ -1,4 +1,4 @@
-import type { EventKind, ReportCategory } from "@civfix/shared"
+import type { EventKind, ReportCategory } from "@civfix/contract"
 
 export interface DiscoverySectionCounts {
   queue: number

@@ -17,7 +17,7 @@ import type {
   InboundEmailStatus,
   InboxListQuery,
   InboxListResponse,
-} from "@civfix/shared"
+} from "@civfix/contract"
 
 interface StoredInbound extends InboundEmailInsert {
   id: string

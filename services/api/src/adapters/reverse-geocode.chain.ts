@@ -1,4 +1,4 @@
-import type { AddressPrecision } from "@civfix/shared"
+import type { AddressPrecision } from "@civfix/contract"
 import { raceTimeout } from "../lib/timeout.js"
 
 export type PointResolver<T> = (lat: number, lng: number) => Promise<T | null>

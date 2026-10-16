@@ -1,6 +1,6 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest"
 import { randomUUID } from "node:crypto"
-import { AppError } from "@civfix/shared"
+import { AppError } from "@civfix/contract"
 import { withPg, type PgHarness, testHandle } from "../helpers/pg.js"
 import { seedCleanup } from "../helpers/cleanups.js"
 import {

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest"
-import { FakeStorage } from "@civfix/shared/fakes"
+import { FakeStorage } from "@civfix/seams"
 import { servedKey } from "../../src/jobs/media-keys.js"
 import {
   UploadReapInfraError,

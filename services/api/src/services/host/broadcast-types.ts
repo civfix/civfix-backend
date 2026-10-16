@@ -6,7 +6,7 @@ import type {
   DeliveryFailureKind,
   DeliveryStatus,
   DeliverySuppressionReason,
-} from "@civfix/shared"
+} from "@civfix/contract"
 import type { KeysetCursor } from "../../db/cursor-helpers.js"
 
 export type BroadcastRecipientKind = "member" | "guest"

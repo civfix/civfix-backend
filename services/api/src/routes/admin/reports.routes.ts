@@ -10,7 +10,7 @@ import {
   type AdminReportListResponse,
   type RouteReportResponse,
   type SetReportVerdictResponse,
-} from "@civfix/shared"
+} from "@civfix/contract"
 import type { FastifyInstance } from "fastify"
 import { perIdentity } from "../../plugins/rate-limit.js"
 import type { Container } from "../../di.js"

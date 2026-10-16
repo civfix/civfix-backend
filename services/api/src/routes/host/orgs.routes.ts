@@ -31,7 +31,7 @@ import {
   type RevokeOrganizationInviteResponse,
   type SetOrganizationMemberRoleResponse,
   type UpdateOrganizationResponse,
-} from "@civfix/shared"
+} from "@civfix/contract"
 import { z } from "zod"
 import type { FastifyInstance } from "fastify"
 import type { Container } from "../../di.js"

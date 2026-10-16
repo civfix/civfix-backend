@@ -1,6 +1,6 @@
 import { isIP } from "node:net"
 import { lookup, Resolver } from "node:dns/promises"
-import type { PushPlatform } from "@civfix/shared/interfaces"
+import type { PushPlatform } from "@civfix/contract"
 import { isExpoPushToken } from "../adapters/push-expo.js"
 import { expandIpv6Hextets } from "../adapters/net-ipv6.js"
 

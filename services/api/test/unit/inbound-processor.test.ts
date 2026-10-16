@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest"
-import { FakeInboundMail, FakeJobs, FakeStorage } from "@civfix/shared/fakes"
-import type { InboundMail } from "@civfix/shared/interfaces"
+import { FakeInboundMail, FakeJobs, FakeStorage } from "@civfix/seams"
+import type { InboundMail } from "@civfix/seams"
 import { InMemoryMailRepository } from "../helpers/admin/mail-repository.memory.js"
 import { InMemoryInboundRepository } from "../helpers/admin/inbound-repository.memory.js"
 import { InMemoryAdminReportRepository } from "../helpers/admin/admin-report-repository.memory.js"
@@ -25,7 +25,7 @@ import {
   JURISDICTION_REPLY_NOTIFICATION_BODY,
   MESSAGE_ID_LIST_CAP,
 } from "../../src/services/admin/inbound-thread-correlation.js"
-import { MESSAGE_BODY_MAX } from "@civfix/shared"
+import { MESSAGE_BODY_MAX } from "@civfix/contract"
 import type { ReportTimelineEvent } from "../../src/services/report-timeline-event.js"
 import { CfInboundMail } from "../../src/adapters/inbound-mail.cf.js"
 

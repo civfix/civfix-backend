@@ -1,4 +1,4 @@
-import { AppError, ErrorCode } from "@civfix/shared"
+import { AppError, ErrorCode } from "@civfix/contract"
 
 const SMS_FAILURE_FIELD = "smsDelivery"
 

@@ -6,7 +6,7 @@ import type {
   ReportCategory,
   ReportStatus,
   ReportType,
-} from "@civfix/shared"
+} from "@civfix/contract"
 import type { AnonTokenStore } from "../abuse/anon-token.js"
 import type { AnonAbuseReason } from "./anon-service.js"
 

@@ -1,4 +1,4 @@
-import type { UserSearchResultDTO } from "@civfix/shared"
+import type { UserSearchResultDTO } from "@civfix/contract"
 
 export interface UserSearchRepository {
   searchByHandlePrefix(q: string, viewerId: string, limit: number): Promise<UserSearchResultDTO[]>

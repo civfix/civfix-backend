@@ -4,7 +4,7 @@ import { RedisChatPubSub, chatChannel } from "../../src/adapters/chat-pubsub.js"
 import { WsChatService } from "../../src/adapters/chat-service.ws.js"
 import type { RedisClient } from "../../src/adapters/redis.js"
 import { InMemoryChatRepository, MockConnection } from "../helpers/chat.js"
-import type { ChatMessageDTO } from "@civfix/shared"
+import type { ChatMessageDTO } from "@civfix/contract"
 
 /**
  * Exercises the REAL RedisChatPubSub (the production ioredis pub/sub adapter) against ioredis-mock, so

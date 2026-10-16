@@ -1,4 +1,4 @@
-import type { PostDTO } from "@civfix/shared"
+import type { PostDTO } from "@civfix/contract"
 import type { POST_KIND_VALUES, REPORT_VISIBILITY_VALUES } from "../db/schema/types.js"
 
 export type PostKind = (typeof POST_KIND_VALUES)[number]

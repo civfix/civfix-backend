@@ -6,7 +6,7 @@
  * them so an unrecognized value degrades to the default instead of 422ing or reaching SQL.
  */
 
-import { ActivityListQuerySchema, type ActivityListResponse } from "@civfix/shared"
+import { ActivityListQuerySchema, type ActivityListResponse } from "@civfix/contract"
 import type { FastifyInstance } from "fastify"
 import type { Container } from "../../di.js"
 import { overridableService, parse, spreadNow } from "./_route-utils.js"

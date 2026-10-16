@@ -8,7 +8,7 @@ import type {
   DiscussionRepository,
   ReportJurisdictionView,
 } from "./discussion-repository.js"
-import type { ReportCategory } from "@civfix/shared"
+import type { ReportCategory } from "@civfix/contract"
 
 export function makeDrizzleDiscussionRepository(sql: Sql): DiscussionRepository {
   return {

@@ -1,11 +1,7 @@
 import { describe, expect, it } from "vitest"
-import {
-  AppError,
-  type ChatHistoryPage,
-  type ChatMessageDTO,
-  type UserMentionDTO,
-} from "@civfix/shared"
-import type { PersistChatInput } from "@civfix/shared/interfaces"
+import { AppError, type ChatMessageDTO, type UserMentionDTO } from "@civfix/contract"
+import { type ChatHistoryPage } from "@civfix/seams"
+import type { PersistChatInput } from "@civfix/seams"
 import { makeAdminReportChatService } from "../../src/services/admin/admin-report-chat-service.js"
 import { InMemoryAdminReportChatRepository } from "../helpers/admin/admin-report-chat-repository.memory.js"
 import {

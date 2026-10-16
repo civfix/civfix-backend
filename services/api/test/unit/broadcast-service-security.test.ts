@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest"
-import type { BroadcastKind } from "@civfix/shared"
-import { FakeMailer } from "@civfix/shared/fakes"
+import type { BroadcastKind } from "@civfix/contract"
+import { FakeMailer } from "@civfix/seams"
 import { InMemoryCounterStore } from "../../src/abuse/counter-store.js"
 import { InMemoryBroadcastRepository } from "../helpers/host/broadcast-repository.memory.js"
 import {

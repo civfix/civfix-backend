@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest"
-import { FakePushSender } from "@civfix/shared/fakes"
-import type { ChatMessageDTO, PersonDTO } from "@civfix/shared"
+import { FakePushSender } from "@civfix/seams"
+import type { ChatMessageDTO, PersonDTO } from "@civfix/contract"
 import {
   makeRoomFanoutDispatcher,
   parseChatRoomFanoutJob,

@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest"
-import { AppError } from "@civfix/shared"
-import type { ChatMessageDTO } from "@civfix/shared"
+import { AppError } from "@civfix/contract"
+import type { ChatMessageDTO } from "@civfix/contract"
 import {
   makeChatPollService,
   type ChatPollServiceDeps,

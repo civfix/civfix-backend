@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest"
 import { toEventStatus } from "../../src/services/admin/event-status.js"
-import { EventStatusSchema } from "@civfix/shared"
+import { EventStatusSchema } from "@civfix/contract"
 
 /**
  * The one-way bridge from the DERIVED public CleanupStatus (computed from scheduled_at/ends_at since

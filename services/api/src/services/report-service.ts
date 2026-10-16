@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto"
-import { AppError, REPORT_TYPE_TO_CATEGORY } from "@civfix/shared"
+import { AppError, REPORT_TYPE_TO_CATEGORY } from "@civfix/contract"
 import type {
   CreateReportRequest,
   LinkedEventRef,
@@ -16,7 +16,7 @@ import type {
   ReportTimelineEntryDTO,
   ReportType,
   ReportVisibility,
-} from "@civfix/shared"
+} from "@civfix/contract"
 import { assertNoSlur } from "../abuse/slur-filter.js"
 import { isUuid } from "../db/cursor-helpers.js"
 import { UNKNOWN_JURCODE } from "../db/reference-code.js"

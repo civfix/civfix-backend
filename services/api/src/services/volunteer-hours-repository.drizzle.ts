@@ -1,10 +1,10 @@
-import { AppError, avatarGradient } from "@civfix/shared"
+import { AppError, avatarGradient } from "@civfix/contract"
 import type {
   LeaderboardEntryDTO,
   OrganizationRefDTO,
   OrgVerificationStatus,
   VolunteerHoursSource,
-} from "@civfix/shared"
+} from "@civfix/contract"
 import { CIVFIX_OFFICIAL_USER_ID, isOfficialAccount } from "../auth/official-account.js"
 import type { Queryable, Sql, TransactionSql } from "../db/client.js"
 import { keysetInstant, keysetPredicate, pageWith, paginateKeyset } from "../db/cursor-helpers.js"

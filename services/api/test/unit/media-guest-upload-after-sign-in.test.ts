@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto"
 import { afterEach, describe, expect, it } from "vitest"
 import type { FastifyRequest } from "fastify"
-import type { FakeStorage } from "@civfix/shared/fakes"
+import type { FakeStorage } from "@civfix/seams"
 import { signAnonToken } from "../../src/abuse/anon-token.js"
 import { resolveAuthContext } from "../../src/auth/context.js"
 import type { Sql } from "../../src/db/client.js"

@@ -20,7 +20,7 @@
 
 import { afterAll, beforeAll, describe, expect, it } from "vitest"
 import { randomUUID } from "node:crypto"
-import { FakeAbuseChecks } from "@civfix/shared/fakes"
+import { FakeAbuseChecks } from "@civfix/seams"
 import { withPg, type PgHarness } from "../helpers/pg.js"
 import { InMemoryCounterStore } from "../../src/abuse/counter-store.js"
 import { signAnonToken, ANON_TOKEN_REPORT_CAP } from "../../src/abuse/anon-token.js"
@@ -36,7 +36,7 @@ import { releaseAnonHoldIfReady } from "../../src/services/anon-hold-release.js"
 import { makeDrizzleReportRepository } from "../../src/services/report-repository.drizzle.js"
 import { makeReportService, type ReportService } from "../../src/services/report-service.js"
 import { PROBE_INSIDE_CITY } from "../../src/db/seed-fixtures.js"
-import type { AnonReportRequest } from "@civfix/shared"
+import type { AnonReportRequest } from "@civfix/contract"
 
 const pg = await withPg()
 const SIGNING_KEY = "integration-anon-signing-key"

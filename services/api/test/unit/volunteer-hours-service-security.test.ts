@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest"
-import type { EventVisibility } from "@civfix/shared"
+import type { EventVisibility } from "@civfix/contract"
 import {
   makeVolunteerHoursService,
   type CleanupHoursView,

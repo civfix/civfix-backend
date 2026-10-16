@@ -20,8 +20,8 @@
  */
 
 import { describe, it, expect, beforeEach, vi } from "vitest"
-import { FakePushSender } from "@civfix/shared/fakes"
-import type { ChatMessageDTO, PersonDTO } from "@civfix/shared"
+import { FakePushSender } from "@civfix/seams"
+import type { ChatMessageDTO, PersonDTO } from "@civfix/contract"
 import type { Container } from "../../src/di.js"
 
 /**

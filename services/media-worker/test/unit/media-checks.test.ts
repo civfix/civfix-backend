@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest"
-import { FakeStorage, FakeAbuseChecks } from "@civfix/shared/fakes"
+import { FakeStorage, FakeAbuseChecks } from "@civfix/seams"
 import { RealAbuseChecks } from "@civfix/api/adapters/abuse-checks"
 import exifr from "exifr"
 import { loadLimits, type WorkerLimits } from "../../src/config.js"

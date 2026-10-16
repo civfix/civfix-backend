@@ -7,7 +7,7 @@
  *   - dm reply vs dm delivered bell: makeDmBellNotifier is the single dm bell site, so one bell by
  *     construction.
  */
-import type { ChatMessageDTO, NotificationType, RoomKind } from "@civfix/shared"
+import type { ChatMessageDTO, NotificationType, RoomKind } from "@civfix/contract"
 import type { NotificationService } from "./notification-service.js"
 import { CONVERSATION_BELL } from "./conversation-bell.js"
 import { messageAuthorName, textPreview } from "./chat-notify-copy.js"

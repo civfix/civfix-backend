@@ -30,7 +30,7 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest"
 import { randomUUID } from "node:crypto"
 import type { FastifyInstance } from "fastify"
-import { FakeMailer } from "@civfix/shared/fakes"
+import { FakeMailer } from "@civfix/seams"
 import { withPg, type PgHarness, testHandle } from "../helpers/pg.js"
 import { makeServer } from "../../src/server.js"
 import { makeContainer, type Container } from "../../src/di.js"

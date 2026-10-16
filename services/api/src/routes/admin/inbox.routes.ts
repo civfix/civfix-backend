@@ -9,9 +9,9 @@ import {
   type InboundEmailDTO,
   type InboxFeedResponse,
   type InboxListResponse,
-} from "@civfix/shared"
-import type { Storage } from "@civfix/shared/interfaces"
-import { AppError } from "@civfix/shared"
+  AppError,
+} from "@civfix/contract"
+import type { Storage } from "@civfix/seams"
 import type { FastifyInstance } from "fastify"
 import type { Container } from "../../di.js"
 import { route } from "../../versioning/route.js"

@@ -36,7 +36,7 @@ import type {
   ReportOutreachStatus,
   ReportTimelineItem,
   ReportVisibility,
-} from "@civfix/shared"
+} from "@civfix/contract"
 import {
   ROUTE_CLAIM_STALE_SECONDS,
   ROUTE_DEADLINE_INFLIGHT_SECONDS,

@@ -1,7 +1,7 @@
 import { describe, it, expect } from "vitest"
-import { FakeStorage, FakeJobs } from "@civfix/shared/fakes"
-import { MAX_IMAGE_BYTES, MAX_VIDEO_BYTES } from "@civfix/shared"
-import type { CreateMediaUploadRequest } from "@civfix/shared"
+import { FakeStorage, FakeJobs } from "@civfix/seams"
+import { MAX_IMAGE_BYTES, MAX_VIDEO_BYTES } from "@civfix/contract"
+import type { CreateMediaUploadRequest } from "@civfix/contract"
 import {
   makeMediaIntakeService,
   precheckUpload,

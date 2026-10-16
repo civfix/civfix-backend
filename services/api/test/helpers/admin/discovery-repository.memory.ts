@@ -14,7 +14,7 @@ import type {
   DiscoveryTaskRecord,
   ListDiscoveryArgs,
 } from "../../../src/services/admin/discovery-repository.js"
-import type { JurisdictionLayer, ReportCategory } from "@civfix/shared"
+import type { JurisdictionLayer, ReportCategory } from "@civfix/contract"
 
 export interface SeededDiscoveryTask {
   task: DiscoveryTaskRecord

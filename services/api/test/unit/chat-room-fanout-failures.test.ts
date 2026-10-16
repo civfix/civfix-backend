@@ -1,6 +1,6 @@
 import { describe, it, expect, vi } from "vitest"
-import { FakePushSender } from "@civfix/shared/fakes"
-import type { ChatMessageDTO } from "@civfix/shared"
+import { FakePushSender } from "@civfix/seams"
+import type { ChatMessageDTO } from "@civfix/contract"
 import { runChatRoomFanout } from "../../src/services/chat-fanout-jobs.js"
 import {
   makeRoomFanoutNotifier,

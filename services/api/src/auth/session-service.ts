@@ -1,4 +1,4 @@
-import { AppError, type Role } from "@civfix/shared"
+import { AppError, type Role } from "@civfix/contract"
 import { generateToken, sha256Hex } from "./crypto.js"
 import type { CacheClient } from "./cache.js"
 import { isOfficialAccount } from "./official-account.js"

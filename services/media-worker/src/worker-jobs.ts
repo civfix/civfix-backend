@@ -16,8 +16,8 @@
  */
 
 import type PgBoss from "pg-boss"
-import type { Jobs, EnqueueOptions, JobHandler } from "@civfix/shared/interfaces"
-import { FakeJobs } from "@civfix/shared/fakes"
+import type { Jobs, EnqueueOptions, JobHandler } from "@civfix/seams"
+import { FakeJobs } from "@civfix/seams"
 import { parseBool } from "@civfix/api/env-parsers"
 import { assertRealSeamInProd } from "./config.js"
 

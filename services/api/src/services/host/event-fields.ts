@@ -4,7 +4,7 @@ import {
   MAX_EVENT_GALLERY_MEDIA,
   MAX_EVENT_REMINDER_OFFSETS,
   MIN_EVENT_DURATION_MINUTES,
-} from "@civfix/shared"
+} from "@civfix/contract"
 import { MAX_EVENT_DURATION_MS, MIN_EVENT_DURATION_MS } from "../cleanup-rules.js"
 import { MINUTES_PER_HOUR } from "../../lib/time.js"
 

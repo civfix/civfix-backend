@@ -15,7 +15,7 @@
 import { createHmac } from "node:crypto"
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest"
 import Fastify, { type FastifyInstance } from "fastify"
-import { FakeInboundMail, FakeStorage } from "@civfix/shared/fakes"
+import { FakeInboundMail, FakeStorage } from "@civfix/seams"
 import { withPg, type PgHarness } from "../helpers/pg.js"
 import {
   registerInboundMailWebhook,

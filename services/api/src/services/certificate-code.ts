@@ -6,16 +6,16 @@
  * threat model, but the draw still has to be a real CSPRNG draw, because a predictable code would let
  * anyone assert someone else's service record.
  *
- * The format itself (alphabet, canonicalization, the `CFX-` display prefix) lives in @civfix/shared so
+ * The format itself (alphabet, canonicalization, the `CFX-` display prefix) lives in @civfix/contract so
  * the web verification page and the apps normalize identically; this module only mints.
  */
 
-import { CERTIFICATE_CODE_ALPHABET, CERTIFICATE_CODE_LENGTH } from "@civfix/shared"
+import { CERTIFICATE_CODE_ALPHABET, CERTIFICATE_CODE_LENGTH } from "@civfix/contract"
 import { randomIntBelow } from "../auth/crypto.js"
 
 // Re-exported so a caller never re-implements normalization/formatting locally: `CFX-` is display-only
 // and stripping it unconditionally would corrupt a genuine code that begins with those (valid) symbols.
-export { formatCertificateCode, normalizeCertificateCode } from "@civfix/shared"
+export { formatCertificateCode, normalizeCertificateCode } from "@civfix/contract"
 
 /**
  * How many times the service may re-draw on a unique-violation of `service_hours_certificates.code`

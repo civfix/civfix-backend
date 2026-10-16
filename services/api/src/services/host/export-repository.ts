@@ -1,4 +1,4 @@
-import type { HostExportKind, HostExportStatus } from "@civfix/shared"
+import type { HostExportKind, HostExportStatus } from "@civfix/contract"
 import type { WriteAuditInput } from "../admin/audit.js"
 
 export interface HostExportRecord {

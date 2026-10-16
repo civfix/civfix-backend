@@ -1,10 +1,5 @@
-import type {
-  ChatService,
-  ChatConnection,
-  PersistChatInput,
-  ChatHistoryPage,
-} from "@civfix/shared/interfaces"
-import type { ChatMessageDTO, WsServerMessage } from "@civfix/shared"
+import type { ChatService, ChatConnection, PersistChatInput, ChatHistoryPage } from "@civfix/seams"
+import type { ChatMessageDTO, WsServerMessage } from "@civfix/contract"
 import { randomUUID } from "node:crypto"
 import { chatChannel, type ChatPubSub } from "./chat-pubsub.js"
 import { RefCountedSubscriptions } from "./ref-counted-subscriptions.js"

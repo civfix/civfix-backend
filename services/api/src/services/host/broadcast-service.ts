@@ -1,4 +1,4 @@
-import { AppError } from "@civfix/shared"
+import { AppError } from "@civfix/contract"
 import type {
   BroadcastChannel,
   BroadcastDTO,
@@ -11,9 +11,9 @@ import type {
   ListEventBroadcastsRequest,
   PreviewEventBroadcastRequest,
   UpdateEventBroadcastRequest,
-} from "@civfix/shared"
-import type { BroadcastVarValues } from "@civfix/shared/host"
-import type { Mailer } from "@civfix/shared/interfaces"
+} from "@civfix/contract"
+import type { BroadcastVarValues } from "@civfix/contract/host"
+import type { Mailer } from "@civfix/seams"
 import type { FastifyBaseLogger } from "fastify"
 import { assertNoSlur } from "../../abuse/slur-filter.js"
 import type { CounterStore } from "../../abuse/counter-store.js"

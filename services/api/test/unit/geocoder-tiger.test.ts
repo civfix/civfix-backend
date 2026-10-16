@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest"
-import { AppError } from "@civfix/shared"
+import { AppError } from "@civfix/contract"
 import {
   uspsFromGeoid,
   formatCityStateLabel,

@@ -7,7 +7,7 @@ import type {
   ReportStatus,
   ReportType,
   ReportVisibility,
-} from "@civfix/shared"
+} from "@civfix/contract"
 import type { ReportVisibilityTimelineKind } from "./report-types.js"
 import type { ConfirmationVerdict } from "./report-visibility.js"
 

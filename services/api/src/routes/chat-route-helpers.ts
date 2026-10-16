@@ -1,5 +1,5 @@
-import { AppError, type ChatHistoryResponse, type ChatMessageDTO } from "@civfix/shared"
-import type { ChatHistoryPage, ChatService } from "@civfix/shared/interfaces"
+import { AppError, type ChatHistoryResponse, type ChatMessageDTO } from "@civfix/contract"
+import type { ChatHistoryPage, ChatService } from "@civfix/seams"
 import { broadcastMessageUpdate, roomKeyFor } from "../ws/gateway.js"
 import type { ChatMessageMeta, SoftDeleteOpts } from "../services/chat-repository.js"
 import type { ResolveChatPowers } from "../services/chat-room-roles.js"

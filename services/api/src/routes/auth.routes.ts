@@ -17,7 +17,7 @@ import {
   type UpdateProfileResponse,
   type HandleAvailableResponse,
   type UserDTO,
-} from "@civfix/shared"
+} from "@civfix/contract"
 import type { FastifyBaseLogger, FastifyInstance, FastifyReply, FastifyRequest } from "fastify"
 import { perHost } from "../plugins/rate-limit.js"
 import type { Container } from "../di.js"

@@ -3,7 +3,7 @@
 # civfix media-worker production image (multi-stage).
 #
 # BUILD CONTEXT MUST BE THE REPO ROOT (civfix-backend/). The worker is a pnpm workspace package that
-# (a) inlines @civfix/api (workspace source) + @civfix/shared (from the private registry repo.civfix.org)
+# (a) inlines @civfix/api + @civfix/seams (workspace source) + @civfix/contract (from the private registry repo.civfix.org)
 # at BUILD time (tsup noExternal), and
 # (b) keeps the native / heavy runtime deps EXTERNAL (sharp, execa, exifr, pg-boss, postgres,
 # drizzle-orm, undici, @sentry/node, @aws-sdk/*). So the build needs the root
@@ -64,7 +64,7 @@
 # Stages:
 #   base    pinned Node 22 (bookworm-slim, glibc) + corepack-pinned pnpm.
 #   ffmpeg  verify the pinned FFmpeg source release and compile the minimal ffmpeg + ffprobe.
-#   build   install the FULL workspace, build shared -> api(src is inlined) -> worker, then
+#   build   install the FULL workspace, build api(src is inlined) -> worker, then
 #           `pnpm deploy --prod` the worker into a self-contained, dev-pruned /out.
 #   runtime copy /out + the pinned binaries, provision the sandbox user, drop privileges in the
 #           entrypoint, run the worker. (No port / no HTTP healthcheck: the worker is a queue consumer;
@@ -143,7 +143,7 @@ FROM base AS build
 COPY . .
 RUN --mount=type=cache,id=pnpm-store,target=/pnpm/store \
     pnpm install --frozen-lockfile
-# Build shared -> api -> worker (the worker bundle inlines the api/shared sources). The trailing `...`
+# Build api -> worker (the worker bundle inlines the api, seams and contract sources). The trailing `...`
 # selects the worker AND its workspace dependencies, built in order.
 RUN pnpm --filter @civfix/media-worker... build
 # Production-pruned, self-contained deployment of just the worker at /out. The native/external deps

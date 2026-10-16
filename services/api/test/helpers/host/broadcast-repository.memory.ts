@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto"
-import { ANNOUNCEMENT_BROADCAST_KIND } from "@civfix/shared"
-import type { BroadcastKind, BroadcastStatus } from "@civfix/shared"
+import { ANNOUNCEMENT_BROADCAST_KIND } from "@civfix/contract"
+import type { BroadcastKind, BroadcastStatus } from "@civfix/contract"
 import type {
   AdminBroadcastListQuery,
   AnnouncementCap,

@@ -36,7 +36,7 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
-      # The backend depends ONLY on the framework-free @civfix/shared contract; fail if it ever pulls in
+      # The backend depends ONLY on the framework-free @civfix/contract and @civfix/tokens; fail if it ever pulls in
       # frontend runtime deps (react / react-dom / react-native / react-native-web / @civfix/ui).
       - name: Assert backend stays React/RN-free
         run: node scripts/assert-no-frontend.mjs

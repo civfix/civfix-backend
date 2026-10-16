@@ -3,7 +3,7 @@ import {
   AppError,
   avatarGradient,
   MAX_EVENT_HOURS_ENTRIES,
-} from "@civfix/shared"
+} from "@civfix/contract"
 import type {
   CleanupMemberRole,
   CleanupStatus,
@@ -22,8 +22,8 @@ import type {
   PublicVolunteerHoursResponse,
   VolunteerHoursEntryDTO,
   VolunteerHoursSource,
-} from "@civfix/shared"
-import { can, type HostStanding } from "@civfix/shared/host"
+} from "@civfix/contract"
+import { can, type HostStanding } from "@civfix/contract/host"
 import { parseKeysetCursor } from "../db/cursor-helpers.js"
 import type { MessageKey, MessageVars } from "../i18n/renderMessage.js"
 import { mapWithLimit } from "../lib/concurrency.js"

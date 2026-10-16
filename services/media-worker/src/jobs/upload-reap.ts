@@ -1,4 +1,4 @@
-import type { Storage } from "@civfix/shared/interfaces"
+import type { Storage } from "@civfix/seams"
 import type { MediaWorkerRepository } from "@civfix/api/media-worker-repository"
 import { R2_PUT_TTL_SEC } from "@civfix/api/adapters/storage"
 import { MEDIA_UPLOAD_REAP_JOB } from "@civfix/api/queue-names"

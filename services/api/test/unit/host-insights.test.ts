@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto"
 import { describe, expect, it } from "vitest"
-import { avatarGradient, MAX_INSIGHTS_TOP_VOLUNTEERS } from "@civfix/shared"
+import { avatarGradient, MAX_INSIGHTS_TOP_VOLUNTEERS } from "@civfix/contract"
 import { InMemoryCacheClient } from "../../src/auth/cache.js"
 import {
   makeHostAnalyticsCache,

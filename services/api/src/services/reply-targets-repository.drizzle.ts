@@ -1,4 +1,4 @@
-import type { ChatMessageKind } from "@civfix/shared"
+import type { ChatMessageKind } from "@civfix/contract"
 import type { Queryable } from "../db/client.js"
 
 /** Trusted internal identifiers, rendered via sql(...) as idents. */

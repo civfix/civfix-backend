@@ -5,7 +5,7 @@
 
 import { describe, it, expect, beforeAll, afterAll } from "vitest"
 import Fastify, { type FastifyInstance } from "fastify"
-import { ErrorCode } from "@civfix/shared"
+import { ErrorCode } from "@civfix/contract"
 import { makeErrorHandler, makeNotFoundHandler } from "../../src/errors/http-mapper.js"
 import { genReqId } from "../../src/plugins/request-id.js"
 import { registerVersionGate } from "../../src/versioning/version-gate.js"

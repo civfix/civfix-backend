@@ -1,5 +1,5 @@
-import type { ChatMessageDTO, ChatMessageKind, ReactionEmoji } from "@civfix/shared"
-import type { ChatHistoryPage } from "@civfix/shared/interfaces"
+import type { ChatMessageDTO, ChatMessageKind, ReactionEmoji } from "@civfix/contract"
+import type { ChatHistoryPage } from "@civfix/seams"
 import type { TimeCursor } from "../db/cursor-helpers.js"
 
 export interface DmThread {

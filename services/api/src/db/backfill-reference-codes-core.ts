@@ -6,7 +6,7 @@
  * migration transaction: a long table scan there would block boot.
  */
 
-import type { ReportType } from "@civfix/shared"
+import type { ReportType } from "@civfix/contract"
 import {
   resolveGeomJurisdictions,
   stampReferenceCodes,

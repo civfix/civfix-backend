@@ -14,7 +14,7 @@ import {
   type PortfolioAnalyticsRange,
   type SeriesPoint,
   type SuppressedRate,
-} from "@civfix/shared"
+} from "@civfix/contract"
 import {
   arrivalsCurve,
   bestDayTime,
@@ -28,7 +28,7 @@ import {
   type DayCount,
   type DayRange,
   type KeyCount,
-} from "@civfix/shared/host"
+} from "@civfix/contract/host"
 import type { AnalyticsRepository, LabeledKeyCount } from "./analytics-repository.js"
 import type { MetricRow, MetricsRepository } from "./metrics-repository.js"
 import { leaderboardEntryOf } from "../volunteer-hours-service.js"

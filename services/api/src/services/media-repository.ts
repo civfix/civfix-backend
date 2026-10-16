@@ -1,4 +1,4 @@
-import type { MediaKind, MediaStatus } from "@civfix/shared"
+import type { MediaKind, MediaStatus } from "@civfix/contract"
 import type { MEDIA_PURPOSE_VALUES } from "../db/schema/types-host.js"
 
 export type MediaPurpose = (typeof MEDIA_PURPOSE_VALUES)[number]

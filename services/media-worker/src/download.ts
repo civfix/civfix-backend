@@ -1,4 +1,4 @@
-import type { Storage } from "@civfix/shared/interfaces"
+import type { Storage } from "@civfix/seams"
 import { normalizeEtag, readEtag } from "@civfix/api/media-repo"
 import { concatChunks, readCappedChunks, type CappedChunks } from "@civfix/api/capped-body"
 import { loadHttpsProxy } from "./config.js"

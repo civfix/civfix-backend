@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest"
-import type { CleanupMemberRole, HostCapability, OrganizationMemberRole } from "@civfix/shared"
-import { HOST_CAPABILITY_VALUES } from "@civfix/shared"
-import { can, hostCapabilities, NO_HOST_STANDING, type HostStanding } from "@civfix/shared/host"
+import type { CleanupMemberRole, HostCapability, OrganizationMemberRole } from "@civfix/contract"
+import { HOST_CAPABILITY_VALUES } from "@civfix/contract"
+import { can, hostCapabilities, NO_HOST_STANDING, type HostStanding } from "@civfix/contract/host"
 import {
   assertMayGrantRole,
   hasHostStanding,

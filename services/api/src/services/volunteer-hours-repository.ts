@@ -4,7 +4,7 @@ import type {
   MyVolunteerHoursDTO,
   OrganizationRefDTO,
   VolunteerHoursSource,
-} from "@civfix/shared"
+} from "@civfix/contract"
 import type { KeysetCursor } from "../db/cursor-helpers.js"
 
 export type VolunteerHoursAnomalyKind = "weekly_hours" | "reciprocal_credit"

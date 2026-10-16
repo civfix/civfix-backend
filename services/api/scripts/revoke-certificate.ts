@@ -38,7 +38,7 @@
  * rewrites an earlier revocation's timestamp or reason; the script reports that it was already revoked.
  */
 
-import { formatCertificateCode, normalizeCertificateCode } from "@civfix/shared"
+import { formatCertificateCode, normalizeCertificateCode } from "@civfix/contract"
 import { R2Storage } from "../src/adapters/storage.r2.js"
 import { makeDb } from "../src/db/client.js"
 import { makeDrizzleCertificateRepository } from "../src/services/certificate-repository.drizzle.js"

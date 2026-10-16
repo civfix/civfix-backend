@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest"
-import { DEFAULT_FEED_RANKING } from "@civfix/shared"
+import { DEFAULT_FEED_RANKING } from "@civfix/contract"
 import { FAKE_SEAM_FLAGS, loadEnv } from "../../src/env.js"
 
 // Characterization net for the loadEnv split into section loaders: the resolved Env, every aggregated

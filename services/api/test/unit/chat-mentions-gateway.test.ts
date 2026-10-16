@@ -14,7 +14,7 @@ import {
 import { WsChatService } from "../../src/adapters/chat-service.ws.js"
 import { InMemoryChatPubSub } from "../../src/adapters/chat-pubsub.js"
 import { InMemoryChatRepository, MockConnection } from "../helpers/chat.js"
-import type { ChatMessageDTO, UserMentionDTO } from "@civfix/shared"
+import type { ChatMessageDTO, UserMentionDTO } from "@civfix/contract"
 
 const ROOM = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
 const ALICE = "11111111-1111-1111-1111-111111111111"

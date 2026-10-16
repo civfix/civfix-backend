@@ -16,9 +16,9 @@ import {
   type RegisterForEventRequest,
   type RegisterForEventResponse,
   type TicketTypeVisibility,
-} from "@civfix/shared"
-import { GUEST_RSVP_TURNSTILE_ACTION } from "@civfix/shared/host"
-import type { AbuseChecks, Jobs, Mailer, SmsSender } from "@civfix/shared/interfaces"
+} from "@civfix/contract"
+import { GUEST_RSVP_TURNSTILE_ACTION } from "@civfix/contract/host"
+import type { AbuseChecks, Jobs, Mailer, SmsSender } from "@civfix/seams"
 import {
   OTP_CODE_LENGTH,
   OTP_MAX_ATTEMPTS,

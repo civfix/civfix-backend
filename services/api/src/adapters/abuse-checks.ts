@@ -1,7 +1,6 @@
-import { AppError } from "@civfix/shared"
-import type { AbuseChecks, NearDuplicateResult } from "@civfix/shared/interfaces"
-import type { LatLng } from "@civfix/shared"
-import { haversineKm } from "@civfix/shared"
+import { AppError, haversineKm } from "@civfix/contract"
+import type { AbuseChecks, NearDuplicateResult } from "@civfix/seams"
+import type { LatLng } from "@civfix/contract"
 import { fetchJsonWithTimeout, type FetchJsonResult } from "./http-fetch.js"
 
 export type PerceptualHashFn = (buffer: Uint8Array) => Promise<string>

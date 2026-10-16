@@ -10,7 +10,7 @@
  *                                      contract promises `cityStateLabel` on every response and the
  *                                      creation flows show it as a hint even when the ladder came up
  *                                      empty. Callers treat this rung as NOT LOCATED
- *                                      (@civfix/shared `isLocatedPrecision`).
+ *                                      (@civfix/contract `isLocatedPrecision`).
  *   null                               nothing at all: outside TIGER coverage with a chain miss.
  *
  * A `landmark` line is stored and returned RAW ("Vista Hermosa Park, Los Angeles, CA"). The "Near "
@@ -32,8 +32,8 @@ import {
   MAX_REPORT_ADDR_LENGTH,
   type AddressPrecision,
   type ReportAddressSource,
-} from "@civfix/shared"
-import type { Geocoder } from "@civfix/shared"
+} from "@civfix/contract"
+import type { Geocoder } from "@civfix/seams"
 import type { ReverseGeocode } from "../adapters/reverse-geocode.chain.js"
 import { isChainAnswer, NO_GEOCODE_CACHE, type GeocodeCache } from "./geocode-cache.js"
 

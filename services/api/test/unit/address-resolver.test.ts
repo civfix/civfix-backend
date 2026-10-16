@@ -3,8 +3,8 @@
 // a chain answer is cached so an outage cannot lock a point at city grade for half a year.
 
 import { describe, it, expect } from "vitest"
-import { FakeGeocoder } from "@civfix/shared/fakes"
-import { geocodePointKey } from "@civfix/shared"
+import { FakeGeocoder } from "@civfix/seams"
+import { geocodePointKey } from "@civfix/contract"
 import type { ReverseGeocode, ReverseResult } from "../../src/adapters/reverse-geocode.chain.js"
 import {
   addressProvenance,

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest"
-import type { ParsedMail } from "@civfix/shared/interfaces"
+import type { ParsedMail } from "@civfix/seams"
 import {
   CfInboundMail,
   CLOUDFLARE_AUTHSERV_ID,

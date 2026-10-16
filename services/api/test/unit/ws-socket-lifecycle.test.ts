@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach, vi } from "vitest"
 import type { FastifyInstance, FastifyRequest } from "fastify"
 import type { WebSocket } from "@fastify/websocket"
-import { FakeUserChannel } from "@civfix/shared/fakes"
+import { FakeUserChannel } from "@civfix/seams"
 import {
   MAX_CONNECTIONS_PER_IP,
   MAX_CONNECTIONS_PER_USER,

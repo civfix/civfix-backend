@@ -1,12 +1,12 @@
 import { randomUUID } from "node:crypto"
-import { AppError, MAX_ORG_INVITES_PER_ORG } from "@civfix/shared"
+import { AppError, MAX_ORG_INVITES_PER_ORG } from "@civfix/contract"
 import type {
   OrganizationInviteRole,
   OrganizationInviteStatus,
   OrganizationMemberRole,
   OrgVerificationKind,
   SocialLinks,
-} from "@civfix/shared"
+} from "@civfix/contract"
 import type {
   AcceptOrganizationInviteOutcome,
   DeclineOrganizationInviteOutcome,

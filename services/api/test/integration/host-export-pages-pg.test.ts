@@ -4,7 +4,7 @@
  */
 
 import { afterAll, beforeAll, describe, expect, it } from "vitest"
-import type { HostExportKind } from "@civfix/shared"
+import type { HostExportKind } from "@civfix/contract"
 import { withPg, type PgHarness } from "../helpers/pg.js"
 import { seedCleanup } from "../helpers/cleanups.js"
 import { makeDrizzleHostExportRepository } from "../../src/services/host/export-repository.drizzle.js"

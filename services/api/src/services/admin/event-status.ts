@@ -5,7 +5,7 @@
  * direction: status is a clock reading, and the only admin write is Cancel.
  */
 
-import type { EventStatus } from "@civfix/shared"
+import type { EventStatus } from "@civfix/contract"
 
 export function toEventStatus(stored: string): EventStatus {
   switch (stored) {

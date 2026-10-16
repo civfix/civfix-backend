@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from "vitest"
-import { FakePushSender } from "@civfix/shared/fakes"
+import { FakePushSender } from "@civfix/seams"
 import type { FastifyInstance } from "fastify"
 import type { Container } from "../../src/di.js"
 import type { GatewayReportChat } from "../../src/ws/gateway.js"

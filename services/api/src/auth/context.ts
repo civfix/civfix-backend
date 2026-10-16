@@ -1,5 +1,5 @@
-import { AppError } from "@civfix/shared"
-import type { AuthContext } from "@civfix/shared"
+import { AppError } from "@civfix/contract"
+import type { AuthContext } from "@civfix/contract"
 import type { FastifyInstance, FastifyRequest } from "fastify"
 import { verifyAnonTokenSignature } from "../abuse/anon-token.js"
 import type { AuthServices } from "./auth-services.js"

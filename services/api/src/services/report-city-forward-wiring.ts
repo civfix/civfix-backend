@@ -1,4 +1,4 @@
-import type { ChatMessageDTO } from "@civfix/shared"
+import type { ChatMessageDTO } from "@civfix/contract"
 import type { Container } from "../di.js"
 import { makeOutboundMailService, type OutboundMailService } from "./admin/outbound-mail-service.js"
 import { makeDrizzleMailRepository } from "./admin/mail-repository.drizzle.js"

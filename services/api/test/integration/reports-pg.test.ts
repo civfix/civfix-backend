@@ -6,7 +6,7 @@ import { randomUUID } from "node:crypto"
 import { withPg, type PgHarness } from "../helpers/pg.js"
 import { makeDrizzleReportRepository } from "../../src/services/report-repository.drizzle.js"
 import { makeReportService, type ReportService } from "../../src/services/report-service.js"
-import type { CreateReportRequest } from "@civfix/shared"
+import type { CreateReportRequest } from "@civfix/contract"
 import { CALIFORNIA, LA_CITY, PROBE_INSIDE_CITY } from "../../src/db/seed-fixtures.js"
 
 const pg = await withPg()

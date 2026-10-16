@@ -1,8 +1,8 @@
 // "Save & route" does not touch the geoid's reports: nothing is mailed per report here, so nothing is
 // marked routed. The types and directory projectors are re-exported so external importers keep resolving.
 
-import { AppError } from "@civfix/shared"
-import type { JurisdictionListQuery } from "@civfix/shared"
+import { AppError } from "@civfix/contract"
+import type { JurisdictionListQuery } from "@civfix/contract"
 import { toDirectoryDTO, hasAnyContact } from "./jurisdiction-directory-projection.js"
 import type { PatchContactsInput, SaveContactsInput } from "./jurisdiction-contacts-repository.js"
 import { isReservedHandle } from "../../auth/reserved-handles.js"

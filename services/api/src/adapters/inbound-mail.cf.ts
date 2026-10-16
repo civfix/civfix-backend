@@ -1,10 +1,5 @@
-import type {
-  InboundMail,
-  ParsedMail,
-  ParsedMailAddress,
-  ParsedMailAttachment,
-} from "@civfix/shared/interfaces"
-import { collapseWhitespace } from "@civfix/shared"
+import type { InboundMail, ParsedMail, ParsedMailAddress, ParsedMailAttachment } from "@civfix/seams"
+import { collapseWhitespace } from "@civfix/contract"
 import type { AddressObject, Attachment, EmailAddress, HeaderLines } from "mailparser"
 import { getDomain } from "tldts"
 import { domainOfOrNull } from "./mail-text.js"

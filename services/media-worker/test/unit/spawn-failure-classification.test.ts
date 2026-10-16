@@ -8,7 +8,7 @@ vi.mock("../../src/sandbox/image-lane.js", () => ({
   imageLaneEntry: () => fileURLToPath(import.meta.url),
 }))
 
-const { FakeStorage, FakeAbuseChecks } = await import("@civfix/shared/fakes")
+const { FakeStorage, FakeAbuseChecks } = await import("@civfix/seams")
 const { loadLimits } = await import("../../src/config.js")
 const { SandboxSpawnError, SandboxToolError, resetSandboxIdentity } =
   await import("../../src/sandbox/exec.js")

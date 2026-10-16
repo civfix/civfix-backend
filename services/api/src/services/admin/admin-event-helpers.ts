@@ -1,6 +1,6 @@
 // Kept out of admin-event-service.ts so the repos can import these without a repo->service back-edge.
 
-import type { EventStatus, EventTimelineItem } from "@civfix/shared"
+import type { EventStatus, EventTimelineItem } from "@civfix/contract"
 
 export const EVENT_NOTE_FLAGGED = "Flagged for review"
 

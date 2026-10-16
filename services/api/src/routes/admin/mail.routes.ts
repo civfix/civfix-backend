@@ -15,8 +15,8 @@ import {
   type MailThreadDTO,
   type PreviewForwardTemplateResponse,
   type PublishMailReplyResponse,
-} from "@civfix/shared"
-import type { Storage } from "@civfix/shared/interfaces"
+} from "@civfix/contract"
+import type { Storage } from "@civfix/seams"
 import type { FastifyInstance } from "fastify"
 import type { Container } from "../../di.js"
 import { route } from "../../versioning/route.js"

@@ -14,7 +14,7 @@ import type {
   ReportsSectionCounts,
   UsersSectionCounts,
 } from "./home-repository.js"
-import type { EventKind, ReportCategory } from "@civfix/shared"
+import type { EventKind, ReportCategory } from "@civfix/contract"
 import { adminEventStatusExpr } from "../cleanup-sql.js"
 
 function num(value: string | null | undefined): number {

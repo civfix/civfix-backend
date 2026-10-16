@@ -5,7 +5,7 @@ import {
   resolveUserFilter,
   type AdminUserService,
 } from "../../src/services/admin/admin-user-service.js"
-import { avatarGradient, type UserStatus } from "@civfix/shared"
+import { avatarGradient, type UserStatus } from "@civfix/contract"
 
 const NOW = new Date("2026-06-06T00:00:00.000Z")
 

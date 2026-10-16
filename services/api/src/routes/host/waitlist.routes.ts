@@ -9,7 +9,7 @@ import {
   type LeaveEventWaitlistResponse,
   type ListEventWaitlistResponse,
   type PromoteFromWaitlistResponse,
-} from "@civfix/shared"
+} from "@civfix/contract"
 import type { FastifyInstance } from "fastify"
 import type { Container } from "../../di.js"
 import { requireAuth } from "../../auth/context.js"

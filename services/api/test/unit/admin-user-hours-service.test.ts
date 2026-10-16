@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest"
-import { AdminUserHoursResponseSchema, type AdminCreditUserHoursRequest } from "@civfix/shared"
+import { AdminUserHoursResponseSchema, type AdminCreditUserHoursRequest } from "@civfix/contract"
 import { CIVFIX_OFFICIAL_USER_ID } from "../../src/auth/official-account.js"
 import { InMemoryAdminUserRepository } from "../helpers/admin/admin-user-repository.memory.js"
 import {

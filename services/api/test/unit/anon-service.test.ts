@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest"
-import { FakeAbuseChecks } from "@civfix/shared/fakes"
-import type { AnonReportRequest } from "@civfix/shared"
+import { FakeAbuseChecks } from "@civfix/seams"
+import type { AnonReportRequest } from "@civfix/contract"
 import { InMemoryCounterStore } from "../../src/abuse/counter-store.js"
 import { abuseH3Cell } from "../../src/abuse/h3-cap.js"
 import { ANON_TOKEN_REPORT_CAP, signAnonToken } from "../../src/abuse/anon-token.js"

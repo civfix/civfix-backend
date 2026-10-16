@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest"
-import { FakeAbuseChecks } from "@civfix/shared/fakes"
+import { FakeAbuseChecks } from "@civfix/seams"
 import { InMemoryCounterStore } from "../../src/abuse/counter-store.js"
 import { honeypotTripped } from "../../src/abuse/honeypot.js"
 import {

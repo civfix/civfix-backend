@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest"
-import { FakeStorage, FakeJobs } from "@civfix/shared/fakes"
+import { FakeStorage, FakeJobs } from "@civfix/seams"
 import { makeMediaIntakeService } from "../../src/services/media-intake-service.js"
 import { MEDIA_CHECKS_JOB } from "../../src/lib/queue-names.js"
 import { InMemoryMediaRepository } from "../helpers/media.js"

@@ -14,7 +14,7 @@
  * GlitchTip/Sentry via captureError. There are NO silent catches: the handler always logs and responds.
  */
 
-import { AppError, ErrorCode } from "@civfix/shared"
+import { AppError, ErrorCode } from "@civfix/contract"
 import type { FastifyError, FastifyReply, FastifyRequest } from "fastify"
 import { isProd } from "../env.js"
 import { loggedRequestUrl } from "../lib/request-url.js"
@@ -78,7 +78,7 @@ interface ZodLikeError {
 }
 
 // Structural ZodError match (NOT instanceof) so it survives the dual-zod-realm boundary between
-// @civfix/shared's zod and the API's zod: a ZodError thrown outside a route parse() (service-level
+// @civfix/contract's zod and the API's zod: a ZodError thrown outside a route parse() (service-level
 // parse / .transform / nested parse) reaches the handler and must render as 422, never 500.
 function isZodLikeError(error: Error): error is Error & ZodLikeError {
   return error.name === "ZodError" && Array.isArray((error as { issues?: unknown }).issues)

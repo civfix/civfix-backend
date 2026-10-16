@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest"
-import type { UserStatus } from "@civfix/shared"
+import type { UserStatus } from "@civfix/contract"
 import {
   CIVFIX_OFFICIAL_USER_ID,
   impersonatesOfficialName,

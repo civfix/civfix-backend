@@ -1,6 +1,6 @@
 import { describe, it, expect, vi } from "vitest"
 import { randomUUID } from "node:crypto"
-import type { UserMentionDTO } from "@civfix/shared"
+import type { UserMentionDTO } from "@civfix/contract"
 import { makeChatEditService } from "../../src/services/chat-edit-service.js"
 import { InMemoryChatRepository } from "../helpers/chat.js"
 

@@ -8,7 +8,7 @@ import {
   type OpenDmResponse,
   type ChatHistoryResponse,
   type ChatMessageDTO,
-} from "@civfix/shared"
+} from "@civfix/contract"
 import { z } from "zod"
 import type { FastifyInstance } from "fastify"
 import { perIdentity } from "../plugins/rate-limit.js"

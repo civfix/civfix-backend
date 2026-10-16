@@ -1,4 +1,4 @@
-import { AppError, ErrorCode } from "@civfix/shared"
+import { AppError, ErrorCode } from "@civfix/contract"
 import { exposeMessage } from "../errors/exposed-message.js"
 import { constantTimeStringEqual } from "./crypto.js"
 import { sha256HexSync } from "../lib/hash.js"

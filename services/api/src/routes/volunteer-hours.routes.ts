@@ -11,7 +11,7 @@ import {
   type LogEventHoursResponse,
   type MyVolunteerHoursEntriesResponse,
   type PublicVolunteerHoursResponse,
-} from "@civfix/shared"
+} from "@civfix/contract"
 import { z } from "zod"
 import type { FastifyInstance, FastifyReply } from "fastify"
 import type { Container } from "../di.js"

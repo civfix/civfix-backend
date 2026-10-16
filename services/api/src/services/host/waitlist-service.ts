@@ -1,4 +1,4 @@
-import { AppError } from "@civfix/shared"
+import { AppError } from "@civfix/contract"
 import { eventEndedError } from "../cleanup-rules.js"
 import type {
   ClaimWaitlistOfferRequest,
@@ -10,8 +10,8 @@ import type {
   ListEventWaitlistResponse,
   PromoteFromWaitlistRequest,
   PromoteFromWaitlistResponse,
-} from "@civfix/shared"
-import type { Jobs } from "@civfix/shared/interfaces"
+} from "@civfix/contract"
+import type { Jobs } from "@civfix/seams"
 import { sha256Hex } from "../../auth/crypto.js"
 import type { GuestPromotionNotifier } from "../guest-notify.js"
 import { toWaitlistEntryDTO } from "./registration-dto.js"

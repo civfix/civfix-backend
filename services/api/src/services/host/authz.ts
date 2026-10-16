@@ -1,10 +1,5 @@
-import {
-  AppError,
-  type CleanupMemberRole,
-  type EventVisibility,
-  type HostCapability,
-} from "@civfix/shared"
-import { can, hostCapabilities, type HostStanding } from "@civfix/shared/host"
+import { AppError, type CleanupMemberRole, type EventVisibility, type HostCapability } from "@civfix/contract"
+import { can, hostCapabilities, type HostStanding } from "@civfix/contract/host"
 import type { Queryable } from "../../db/client.js"
 import { hostStandingOf, orgStandingOf } from "./host-standing-repository.drizzle.js"
 import type { HostStandingResolution } from "./host-standing-repository.js"

@@ -1,4 +1,4 @@
-import type { RegistrationRosterFilter, RegistrationRosterSort } from "@civfix/shared"
+import type { RegistrationRosterFilter, RegistrationRosterSort } from "@civfix/contract"
 import type { Queryable, Sql } from "../../db/client.js"
 import {
   encodeKeysetCursor,

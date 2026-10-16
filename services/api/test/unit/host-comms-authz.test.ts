@@ -1,8 +1,8 @@
 import { afterEach, describe, expect, it } from "vitest"
 import { randomUUID } from "node:crypto"
-import type { CleanupMemberRole, EventVisibility, OrganizationMemberRole } from "@civfix/shared"
-import { endpoints, versionedPath } from "@civfix/shared/client"
-import { FakeMailer } from "@civfix/shared/fakes"
+import type { CleanupMemberRole, EventVisibility, OrganizationMemberRole } from "@civfix/contract"
+import { endpoints, versionedPath } from "@civfix/contract/client"
+import { FakeMailer } from "@civfix/seams"
 import { InMemoryCounterStore } from "../../src/abuse/counter-store.js"
 import { makeContainer, type Container } from "../../src/di.js"
 import { loadEnv } from "../../src/env.js"
@@ -133,7 +133,7 @@ function exportService(records: Map<string, HostExportRecord>): HostExportServic
     get: async (exportId) => {
       const record = records.get(exportId)
       if (record === undefined) {
-        const { AppError } = await import("@civfix/shared")
+        const { AppError } = await import("@civfix/contract")
         throw AppError.notFound("Export not found")
       }
       return record

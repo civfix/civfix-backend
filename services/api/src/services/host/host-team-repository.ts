@@ -4,7 +4,7 @@ import type {
   EventTeamInviteStatus,
   EventTeamRole,
   EventVisibility,
-} from "@civfix/shared"
+} from "@civfix/contract"
 import type { CleanupPersonView } from "../cleanup-repository.js"
 
 export interface EventTeamMemberRecord {

@@ -14,7 +14,7 @@ import type {
   TopJurisdictionRow,
   WeekBucket,
 } from "./analytics-repository.js"
-import type { ReportCategory } from "@civfix/shared"
+import type { ReportCategory } from "@civfix/contract"
 import { jurisdictionHasAnyContactExpr } from "./sql-fragments.js"
 
 function num(value: string | null | undefined): number {

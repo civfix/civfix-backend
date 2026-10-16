@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest"
-import { AppError } from "@civfix/shared"
+import { AppError } from "@civfix/contract"
 import type { Sql } from "../../src/db/client.js"
 import { makeChatGroupService } from "../../src/services/chat-group-service.js"
 import { makeChatGroupRepository } from "../../src/services/chat-group-repository.drizzle.js"

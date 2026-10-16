@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach } from "vitest"
 import type { FastifyInstance } from "fastify"
-import { FakeJobs, FakeMailer, FakeStorage } from "@civfix/shared/fakes"
+import { FakeJobs, FakeMailer, FakeStorage } from "@civfix/seams"
 import { makeServer } from "../../src/server.js"
 import { loadEnv } from "../../src/env.js"
 import { InMemoryCacheClient } from "../../src/auth/cache.js"

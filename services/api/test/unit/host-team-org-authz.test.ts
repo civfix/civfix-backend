@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it } from "vitest"
 import { randomUUID } from "node:crypto"
-import type { EventVisibility, OrganizationMemberRole } from "@civfix/shared"
+import type { EventVisibility, OrganizationMemberRole } from "@civfix/contract"
 import { InMemoryCounterStore } from "../../src/abuse/counter-store.js"
 import type { Queryable } from "../../src/db/client.js"
 import { requireCapability } from "../../src/services/host/authz.js"

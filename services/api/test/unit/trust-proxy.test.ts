@@ -5,7 +5,7 @@ import { parseTrustProxy, DEFAULT_TRUSTED_PROXY_CIDRS } from "../../src/plugins/
 import { loadEnv } from "../../src/env.js"
 import { makeServer } from "../../src/server.js"
 import { normalizeIp } from "../../src/abuse/ip-rate-limit.js"
-import type { AnonReportRequest } from "@civfix/shared"
+import type { AnonReportRequest } from "@civfix/contract"
 import type {
   AnonService,
   AnonSubmitContext,

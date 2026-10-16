@@ -4,7 +4,7 @@ import type {
   EventPageStatus,
   EventVisibility,
   OrganizationMemberRole,
-} from "@civfix/shared"
+} from "@civfix/contract"
 import type { Queryable, Sql } from "../../db/client.js"
 import { encodeTimeCursor, pageWith, parseTimeCursor } from "../../db/cursor-helpers.js"
 import { publicServedKeyExpr } from "../media-served-key.js"

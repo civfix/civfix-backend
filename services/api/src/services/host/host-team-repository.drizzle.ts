@@ -6,7 +6,7 @@ import {
   type EventTeamInviteStatus,
   type EventTeamRole,
   type EventVisibility,
-} from "@civfix/shared"
+} from "@civfix/contract"
 import type { Queryable, Sql } from "../../db/client.js"
 import {
   keysetInstant,

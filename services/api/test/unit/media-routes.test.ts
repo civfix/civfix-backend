@@ -1,12 +1,12 @@
 import { describe, it, expect, afterEach } from "vitest"
 import type { FastifyInstance } from "fastify"
-import { MAX_IMAGE_BYTES } from "@civfix/shared"
+import { MAX_IMAGE_BYTES } from "@civfix/contract"
 import { makeServer } from "../../src/server.js"
 import { makeContainer } from "../../src/di.js"
 import { loadEnv } from "../../src/env.js"
 import { InMemoryMediaRepository } from "../helpers/media.js"
 import { MEDIA_CHECKS_JOB } from "../../src/lib/queue-names.js"
-import type { FakeStorage, FakeJobs } from "@civfix/shared/fakes"
+import type { FakeStorage, FakeJobs } from "@civfix/seams"
 
 const SHA = "b".repeat(64)
 

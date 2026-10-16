@@ -1,4 +1,4 @@
-import { RecordEventPageViewRequestSchema } from "@civfix/shared"
+import { RecordEventPageViewRequestSchema } from "@civfix/contract"
 import type { FastifyInstance, FastifyRequest } from "fastify"
 import type { Container } from "../../di.js"
 import { perHost } from "../../plugins/rate-limit.js"

@@ -20,7 +20,7 @@
 
 import { mkdirSync, writeFileSync } from "node:fs"
 import { join } from "node:path"
-import { MAX_CERTIFICATE_ENTRIES } from "@civfix/shared"
+import { MAX_CERTIFICATE_ENTRIES } from "@civfix/contract"
 import {
   buildTranscriptModel,
   ledgerFingerprint,

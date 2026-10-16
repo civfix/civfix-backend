@@ -2,7 +2,7 @@ import type {
   JurisdictionDirectoryResponse,
   JurisdictionGeometryResponse,
   JurisdictionListQuery,
-} from "@civfix/shared"
+} from "@civfix/contract"
 import type {
   JurisdictionContactsRepository,
   PatchContactsInput,

@@ -8,7 +8,7 @@ import {
   SaveContactsRequestSchema,
   type JurisdictionDirectoryResponse,
   type JurisdictionGeometryResponse,
-} from "@civfix/shared"
+} from "@civfix/contract"
 import type { FastifyInstance } from "fastify"
 import type { Container } from "../../di.js"
 import { requireOperator } from "../../auth/admin-guard.js"

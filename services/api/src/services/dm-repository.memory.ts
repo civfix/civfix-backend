@@ -1,7 +1,13 @@
 import { randomUUID } from "node:crypto"
-import { avatarGradient, AppError } from "@civfix/shared"
-import type { ChatMessageDTO, ReactionEmoji, ReactionSummaryDTO, ReplyToDTO } from "@civfix/shared"
-import type { ChatHistoryPage } from "@civfix/shared/interfaces"
+import { avatarGradient, AppError } from "@civfix/contract"
+import type {
+  ChatMessageDTO,
+  ReactionEmoji,
+  ReactionSummaryDTO,
+  ReplyToDTO,
+  PersonDTO,
+} from "@civfix/contract"
+import type { ChatHistoryPage } from "@civfix/seams"
 import { REPLY_EXCERPT_MAX, replyDeletedTarget, replyWrongRoom } from "./chat-reply-hydration.js"
 import { PIN_LIST_CAP } from "./room-messages-repository.drizzle.js"
 import { publicAuthorIdentity } from "./public-author.js"
@@ -25,7 +31,6 @@ import type {
 import { visibleAfterHides } from "./conversation-hides-repository.memory.js"
 import { LIST_BLOCKS_DEFAULT_LIMIT } from "./blocks-repository.drizzle.js"
 import type { TimeCursor } from "../db/cursor-helpers.js"
-import type { PersonDTO } from "@civfix/shared"
 
 export interface DmUser {
   id: string

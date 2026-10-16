@@ -9,7 +9,7 @@ import {
   uniqueIndex,
   uuid,
 } from "drizzle-orm/pg-core"
-import type { AddressPrecision, ReportAddressSource } from "@civfix/shared"
+import type { AddressPrecision, ReportAddressSource } from "@civfix/contract"
 import { jurisdictions } from "./jurisdictions.js"
 import { users } from "./users.js"
 import {

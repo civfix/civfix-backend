@@ -9,7 +9,7 @@
  */
 
 import type { Queryable, Sql } from "../db/client.js"
-import type { PollDTO, PollOptionDTO } from "@civfix/shared"
+import type { PollDTO, PollOptionDTO } from "@civfix/contract"
 import type { ChatPollRepository, CreatePollRow, PollMeta } from "./chat-poll-repository.js"
 
 export function makeChatPollRepository(sql: Sql): ChatPollRepository {

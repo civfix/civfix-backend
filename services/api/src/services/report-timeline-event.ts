@@ -11,7 +11,7 @@
  * wired wherever the admin/citizen services are, without the chat-gateway wiring's instances.
  */
 
-import type { ChatMessageDTO } from "@civfix/shared"
+import type { ChatMessageDTO } from "@civfix/contract"
 
 const EMIT_FAILED = "report-chat: system-message emit failed (suppressed)"
 

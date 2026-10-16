@@ -21,7 +21,7 @@ import { makeCleanupService, type CleanupService } from "../../src/services/clea
 import { InMemoryCleanupRepository } from "../helpers/cleanups.js"
 import { InMemoryCounterStore } from "../../src/abuse/counter-store.js"
 import type { AddressResolver } from "../../src/services/address-resolver.js"
-import type { CreateCleanupRequest } from "@civfix/shared"
+import type { CreateCleanupRequest } from "@civfix/contract"
 
 const HOST = "22222222-2222-2222-2222-222222222222"
 

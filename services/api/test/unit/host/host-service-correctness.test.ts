@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest"
 import { randomUUID } from "node:crypto"
-import type { Jobs } from "@civfix/shared/interfaces"
+import type { Jobs } from "@civfix/seams"
 import { InMemoryCounterStore } from "../../../src/abuse/counter-store.js"
 import { InMemoryHostRegistrationRepository } from "../../helpers/host/registration-repository.memory.js"
 import { makeRegistrationService } from "../../../src/services/host/registration-service.js"

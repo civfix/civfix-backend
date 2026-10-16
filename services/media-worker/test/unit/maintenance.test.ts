@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest"
-import { FakeStorage } from "@civfix/shared/fakes"
+import { FakeStorage } from "@civfix/seams"
 import { loadLimits } from "../../src/config.js"
 import {
   LEAK_RETRY_MAX_ATTEMPTS,

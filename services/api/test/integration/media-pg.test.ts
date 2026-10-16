@@ -6,7 +6,7 @@ import { makeServer } from "../../src/server.js"
 import { makeContainer } from "../../src/di.js"
 import { loadEnv } from "../../src/env.js"
 import { MEDIA_CHECKS_JOB } from "../../src/lib/queue-names.js"
-import type { FakeStorage, FakeJobs } from "@civfix/shared/fakes"
+import type { FakeStorage, FakeJobs } from "@civfix/seams"
 
 const pg = await withPg()
 

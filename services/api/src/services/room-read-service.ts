@@ -1,4 +1,4 @@
-import type { RoomKind } from "@civfix/shared"
+import type { RoomKind } from "@civfix/contract"
 import type { ConversationBellKind } from "./conversation-bell.js"
 
 export type AdvanceReadAt = (roomId: string, userId: string, at: Date) => Promise<void>

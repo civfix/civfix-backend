@@ -20,7 +20,7 @@ import {
   type EVENT_KIND_VALUES,
 } from "./types.js"
 import type { EVENT_VISIBILITY_VALUES } from "./types-host.js"
-import type { EventAddressSource } from "@civfix/shared"
+import type { EventAddressSource } from "@civfix/contract"
 
 type CleanupType = (typeof CLEANUP_TYPE_VALUES)[number]
 type CleanupStatus = (typeof CLEANUP_STATUS_VALUES)[number]

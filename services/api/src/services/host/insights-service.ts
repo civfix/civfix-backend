@@ -15,8 +15,8 @@ import {
   type InsightsTicketType,
   type LeaderboardEntryDTO,
   type SeatPoint,
-} from "@civfix/shared"
-import { DEFAULT_DURATION_MS } from "@civfix/shared/host"
+} from "@civfix/contract"
+import { DEFAULT_DURATION_MS } from "@civfix/contract/host"
 import type {
   AnalyticsRepository,
   EventClockRecord,

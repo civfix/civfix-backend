@@ -4,7 +4,7 @@
  * wired here, so a mutation adds `preHandler: csrfProtect` itself.
  */
 
-import { endpoints, versionedPath } from "@civfix/shared/client"
+import { endpoints, versionedPath } from "@civfix/contract/client"
 import type { FastifyInstance } from "fastify"
 import type { RouteHandlerMethod, RouteShorthandOptions } from "fastify"
 

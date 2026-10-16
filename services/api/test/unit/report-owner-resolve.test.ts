@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest"
-import type { ReportStatus } from "@civfix/shared"
+import type { ReportStatus } from "@civfix/contract"
 import { makeFakeSql } from "../helpers/fake-sql.js"
 import type { Sql } from "../../src/db/client.js"
 import { makeDrizzleReportRepository } from "../../src/services/report-repository.drizzle.js"

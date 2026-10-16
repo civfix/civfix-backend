@@ -34,7 +34,7 @@ import type {
   ListEventsArgs,
 } from "../../../src/services/admin/admin-event-repository.js"
 import type { LinkedReportView } from "../../../src/services/cleanup-service.js"
-import type { AdminEventCounts, EventKind, EventStatus, ReportCategory } from "@civfix/shared"
+import type { AdminEventCounts, EventKind, EventStatus, ReportCategory } from "@civfix/contract"
 
 const IN_PROGRESS_SEED_OFFSET_MS = -MS_PER_HOUR
 const UPCOMING_SEED_OFFSET_MS = 7 * 24 * MS_PER_HOUR

@@ -1,9 +1,4 @@
-import type {
-  GovCheckStatus,
-  GovClaimStatus,
-  GovMethod,
-  GovVerificationCheck,
-} from "@civfix/shared"
+import type { GovCheckStatus, GovClaimStatus, GovMethod, GovVerificationCheck } from "@civfix/contract"
 
 export interface GovCheckRecord {
   status: GovCheckStatus

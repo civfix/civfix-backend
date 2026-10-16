@@ -1,4 +1,4 @@
-import { avatarGradient } from "@civfix/shared"
+import { avatarGradient } from "@civfix/contract"
 import type {
   AttendeeDTO,
   CleanupDTO,
@@ -9,7 +9,7 @@ import type {
   LinkedReportRef,
   CleanupOrganizationRef,
   PersonDTO,
-} from "@civfix/shared"
+} from "@civfix/contract"
 import type {
   AttendeeView,
   CleanupOrganizationView,

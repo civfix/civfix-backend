@@ -1,4 +1,4 @@
-import { AppError } from "@civfix/shared"
+import { AppError } from "@civfix/contract"
 import type { Queryable } from "../db/client.js"
 import {
   findClaimableAvatarIn,

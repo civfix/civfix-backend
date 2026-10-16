@@ -1,5 +1,5 @@
-import { AppError } from "@civfix/shared"
-import type { ClaimNudgeResponse, ClaimReportResponse, ReportDTO } from "@civfix/shared"
+import { AppError } from "@civfix/contract"
+import type { ClaimNudgeResponse, ClaimReportResponse, ReportDTO } from "@civfix/contract"
 import { resolveAnonToken, type AnonTokenDeps } from "../abuse/anon-token.js"
 import type { ReportOwner } from "./report-service.js"
 import { generateToken, sha256Hex } from "../auth/crypto.js"

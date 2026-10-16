@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest"
-import { relativeAgo } from "@civfix/shared"
+import { relativeAgo } from "@civfix/contract"
 import { makeThreadsService, InMemoryChatReadState } from "../../src/services/threads-service.js"
 import { InMemoryThreadsRepository } from "../helpers/chat.js"
 

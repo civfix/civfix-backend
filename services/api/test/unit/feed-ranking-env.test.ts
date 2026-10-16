@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest"
-import { DEFAULT_FEED_RANKING } from "@civfix/shared"
+import { DEFAULT_FEED_RANKING } from "@civfix/contract"
 import { loadEnv } from "../../src/env.js"
 
 function load(feedRanking?: string) {

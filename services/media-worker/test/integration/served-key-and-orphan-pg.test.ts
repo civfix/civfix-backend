@@ -1,6 +1,6 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest"
 import { randomUUID } from "node:crypto"
-import { FakeStorage } from "@civfix/shared/fakes"
+import { FakeStorage } from "@civfix/seams"
 import { makeDrizzleMediaWorkerRepository } from "@civfix/api/media-repo"
 import type { MediaWorkerRepository } from "@civfix/api/media-worker-repository"
 import { loadLimits } from "../../src/config.js"

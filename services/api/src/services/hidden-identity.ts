@@ -1,4 +1,4 @@
-import { avatarGradient } from "@civfix/shared"
+import { avatarGradient } from "@civfix/contract"
 
 export const HIDDEN_USER_LABEL = "Community member"
 

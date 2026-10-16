@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto"
-import type { GuestContactChannel } from "@civfix/shared"
+import type { GuestContactChannel } from "@civfix/contract"
 import { encodeTimeCursor, pageWith, type TimeCursor } from "../../src/db/cursor-helpers.js"
 import type {
   GuestEventView,

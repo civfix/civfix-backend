@@ -1,5 +1,5 @@
 import { createHmac } from "node:crypto"
-import { AppError } from "@civfix/shared"
+import { AppError } from "@civfix/contract"
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify"
 import { perHost } from "../../plugins/rate-limit.js"
 import type { Container } from "../../di.js"

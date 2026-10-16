@@ -8,8 +8,8 @@
  * httpStatus + fields.code.
  */
 
-import { AppError, ErrorCode } from "@civfix/shared"
-import type { ReplyToDTO } from "@civfix/shared"
+import { AppError, ErrorCode } from "@civfix/contract"
+import type { ReplyToDTO } from "@civfix/contract"
 import type { Queryable } from "../db/client.js"
 import { isUuid } from "../db/cursor-helpers.js"
 import {

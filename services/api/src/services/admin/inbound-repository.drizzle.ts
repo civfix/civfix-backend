@@ -17,7 +17,7 @@ import type {
   InboxListQuery,
   InboxListResponse,
   MailAttachment,
-} from "@civfix/shared"
+} from "@civfix/contract"
 import type { InboundEmailInsert, InboundRepository } from "./inbound-repository.js"
 
 export function localPartOf(recipient: string | null): string {

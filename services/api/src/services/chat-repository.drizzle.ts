@@ -8,8 +8,8 @@ import type {
   ReactionSummaryDTO,
   ReplyToDTO,
   UserMentionDTO,
-} from "@civfix/shared"
-import type { ChatHistoryPage, PersistChatInput } from "@civfix/shared/interfaces"
+} from "@civfix/contract"
+import type { ChatHistoryPage, PersistChatInput } from "@civfix/seams"
 import { loadChatReactions, toggleChatReaction } from "./chat-reactions-repository.drizzle.js"
 import { loadChatMentions } from "./chat-mentions-repository.drizzle.js"
 import { attachChatMedia, loadChatAttachments } from "./chat-attachments-repository.drizzle.js"

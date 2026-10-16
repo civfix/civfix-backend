@@ -4,7 +4,7 @@ import { WsChatService } from "../../src/adapters/chat-service.ws.js"
 import { InMemoryChatPubSub, chatChannel } from "../../src/adapters/chat-pubsub.js"
 import { InMemoryChatPresence } from "../../src/adapters/chat-presence.js"
 import { InMemoryChatRepository, MockConnection } from "../helpers/chat.js"
-import { WsClientMessageSchema, WsServerMessageSchema, type ChatMessageDTO } from "@civfix/shared"
+import { WsClientMessageSchema, WsServerMessageSchema, type ChatMessageDTO } from "@civfix/contract"
 
 /**
  * Two devices chat in real time, proven locally: TWO mock ChatConnections drive handleClientFrame

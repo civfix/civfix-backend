@@ -5,7 +5,7 @@ import type {
   Panel,
   SeriesPoint,
   SuppressedRate,
-} from "@civfix/shared"
+} from "@civfix/contract"
 import {
   eventPhase,
   suppressRate,
@@ -13,7 +13,7 @@ import {
   type DerivedBreakdownRow,
   type DerivedPanel,
   type SeriesClosure,
-} from "@civfix/shared/host"
+} from "@civfix/contract/host"
 import type { EventClockRecord } from "./analytics-repository.js"
 import type { MetricRow } from "./metrics-repository.js"
 import { MS_PER_DAY } from "../../lib/time.js"

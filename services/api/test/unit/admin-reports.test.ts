@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest"
-import { AppError, DEFAULT_FORWARD_SUBJECT_TEMPLATE, templateUsesToken } from "@civfix/shared"
-import { FakeMailer } from "@civfix/shared/fakes"
+import { AppError, DEFAULT_FORWARD_SUBJECT_TEMPLATE, templateUsesToken } from "@civfix/contract"
+import { FakeMailer } from "@civfix/seams"
 import { runAutoForwardWith } from "../../src/services/admin/autoforward-jobs.js"
 import { InMemoryAdminReportRepository } from "../helpers/admin/admin-report-repository.memory.js"
 import type { MailMessageKind } from "../../src/services/admin/mail-repository.js"

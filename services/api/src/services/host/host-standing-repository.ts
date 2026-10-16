@@ -1,5 +1,5 @@
-import type { EventVisibility, OrganizationMemberRole } from "@civfix/shared"
-import type { HostStanding } from "@civfix/shared/host"
+import type { EventVisibility, OrganizationMemberRole } from "@civfix/contract"
+import type { HostStanding } from "@civfix/contract/host"
 
 export interface HostStandingResolution {
   cleanupId: string

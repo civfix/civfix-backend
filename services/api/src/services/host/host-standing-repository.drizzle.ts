@@ -1,5 +1,5 @@
-import type { CleanupMemberRole, EventVisibility, OrganizationMemberRole } from "@civfix/shared"
-import { NO_HOST_STANDING, type HostStanding } from "@civfix/shared/host"
+import type { CleanupMemberRole, EventVisibility, OrganizationMemberRole } from "@civfix/contract"
+import { NO_HOST_STANDING, type HostStanding } from "@civfix/contract/host"
 import type { Queryable } from "../../db/client.js"
 import type { HostStandingRepository, HostStandingResolution } from "./host-standing-repository.js"
 

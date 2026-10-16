@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest"
-import { FakeStorage, FakeAbuseChecks } from "@civfix/shared/fakes"
-import type { StorageHead } from "@civfix/shared/interfaces"
+import { FakeStorage, FakeAbuseChecks } from "@civfix/seams"
+import type { StorageHead } from "@civfix/seams"
 import { loadLimits, type WorkerLimits } from "../../src/config.js"
 import { makeDownloader } from "../../src/download.js"
 import { runMediaChecksJob, type MediaChecksDeps } from "../../src/jobs/media-checks.js"

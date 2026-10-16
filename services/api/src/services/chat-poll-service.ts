@@ -1,5 +1,5 @@
-import { AppError, ErrorCode } from "@civfix/shared"
-import type { ChatMessageDTO } from "@civfix/shared"
+import { AppError, ErrorCode } from "@civfix/contract"
+import type { ChatMessageDTO } from "@civfix/contract"
 import type { ChatRepository } from "./chat-repository.js"
 import type { ChatPollRepository, PollRoomColumn } from "./chat-poll-repository.js"
 import { assertNoSlur } from "../abuse/slur-filter.js"

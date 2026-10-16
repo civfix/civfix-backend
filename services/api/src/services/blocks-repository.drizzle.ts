@@ -1,5 +1,5 @@
 import type { Sql } from "../db/client.js"
-import { avatarGradient } from "@civfix/shared"
+import { avatarGradient } from "@civfix/contract"
 import {
   keysetInstant,
   keysetPredicate,

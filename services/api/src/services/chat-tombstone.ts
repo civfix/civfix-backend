@@ -1,4 +1,4 @@
-import type { ChatMessageDTO } from "@civfix/shared"
+import type { ChatMessageDTO } from "@civfix/contract"
 
 export function toTombstoneDTO(dto: ChatMessageDTO, deletedAt: Date): ChatMessageDTO {
   return {

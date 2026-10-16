@@ -1,4 +1,4 @@
-import type { RoomKind } from "@civfix/shared"
+import type { RoomKind } from "@civfix/contract"
 import type { Queryable, Sql } from "../../db/client.js"
 import { insertAuditRow } from "./audit-repository.drizzle.js"
 import type {

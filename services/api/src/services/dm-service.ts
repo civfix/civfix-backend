@@ -1,5 +1,5 @@
-import { AppError, relativeAgo, avatarGradient } from "@civfix/shared"
-import type { ChatMessageDTO, MessageThreadDTO, PersonDTO } from "@civfix/shared"
+import { AppError, relativeAgo, avatarGradient } from "@civfix/contract"
+import type { ChatMessageDTO, MessageThreadDTO, PersonDTO } from "@civfix/contract"
 import type { BlocksRepository } from "./blocks-repository.js"
 import type { DmRepository } from "./dm-repository.js"
 import { officialPersonFlag } from "../auth/official-account.js"

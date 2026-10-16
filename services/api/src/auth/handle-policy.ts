@@ -4,7 +4,7 @@
  * rename cooldown.
  */
 
-import { AppError, HANDLE_REGEX } from "@civfix/shared"
+import { AppError, HANDLE_REGEX } from "@civfix/contract"
 import { handleChangeableAtFrom } from "./stores.js"
 
 export interface DecideHandleWriteInput {

@@ -17,7 +17,7 @@
  */
 
 import { createHmac } from "node:crypto"
-import { AppError } from "@civfix/shared"
+import { AppError } from "@civfix/contract"
 import type { FastifyReply, FastifyRequest } from "fastify"
 import { constantTimeStringEqual, generateToken, sha256Hex } from "./crypto.js"
 import {

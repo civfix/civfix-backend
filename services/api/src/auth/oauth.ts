@@ -1,5 +1,5 @@
 import { Apple, Google, generateCodeVerifier, generateState } from "arctic"
-import { AppError, collapseWhitespace } from "@civfix/shared"
+import { AppError, collapseWhitespace } from "@civfix/contract"
 import { containsSlur } from "../abuse/slur-filter.js"
 import {
   EmailTakenError,

@@ -1,5 +1,5 @@
 import type { FastifyBaseLogger } from "fastify"
-import type { ChatMessageDTO, RoomKind, WsServerMessage } from "@civfix/shared"
+import type { ChatMessageDTO, RoomKind, WsServerMessage } from "@civfix/contract"
 import { unrefSleep } from "../lib/sleep.js"
 import { MS_PER_SECOND } from "../lib/time.js"
 import { settleWithin } from "../lib/timeout.js"

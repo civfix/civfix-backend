@@ -5,7 +5,7 @@
  * (kind 'flag'/'unflag'): the most recent of them decides.
  */
 
-import { AppError } from "@civfix/shared"
+import { AppError } from "@civfix/contract"
 import type {
   AdminEventCounts,
   AdminEventDTO,
@@ -16,7 +16,7 @@ import type {
   EventStatus,
   EventTimelineItem,
   LinkedReportRef,
-} from "@civfix/shared"
+} from "@civfix/contract"
 import { toLinkedReportRef, type LinkedReportView } from "../cleanup-service.js"
 import { toRelAbs } from "./admin-format.js"
 import { toPersonDTO } from "./admin-person.js"

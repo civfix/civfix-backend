@@ -9,7 +9,7 @@
 // "discovery.note_added", target "discovery:<taskId>", meta.text + meta.who). That keeps them in the
 // audited store the activity feed and audit view already read; see discovery-repository.drizzle.ts.
 
-import { AppError, REPORT_CATEGORY_LABELS, relativeAgo } from "@civfix/shared"
+import { AppError, REPORT_CATEGORY_LABELS, relativeAgo } from "@civfix/contract"
 import { ADMIN_CATEGORIES } from "./category-counts.js"
 import { clampLimit } from "./pagination.js"
 import { MS_PER_HOUR } from "../../lib/time.js"
@@ -24,7 +24,7 @@ import type {
   PerCategoryCounts,
   Priority,
   ReportCategory,
-} from "@civfix/shared"
+} from "@civfix/contract"
 import type {
   DiscoveryContactSuggestionRecord,
   DiscoveryNoteRecord,

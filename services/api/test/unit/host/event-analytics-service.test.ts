@@ -4,7 +4,7 @@ import {
   EVENT_ANALYTICS_CARD_SLOT_ROWS,
   EVENT_ANALYTICS_COMPARISON_MIN_EVENTS,
   GetEventAnalyticsResponseSchema,
-} from "@civfix/shared"
+} from "@civfix/contract"
 import { InMemoryCacheClient } from "../../../src/auth/cache.js"
 import { makeHostAnalyticsCache } from "../../../src/services/host/host-analytics-cache.js"
 import {

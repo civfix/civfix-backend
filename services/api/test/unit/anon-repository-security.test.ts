@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest"
-import type { AnonReportResponse } from "@civfix/shared"
+import type { AnonReportResponse } from "@civfix/contract"
 import { makeDrizzleAnonReportRepository } from "../../src/services/anon-repository.drizzle.js"
 import { ANON_REPORT_CREATE_SCOPE } from "../../src/services/anon-service.js"
 import type { CreateAnonReportTxArgs } from "../../src/services/anon-repository.js"

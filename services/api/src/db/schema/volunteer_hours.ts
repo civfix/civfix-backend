@@ -11,7 +11,7 @@ import {
   uniqueIndex,
   uuid,
 } from "drizzle-orm/pg-core"
-import type { VolunteerHoursSource } from "@civfix/shared"
+import type { VolunteerHoursSource } from "@civfix/contract"
 import { cleanups } from "./cleanups.js"
 import { jurisdictions } from "./jurisdictions.js"
 import { reports } from "./reports.js"

@@ -5,7 +5,7 @@
  * member of any seniority stays mentionable.
  */
 
-import type { RoomKind, UserMentionDTO } from "@civfix/shared"
+import type { RoomKind, UserMentionDTO } from "@civfix/contract"
 import { parseUserMentions } from "./discussion-mentions.js"
 import type { GatewayChatMentions } from "../ws/types.js"
 

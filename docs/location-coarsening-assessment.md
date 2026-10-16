@@ -51,7 +51,7 @@ transit) has to cover this column, `reports.geom`, `cleanups.geom` and
 ## Is a backend-only coarsening possible without a shared-contract change?
 
 **Technically yes.** `ReportDTO.lat/lng` and `ReportPinDTO.lat/lng` come from
-`LatLngFields` in `@civfix/shared`, which checks only the range (-90..90,
+`LatLngFields` in `@civfix/contract`, which checks only the range (-90..90,
 -180..180) and puts no constraint on precision, so rounding them server-side
 before send is a pure display transform that needs NO contract change and NO
 migration. The precise `geom` stays untouched for routing; only the projected

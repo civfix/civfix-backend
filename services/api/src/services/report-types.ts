@@ -10,8 +10,8 @@ import type {
   ReportDTO,
   ReportType,
   ReportVisibility,
-} from "@civfix/shared"
-import type { Jobs } from "@civfix/shared/interfaces"
+} from "@civfix/contract"
+import type { Jobs } from "@civfix/seams"
 import type { LinkedEventView } from "./cleanup-service.js"
 import type { ReportChatSystemEmitter } from "./report-timeline-event.js"
 import type { AddressResolver } from "./address-resolver.js"

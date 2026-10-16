@@ -4,7 +4,7 @@ import {
   MAX_EVENT_QUESTIONS,
   MAX_LINKED_REPORTS,
   MAX_TICKET_TYPES_PER_EVENT,
-} from "@civfix/shared"
+} from "@civfix/contract"
 import type { Queryable, Sql, SqlFragment } from "../db/client.js"
 import {
   encodeNearCursor,
@@ -20,7 +20,7 @@ import {
   hostStandingsOf,
   orgStandingOf,
 } from "./host/host-standing-repository.drizzle.js"
-import { NO_HOST_STANDING } from "@civfix/shared/host"
+import { NO_HOST_STANDING } from "@civfix/contract/host"
 import { publicServedKeyExpr } from "./media-served-key.js"
 import { mediaBoundElsewhere, mediaBoundToCleanup, uploadedByClaimant } from "./media-bindings.js"
 import { userUploader } from "./media-uploader.js"
@@ -85,8 +85,8 @@ import type {
   ReportCategory,
   ReportStatus,
   ReportType,
-} from "@civfix/shared"
-import type { HostStanding } from "@civfix/shared/host"
+} from "@civfix/contract"
+import type { HostStanding } from "@civfix/contract/host"
 import { touchUserActivity } from "../db/sql/user-activity.js"
 import { isUniqueViolationOn, PG_UNIQUE_VIOLATION } from "../db/pg-errors.js"
 

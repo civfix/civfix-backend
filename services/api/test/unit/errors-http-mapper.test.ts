@@ -11,7 +11,7 @@
 
 import { describe, it, expect, vi, beforeEach } from "vitest"
 import Fastify, { type FastifyInstance } from "fastify"
-import { AppError, ErrorCode } from "@civfix/shared"
+import { AppError, ErrorCode } from "@civfix/contract"
 
 /** Flipped per test; the handler reads isProd() at response time. */
 let prod = false

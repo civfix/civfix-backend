@@ -1,6 +1,6 @@
-import type { ChatMessageDTO, ChatMessageKind, RoomKind, UserMentionDTO } from "@civfix/shared"
+import type { ChatMessageDTO, ChatMessageKind, RoomKind, UserMentionDTO } from "@civfix/contract"
 import type { FastifyBaseLogger } from "fastify"
-import type { ChatService, ChatConnection, UserChannel } from "@civfix/shared/interfaces"
+import type { ChatService, ChatConnection, UserChannel } from "@civfix/seams"
 import type { ChatPresence } from "../adapters/chat-presence.js"
 import type { SocketStatusCheck } from "../auth/account-status.js"
 import type { SessionService } from "../auth/session-service.js"

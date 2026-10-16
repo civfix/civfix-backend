@@ -1,5 +1,5 @@
-import { OPEN_REPORT_STATUSES, PUBLIC_REPORT_STATUSES } from "@civfix/shared"
-import type { ReportVisibility } from "@civfix/shared"
+import { OPEN_REPORT_STATUSES, PUBLIC_REPORT_STATUSES } from "@civfix/contract"
+import type { ReportVisibility } from "@civfix/contract"
 import type { DiscussionReportView } from "./discussion-repository.js"
 import type { OwnerToggleStatus } from "./report-repository.js"
 

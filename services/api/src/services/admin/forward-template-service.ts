@@ -5,7 +5,7 @@ import {
   type PreviewForwardTemplateRequest,
   type PreviewForwardTemplateResponse,
   type SetForwardTemplateDefaultRequest,
-} from "@civfix/shared"
+} from "@civfix/contract"
 import { buildReportPacket, type PacketMediaLink } from "./mail-format.js"
 import type { AdminReportRecord, AdminReportRoutingRecord } from "./admin-report-repository.js"
 import type {

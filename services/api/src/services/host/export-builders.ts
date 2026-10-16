@@ -1,4 +1,4 @@
-import type { HostExportKind } from "@civfix/shared"
+import type { HostExportKind } from "@civfix/contract"
 
 export interface HostExportContext {
   exportId: string

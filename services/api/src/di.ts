@@ -10,7 +10,7 @@ import type {
   SmsSender,
   Storage,
   UserChannel,
-} from "@civfix/shared/interfaces"
+} from "@civfix/seams"
 import {
   FakeAbuseChecks,
   FakeChatService,
@@ -23,7 +23,7 @@ import {
   FakeSmsSender,
   FakeStorage,
   FakeUserChannel,
-} from "@civfix/shared/fakes"
+} from "@civfix/seams"
 
 import type { FastifyBaseLogger } from "fastify"
 

@@ -1,4 +1,4 @@
-import { AppError, IdSchema, type AdminOkResponse, type RoomKind } from "@civfix/shared"
+import { AppError, IdSchema, type AdminOkResponse, type RoomKind } from "@civfix/contract"
 import type { FastifyBaseLogger, FastifyInstance, FastifyReply, FastifyRequest } from "fastify"
 import type { ZodTypeAny, z } from "zod"
 import { parse } from "../_validate.js"
@@ -129,7 +129,7 @@ export function spreadNow(overrides: { now?: () => Date }): { now?: () => Date }
  * href in the admin console and the public jurisdiction directory, so a stored `javascript:` URI is a
  * stored XSS in two UIs (in the console a full authz bypass, since the CSRF cookie is JS-readable).
  *
- * The wire schemas live in @civfix/shared, so the constraint is enforced at the persist boundary until
+ * The wire schemas live in @civfix/contract, so the constraint is enforced at the persist boundary until
  * `PatchJurisdictionRequestSchema` / `SaveContactsRequestSchema` / `SaveDraftRequestSchema` carry a
  * scheme-checked URL themselves.
  *

@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest"
-import { FakeInboundMail, FakeJobs, FakeStorage } from "@civfix/shared/fakes"
-import type { ParsedMail } from "@civfix/shared/interfaces"
+import { FakeInboundMail, FakeJobs, FakeStorage } from "@civfix/seams"
+import type { ParsedMail } from "@civfix/seams"
 import { InMemoryMailRepository } from "../helpers/admin/mail-repository.memory.js"
 import { InMemoryInboundRepository } from "../helpers/admin/inbound-repository.memory.js"
 import { InMemoryAdminReportRepository } from "../helpers/admin/admin-report-repository.memory.js"

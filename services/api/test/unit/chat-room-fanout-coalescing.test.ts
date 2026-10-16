@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach } from "vitest"
-import { FakePushSender } from "@civfix/shared/fakes"
-import type { ChatMessageDTO, PersonDTO, UserMentionDTO } from "@civfix/shared"
-import type { PushPayload, PushSender } from "@civfix/shared/interfaces"
+import { FakePushSender } from "@civfix/seams"
+import type { ChatMessageDTO, PersonDTO, UserMentionDTO } from "@civfix/contract"
+import type { PushPayload, PushSender } from "@civfix/seams"
 import {
   makeRoomFanoutNotifier,
   ROOM_ACTIVITY_COALESCE_WINDOW_MS,

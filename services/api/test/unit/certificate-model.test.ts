@@ -1,4 +1,4 @@
-import { MAX_CERTIFICATE_ENTRIES } from "@civfix/shared"
+import { MAX_CERTIFICATE_ENTRIES } from "@civfix/contract"
 import { describe, expect, it } from "vitest"
 import {
   CERTIFICATE_MESSAGE_KEYS,

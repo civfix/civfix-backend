@@ -1,4 +1,5 @@
-import type { PushSender, PushPayload, PushPlatform } from "@civfix/shared/interfaces"
+import type { PushSender, PushPayload } from "@civfix/seams"
+import type { PushPlatform } from "@civfix/contract"
 import type { Db } from "../db/client.js"
 import { pushTokens } from "../db/schema/push_tokens.js"
 import { and, desc, inArray, isNull } from "drizzle-orm"

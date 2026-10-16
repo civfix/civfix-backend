@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from "vitest"
-import type { ChatMessageDTO } from "@civfix/shared"
+import type { ChatMessageDTO } from "@civfix/contract"
 import { makeReportChatNotifier } from "../../src/services/report-chat-notifier.js"
 import { makeGroupChatNotifier } from "../../src/services/group-chat-notifier.js"
 import { makeChatPowersResolver } from "../../src/services/chat-room-roles.js"

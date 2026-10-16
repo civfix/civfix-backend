@@ -1,4 +1,4 @@
-import type { JurisdictionLayer, ReportCategory } from "@civfix/shared"
+import type { JurisdictionLayer, ReportCategory } from "@civfix/contract"
 
 export interface DiscoveryTaskRecord {
   id: string

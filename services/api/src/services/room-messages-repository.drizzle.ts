@@ -6,9 +6,9 @@
  * closed unions, never string concatenation.
  */
 
-import { AppError } from "@civfix/shared"
-import type { ChatMessageDTO } from "@civfix/shared"
-import type { ChatHistoryPage } from "@civfix/shared/interfaces"
+import { AppError } from "@civfix/contract"
+import type { ChatMessageDTO } from "@civfix/contract"
+import type { ChatHistoryPage } from "@civfix/seams"
 import type { Sql, SqlFragment } from "../db/client.js"
 import { isUuid } from "../db/cursor-helpers.js"
 import { aroundLimits, mergeAroundWindow } from "./chat-history-window.js"

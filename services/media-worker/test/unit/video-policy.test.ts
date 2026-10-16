@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest"
-import { FakeStorage, FakeAbuseChecks } from "@civfix/shared/fakes"
+import { FakeStorage, FakeAbuseChecks } from "@civfix/seams"
 import { loadLimits, type WorkerLimits } from "../../src/config.js"
 import { makeDownloader } from "../../src/download.js"
 import { InMemoryMediaWorkerRepository } from "../helpers/in-memory-media-worker-repository.js"

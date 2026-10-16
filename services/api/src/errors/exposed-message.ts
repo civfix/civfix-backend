@@ -1,4 +1,4 @@
-import type { AppError } from "@civfix/shared"
+import type { AppError } from "@civfix/contract"
 
 // A 5xx message is hidden from production clients by default because most carry operator diagnostics
 // (vendor responses, env var names). The few written for end users opt in here. The brand lives in the

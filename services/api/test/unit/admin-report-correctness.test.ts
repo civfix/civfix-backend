@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest"
-import { FakeMailer } from "@civfix/shared/fakes"
+import { FakeMailer } from "@civfix/seams"
 import { InMemoryAdminReportRepository } from "../helpers/admin/admin-report-repository.memory.js"
 import { makeDrizzleAdminReportRepository } from "../../src/services/admin/admin-report-repository.drizzle.js"
 import { makeAdminReportService } from "../../src/services/admin/admin-report-service.js"

@@ -1,4 +1,4 @@
-/** Kept in lockstep with the client `LocaleEnum` in @civfix/shared and the four client catalogs. */
+/** Kept in lockstep with the client `LocaleEnum` in @civfix/contract and the four client catalogs. */
 
 export const SUPPORTED_LOCALES = ["en", "es", "de", "ko"] as const
 

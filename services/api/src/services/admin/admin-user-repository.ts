@@ -7,7 +7,7 @@ import type {
   Risk,
   Role,
   UserStatus,
-} from "@civfix/shared"
+} from "@civfix/contract"
 
 export interface AdminUserRecord {
   id: string

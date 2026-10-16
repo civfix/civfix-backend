@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest"
-import { DEFAULT_FEED_RANKING, FeedRankingConfigSchema } from "@civfix/shared"
-import type { FeedRankingConfig } from "@civfix/shared"
+import { DEFAULT_FEED_RANKING, FeedRankingConfigSchema } from "@civfix/contract"
+import type { FeedRankingConfig } from "@civfix/contract"
 import {
   applyCutoff,
   bucketSeed,

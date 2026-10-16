@@ -3,7 +3,7 @@
  * event copy the generator samples from. Guard-free (no runIfMain) because seed-demo-la bundles it.
  */
 
-import type { ReportType } from "@civfix/shared"
+import type { ReportType } from "@civfix/contract"
 
 // About 70% of the cohort is Hispanic, with the rest reflecting LA's mix.
 

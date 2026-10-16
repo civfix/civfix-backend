@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest"
-import { NotificationPrefsDTOSchema } from "@civfix/shared"
+import { NotificationPrefsDTOSchema } from "@civfix/contract"
 import {
   DEFAULT_PREFS,
   toPrefsDTO,

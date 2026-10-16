@@ -1,4 +1,4 @@
-import { AppError, ErrorCode } from "@civfix/shared"
+import { AppError, ErrorCode } from "@civfix/contract"
 import type {
   Storage,
   PresignPutOptions,
@@ -6,7 +6,7 @@ import type {
   StoragePutMeta,
   StorageListOptions,
   StorageListResult,
-} from "@civfix/shared/interfaces"
+} from "@civfix/seams"
 import { normalizeEtag, type StorageHeadWithEtag } from "../services/media-etag.js"
 import { readProxySettings, shouldProxyHost } from "./proxy-egress.js"
 import { stripTrailingSlashes } from "../lib/base-url.js"

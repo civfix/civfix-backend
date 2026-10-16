@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest"
-import type { MailThreadDTO } from "@civfix/shared"
-import type { Storage } from "@civfix/shared/interfaces"
+import type { MailThreadDTO } from "@civfix/contract"
+import type { Storage } from "@civfix/seams"
 import { InMemoryMailRepository } from "../helpers/admin/mail-repository.memory.js"
 import { presignThreadAttachments } from "../../src/routes/admin/mail.routes.js"
 import {

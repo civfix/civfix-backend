@@ -1,5 +1,5 @@
 import { inArray, sql } from "drizzle-orm"
-import { DELETED_USER_LABEL } from "@civfix/shared"
+import { DELETED_USER_LABEL } from "@civfix/contract"
 import type { DbTransaction, ErasureRepository, TransferredEvent } from "./erasure-repository.js"
 
 // Takes no handle: every step runs on the erasure transaction its caller passes in, never on the pool.

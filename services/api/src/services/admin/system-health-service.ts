@@ -1,4 +1,4 @@
-import type { SystemHealthResponse, SystemService } from "@civfix/shared"
+import type { SystemHealthResponse, SystemService } from "@civfix/contract"
 import {
   PG_INVALID_AUTHORIZATION,
   PG_INVALID_CATALOG_NAME,

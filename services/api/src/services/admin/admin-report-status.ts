@@ -1,5 +1,5 @@
-import { ADMIN_REPORT_STATUS_LABELS, ReportTimelineItemSchema } from "@civfix/shared"
-import type { AdminReportStatus, ReportTimelineItem } from "@civfix/shared"
+import { ADMIN_REPORT_STATUS_LABELS, ReportTimelineItemSchema } from "@civfix/contract"
+import type { AdminReportStatus, ReportTimelineItem } from "@civfix/contract"
 
 /**
  * The design has three live buckets for the seven civfix statuses. An authed pin is created `published`

@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it } from "vitest"
-import { AppError, currentVersion } from "@civfix/shared"
-import { parseMarkdownSubset } from "@civfix/shared/markdown"
-import type { EventPageBlock } from "@civfix/shared"
+import { AppError, currentVersion } from "@civfix/contract"
+import { parseMarkdownSubset } from "@civfix/contract/markdown"
+import type { EventPageBlock } from "@civfix/contract"
 import { InMemoryCounterStore } from "../../../src/abuse/counter-store.js"
 import { InMemoryHostRegistrationRepository } from "../../helpers/host/registration-repository.memory.js"
 import {

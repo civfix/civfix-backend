@@ -1,7 +1,7 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest"
 import type { InjectOptions, LightMyRequestResponse } from "fastify"
-import { endpoints, versionedPath, type EndpointDef } from "@civfix/shared/client"
-import type { Role } from "@civfix/shared"
+import { endpoints, versionedPath, type EndpointDef } from "@civfix/contract/client"
+import type { Role } from "@civfix/contract"
 import { makeAuthHarness, type AuthHarness } from "../helpers/auth.js"
 
 // admin-auth-guard.test.ts proves the operator gate on a hand-picked sample of routes. This suite derives

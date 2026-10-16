@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest"
-import { IdSchema } from "@civfix/shared"
+import { IdSchema } from "@civfix/contract"
 import {
   CIVFIX_OFFICIAL_DISPLAY_NAME,
   CIVFIX_OFFICIAL_HANDLE,

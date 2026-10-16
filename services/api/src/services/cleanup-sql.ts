@@ -15,7 +15,7 @@ import type {
   EventVisibility,
   OrgVerificationKind,
   OrgVerificationStatus,
-} from "@civfix/shared"
+} from "@civfix/contract"
 import { publicServedKeyExpr } from "./media-served-key.js"
 
 export function cleanupStatusExpr(sql: Queryable) {

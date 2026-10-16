@@ -1,4 +1,4 @@
-import type { FeedRankingConfig } from "@civfix/shared"
+import type { FeedRankingConfig } from "@civfix/contract"
 import type { RankedCandidate } from "./feed-ranking.js"
 
 export interface FeedPresenceCache {

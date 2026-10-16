@@ -7,7 +7,7 @@ import { makeDrizzleOrganizationRepository } from "../../src/services/host/organ
 import { makeDrizzleHostTeamRepository } from "../../src/services/host/host-team-repository.drizzle.js"
 import { makeDrizzleHostPortfolioRepository } from "../../src/services/host/host-portfolio-repository.drizzle.js"
 import { makeDrizzleAnalyticsRepository } from "../../src/services/host/analytics-repository.drizzle.js"
-import { MAX_INSIGHTS_TOP_VOLUNTEERS } from "@civfix/shared"
+import { MAX_INSIGHTS_TOP_VOLUNTEERS } from "@civfix/contract"
 import {
   hostStandingOf,
   orgStandingOf,

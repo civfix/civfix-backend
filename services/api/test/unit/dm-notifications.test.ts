@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach } from "vitest"
-import { FakePushSender } from "@civfix/shared/fakes"
+import { FakePushSender } from "@civfix/seams"
 import {
   handleClientFrame,
   type GatewayDeps,

@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest"
-import { FakeAbuseChecks } from "@civfix/shared/fakes"
+import { FakeAbuseChecks } from "@civfix/seams"
 import { releaseAnonHoldIfReady } from "../../src/services/anon-hold-release.js"
 import { InMemoryAnonStore } from "../helpers/anon.js"
 

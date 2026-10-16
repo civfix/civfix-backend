@@ -1,4 +1,10 @@
-import { AppError, MAX_EVENT_PAGE_BLOCKS, PAGE_SLUG_MAX, PageSlugSchema } from "@civfix/shared"
+import {
+  AppError,
+  MAX_EVENT_PAGE_BLOCKS,
+  PAGE_SLUG_MAX,
+  PageSlugSchema,
+  currentVersion,
+} from "@civfix/contract"
 import type {
   CheckEventPageSlugRequest,
   CheckEventPageSlugResponse,
@@ -9,10 +15,9 @@ import type {
   PublicEventPageDTO,
   PublishEventPageRequest,
   SaveEventPageRequest,
-} from "@civfix/shared"
-import { currentVersion } from "@civfix/shared"
-import { parseMarkdownSubset, MARKDOWN_SUBSET_MAX_CHARS } from "@civfix/shared/markdown"
-import { can, type HostStanding } from "@civfix/shared/host"
+} from "@civfix/contract"
+import { parseMarkdownSubset, MARKDOWN_SUBSET_MAX_CHARS } from "@civfix/contract/markdown"
+import { can, type HostStanding } from "@civfix/contract/host"
 import { assertNoSlur } from "../../abuse/slur-filter.js"
 import { mapWithLimit } from "../../lib/concurrency.js"
 import { SECONDS_PER_DAY } from "../../lib/time.js"

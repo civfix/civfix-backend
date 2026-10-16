@@ -1,4 +1,4 @@
-import type { ChatMessageDTO, ReportChatParticipantDTO } from "@civfix/shared"
+import type { ChatMessageDTO, ReportChatParticipantDTO } from "@civfix/contract"
 import type { ReportChatMeta } from "./report-types.js"
 
 export type ReportChatRole = "owner" | "member"

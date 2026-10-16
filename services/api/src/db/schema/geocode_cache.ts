@@ -1,5 +1,5 @@
 import { index, pgTable, text, timestamp } from "drizzle-orm/pg-core"
-import type { AddressPrecision } from "@civfix/shared"
+import type { AddressPrecision } from "@civfix/contract"
 
 /**
  * Read-through reverse-geocode cache keyed by the shared `geocodePointKey`. A NULL `address` is a negative

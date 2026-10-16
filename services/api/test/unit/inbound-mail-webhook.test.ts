@@ -1,8 +1,8 @@
 import { createHmac } from "node:crypto"
 import { describe, expect, it, vi } from "vitest"
 import Fastify, { type FastifyInstance, type FastifyRequest } from "fastify"
-import { FakeInboundMail, FakeStorage } from "@civfix/shared/fakes"
-import type { InboundMail, ParsedMail } from "@civfix/shared/interfaces"
+import { FakeInboundMail, FakeStorage } from "@civfix/seams"
+import type { InboundMail, ParsedMail } from "@civfix/seams"
 import { InMemoryMailRepository } from "../helpers/admin/mail-repository.memory.js"
 import { InMemoryInboundRepository } from "../helpers/admin/inbound-repository.memory.js"
 import {

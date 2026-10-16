@@ -5,8 +5,8 @@ Worker for inbound mail. The API covers auth (Apple/Google/email OTP), jurisdict
 intake, reports (including anonymous submit, abuse controls and claim), cleanups and events, real-time
 chat and direct messages over WebSocket, posts, social (people/follow/profile), volunteer hours and
 service-hours certificates, notifications/push, city mail (outbound packets and inbound replies), and
-the operator (admin) plane. External services sit behind the 11 seam interfaces from
-`@civfix/shared/interfaces` (plus two API-local adapter interfaces, reverse geocoding and jurisdiction
+the operator (admin) plane. External services sit behind the 11 seam interfaces in
+`@civfix/seams` (`packages/seams`; plus two API-local adapter interfaces, reverse geocoding and jurisdiction
 lookup), selected real-vs-fake in the DI container, so the whole stack boots offline with no
 credentials for development and tests.
 
@@ -15,10 +15,11 @@ See "Deploy (Docker Compose, via the civfix-infra repo)" below.
 
 Part of a set of independent repos that share one contract:
 
-- `civfix-app` (the consumer-plane monorepo: the web and mobile apps, plus the contract in
-  `packages/shared`: zod schemas, domain types, the 11 vendor-neutral seam interfaces, fakes, design
-  tokens, typed client). The contract is published as `@civfix/shared` to the private registry at
-  `repo.civfix.org` and installed here as a normal dependency.
+- `civfix-contract` (the API contract, `@civfix/contract`: zod schemas, domain types, the endpoint
+  registry, errors, typed client). Published to the private registry at `repo.civfix.org` and
+  installed here as a normal dependency.
+- `civfix-app` (the consumer-plane monorepo: the web and mobile apps, plus the design tokens published
+  as `@civfix/tokens`, which the API's email layout uses).
 - `civfix-backend` (this repo).
 - `civfix-admin` (the operator dashboard) and `civfix-infra` (VPS infra and deploy).
 
@@ -26,9 +27,10 @@ Part of a set of independent repos that share one contract:
 
 ```
 civfix-backend/
-  .npmrc                        @civfix:registry=https://repo.civfix.org/ (installs @civfix/shared)
+  .npmrc                        @civfix:registry=https://repo.civfix.org/ (installs @civfix/contract, @civfix/tokens)
   packages/
     config/                     shared eslint + prettier presets (@civfix/config)
+    seams/                      the 11 seam interfaces, their fakes, MailSendError (@civfix/seams)
   services/
     api/                        Fastify API (@civfix/api)
     media-worker/               pg-boss media worker (@civfix/media-worker)
@@ -56,27 +58,26 @@ civfix-backend/
   the umbrella root with `docker build -t civfix/postgis:16-local civfix-infra/postgres` and set
   `CIVFIX_TEST_PG_IMAGE=civfix/postgis:16-local`.
 
-## The shared contract (`@civfix/shared` from the private registry)
+## The contract (`@civfix/contract` from the private registry)
 
-`@civfix/shared` is consumed as a normal npm dependency from the private Verdaccio registry at
+`@civfix/contract` is consumed as a normal npm dependency from the private Verdaccio registry at
 `https://repo.civfix.org`, so the backend always builds against a published, versioned contract.
 
 The repo-root `.npmrc` scopes `@civfix` to the registry
-(`@civfix:registry=https://repo.civfix.org/`), and both service `package.json` files
-(`services/api`, `services/media-worker`) depend on a published version by caret range (`^0.55.0`
-today). The registry allows anonymous read, so no credentials are needed to install. A fresh clone
+(`@civfix:registry=https://repo.civfix.org/`), and `services/api`, `services/media-worker` and `packages/seams`
+depend on a published version by caret range (`^0.62.0` today; the API also takes `@civfix/tokens`). The registry allows anonymous read, so no credentials are needed to install. A fresh clone
 needs only:
 
 ```
 git clone <civfix-backend remote>
 cd civfix-backend
-pnpm install   # fetches @civfix/shared from repo.civfix.org
+pnpm install   # fetches @civfix/contract from repo.civfix.org
 ```
 
-Contract changes are made in `civfix-app` (`packages/shared`), versioned with changesets and published
-by that repo's `publish-shared.yml` workflow on a push to its `main` (a `vX.Y.Z` tag publishes nothing).
-They are adopted here by bumping the `@civfix/shared` range in BOTH services and refreshing the
-lockfile: `pnpm install` after a range edit, `pnpm --filter <service> update @civfix/shared` for an
+Contract changes are made in `civfix-contract`, versioned with changesets and published by that
+repo's `publish.yml` workflow on a push to its `main` (a `vX.Y.Z` tag publishes nothing). They are
+adopted here by bumping the `@civfix/contract` range in all three workspaces and refreshing the
+lockfile: `pnpm install` after a range edit, `pnpm -r update @civfix/contract` for an
 in-range patch (plain `pnpm install` leaves the lockfile untouched in that case). On `0.x` the caret
 pins the minor, so every minor bump needs a range edit.
 
@@ -86,8 +87,8 @@ pins the minor, so every minor bump needs a range edit.
 pnpm install
 ```
 
-This installs the workspace (both services and `@civfix/config`) and fetches the prebuilt
-`@civfix/shared` from the registry; nothing in this repo builds the contract.
+This installs the workspace (both services, `@civfix/seams` and `@civfix/config`) and fetches the
+prebuilt `@civfix/contract` and `@civfix/tokens` from the registry; nothing in this repo builds the contract.
 
 ## Common tasks (run from the repo root; delegated to turbo)
 
@@ -131,8 +132,8 @@ throws an aggregated error listing each missing one.
 ## Architecture: the seam boundary
 
 External dependencies (object storage, mail, inbound mail, geocoding, chat transport, the per-user
-realtime channel, push, routing, abuse checks, background jobs, SMS) sit behind the 11 interfaces from
-`@civfix/shared/interfaces`. The API's application code never imports a vendor SDK directly; vendor
+realtime channel, push, routing, abuse checks, background jobs, SMS) sit behind the 11 interfaces in
+`@civfix/seams`. The API's application code never imports a vendor SDK directly; vendor
 SDKs are confined to adapter files under `services/api/src/adapters/`. The DI container
 (`services/api/src/di.ts`) is the single place that chooses a REAL adapter or an in-memory FAKE, per
 `USE_FAKE_*` flag (InboundMail and RoutingProvider switch on `NODE_ENV` instead, and
@@ -176,7 +177,7 @@ postgres-js client, the R2 adapter, or the GlitchTip reporter. It depends on `@c
   `@civfix/api/migrate` - the R2 adapter, the real AbuseChecks adapter, the GlitchTip helper, and the
   migration runner (the last reused only by the Docker-gated worker integration harness).
 
-The worker's `tsup` build inlines `@civfix/api` + `@civfix/shared` source into a self-contained
+The worker's `tsup` build inlines `@civfix/api`, `@civfix/seams` and `@civfix/contract` source into a self-contained
 `dist`, keeping only native/heavy deps external (`sharp`, `ffmpeg-static`, `ffprobe-static`, `execa`,
 `exifr`, `pg-boss`, `postgres`, `drizzle-orm`, `@sentry/node`, `undici`, `https-proxy-agent`,
 `@smithy/node-http-handler`, `@aws-sdk/*`).
@@ -284,7 +285,7 @@ The infra compose still carries each image's `build.context`, which is the escap
 (`CIVFIX_ALLOW_LOCAL_BUILD=1`) rather than the normal path.
 
 Build contexts are the REPO ROOT (the services are pnpm-workspace packages that need the root
-manifests + lockfile + the root `.npmrc`, so the in-image `pnpm install` resolves `@civfix/shared`
+manifests + lockfile + the root `.npmrc`, so the in-image `pnpm install` resolves `@civfix/contract`
 from `repo.civfix.org`); each service's `Dockerfile` header documents this.
 
 In normal operation the deploy is CI-driven, and **staging and production are the same artifact**

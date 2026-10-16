@@ -2,7 +2,7 @@ import { readFileSync } from "node:fs"
 import { dirname, join } from "node:path"
 import { fileURLToPath } from "node:url"
 import { describe, expect, it } from "vitest"
-import { LEGAL_DOCUMENTS } from "@civfix/shared/legal"
+import { LEGAL_DOCUMENTS } from "@civfix/contract/legal"
 import { LEGAL_DOCUMENT_TYPE_VALUES } from "../../src/db/schema/types-legal.js"
 import {
   assertConsentVersionsCurrent,

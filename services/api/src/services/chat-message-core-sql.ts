@@ -8,7 +8,7 @@ import type {
   ReactionSummaryDTO,
   ReplyToDTO,
   UserMentionDTO,
-} from "@civfix/shared"
+} from "@civfix/contract"
 import type { Queryable } from "../db/client.js"
 import { publicAuthorIdentity } from "./public-author.js"
 import { officialPersonFlag } from "../auth/official-account.js"

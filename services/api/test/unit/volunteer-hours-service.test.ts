@@ -1,6 +1,6 @@
 import { afterEach, describe, it, expect } from "vitest"
 import type { FastifyInstance } from "fastify"
-import { FakeMailer } from "@civfix/shared/fakes"
+import { FakeMailer } from "@civfix/seams"
 import {
   makeVolunteerHoursService,
   type CleanupHoursLookup,

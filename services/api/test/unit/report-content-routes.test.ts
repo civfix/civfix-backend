@@ -1,6 +1,6 @@
 import { describe, it, expect, afterEach } from "vitest"
 import type { FastifyInstance } from "fastify"
-import { FakeMailer } from "@civfix/shared/fakes"
+import { FakeMailer } from "@civfix/seams"
 import { makeServer } from "../../src/server.js"
 import { loadEnv } from "../../src/env.js"
 import { InMemoryCacheClient } from "../../src/auth/cache.js"
@@ -9,7 +9,7 @@ import { makeAuthServices } from "../../src/auth/auth-services.js"
 import { StubJwksVerifier } from "../helpers/auth.js"
 import { InMemoryModerationRepository } from "../helpers/admin/moderation-repository.memory.js"
 import type { ContentSubjectGate } from "../../src/services/content-report-subject.js"
-import { AppError } from "@civfix/shared"
+import { AppError } from "@civfix/contract"
 
 /**
  * The PUBLIC content-report route (POST /content-reports) builds the moderation service from the injected in-memory ModerationRepository (the SAME app.moderationOverrides

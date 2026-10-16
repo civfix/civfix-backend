@@ -3,7 +3,7 @@
 The open items and deliberately accepted residual risks carried over from the 2026-07-24 full backend
 security review (retired; it is in git history), each re-checked against the code. A fixed item leaves
 this file in the change that fixes it. IDs are the review's own (H = high, M = medium, L = low,
-F = `@civfix/shared` follow-up).
+F = `@civfix/contract` follow-up).
 
 ## Operator rules that stay in force
 
@@ -35,7 +35,7 @@ F = `@civfix/shared` follow-up).
 | L25 | Any member of an event sees the full attendee list | Product decision |
 | L26 | Pagination cursors are unsigned | Accepted: cursors carry no authority |
 
-## Contract follow-ups (`@civfix/shared`)
+## Contract follow-ups (`@civfix/contract`)
 
 | ID | Gap |
 | --- | --- |

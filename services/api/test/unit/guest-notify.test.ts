@@ -12,7 +12,7 @@
 
 import { describe, expect, it } from "vitest"
 import { randomUUID } from "node:crypto"
-import { FakeMailer } from "@civfix/shared/fakes"
+import { FakeMailer } from "@civfix/seams"
 import { InMemoryGuestRsvpRepository, type StoredGuest } from "../helpers/guest-rsvp.js"
 import { makeGuestPromotionNotifier, guestEventLink } from "../../src/services/guest-notify.js"
 import { formatEventWhen } from "../../src/services/host/broadcast-render.js"

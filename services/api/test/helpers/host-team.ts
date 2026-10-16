@@ -1,4 +1,4 @@
-import type { CleanupDTO } from "@civfix/shared"
+import type { CleanupDTO } from "@civfix/contract"
 
 const FIXTURE_ID = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
 

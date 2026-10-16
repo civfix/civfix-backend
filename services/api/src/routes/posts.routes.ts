@@ -4,7 +4,7 @@ import {
   IdSchema,
   PaginationQuerySchema,
   PostComposeInputSchema,
-} from "@civfix/shared"
+} from "@civfix/contract"
 import { z } from "zod"
 import type { FastifyInstance, FastifyRequest } from "fastify"
 import { perIdentity } from "../plugins/rate-limit.js"

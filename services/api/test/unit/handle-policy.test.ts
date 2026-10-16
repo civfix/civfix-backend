@@ -10,7 +10,7 @@
  */
 
 import { describe, it, expect } from "vitest"
-import { AppError } from "@civfix/shared"
+import { AppError } from "@civfix/contract"
 import { decideHandleWrite, handleChanged } from "../../src/auth/handle-policy.js"
 import { HANDLE_RENAME_COOLDOWN_MS, InMemoryUserStore } from "../../src/auth/stores.js"
 

@@ -1,5 +1,5 @@
-import { relativeAgo } from "@civfix/shared"
-import type { RelAbsTime } from "@civfix/shared"
+import { relativeAgo } from "@civfix/contract"
+import type { RelAbsTime } from "@civfix/contract"
 
 // Fixed to en-US + UTC so the absolute label is deterministic across machines and in tests: the design
 // treats it as an unambiguous display string, not a locale-aware one.

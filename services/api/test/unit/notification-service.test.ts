@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest"
-import { FakePushSender, FakeUserChannel } from "@civfix/shared/fakes"
+import { FakePushSender, FakeUserChannel } from "@civfix/seams"
 import {
   makeNotificationService,
   isWithinQuietHours,

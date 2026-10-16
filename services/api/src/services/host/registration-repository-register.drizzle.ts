@@ -1,5 +1,5 @@
-import { AppError } from "@civfix/shared"
-import type { EventVisibility } from "@civfix/shared"
+import { AppError } from "@civfix/contract"
+import type { EventVisibility } from "@civfix/contract"
 import type { Queryable, Sql, TransactionSql } from "../../db/client.js"
 import { constantTimeStringEqual } from "../../auth/crypto.js"
 import { deterministicUuid } from "../deterministic-uuid.js"

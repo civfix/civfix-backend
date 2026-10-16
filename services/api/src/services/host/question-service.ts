@@ -1,10 +1,10 @@
-import { AppError, MAX_EVENT_QUESTIONS } from "@civfix/shared"
+import { AppError, MAX_EVENT_QUESTIONS } from "@civfix/contract"
 import type {
   ListEventQuestionsRequest,
   ListEventQuestionsResponse,
   SaveEventQuestionsRequest,
   SaveEventQuestionsResponse,
-} from "@civfix/shared"
+} from "@civfix/contract"
 import { assertNoSlur } from "../../abuse/slur-filter.js"
 import { toEventQuestionDTO } from "./registration-dto.js"
 import type { DesiredQuestion, HostRegistrationRepository } from "./registration-repository.js"

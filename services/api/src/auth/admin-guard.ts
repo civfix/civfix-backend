@@ -21,7 +21,7 @@
  * applies the preHandler to the data routers only.
  */
 
-import { AppError } from "@civfix/shared"
+import { AppError } from "@civfix/contract"
 import type { FastifyRequest } from "fastify"
 import { requireAuth, requireRole } from "./context.js"
 import { isAdminEmail } from "./admin-allowlist.js"

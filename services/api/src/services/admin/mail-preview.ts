@@ -1,4 +1,4 @@
-import { collapseWhitespace } from "@civfix/shared"
+import { collapseWhitespace } from "@civfix/contract"
 
 export const PREVIEW_LEN = 140
 

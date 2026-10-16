@@ -7,8 +7,8 @@ import {
   type WsServerMessage,
   type ChatMessageDTO,
   type UserMentionDTO,
-} from "@civfix/shared"
-import type { ChatConnection, UserChannel } from "@civfix/shared/interfaces"
+} from "@civfix/contract"
+import type { ChatConnection, UserChannel } from "@civfix/seams"
 import { resolveAndRecordChatMentions } from "../services/chat-mention-resolver.js"
 import { mapWithLimit } from "../lib/concurrency.js"
 import { neutralizeChatViewerFields } from "../services/chat-viewer-fields.js"

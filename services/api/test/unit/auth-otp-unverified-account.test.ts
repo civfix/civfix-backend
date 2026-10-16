@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest"
-import { FakeMailer } from "@civfix/shared/fakes"
+import { FakeMailer } from "@civfix/seams"
 import { InMemoryCacheClient } from "../../src/auth/cache.js"
 import {
   InMemoryOAuthIdentityStore,
