@@ -96,6 +96,8 @@ async function buildFullFakeServer(): Promise<FastifyInstance> {
       mediaRejected: 0,
       timeline: [],
       linkedEvents: [],
+      confirmCount: 0,
+      confirmedByMe: false,
     })
   }
   const claimService = makeClaimService({
@@ -227,8 +229,8 @@ describe("route-coverage: every shared endpoint is registered (offline boot smok
     })
   }
 
-  it("covers ALL 336 endpoints in the registry (no endpoint skipped)", () => {
-    expect(Object.keys(endpoints).length).toBe(336)
+  it("T42: covers ALL 339 endpoints in the registry (no endpoint skipped)", () => {
+    expect(Object.keys(endpoints).length).toBe(339)
   })
 
   it("the discriminator is not vacuous: a bogus path IS detected as route-missing", async () => {

@@ -1,5 +1,14 @@
 import { sql } from "drizzle-orm"
-import { check, index, pgTable, text, timestamp, uniqueIndex, uuid } from "drizzle-orm/pg-core"
+import {
+  check,
+  index,
+  integer,
+  pgTable,
+  text,
+  timestamp,
+  uniqueIndex,
+  uuid,
+} from "drizzle-orm/pg-core"
 import type { AddressPrecision, ReportAddressSource } from "@civfix/shared"
 import { jurisdictions } from "./jurisdictions.js"
 import { users } from "./users.js"
@@ -53,6 +62,8 @@ export const reports = pgTable(
     publishedAt: timestamp("published_at", { withTimezone: true }),
     deletedAt: timestamp("deleted_at", { withTimezone: true }),
     holdReleaseCheckedAt: timestamp("hold_release_checked_at", { withTimezone: true }),
+    /** Rows in report_confirmations for this report, moved in the same transaction as the row. */
+    confirmCount: integer("confirm_count").notNull().default(0),
   },
   (t) => [
     uniqueIndex("reports_idempotency_key_key").on(t.idempotencyKey),

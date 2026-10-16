@@ -7,8 +7,10 @@ import type {
   ListReportsSearchResponse,
   MediaDTO,
   PaginationQuery,
+  PressingReportsResponse,
   ReportCategory,
   ReportClusterResponse,
+  ReportConfirmResponse,
   ReportDTO,
   ReportPinDTO,
   ReportTimelineEntryDTO,
@@ -54,6 +56,7 @@ import {
 import type {
   BBox,
   OwnerToggleStatus,
+  ReportConfirmationOutcome,
   ReportMediaView,
   ReportRecord,
   ReportTimelineView,
@@ -67,11 +70,13 @@ const RESOLVED_BY_REPORTER_NOTE = "Marked resolved by the reporter"
 const REOPENED_BY_REPORTER_NOTE = "Reopened by the reporter"
 const HIDDEN_BY_REPORTER_NOTE = "Hidden from the public map by the reporter"
 const RELISTED_BY_REPORTER_NOTE = "Re-listed by the reporter"
+const PRESSING_REPORTS_LIMIT = 20
 
 type PresignMedia = ReportServiceDeps["presignMedia"]
 
 interface ReportViewFlags {
   mine: boolean
+  confirmedByMe?: boolean
   mediaPending?: number
   mediaRejected?: number
   linkedEvents?: LinkedEventRef[]
@@ -111,6 +116,7 @@ async function toMapPinDTO(pin: UnsignedReportPin, presign: PresignMedia): Promi
     thumbUrl,
     addr: pin.addr,
     ...(pin.referenceCode !== null ? { referenceCode: pin.referenceCode } : {}),
+    confirmCount: pin.confirmCount,
   }
 }
 
@@ -190,6 +196,8 @@ export function makeReportService(deps: ReportServiceDeps): ReportService {
       linkedEvents: flags.linkedEvents ?? [],
       ...discussionFields(flags.discussionMeta ?? null),
       ...chatFields(flags.chatMeta ?? null),
+      confirmCount: record.confirmCount,
+      confirmedByMe: flags.confirmedByMe ?? false,
     }
   }
 
@@ -222,16 +230,19 @@ export function makeReportService(deps: ReportServiceDeps): ReportService {
     }
   }
 
+  // confirmedByMe is looked up only for getReport (DECISIONS §60); the reporter can hold no
+  // confirmation of their own report, so it is never looked up for them.
   async function viewReport(
     record: ReportRecord,
     viewerId: string | null,
+    opts: { withConfirmedByMe?: boolean } = {},
   ): Promise<ReportDTO | null> {
     if (record.deletedAt !== null) return null
     const mine = viewerId !== null && record.reporterUserId === viewerId
     const isPublic = isPubliclyVisibleStatus(record.status) && record.visibility === "public"
     if (!isPublic && !mine) return null
 
-    const [media, timeline, mediaStates, linkedEvents, discussionMeta, chatMeta] =
+    const [media, timeline, mediaStates, linkedEvents, discussionMeta, chatMeta, confirmedByMe] =
       await Promise.all([
         deps.repo.findMediaForReport(record.id, mine),
         deps.repo.findTimelineForReport(record.id),
@@ -239,6 +250,9 @@ export function makeReportService(deps: ReportServiceDeps): ReportService {
         linkedEventsFor(record.id),
         discussionMetaFor(record.id),
         chatMetaFor(record.id, viewerId),
+        opts.withConfirmedByMe === true && viewerId !== null && !mine
+          ? deps.repo.isConfirmedBy(record.id, viewerId)
+          : Promise.resolve(false),
       ])
 
     const validatingShown = media.reduce((n, m) => (m.status === "validating" ? n + 1 : n), 0)
@@ -253,6 +267,7 @@ export function makeReportService(deps: ReportServiceDeps): ReportService {
       linkedEvents,
       discussionMeta,
       chatMeta,
+      confirmedByMe,
     })
   }
 
@@ -338,7 +353,9 @@ export function makeReportService(deps: ReportServiceDeps): ReportService {
       const record = isUuid(id)
         ? await deps.repo.findReportById(id)
         : await deps.repo.findReportByReferenceCode(id)
-      const dto = record ? await viewReport(record, viewer.userId ?? null) : null
+      const dto = record
+        ? await viewReport(record, viewer.userId ?? null, { withConfirmedByMe: true })
+        : null
       if (dto === null) throw AppError.notFound(REPORT_NOT_FOUND)
       return dto
     },
@@ -455,8 +472,39 @@ export function makeReportService(deps: ReportServiceDeps): ReportService {
       await maybeEmitTimeline(deps, { reportId, status: dto.status, kind, note })
       return dto
     },
+
+    async confirmReport(userId: string, reportId: string): Promise<ReportConfirmResponse> {
+      const outcome = await deps.repo.setConfirmation(reportId, userId, "confirm")
+      return { confirmCount: appliedConfirmCount(outcome), confirmedByMe: true }
+    },
+
+    async unconfirmReport(userId: string, reportId: string): Promise<ReportConfirmResponse> {
+      const outcome = await deps.repo.setConfirmation(reportId, userId, "unconfirm")
+      return { confirmCount: appliedConfirmCount(outcome), confirmedByMe: false }
+    },
+
+    async pressingReports(bbox: BBox): Promise<PressingReportsResponse> {
+      const points = await deps.repo.findPressing(bbox, PRESSING_REPORTS_LIMIT)
+      const items: ReportPinDTO[] = await mapWithLimit(points, PRESIGN_CONCURRENCY, (p) =>
+        toMapPinDTO(mapPointToUnsignedPin(p), deps.presignMedia),
+      )
+      return { items }
+    },
   }
   return service
+}
+
+function appliedConfirmCount(outcome: ReportConfirmationOutcome): number {
+  switch (outcome.kind) {
+    case "applied":
+      return outcome.confirmCount
+    case "not_found":
+      throw AppError.notFound(REPORT_NOT_FOUND)
+    case "forbidden":
+      throw AppError.forbidden("Me too is for other people's reports, not your own")
+    case "closed":
+      throw AppError.conflict("This report is resolved, so it takes no new Me too")
+  }
 }
 
 async function resolvePlacement(

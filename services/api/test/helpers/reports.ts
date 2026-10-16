@@ -5,6 +5,7 @@ import type {
   CreateReportTxArgs,
   CreateReportTxResult,
   OwnerToggleStatus,
+  ReportConfirmationOutcome,
   ReportMapPoint,
   ReportMediaView,
   ReportRecord,
@@ -13,11 +14,12 @@ import type {
 } from "../../src/services/report-repository.js"
 import { formatReferenceCode, reportScopeKey, typeCodeFor } from "../../src/db/reference-code.js"
 import {
+  confirmationVerdict,
   isPubliclyVisibleStatus,
   ownerStatusTransition,
 } from "../../src/services/report-visibility.js"
 import { paginate, parseTimeCursor } from "../../src/db/cursor-helpers.js"
-import type { ReportDTO } from "@civfix/shared"
+import { OPEN_REPORT_STATUSES, type ReportDTO } from "@civfix/shared"
 
 export interface StoredMediaAsset {
   id: string
@@ -54,6 +56,8 @@ export class InMemoryReportRepository implements ReportRepository {
   readonly media: StoredMediaAsset[] = []
   readonly timeline: StoredTimeline[] = []
   readonly idempotency = new Map<string, StoredIdempotency>()
+  /** report id -> (user id -> confirmed at): the report_confirmations rows. */
+  readonly confirmations = new Map<string, Map<string, Date>>()
   private readonly refCounters = new Map<string, number>()
 
   private allocateReferenceCode(type: ReportRecord["type"], jurCode: number): string {
@@ -125,9 +129,48 @@ export class InMemoryReportRepository implements ReportRepository {
       createdAt: over.createdAt ?? now,
       publishedAt: over.publishedAt ?? (over.status === undefined ? now : null),
       deletedAt: over.deletedAt ?? null,
+      confirmCount: over.confirmCount ?? 0,
     }
     this.reports.set(record.id, record)
     return record
+  }
+
+  /** A confirmation row plus the count it moves, as the confirm transaction writes them. */
+  seedConfirmation(reportId: string, userId: string = randomUUID()): void {
+    const report = this.reports.get(reportId)
+    if (!report) throw new Error(`seedConfirmation: no report ${reportId}`)
+    const rows = this.confirmationsOf(reportId)
+    if (rows.has(userId)) return
+    rows.set(userId, this.nextDate())
+    report.confirmCount += 1
+  }
+
+  private confirmationsOf(reportId: string): Map<string, Date> {
+    let rows = this.confirmations.get(reportId)
+    if (!rows) {
+      rows = new Map()
+      this.confirmations.set(reportId, rows)
+    }
+    return rows
+  }
+
+  private toMapPoint(r: ReportRecord): ReportMapPoint {
+    const firstPhoto = this.firstReadyStill(r.id)
+    return {
+      id: r.id,
+      lat: r.lat,
+      lng: r.lng,
+      category: r.category,
+      type: r.type,
+      status: r.status,
+      title: r.title,
+      description: r.description,
+      addr: r.addr,
+      referenceCode: r.referenceCode,
+      thumbKey: firstPhoto?.thumbKey ?? null,
+      r2Key: firstPhoto?.r2Key ?? null,
+      confirmCount: r.confirmCount,
+    }
   }
 
   findIdempotentSnapshot(
@@ -172,6 +215,7 @@ export class InMemoryReportRepository implements ReportRepository {
       createdAt,
       publishedAt: args.publishedAt,
       deletedAt: null,
+      confirmCount: 0,
     }
     this.reports.set(record.id, record)
 
@@ -325,23 +369,7 @@ export class InMemoryReportRepository implements ReportRepository {
       )
       .sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime())
       .slice(0, cap)
-      .map((r) => {
-        const firstPhoto = this.firstReadyStill(r.id)
-        return {
-          id: r.id,
-          lat: r.lat,
-          lng: r.lng,
-          category: r.category,
-          type: r.type,
-          status: r.status,
-          title: r.title,
-          description: r.description,
-          addr: r.addr,
-          referenceCode: r.referenceCode,
-          thumbKey: firstPhoto?.thumbKey ?? null,
-          r2Key: firstPhoto?.r2Key ?? null,
-        }
-      })
+      .map((r) => this.toMapPoint(r))
     return Promise.resolve(rows)
   }
 
@@ -388,24 +416,53 @@ export class InMemoryReportRepository implements ReportRepository {
       at: r.createdAt,
       id: r.id,
     }))
-    const points: ReportMapPoint[] = items.map((r) => {
-      const firstPhoto = this.firstReadyStill(r.id)
-      return {
-        id: r.id,
-        lat: r.lat,
-        lng: r.lng,
-        category: r.category,
-        type: r.type,
-        status: r.status,
-        title: r.title,
-        description: r.description,
-        addr: r.addr,
-        referenceCode: r.referenceCode,
-        thumbKey: firstPhoto?.thumbKey ?? null,
-        r2Key: firstPhoto?.r2Key ?? null,
-      }
-    })
+    const points: ReportMapPoint[] = items.map((r) => this.toMapPoint(r))
     return Promise.resolve({ points, nextCursor })
+  }
+
+  findPressing(bbox: BBox, limit: number): Promise<ReportMapPoint[]> {
+    const open = OPEN_REPORT_STATUSES as readonly string[]
+    const rows = [...this.reports.values()]
+      .filter(
+        (r) =>
+          open.includes(r.status) &&
+          r.visibility === "public" &&
+          r.deletedAt === null &&
+          r.confirmCount >= 1 &&
+          r.lng >= bbox.west &&
+          r.lng <= bbox.east &&
+          r.lat >= bbox.south &&
+          r.lat <= bbox.north,
+      )
+      .sort(
+        (a, b) => b.confirmCount - a.confirmCount || b.createdAt.getTime() - a.createdAt.getTime(),
+      )
+      .slice(0, limit)
+      .map((r) => this.toMapPoint(r))
+    return Promise.resolve(rows)
+  }
+
+  setConfirmation(
+    reportId: string,
+    userId: string,
+    action: "confirm" | "unconfirm",
+  ): Promise<ReportConfirmationOutcome> {
+    const report = this.reports.get(reportId)
+    if (!report) return Promise.resolve({ kind: "not_found" })
+    const verdict = confirmationVerdict(report, userId, action)
+    if (verdict !== "allowed") return Promise.resolve({ kind: verdict })
+    const rows = this.confirmationsOf(reportId)
+    if (action === "confirm" && !rows.has(userId)) {
+      rows.set(userId, this.nextDate())
+      report.confirmCount += 1
+    } else if (action === "unconfirm" && rows.delete(userId)) {
+      report.confirmCount = Math.max(report.confirmCount - 1, 0)
+    }
+    return Promise.resolve({ kind: "applied", confirmCount: report.confirmCount })
+  }
+
+  isConfirmedBy(reportId: string, userId: string): Promise<boolean> {
+    return Promise.resolve(this.confirmations.get(reportId)?.has(userId) ?? false)
   }
 
   resolveByOwner(

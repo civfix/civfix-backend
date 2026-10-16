@@ -19,6 +19,7 @@ import type {
   PostExportRow,
   ProfileRow,
   PushTokenRow,
+  ReportConfirmationExportRow,
   ReportExportRow,
   VolunteerHoursExportRow,
 } from "./data-export-repository.js"
@@ -40,6 +41,14 @@ export function makeDrizzleDataExportRepository(sql: Sql): DataExportRepository 
       LEFT JOIN jurisdictions j ON j.geoid = r.jurisdiction_geoid
       WHERE r.reporter_user_id = ${userId}
       ORDER BY r.created_at DESC
+      LIMIT ${rowCap + 1}
+    `,
+
+    reportConfirmations: (userId, rowCap) => sql<ReportConfirmationExportRow[]>`
+      SELECT report_id, created_at
+      FROM report_confirmations
+      WHERE user_id = ${userId}
+      ORDER BY created_at DESC
       LIMIT ${rowCap + 1}
     `,
 

@@ -21,6 +21,11 @@ export interface ReportExportRow {
   created_at: Date
 }
 
+export interface ReportConfirmationExportRow {
+  report_id: string
+  created_at: Date
+}
+
 export interface PostExportRow {
   id: string
   kind: string
@@ -179,6 +184,7 @@ export interface EventCheckinExportRow {
 export interface DataExportRepository {
   profile(userId: string): Promise<ProfileRow | null>
   reports(userId: string, rowCap: number): Promise<ReportExportRow[]>
+  reportConfirmations(userId: string, rowCap: number): Promise<ReportConfirmationExportRow[]>
   posts(userId: string, rowCap: number): Promise<PostExportRow[]>
   chatMessages(userId: string, rowCap: number): Promise<ChatMessageExportRow[]>
   dmMessages(userId: string, rowCap: number): Promise<DmMessageExportRow[]>

@@ -7,7 +7,7 @@ import type {
   ReportStatus,
   ReportType,
 } from "@civfix/shared"
-import { PUBLIC_REPORT_STATUSES } from "./report-visibility.js"
+import { PUBLIC_REPORT_STATUSES } from "@civfix/shared"
 import type {
   ReportMapPoint,
   ReportMediaView,
@@ -36,6 +36,7 @@ export interface ReportRowSelect {
   created_at: Date
   published_at: Date | null
   deleted_at: Date | null
+  confirm_count: number
 }
 
 export function toRecord(r: ReportRowSelect): ReportRecord {
@@ -60,6 +61,7 @@ export function toRecord(r: ReportRowSelect): ReportRecord {
     createdAt: r.created_at,
     publishedAt: r.published_at,
     deletedAt: r.deleted_at,
+    confirmCount: r.confirm_count,
   }
 }
 
@@ -68,7 +70,7 @@ export function reportColumns(sql: Queryable) {
     id, reporter_user_id, anon_session_id, category, type, title, description, addr, addr_source,
     addr_precision, status, visibility,
     ST_X(geom) AS lng, ST_Y(geom) AS lat, geom_source, jurisdiction_geoid, reference_code,
-    created_at, published_at, deleted_at
+    created_at, published_at, deleted_at, confirm_count
   `
 }
 
@@ -144,11 +146,12 @@ export interface PublicPinRow {
   reference_code: string | null
   thumb_key: string | null
   r2_key: string | null
+  confirm_count: number
   created_at: Date
   cursor_at: string | null
 }
 
-export function toMapPoint(r: PublicPinRow): ReportMapPoint {
+export function toMapPoint(r: Omit<PublicPinRow, "cursor_at">): ReportMapPoint {
   return {
     id: r.id,
     lat: r.lat,
@@ -162,6 +165,7 @@ export function toMapPoint(r: PublicPinRow): ReportMapPoint {
     referenceCode: r.reference_code,
     thumbKey: r.thumb_key,
     r2Key: r.r2_key,
+    confirmCount: r.confirm_count,
   }
 }
 
@@ -185,6 +189,7 @@ export async function selectPublicPins(
       r.reference_code,
       m.thumb_key,
       m.r2_key,
+      r.confirm_count,
       r.created_at,
       ${keysetInstant(sql, sql`r.created_at`)} AS cursor_at
     FROM reports r

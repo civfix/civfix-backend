@@ -408,6 +408,18 @@ export function makeDrizzleClaimRepository(sql: Sql): ClaimRepository {
         `
         const report = updated[0]
         if (!report) return null
+        // A Me too is for someone else's report, so the claimant's own one (made while it was
+        // anonymous) goes in the same transaction, with the count it added.
+        const removed = await tx<{ report_id: string }[]>`
+          DELETE FROM report_confirmations
+          WHERE report_id = ${report.id} AND user_id = ${userId}
+          RETURNING report_id
+        `
+        if (removed.length > 0) {
+          await tx`
+            UPDATE reports SET confirm_count = GREATEST(confirm_count - 1, 0) WHERE id = ${report.id}
+          `
+        }
         return { reportId: report.id }
       })
     },
