@@ -14,7 +14,13 @@ import {
   userModeration,
   users,
 } from "../db/schema/index.js"
-import { AppError, DELETED_USER_LABEL, SOCIAL_PLATFORMS, type Role, type SocialLinks } from "@civfix/contract"
+import {
+  AppError,
+  DELETED_USER_LABEL,
+  SOCIAL_PLATFORMS,
+  type Role,
+  type SocialLinks,
+} from "@civfix/contract"
 import type { Jobs } from "@civfix/seams"
 import { decideHandleWrite, handleChanged } from "./handle-policy.js"
 import { avatarMediaRefOrThrow } from "../services/avatar-media.js"

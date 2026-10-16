@@ -6,7 +6,12 @@
  */
 
 import { relativeAgo, ActivityKindSchema } from "@civfix/contract"
-import type { ActivityItemDTO, ActivityKind, ActivityListQuery, ActivityListResponse } from "@civfix/contract"
+import type {
+  ActivityItemDTO,
+  ActivityKind,
+  ActivityListQuery,
+  ActivityListResponse,
+} from "@civfix/contract"
 import { clampLimit } from "./pagination.js"
 import type {
   ActivityFilter,

@@ -5,7 +5,7 @@
 export function makeIdFactory(seed = 1): () => string {
   // 0 is a FIXED POINT of xorshift32 (0 -> 0), so a caller passing seed 0 (or anything that truncates
   // to 0, e.g. 2**32) would otherwise get the same id forever and silently collide every fake row.
-  let n = (seed >>> 0) || 1
+  let n = seed >>> 0 || 1
   return () => {
     // xorshift32 step for a little spread, then format as a v4 UUID.
     n ^= n << 13

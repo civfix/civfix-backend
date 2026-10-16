@@ -2,7 +2,11 @@ import { afterAll, describe, expect, it } from "vitest"
 import { randomUUID } from "node:crypto"
 import { getTableName, is } from "drizzle-orm"
 import { PgTable, getTableConfig } from "drizzle-orm/pg-core"
-import { AddressPrecisionSchema, EventAddressSourceSchema, ReportAddressSourceSchema } from "@civfix/contract"
+import {
+  AddressPrecisionSchema,
+  EventAddressSourceSchema,
+  ReportAddressSourceSchema,
+} from "@civfix/contract"
 import { withPg, type PgHarness } from "../helpers/pg.js"
 import { seedCleanup } from "../helpers/cleanups.js"
 import * as schema from "../../src/db/schema/index.js"

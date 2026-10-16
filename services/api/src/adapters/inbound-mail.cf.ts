@@ -1,4 +1,9 @@
-import type { InboundMail, ParsedMail, ParsedMailAddress, ParsedMailAttachment } from "@civfix/seams"
+import type {
+  InboundMail,
+  ParsedMail,
+  ParsedMailAddress,
+  ParsedMailAttachment,
+} from "@civfix/seams"
 import { collapseWhitespace } from "@civfix/contract"
 import type { AddressObject, Attachment, EmailAddress, HeaderLines } from "mailparser"
 import { getDomain } from "tldts"

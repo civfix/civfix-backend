@@ -1,5 +1,9 @@
 import { tokens } from "@civfix/tokens"
-import { markdownInlineToPlainText, type MarkdownInline, type MarkdownList } from "@civfix/contract/markdown"
+import {
+  markdownInlineToPlainText,
+  type MarkdownInline,
+  type MarkdownList,
+} from "@civfix/contract/markdown"
 import { escapeHtml } from "./mail-text.js"
 
 export interface EmailBlock {

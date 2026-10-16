@@ -1,5 +1,9 @@
 import type { Sql } from "../db/client.js"
-import { ReportStatusSchema, type ChatMessageDTO, type ReportChatParticipantDTO } from "@civfix/contract"
+import {
+  ReportStatusSchema,
+  type ChatMessageDTO,
+  type ReportChatParticipantDTO,
+} from "@civfix/contract"
 import type { PresignMedia } from "./media-presign.js"
 import type { ReportChatMeta } from "./report-types.js"
 import { monotonicReadWatermarkUpdate } from "./read-watermark-repository.drizzle.js"

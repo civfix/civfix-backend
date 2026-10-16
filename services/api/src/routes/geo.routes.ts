@@ -1,4 +1,7 @@
-import { GetApproximateLocationRequestSchema, type GetApproximateLocationResponse } from "@civfix/contract"
+import {
+  GetApproximateLocationRequestSchema,
+  type GetApproximateLocationResponse,
+} from "@civfix/contract"
 import type { FastifyInstance } from "fastify"
 import type { Container } from "../di.js"
 import { cfGeoFromTrustedEdge } from "../abuse/gps-sanity.js"

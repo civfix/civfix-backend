@@ -1,4 +1,9 @@
-import { AppError, ErrorCode, MAX_EVENT_DURATION_MINUTES, MIN_EVENT_DURATION_MINUTES } from "@civfix/contract"
+import {
+  AppError,
+  ErrorCode,
+  MAX_EVENT_DURATION_MINUTES,
+  MIN_EVENT_DURATION_MINUTES,
+} from "@civfix/contract"
 import type { CleanupStatus, EventSlotInput } from "@civfix/contract"
 import {
   DEFAULT_EVENT_DURATION_MS,

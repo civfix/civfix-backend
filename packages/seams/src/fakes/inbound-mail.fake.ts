@@ -84,7 +84,8 @@ export class FakeInboundMail implements InboundMail {
     const ccAddresses = (mail.headers["cc"] ?? "").match(REPLY_ADDRESS_SCAN_RE) ?? []
     for (const address of [...mail.to.map((addr) => addr.address), ...ccAddresses]) {
       const match = address.toLowerCase().match(REPLY_ADDRESS_RE)
-      if (match?.[1] && match[2] === this.replyDomain && THREAD_TOKEN_RE.test(match[1])) return match[1]
+      if (match?.[1] && match[2] === this.replyDomain && THREAD_TOKEN_RE.test(match[1]))
+        return match[1]
     }
     return null
   }

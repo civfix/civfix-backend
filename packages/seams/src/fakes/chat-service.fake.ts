@@ -122,14 +122,16 @@ export class FakeChatService implements ChatService {
       // NOT AppError: the fakes entry is bundled separately from the package index, so its AppError
       // would be a DIFFERENT class object and consumers' `instanceof AppError` handlers would map it
       // to 500. A fastify-style `statusCode` duck-typed Error renders as an honest 404 everywhere.
-      if (idx < 0) return Promise.reject(Object.assign(new Error("Message not found"), { statusCode: 404 }))
+      if (idx < 0)
+        return Promise.reject(Object.assign(new Error("Message not found"), { statusCode: 404 }))
       const olderLimit = Math.ceil(limit / 2)
       const newerLimit = Math.floor(limit / 2)
       const newerStart = Math.max(0, idx - newerLimit)
       const window = ordered.slice(newerStart, idx + olderLimit)
       return Promise.resolve({
         items: window,
-        nextCursor: idx + olderLimit < ordered.length ? (window[window.length - 1]?.id ?? null) : null,
+        nextCursor:
+          idx + olderLimit < ordered.length ? (window[window.length - 1]?.id ?? null) : null,
         prevCursor: newerStart > 0 ? (window[0]?.id ?? null) : null,
       })
     }

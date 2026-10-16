@@ -1,6 +1,12 @@
 import type postgres from "postgres"
 import { AppError, OPEN_REPORT_STATUSES } from "@civfix/contract"
-import type { ReportCategory, ReportDTO, ReportStatus, ReportType, ReportVisibility } from "@civfix/contract"
+import type {
+  ReportCategory,
+  ReportDTO,
+  ReportStatus,
+  ReportType,
+  ReportVisibility,
+} from "@civfix/contract"
 import type { Queryable, Sql, SqlFragment } from "../db/client.js"
 import {
   keysetInstant,

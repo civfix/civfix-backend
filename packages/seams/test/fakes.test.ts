@@ -90,9 +90,7 @@ describe("FakeInboundMail", () => {
 
   it("extracts a token from the current report-/event- reply addresses", async () => {
     const m = new FakeInboundMail()
-    const reportReply = await m.parse(
-      enc.encode("To: report-k7m2x9q4ab3d@civfix.org\n\nthanks"),
-    )
+    const reportReply = await m.parse(enc.encode("To: report-k7m2x9q4ab3d@civfix.org\n\nthanks"))
     expect(m.extractThreadToken(reportReply)).toBe("k7m2x9q4ab3d")
     const eventReply = await m.parse(enc.encode("To: event-k7m2x9q4ab3d@civfix.org\n\nok"))
     expect(m.extractThreadToken(eventReply)).toBe("k7m2x9q4ab3d")
@@ -208,7 +206,10 @@ describe("FakeUserChannel", () => {
     await ch.subscribeUser("user-a", { id: "a1", send: (d) => a.push(d) })
     await ch.subscribeUser("user-b", { id: "b1", send: (d) => b.push(d) })
 
-    await ch.publishToUsers(["user-a", "user-b"], { topic: "threads", id: "00000000-0000-0000-0000-000000000000" })
+    await ch.publishToUsers(["user-a", "user-b"], {
+      topic: "threads",
+      id: "00000000-0000-0000-0000-000000000000",
+    })
     expect(a).toHaveLength(1)
     expect(b).toHaveLength(1)
     expect(ch.published).toHaveLength(2)
