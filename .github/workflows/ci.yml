@@ -1,7 +1,7 @@
 name: CI
 
 # main is the only long-lived branch (issue civfix/issue-tracker#108): main is the staging lane, and
-# production ships from a published v* release. PRs target main, or an epic's integration/epic-<n>
+# production ships from a published v* release. PRs target main, or an epic's integration/<name>
 # lane, which lands on main in one PR.
 on:
   pull_request:
