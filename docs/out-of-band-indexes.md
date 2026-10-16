@@ -43,7 +43,9 @@ public reports in a bbox that have at least one Me too, most confirmed first.
 A wide bbox walks this index in list order until 20 rows match (it holds
 every confirmed public report, resolved ones included); without it the query
 checks every report in the bbox. Build it on staging before the change merges
-and on prod before the release that carries it.
+and on prod right after the release that carries it: migration 0194 adds
+`confirm_count` in that same release, so the build fails with `column
+"confirm_count" does not exist` until the release has deployed.
 
 ```sql
 CREATE INDEX CONCURRENTLY IF NOT EXISTS reports_pressing_idx
