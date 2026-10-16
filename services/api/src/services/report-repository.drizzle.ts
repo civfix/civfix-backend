@@ -19,7 +19,6 @@ import {
   isPubliclyVisibleStatus,
   ownerStatusTransition,
 } from "./report-visibility.js"
-import { MAP_REPORTS_CANDIDATE_CAP } from "./report-clustering.js"
 import { allocateReportReferenceCode } from "../db/reference-code.js"
 import { likeContains } from "../db/like.js"
 import type { ReportVisibilityTimelineKind } from "./report-types.js"
@@ -141,6 +140,58 @@ export async function isReportOwnedBy(
     LIMIT 1
   `
   return rows[0]?.reporter_user_id === userId
+}
+
+export const PRESSING_INDEX = "reports_pressing_idx"
+
+// Confirmed reports are filtered and ranked in one step, never picked out of a newest-first window: a
+// window would drop an older, heavily confirmed report behind newer unconfirmed ones in a busy bbox.
+// The literal `confirm_count >= 1`, with publicReportFilter's literal visibility and deleted_at, is
+// what lets the planner prove PRESSING_INDEX's partial predicate (0195); parameterizing any of them
+// loses the index. A wide bbox walks the index in list order until `limit` rows match. Only the rows
+// that make the list join their thumbnail.
+function pressingStatement(sql: Queryable, bbox: BBox, limit: number): SqlFragment {
+  return sql`
+    WITH pressing AS (
+      SELECT r.id, r.geom, r.category, r.type, r.status, r.title, r.description, r.addr,
+             r.reference_code, r.confirm_count, r.created_at
+      FROM reports r
+      WHERE ${publicReportFilter(sql)}
+        AND r.status = ANY(${[...OPEN_REPORT_STATUSES]}::text[])
+        AND r.confirm_count >= 1
+        AND ST_Intersects(
+              r.geom,
+              ST_MakeEnvelope(${bbox.west}, ${bbox.south}, ${bbox.east}, ${bbox.north}, 4326)
+            )
+      ORDER BY r.confirm_count DESC, r.created_at DESC
+      LIMIT ${limit}
+    )
+    SELECT
+      r.id,
+      ST_X(r.geom) AS lng,
+      ST_Y(r.geom) AS lat,
+      r.category,
+      r.type,
+      r.status,
+      r.title,
+      r.description,
+      r.addr,
+      r.reference_code,
+      m.thumb_key,
+      m.r2_key,
+      r.confirm_count,
+      r.created_at
+    FROM pressing r
+    ${firstReadyStillLateral(sql)}
+    ORDER BY r.confirm_count DESC, r.created_at DESC
+  `
+}
+
+export async function explainPressing(sql: Queryable, bbox: BBox, limit: number): Promise<string> {
+  const rows = await sql<Record<string, string>[]>`
+    EXPLAIN (COSTS OFF, VERBOSE) ${pressingStatement(sql, bbox, limit)}
+  `
+  return rows.map((r) => Object.values(r)[0] ?? "").join("\n")
 }
 
 export function makeDrizzleReportRepository(sql: Sql): ReportRepository {
@@ -459,50 +510,9 @@ export function makeDrizzleReportRepository(sql: Sql): ReportRepository {
       return { points: items.map(toMapPoint), nextCursor }
     },
 
-    // One statement. The candidates are the map's: the newest public reports in the bbox, capped like
-    // the map before any media is read, so a dense or wide bbox cannot turn into an unbounded scan of
-    // a hot table. Only the 20 that make the list then join their thumbnail.
     async findPressing(bbox: BBox, limit: number): Promise<ReportMapPoint[]> {
       const rows = await sql<Omit<PublicPinRow, "cursor_at">[]>`
-        WITH candidates AS (
-          SELECT r.id
-          FROM reports r
-          WHERE ${publicReportFilter(sql)}
-            AND ST_Intersects(
-                  r.geom,
-                  ST_MakeEnvelope(${bbox.west}, ${bbox.south}, ${bbox.east}, ${bbox.north}, 4326)
-                )
-          ORDER BY r.created_at DESC
-          LIMIT ${MAP_REPORTS_CANDIDATE_CAP}
-        ),
-        pressing AS (
-          SELECT r.id, r.geom, r.category, r.type, r.status, r.title, r.description, r.addr,
-                 r.reference_code, r.confirm_count, r.created_at
-          FROM reports r
-          JOIN candidates c ON c.id = r.id
-          WHERE r.status = ANY(${[...OPEN_REPORT_STATUSES]}::text[])
-            AND r.confirm_count >= 1
-          ORDER BY r.confirm_count DESC, r.created_at DESC
-          LIMIT ${limit}
-        )
-        SELECT
-          r.id,
-          ST_X(r.geom) AS lng,
-          ST_Y(r.geom) AS lat,
-          r.category,
-          r.type,
-          r.status,
-          r.title,
-          r.description,
-          r.addr,
-          r.reference_code,
-          m.thumb_key,
-          m.r2_key,
-          r.confirm_count,
-          r.created_at
-        FROM pressing r
-        ${firstReadyStillLateral(sql)}
-        ORDER BY r.confirm_count DESC, r.created_at DESC
+        ${pressingStatement(sql, bbox, limit)}
       `
       return rows.map(toMapPoint)
     },
