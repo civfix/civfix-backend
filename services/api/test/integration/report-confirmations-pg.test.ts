@@ -23,6 +23,8 @@ import { generateToken, sha256Hex } from "../../src/auth/crypto.js"
 import { makeDataExportService } from "../../src/services/data-export-service.js"
 import { DATA_EXPORT_JOB } from "../../src/lib/queue-names.js"
 import { LA_CITY } from "../../src/db/seed-fixtures.js"
+import { MAP_REPORTS_CANDIDATE_CAP } from "../../src/services/report-clustering.js"
+import { explainPressing, PRESSING_INDEX } from "../../src/services/report-repository.drizzle.js"
 
 const pg = await withPg()
 
@@ -469,6 +471,44 @@ describe.skipIf(!pg)("report confirmations (integration)", () => {
       expect(res.json().items.map((i: { confirmCount: number }) => i.confirmCount)).toEqual(
         Array.from({ length: 20 }, (_, i) => 25 - i),
       )
+    })
+
+    it("T26a: an older confirmed report is listed behind more newer unconfirmed reports than the map caps", async () => {
+      const at = region()
+      const a = await resident()
+      const older = await report(at, {
+        reporter: a,
+        confirmCount: 3,
+        createdAt: new Date(Date.now() - 2 * 3_600_000),
+      })
+      await h.sql`
+        INSERT INTO reports (
+          idempotency_key, geom, geom_source, category, type, title, status, visibility, h3_cell,
+          jurisdiction_geoid, created_at
+        )
+        SELECT gen_random_uuid(), ST_SetSRID(ST_MakePoint(${at.lng}, ${at.lat}), 4326), 'device', 'trash',
+               'dump', 'Newer ' || g, 'published', 'public', 'h0', ${LA_CITY.geoid},
+               ${new Date(Date.now() - 3_600_000)}
+        FROM generate_series(1, ${MAP_REPORTS_CANDIDATE_CAP + 1}) AS g
+      `
+      const res = await pressing(at)
+      expect(res.json().items.map((i: { id: string }) => i.id)).toEqual([older])
+    })
+
+    it("T26b: a wide bbox plans the real statement as a walk of the pressing index", async () => {
+      await h.sql`
+        CREATE INDEX IF NOT EXISTS reports_pressing_idx
+          ON reports (confirm_count DESC, created_at DESC)
+          WHERE confirm_count >= 1 AND visibility = 'public' AND deleted_at IS NULL
+      `
+      await h.sql`ANALYZE reports`
+      const wide = { west: -179, south: -50, east: 21, north: 50 }
+      const plan = await h.sql.begin(async (tx) => {
+        await tx`SET LOCAL enable_seqscan = off`
+        await tx`SET LOCAL enable_bitmapscan = off`
+        return explainPressing(tx, wide, 20)
+      })
+      expect(plan, plan).toContain(`Index Scan using ${PRESSING_INDEX}`)
     })
   })
 

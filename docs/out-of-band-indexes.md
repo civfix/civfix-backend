@@ -1,7 +1,7 @@
 # Out-of-band indexes (civfix-backend)
 
 **Audience:** internal (engineering + ops). Not served publicly.
-**Last updated:** 2026-09-02 (audit H18).
+**Last updated:** 2026-10-16 (reports_pressing_idx).
 
 Every migration in `services/api/drizzle/` runs inside **one transaction**
 (`src/db/migrate.ts`), and `CREATE INDEX CONCURRENTLY` is not allowed in a
@@ -34,6 +34,34 @@ inside the api container targets the LIVE color, read from the state file
 staging `civfix-staging-api-<color>-1`); there is no `compose-api-1`.
 
 ## Pending
+
+### `reports_pressing_idx` (migration 0195)
+
+Back the pressing list (`findPressing` in
+`services/api/src/services/report-repository.drizzle.ts`), which ranks the open
+public reports in a bbox that have at least one Me too, most confirmed first.
+A wide bbox walks this index in list order until 20 rows match (it holds
+every confirmed public report, resolved ones included); without it the query
+checks every report in the bbox. Build it on staging before the change merges
+and on prod before the release that carries it.
+
+```sql
+CREATE INDEX CONCURRENTLY IF NOT EXISTS reports_pressing_idx
+  ON reports (confirm_count DESC, created_at DESC)
+  WHERE confirm_count >= 1 AND visibility = 'public' AND deleted_at IS NULL;
+```
+
+Verify:
+
+```sql
+SELECT indisvalid FROM pg_index WHERE indexrelid = 'reports_pressing_idx'::regclass;
+```
+
+It must return `t`. The name is exported as `PRESSING_INDEX` from
+`services/api/src/services/report-repository.drizzle.ts`, and
+`test/integration/report-confirmations-pg.test.ts` (T26b) builds the index on
+its testcontainer and `EXPLAIN`s the actual statement through the exported
+`explainPressing`, so a query edit that loses the index fails CI.
 
 ### `users_last_activity_gist` + `users_last_activity_at_idx` (migration 0102, audit H18)
 
