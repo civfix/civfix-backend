@@ -3,7 +3,7 @@ import {
   AppError,
   canTransitionReportStatus,
   ErrorCode,
-} from "@civfix/shared"
+} from "@civfix/contract"
 import type {
   AdminReportCounts,
   AdminReportDTO,
@@ -16,7 +16,7 @@ import type {
   ReportOutreach,
   ReportRouting,
   ReportTimelineItem,
-} from "@civfix/shared"
+} from "@civfix/contract"
 import { toLinkedEventRef, type LinkedEventView } from "../cleanup-service.js"
 import { toRelAbs } from "./admin-format.js"
 import { toPersonDTO } from "./admin-person.js"

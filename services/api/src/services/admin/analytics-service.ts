@@ -17,7 +17,7 @@ import type {
   AnalyticsRetentionResponse,
   AnalyticsTopContributorsResponse,
   AnalyticsTopJurisdictionsResponse,
-} from "@civfix/shared"
+} from "@civfix/contract"
 import {
   ANALYTICS_HEATMAP_LIMIT,
   ANALYTICS_TABLE_LIMIT,

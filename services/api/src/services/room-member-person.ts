@@ -1,4 +1,4 @@
-import type { PersonDTO } from "@civfix/shared"
+import type { PersonDTO } from "@civfix/contract"
 import { publicAuthorIdentity } from "./public-author.js"
 import { hiddenIdentity } from "./hidden-identity.js"
 import { officialPersonFlag } from "../auth/official-account.js"

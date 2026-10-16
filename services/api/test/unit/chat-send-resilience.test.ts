@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach } from "vitest"
 import type { FastifyBaseLogger } from "fastify"
-import type { ChatMessageDTO } from "@civfix/shared"
+import type { ChatMessageDTO } from "@civfix/contract"
 import {
   handleClientFrame,
   roomKeyFor,

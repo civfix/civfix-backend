@@ -10,7 +10,7 @@
 
 import { describe, expect, it, afterEach, vi } from "vitest"
 import type { FastifyInstance } from "fastify"
-import type { FakeChatService } from "@civfix/shared/fakes"
+import type { FakeChatService } from "@civfix/seams"
 import { bearer, makeAuthHarness, signIn, type AuthHarness } from "./auth.js"
 import { InMemoryNotificationRepository } from "./notifications.js"
 import { makeContainer } from "../../src/di.js"

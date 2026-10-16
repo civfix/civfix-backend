@@ -1,5 +1,5 @@
-import { DEFAULT_FEED_RANKING, FeedRankingConfigSchema } from "@civfix/shared"
-import type { FeedRankingConfig } from "@civfix/shared"
+import { DEFAULT_FEED_RANKING, FeedRankingConfigSchema } from "@civfix/contract"
+import type { FeedRankingConfig } from "@civfix/contract"
 import type { Env } from "./types.js"
 import type { EnvReader } from "./reader.js"
 import {

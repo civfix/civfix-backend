@@ -1,5 +1,5 @@
-import type { OrganizationMemberRole } from "@civfix/shared"
-import { can } from "@civfix/shared/host"
+import type { OrganizationMemberRole } from "@civfix/contract"
+import { can } from "@civfix/contract/host"
 
 export type InviterRevocationReason = "inviter_removed" | "inviter_demoted" | "account_deleted"
 

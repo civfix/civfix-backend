@@ -1,5 +1,5 @@
 import type { Queryable, Sql } from "../db/client.js"
-import type { UserMentionDTO } from "@civfix/shared"
+import type { UserMentionDTO } from "@civfix/contract"
 import type { MessageMentionRepository } from "./message-mentions-repository.js"
 
 // `table` and `idColumn` are module-constant union literals, never user input, interpolated as postgres.js

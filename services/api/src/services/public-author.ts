@@ -3,7 +3,7 @@
 // with no handle and no avatar photo. The public chat, DM and discussion projections share this helper
 // so they stay identical; admin projections deliberately do not use it.
 
-import { DELETED_USER_LABEL, avatarGradient } from "@civfix/shared"
+import { DELETED_USER_LABEL, avatarGradient } from "@civfix/contract"
 
 type AvatarPair = ReturnType<typeof avatarGradient>
 

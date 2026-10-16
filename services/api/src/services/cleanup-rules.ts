@@ -3,15 +3,15 @@ import {
   ErrorCode,
   MAX_EVENT_DURATION_MINUTES,
   MIN_EVENT_DURATION_MINUTES,
-} from "@civfix/shared"
-import type { CleanupStatus, EventSlotInput } from "@civfix/shared"
+} from "@civfix/contract"
+import type { CleanupStatus, EventSlotInput } from "@civfix/contract"
 import {
   DEFAULT_EVENT_DURATION_MS,
   deriveCleanupStatus,
   eventEndsAtMs,
   hasEventEnded,
-} from "@civfix/shared/host"
-import type { EventWindowLike } from "@civfix/shared/host"
+} from "@civfix/contract/host"
+import type { EventWindowLike } from "@civfix/contract/host"
 import { MS_PER_DAY, MS_PER_MINUTE } from "../lib/time.js"
 
 export { DEFAULT_EVENT_DURATION_MS, deriveCleanupStatus, eventEndsAtMs, hasEventEnded }

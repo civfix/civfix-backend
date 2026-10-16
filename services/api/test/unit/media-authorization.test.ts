@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest"
-import { FakeStorage, FakeJobs } from "@civfix/shared/fakes"
-import type { CreateMediaUploadRequest } from "@civfix/shared"
+import { FakeStorage, FakeJobs } from "@civfix/seams"
+import type { CreateMediaUploadRequest } from "@civfix/contract"
 import {
   makeMediaIntakeService,
   MEDIA_PRIVATE_GET_URL_TTL_SEC,

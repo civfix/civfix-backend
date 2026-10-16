@@ -12,7 +12,7 @@ import {
   uuid,
 } from "drizzle-orm/pg-core"
 import { citext, geometry, type ROLE_VALUES } from "./types.js"
-import type { SocialLinks } from "@civfix/shared"
+import type { SocialLinks } from "@civfix/contract"
 
 type Role = (typeof ROLE_VALUES)[number]
 

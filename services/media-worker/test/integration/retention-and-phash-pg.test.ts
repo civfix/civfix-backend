@@ -18,7 +18,7 @@
 
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest"
 import { randomUUID } from "node:crypto"
-import { FakeStorage } from "@civfix/shared/fakes"
+import { FakeStorage } from "@civfix/seams"
 import { GEOCODE_CACHE_TTL_MS } from "@civfix/api/geocode-cache"
 import { runRetentionSweep } from "../../src/jobs/retention-sweep.js"
 import { makeSeams, type WorkerSeams } from "../../src/seams.js"

@@ -1,4 +1,4 @@
-import { ErrorCode, type DeliveryFailureKind } from "@civfix/shared"
+import { ErrorCode, type DeliveryFailureKind } from "@civfix/contract"
 
 export interface MailFailure {
   kind: DeliveryFailureKind

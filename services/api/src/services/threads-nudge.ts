@@ -1,4 +1,4 @@
-import type { UserChannel } from "@civfix/shared/interfaces"
+import type { UserChannel } from "@civfix/seams"
 
 /**
  * A room the user just joined or was added to otherwise only surfaces on the client's next manual

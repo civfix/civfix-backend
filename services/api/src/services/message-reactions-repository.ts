@@ -1,4 +1,4 @@
-import type { ReactionEmoji, ReactionSummaryDTO } from "@civfix/shared"
+import type { ReactionEmoji, ReactionSummaryDTO } from "@civfix/contract"
 
 export interface MessageReactionRepository {
   toggle(messageId: string, userId: string, emoji: ReactionEmoji): Promise<boolean>

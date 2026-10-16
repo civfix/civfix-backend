@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest"
-import { FakeInboundMail, FakeStorage } from "@civfix/shared/fakes"
+import { FakeInboundMail, FakeStorage } from "@civfix/seams"
 import { InMemoryMailRepository } from "../helpers/admin/mail-repository.memory.js"
 import { InMemoryInboundRepository } from "../helpers/admin/inbound-repository.memory.js"
 import { runInboundSweep } from "../../src/services/admin/inbound-sweep.js"

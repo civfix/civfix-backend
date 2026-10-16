@@ -4,7 +4,7 @@ import {
   type ChatMessageDTO,
   type ReportChatHistoryRequest,
   type RoomKind,
-} from "@civfix/shared"
+} from "@civfix/contract"
 import type { FastifyBaseLogger } from "fastify"
 import { neutralizeChatViewerFields } from "../chat-viewer-fields.js"
 import {

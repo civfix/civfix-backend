@@ -1,6 +1,6 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest"
-import { FakeMailer } from "@civfix/shared/fakes"
-import type { OutboundEmail } from "@civfix/shared/interfaces"
+import { FakeMailer } from "@civfix/seams"
+import type { OutboundEmail } from "@civfix/seams"
 import { withPg, type PgHarness } from "../helpers/pg.js"
 import { makeDrizzleMailRepository } from "../../src/services/admin/mail-repository.drizzle.js"
 import { makeDrizzleOutreachRepository } from "../../src/services/admin/outreach-repository.drizzle.js"

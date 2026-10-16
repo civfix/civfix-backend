@@ -1,4 +1,4 @@
-import type { CleanupPinDTO } from "@civfix/shared"
+import type { CleanupPinDTO } from "@civfix/contract"
 import type { Sql } from "../db/client.js"
 import {
   buildBboxFilter,

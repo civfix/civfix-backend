@@ -4,7 +4,7 @@ import { seedCleanup } from "../helpers/cleanups.js"
 import { makeDrizzleAnalyticsRepository } from "../../src/services/admin/analytics-repository.drizzle.js"
 import type { AnalyticsRepository } from "../../src/services/admin/analytics-repository.js"
 import { LA_CITY } from "../../src/db/seed-fixtures.js"
-import type { CleanupStatus } from "@civfix/shared"
+import type { CleanupStatus } from "@civfix/contract"
 
 const pg = await withPg()
 const GEOID = LA_CITY.geoid

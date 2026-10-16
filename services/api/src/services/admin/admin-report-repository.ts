@@ -5,7 +5,7 @@ import type {
   ReportOutreachStatus,
   ReportTimelineItem,
   ReportVisibility,
-} from "@civfix/shared"
+} from "@civfix/contract"
 import type { AdminPersonRecord } from "./admin-person.js"
 
 export type AdminReporterRecord = AdminPersonRecord

@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it } from "vitest"
-import { FakeMailer } from "@civfix/shared/fakes"
+import { FakeMailer } from "@civfix/seams"
 import { OAuthService } from "../../src/auth/oauth.js"
 import type { JwksVerifier, VerifiedIdToken, VerifyParams } from "../../src/auth/jwks.js"
 import { OtpService } from "../../src/auth/otp.js"

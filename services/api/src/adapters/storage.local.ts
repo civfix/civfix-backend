@@ -3,7 +3,7 @@ import { createReadStream, type Dirent } from "node:fs"
 import { mkdir, readdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises"
 import type { Readable } from "node:stream"
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path"
-import { AppError, ErrorCode } from "@civfix/shared"
+import { AppError, ErrorCode } from "@civfix/contract"
 import type { StorageHeadWithEtag } from "../services/media-etag.js"
 import { stripTrailingSlashes } from "../lib/base-url.js"
 import { sha256HexSync } from "../lib/hash.js"
@@ -15,7 +15,7 @@ import type {
   StorageListOptions,
   StorageListResult,
   StoragePutMeta,
-} from "@civfix/shared/interfaces"
+} from "@civfix/seams"
 
 export const LOCAL_STORAGE_ROUTE_PREFIX = "/_local-storage"
 const LOCAL_STORAGE_PUT_TTL_SEC = 15 * 60

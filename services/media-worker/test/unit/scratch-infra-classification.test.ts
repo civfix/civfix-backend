@@ -40,7 +40,7 @@ vi.mock("../../src/sandbox/ffmpeg-remux.js", async (importOriginal) => {
   }
 })
 
-const { FakeStorage, FakeAbuseChecks } = await import("@civfix/shared/fakes")
+const { FakeStorage, FakeAbuseChecks } = await import("@civfix/seams")
 const { loadLimits } = await import("../../src/config.js")
 const { resetSandboxIdentity, SandboxSpawnError } = await import("../../src/sandbox/exec.js")
 const { makeScratch, ScratchSetupError } = await import("../../src/sandbox/tmp.js")

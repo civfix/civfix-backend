@@ -1,4 +1,4 @@
-import type { ChatMessageDTO } from "@civfix/shared"
+import type { ChatMessageDTO } from "@civfix/contract"
 import type { FastifyBaseLogger } from "fastify"
 import type { NotificationService } from "./notification-service.js"
 import type { MessageKey } from "../i18n/renderMessage.js"

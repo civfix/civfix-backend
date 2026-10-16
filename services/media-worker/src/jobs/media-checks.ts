@@ -1,5 +1,5 @@
-import type { MediaKind, MediaStatus } from "@civfix/shared"
-import type { AbuseChecks, Storage, StorageHead } from "@civfix/shared/interfaces"
+import type { MediaKind, MediaStatus } from "@civfix/contract"
+import type { AbuseChecks, Storage, StorageHead } from "@civfix/seams"
 import type {
   MediaResultPatch,
   MediaWorkerAsset,

@@ -1,4 +1,4 @@
-import { AppError, avatarGradient } from "@civfix/shared"
+import { AppError, avatarGradient } from "@civfix/contract"
 import type {
   LinkedEventRef,
   LinkedReportRef,
@@ -8,7 +8,7 @@ import type {
   PostDTO,
   PostRefDTO,
   UserMentionDTO,
-} from "@civfix/shared"
+} from "@civfix/contract"
 import type { Queryable, Sql, SqlFragment } from "../db/client.js"
 import {
   keysetInstant,

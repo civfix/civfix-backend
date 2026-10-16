@@ -8,8 +8,8 @@
  * a wiring bug, so it throws rather than silently skipping a gate.
  */
 
-import { AppError, ReactionEmojiSchema } from "@civfix/shared"
-import type { ChatMessageDTO, ReactionEmoji } from "@civfix/shared"
+import { AppError, ReactionEmojiSchema } from "@civfix/contract"
+import type { ChatMessageDTO, ReactionEmoji } from "@civfix/contract"
 import type { ChatMessageMeta, ChatRepository } from "./chat-repository.js"
 import type { DmRepository } from "./dm-repository.js"
 

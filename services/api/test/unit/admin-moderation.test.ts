@@ -4,7 +4,7 @@ import {
   makeModerationService,
   type ModerationService,
 } from "../../src/services/admin/moderation-service.js"
-import type { UserStatus } from "@civfix/shared"
+import type { UserStatus } from "@civfix/contract"
 
 const NOW = new Date("2026-06-06T00:00:00.000Z")
 

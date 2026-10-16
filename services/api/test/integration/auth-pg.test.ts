@@ -26,7 +26,7 @@ import {
 } from "../../src/auth/pg-stores.js"
 import { OAuthService } from "../../src/auth/oauth.js"
 import type { JwksVerifier, VerifiedIdToken } from "../../src/auth/jwks.js"
-import { FakeMailer } from "@civfix/shared/fakes"
+import { FakeMailer } from "@civfix/seams"
 import { sha256Hex } from "../../src/auth/crypto.js"
 
 const pg = await withPg()

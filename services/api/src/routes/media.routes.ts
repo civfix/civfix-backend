@@ -15,7 +15,7 @@
  *   - csrfProtect enforces on any request with a session cookie and no bearer token, i.e. every
  *     signed-in civfix-web request (mobile is bearer and short-circuits).
  *   - the shared typed client only sends `X-CSRF-Token` when the ENDPOINT DEFINITION says so
- *     (@civfix/shared client: `if (endpoint.csrf && opts.getCsrfToken)`), and the published
+ *     (@civfix/contract client: `if (endpoint.csrf && opts.getCsrfToken)`), and the published
  *     contract declares `createMediaUpload csrf: false` / `finalizeMedia csrf: false`.
  *
  * Enforcing here would 403 every signed-in web user on POST /v1/media/upload, breaking report photos,
@@ -26,7 +26,7 @@
  * Conditional enforcement ("enforce only when the client sent a header") is not a middle ground: an
  * attacker simply omits the header, so it protects nobody while looking like it does.
  *
- * Enabling it takes `csrf: true` for both endpoints in @civfix/shared FIRST, then, in the same release,
+ * Enabling it takes `csrf: true` for both endpoints in @civfix/contract FIRST, then, in the same release,
  * this service adopting that version and adding `preHandler: csrfProtect` to both `route(...)` calls
  * below. Backend-first breaks web; shared-first is a no-op until the backend follows.
  *
@@ -42,7 +42,7 @@ import {
   type CreateMediaUploadResponse,
   type FinalizeMediaResponse,
   type GetMediaResponse,
-} from "@civfix/shared"
+} from "@civfix/contract"
 import { z } from "zod"
 import type { FastifyInstance, FastifyRequest } from "fastify"
 import type { Container } from "../di.js"
@@ -125,7 +125,7 @@ export async function registerMediaRoutes(
   }
 
   // No `preHandler: csrfProtect` here: read the CSRF block in the module header before adding one. It
-  // 403s every signed-in web caller until @civfix/shared declares `createMediaUpload csrf: true`.
+  // 403s every signed-in web caller until @civfix/contract declares `createMediaUpload csrf: true`.
   route(
     app,
     "createMediaUpload",

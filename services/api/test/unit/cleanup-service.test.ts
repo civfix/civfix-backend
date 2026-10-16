@@ -1,6 +1,6 @@
 import { TEST_TICKET_SIGNER } from "../helpers/ticket-signer.js"
 import { describe, it, expect, beforeEach } from "vitest"
-import { FakeJobs } from "@civfix/shared/fakes"
+import { FakeJobs } from "@civfix/seams"
 import {
   makeCleanupService,
   ATTENDEES_DEFAULT_LIMIT,
@@ -18,7 +18,7 @@ import {
 import { DEFAULT_EVENT_DURATION_MS } from "../../src/services/cleanup-rules.js"
 import { InMemoryCleanupRepository } from "../helpers/cleanups.js"
 import { InMemoryCounterStore } from "../../src/abuse/counter-store.js"
-import type { CreateCleanupRequest } from "@civfix/shared"
+import type { CreateCleanupRequest } from "@civfix/contract"
 
 const ORG = "11111111-1111-1111-1111-111111111111"
 const ALICE = "22222222-2222-2222-2222-222222222222"

@@ -3,7 +3,7 @@ import type {
   GovClaimStatus,
   GovMethod,
   GovVerificationCheck,
-} from "@civfix/shared"
+} from "@civfix/contract"
 
 export interface GovCheckRecord {
   status: GovCheckStatus

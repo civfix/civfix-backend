@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto"
 import { describe, expect, it } from "vitest"
-import type { ChatMessageDTO, MediaDTO } from "@civfix/shared"
+import type { ChatMessageDTO, MediaDTO } from "@civfix/contract"
 import type { Queryable } from "../../src/db/client.js"
 import { neutralizeChatViewerFields } from "../../src/services/chat-viewer-fields.js"
 import { userUploader } from "../../src/services/media-uploader.js"

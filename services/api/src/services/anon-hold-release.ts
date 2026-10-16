@@ -1,5 +1,5 @@
-import type { AbuseChecks } from "@civfix/shared/interfaces"
-import type { LatLng } from "@civfix/shared"
+import type { AbuseChecks } from "@civfix/seams"
+import type { LatLng } from "@civfix/contract"
 import type { AnonHoldReleaseRepository } from "./anon-hold-release-repository.js"
 
 export interface AnonHoldReleaseDeps {

@@ -1,6 +1,6 @@
 import type { FastifyInstance, FastifyRequest } from "fastify"
 import { z } from "zod"
-import { IdSchema } from "@civfix/shared"
+import { IdSchema } from "@civfix/contract"
 import type { Container } from "../../di.js"
 import { perHost, perIdentity } from "../../plugins/rate-limit.js"
 import {

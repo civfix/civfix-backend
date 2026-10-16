@@ -28,7 +28,7 @@ import type {
   Risk,
   Role,
   UserStatus,
-} from "@civfix/shared"
+} from "@civfix/contract"
 import { likeContains } from "../../db/like.js"
 
 const ADMIN_USER_ORGANIZATIONS_LIMIT = 25

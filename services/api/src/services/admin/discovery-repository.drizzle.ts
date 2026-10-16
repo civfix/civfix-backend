@@ -1,4 +1,4 @@
-import type { JurisdictionLayer, ReportCategory } from "@civfix/shared"
+import type { JurisdictionLayer, ReportCategory } from "@civfix/contract"
 import type { Queryable, Sql, SqlFragment } from "../../db/client.js"
 import { clampLimit } from "./pagination.js"
 import { paginate, parseKeysetCursor } from "../../db/cursor-helpers.js"

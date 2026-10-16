@@ -1,4 +1,4 @@
-import { avatarGradient, DELETED_USER_LABEL } from "@civfix/shared"
+import { avatarGradient, DELETED_USER_LABEL } from "@civfix/contract"
 import type {
   CleanupDTO,
   EventAnswerDTO,
@@ -12,7 +12,7 @@ import type {
   PublicPageTicketType,
   RegistrationState,
   TicketTypeDTO,
-} from "@civfix/shared"
+} from "@civfix/contract"
 import type { Sql } from "../../db/client.js"
 import { makeDrizzleHostRegistrationRepository } from "./registration-repository.drizzle.js"
 import type {

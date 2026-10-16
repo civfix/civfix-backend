@@ -3,7 +3,7 @@
 # civfix API production image (multi-stage).
 #
 # BUILD CONTEXT MUST BE THE REPO ROOT (civfix-backend/), NOT services/api/. The API is a pnpm workspace
-# package that depends on @civfix/shared (installed from the private registry repo.civfix.org via the
+# package that depends on @civfix/contract (installed from the private registry repo.civfix.org via the
 # root .npmrc), so the build needs the root manifests + pnpm-lock.yaml + .npmrc + packages/ in the
 # context. CI builds it that way (.github/workflows/build-images.yml); to build by hand from the repo
 # root:
@@ -11,14 +11,14 @@
 #
 # Stages:
 #   base    pinned Node 22 (Debian bookworm-slim, glibc) + corepack-pinned pnpm.
-#   build   install the FULL workspace (incl. dev tooling), build shared -> api with turbo/tsup, then
+#   build   install the FULL workspace (incl. dev tooling), build the api with turbo/tsup, then
 #           `pnpm deploy --prod` the API into a self-contained, dev-pruned directory (/out) whose
-#           node_modules contains only production deps with @civfix/shared resolved via the pnpm store.
+#           node_modules contains only production deps with @civfix/contract resolved via the pnpm store.
 #   runtime copy /out, drop privileges, expose the port, healthcheck GET /healthz.
 #
-# Why deploy: tsup keeps @civfix/shared EXTERNAL (skipNodeModulesBundle), so the runtime needs the shared
-# package resolvable in node_modules. `pnpm deploy` produces exactly that (shared injected + prod-only
-# deps), so the runtime image carries no build toolchain.
+# Why deploy: tsup keeps registry packages like @civfix/contract EXTERNAL (skipNodeModulesBundle), so the
+# runtime needs them resolvable in node_modules. `pnpm deploy` produces exactly that (prod-only deps),
+# so the runtime image carries no build toolchain. @civfix/seams is TypeScript source and is bundled in.
 
 FROM node:22-bookworm-slim AS base
 ENV PNPM_HOME="/pnpm" \

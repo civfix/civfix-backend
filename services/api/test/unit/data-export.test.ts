@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest"
-import { FakeMailer } from "@civfix/shared/fakes"
+import { FakeMailer } from "@civfix/seams"
 import type { Sql } from "../../src/db/client.js"
 import { makeFakeSql, type SqlHandler } from "../helpers/fake-sql.js"
 import { InMemoryUserStore, type UserRecord } from "../../src/auth/stores.js"

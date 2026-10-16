@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest"
-import type { CreateCleanupRequest } from "@civfix/shared"
+import type { CreateCleanupRequest } from "@civfix/contract"
 import { TEST_TICKET_SIGNER } from "../helpers/ticket-signer.js"
 import { InMemoryCleanupRepository } from "../helpers/cleanups.js"
 import { InMemoryCounterStore } from "../../src/abuse/counter-store.js"

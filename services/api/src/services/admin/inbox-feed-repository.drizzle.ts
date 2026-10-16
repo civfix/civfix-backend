@@ -20,7 +20,7 @@ import type {
   InboxFeedQuery,
   InboxFeedResponse,
   MailStatus,
-} from "@civfix/shared"
+} from "@civfix/contract"
 
 export interface InboxFeedRepository {
   list(query: InboxFeedQuery): Promise<InboxFeedResponse>

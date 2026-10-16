@@ -1,6 +1,6 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest"
 import { randomUUID } from "node:crypto"
-import type { CreateReportRequest } from "@civfix/shared"
+import type { CreateReportRequest } from "@civfix/contract"
 import { withPg, testHandle, type PgHarness } from "../helpers/pg.js"
 import { seedMediaAsset, type SeededMedia } from "../helpers/media-pg.js"
 import { seedCleanup } from "../helpers/cleanups.js"

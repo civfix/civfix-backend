@@ -1,4 +1,4 @@
-import { AppError } from "@civfix/shared"
+import { AppError } from "@civfix/contract"
 
 const RESERVED_NAME_MESSAGE = "that name is reserved"
 

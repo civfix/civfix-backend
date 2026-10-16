@@ -1,4 +1,4 @@
-import type { OrganizationRefDTO, PersonDTO } from "@civfix/shared"
+import type { OrganizationRefDTO, PersonDTO } from "@civfix/contract"
 import type { Sql } from "../../db/client.js"
 import { mapWithLimit } from "../../lib/concurrency.js"
 import { PRESIGN_CONCURRENCY } from "../media-presign.js"

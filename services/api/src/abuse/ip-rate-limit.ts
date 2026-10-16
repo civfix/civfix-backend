@@ -6,7 +6,7 @@
  * 64 bits freely, so counting the /64 stops that evasion without over-penalizing a dual-stack user.
  */
 
-import { AppError } from "@civfix/shared"
+import { AppError } from "@civfix/contract"
 import { expandIpv6Hextets } from "../adapters/net-ipv6.js"
 import type { CounterStore } from "./counter-store.js"
 

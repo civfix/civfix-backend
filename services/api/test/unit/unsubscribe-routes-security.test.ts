@@ -1,6 +1,6 @@
 import Fastify, { type FastifyInstance } from "fastify"
 import { afterEach, describe, expect, it } from "vitest"
-import { FakeMailer } from "@civfix/shared/fakes"
+import { FakeMailer } from "@civfix/seams"
 import type { Container } from "../../src/di.js"
 import { makeErrorHandler, makeNotFoundHandler } from "../../src/errors/http-mapper.js"
 import { InMemoryCounterStore } from "../../src/abuse/counter-store.js"

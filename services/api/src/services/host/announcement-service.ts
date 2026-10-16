@@ -4,7 +4,7 @@ import {
   AppError,
   MAX_EVENT_ANNOUNCEMENTS_PER_DAY,
   announcementAudienceToSegment,
-} from "@civfix/shared"
+} from "@civfix/contract"
 import type {
   AnnouncementAudience,
   AnnouncementDTO,
@@ -13,7 +13,7 @@ import type {
   ListEventAnnouncementsRequest,
   ListEventAnnouncementsResponse,
   PersonDTO,
-} from "@civfix/shared"
+} from "@civfix/contract"
 import type { FastifyBaseLogger } from "fastify"
 import { paginateKeyset, parseKeysetCursor } from "../../db/cursor-helpers.js"
 import { clampPageLimit } from "../../lib/page-limit.js"

@@ -1,7 +1,7 @@
 import { describe, it, expect } from "vitest"
 import { generateKeyPairSync, createSign, createHash, type KeyObject } from "node:crypto"
 import { RemoteJwksVerifier, type FetchLike } from "../../src/auth/jwks.js"
-import { AppError, ErrorCode } from "@civfix/shared"
+import { AppError, ErrorCode } from "@civfix/contract"
 
 const ISS = "https://accounts.google.com"
 const AUD = "test-client-id"

@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from "vitest"
-import { FakeAbuseChecks, FakeStorage } from "@civfix/shared/fakes"
-import type { StorageHead } from "@civfix/shared/interfaces"
+import { FakeAbuseChecks, FakeStorage } from "@civfix/seams"
+import type { StorageHead } from "@civfix/seams"
 import type { MediaResultPatch } from "@civfix/api/media-worker-repository"
 import exifr from "exifr"
 import { loadLimits, type WorkerLimits } from "../../src/config.js"

@@ -2,7 +2,7 @@
 // pending), so the row pills always reflect it. The approved claim row IS the user<->jurisdiction binding
 // (gov_claims.jurisdiction_geoid); there is no separate membership table.
 
-import { AppError, relativeAgo } from "@civfix/shared"
+import { AppError, relativeAgo } from "@civfix/contract"
 import { applyRoleChange, type RevokeAllSessions } from "./role-change.js"
 import { newAccountDisplayName } from "../../auth/official-account.js"
 import type {
@@ -14,7 +14,7 @@ import type {
   GovClaimListResponse,
   GovVerificationCheck,
   Role,
-} from "@civfix/shared"
+} from "@civfix/contract"
 import { clampLimit } from "./pagination.js"
 import type {
   GovCheckRecord,

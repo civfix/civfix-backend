@@ -1,4 +1,4 @@
-import { AppError, ErrorCode } from "@civfix/shared"
+import { AppError, ErrorCode } from "@civfix/contract"
 import type { Container } from "../../di.js"
 import type { ReportAutoForwardJob } from "../report-types.js"
 import { REPORT_AUTOFORWARD_JOB } from "../../lib/queue-names.js"

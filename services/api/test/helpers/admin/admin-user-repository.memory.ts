@@ -10,7 +10,7 @@ import type {
   UserMessageRecord,
   UserReportRecord,
 } from "../../../src/services/admin/admin-user-repository.js"
-import type { AdminUserCounts, Role, UserStatus } from "@civfix/shared"
+import type { AdminUserCounts, Role, UserStatus } from "@civfix/contract"
 
 export interface RecordedUserAudit {
   action: string

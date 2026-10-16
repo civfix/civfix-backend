@@ -1,8 +1,8 @@
 import { afterEach, describe, expect, it } from "vitest"
 import { randomUUID } from "node:crypto"
 import type { FastifyInstance } from "fastify"
-import { FakeMailer } from "@civfix/shared/fakes"
-import { endpoints, versionedPath } from "@civfix/shared/client"
+import { FakeMailer } from "@civfix/seams"
+import { endpoints, versionedPath } from "@civfix/contract/client"
 import { makeServer } from "../../../src/server.js"
 import { makeContainer } from "../../../src/di.js"
 import { loadEnv } from "../../../src/env.js"
@@ -17,7 +17,7 @@ import {
   ORGANIZER_STANDING,
   type HostGuards,
 } from "../../../src/services/host/registration-wiring.js"
-import type { HostStanding } from "@civfix/shared/host"
+import type { HostStanding } from "@civfix/contract/host"
 import { makeTicketTokenSigner } from "../../../src/services/host/ticket-token.js"
 
 const EVENT = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
@@ -286,7 +286,7 @@ describe("host registration routes", () => {
     const forbidding: HostGuards = {
       ...denied,
       requireCapability: async () => {
-        const { AppError } = await import("@civfix/shared")
+        const { AppError } = await import("@civfix/contract")
         throw AppError.forbidden("Only the event team can view the roster.")
       },
     }

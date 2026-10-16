@@ -5,9 +5,9 @@ import type {
   EventVisibility,
   HostCapability,
   OrganizationMemberRole,
-} from "@civfix/shared"
-import { endpoints, versionedPath } from "@civfix/shared/client"
-import { can } from "@civfix/shared/host"
+} from "@civfix/contract"
+import { endpoints, versionedPath } from "@civfix/contract/client"
+import { can } from "@civfix/contract/host"
 import { InMemoryCounterStore } from "../../src/abuse/counter-store.js"
 import { makeContainer, type Container } from "../../src/di.js"
 import type { Queryable } from "../../src/db/client.js"

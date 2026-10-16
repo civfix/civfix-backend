@@ -1,4 +1,4 @@
-import { ErrorCode } from "@civfix/shared"
+import { ErrorCode } from "@civfix/contract"
 import type { FastifyBaseLogger, FastifyInstance } from "fastify"
 import type { Container } from "../di.js"
 import { makeWsTicketStore } from "../auth/ws-ticket.js"

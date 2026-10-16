@@ -1,4 +1,4 @@
-import type { OrganizationMemberRole } from "@civfix/shared"
+import type { OrganizationMemberRole } from "@civfix/contract"
 import type { Queryable, Sql } from "../../db/client.js"
 import {
   keysetInstant,

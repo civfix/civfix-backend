@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest"
-import { FakeInboundMail, FakeJobs, FakeStorage } from "@civfix/shared/fakes"
-import type { InboundMail } from "@civfix/shared/interfaces"
+import { FakeInboundMail, FakeJobs, FakeStorage } from "@civfix/seams"
+import type { InboundMail } from "@civfix/seams"
 import { CfInboundMail } from "../../src/adapters/inbound-mail.cf.js"
 import { InMemoryMailRepository } from "../helpers/admin/mail-repository.memory.js"
 import { InMemoryInboundRepository } from "../helpers/admin/inbound-repository.memory.js"

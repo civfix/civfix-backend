@@ -15,8 +15,8 @@ import {
   type ChatPollServiceDeps,
   type PollRoomKind,
 } from "../../src/services/chat-poll-service.js"
-import type { ChatService } from "@civfix/shared/interfaces"
-import { WsServerMessageSchema, type ChatMessageDTO, type WsServerMessage } from "@civfix/shared"
+import type { ChatService } from "@civfix/seams"
+import { WsServerMessageSchema, type ChatMessageDTO, type WsServerMessage } from "@civfix/contract"
 
 const ALICE = "11111111-1111-1111-1111-111111111111"
 const BOB = "22222222-2222-2222-2222-222222222222"

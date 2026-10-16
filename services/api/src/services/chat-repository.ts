@@ -1,5 +1,5 @@
-import type { ChatMessageDTO, ChatMessageKind, ReactionEmoji } from "@civfix/shared"
-import type { ChatHistoryPage, PersistChatInput } from "@civfix/shared/interfaces"
+import type { ChatMessageDTO, ChatMessageKind, ReactionEmoji } from "@civfix/contract"
+import type { ChatHistoryPage, PersistChatInput } from "@civfix/seams"
 import type { Queryable } from "../db/client.js"
 
 export interface ChatMessageMeta {

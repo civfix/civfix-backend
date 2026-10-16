@@ -1,7 +1,7 @@
 import type { FastifyBaseLogger, FastifyInstance, FastifyRequest } from "fastify"
 import type { WebSocket } from "@fastify/websocket"
-import { ErrorCode } from "@civfix/shared"
-import type { ChatConnection, UserChannel } from "@civfix/shared/interfaces"
+import { ErrorCode } from "@civfix/contract"
+import type { ChatConnection, UserChannel } from "@civfix/seams"
 import { randomUUID } from "node:crypto"
 import { checkWsHandshake, originHeader } from "./handshake.js"
 import {

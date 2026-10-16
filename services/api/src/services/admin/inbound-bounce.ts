@@ -1,5 +1,5 @@
 import type { Container } from "../../di.js"
-import type { ParsedMail } from "@civfix/shared/interfaces"
+import type { ParsedMail } from "@civfix/seams"
 import { threadSentTo, type MailRepository } from "./mail-repository.drizzle.js"
 import { BOUNCE_DISCOVERY_PENDING_META_KEY } from "./mail-repository.js"
 import { geoidForContact, markBouncedContact } from "./jurisdiction-contacts-repository.drizzle.js"

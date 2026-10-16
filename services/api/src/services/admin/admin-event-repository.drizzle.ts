@@ -30,7 +30,7 @@ import type {
   ListEventsArgs,
 } from "./admin-event-repository.js"
 import type { LinkedReportView } from "../cleanup-service.js"
-import type { AdminEventCounts, EventKind, ReportCategory, ReportStatus } from "@civfix/shared"
+import type { AdminEventCounts, EventKind, ReportCategory, ReportStatus } from "@civfix/contract"
 
 const LINK_REPORTS_MAX = 100
 

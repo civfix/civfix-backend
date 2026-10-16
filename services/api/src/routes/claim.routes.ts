@@ -4,7 +4,7 @@ import {
   AppError,
   type ClaimNudgeResponse,
   type ClaimReportResponse,
-} from "@civfix/shared"
+} from "@civfix/contract"
 import type { FastifyInstance, FastifyRequest } from "fastify"
 import { perHost } from "../plugins/rate-limit.js"
 import type { Container } from "../di.js"

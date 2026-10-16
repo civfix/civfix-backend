@@ -1,4 +1,4 @@
-import type { BroadcastChannel } from "@civfix/shared"
+import type { BroadcastChannel } from "@civfix/contract"
 import type { FastifyBaseLogger } from "fastify"
 import type { CounterStore } from "../../abuse/counter-store.js"
 import type { BroadcastRepository } from "./broadcast-repository.js"

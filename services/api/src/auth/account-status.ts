@@ -1,4 +1,4 @@
-import { AppError } from "@civfix/shared"
+import { AppError } from "@civfix/contract"
 import type { FastifyInstance, FastifyRequest } from "fastify"
 import type { AccountStatus } from "./stores.js"
 

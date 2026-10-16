@@ -7,7 +7,7 @@
  */
 
 import { z } from "zod"
-import { BBoxSchema, LatLngSchema, ReportCategorySchema, ReportTypeSchema } from "@civfix/shared"
+import { BBoxSchema, LatLngSchema, ReportCategorySchema, ReportTypeSchema } from "@civfix/contract"
 
 // Checked BEFORE parsing: a bbox/near object is tiny, and the cap stops an unauthenticated GET from forcing a
 // megabytes-of-valid-JSON parse on the event loop before validation runs.

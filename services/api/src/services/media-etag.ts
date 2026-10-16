@@ -1,4 +1,4 @@
-import type { StorageHead } from "@civfix/shared/interfaces"
+import type { StorageHead } from "@civfix/seams"
 
 export interface StorageHeadWithEtag extends StorageHead {
   etag?: string

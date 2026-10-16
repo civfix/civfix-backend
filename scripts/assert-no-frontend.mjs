@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// Backend-isolation guard, run in CI. The backend depends ONLY on @civfix/shared, the framework-free
+// Backend-isolation guard, run in CI. The backend depends ONLY on @civfix/contract and @civfix/tokens, the framework-free
 // contract. React, React Native, react-native-web or @civfix/ui (which carries React/RN peers)
 // appearing here means an install or a stray dependency edit leaked the UI layer into the backend.
 //

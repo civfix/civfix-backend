@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest"
-import type { Role } from "@civfix/shared"
+import type { Role } from "@civfix/contract"
 import { InMemoryCacheClient, type CacheClient } from "../../src/auth/cache.js"
 import {
   InMemorySessionStore,

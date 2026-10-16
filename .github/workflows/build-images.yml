@@ -23,7 +23,7 @@ name: Build release images
 # tag for humans; nothing reads it.
 #
 # Required: nothing. GITHUB_TOKEN with `packages: write` publishes to ghcr.io/civfix/*, and
-# @civfix/shared installs anonymously from the public-read registry via the committed .npmrc.
+# @civfix/contract installs anonymously from the public-read registry via the committed .npmrc.
 
 on:
   workflow_call:
@@ -105,7 +105,7 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
 
       # Both images take the REPO ROOT as their build context: the services are pnpm workspace packages
-      # that need the root manifests, pnpm-lock.yaml, .npmrc and packages/ to resolve @civfix/shared.
+      # that need the root manifests, pnpm-lock.yaml, .npmrc and packages/ to resolve @civfix/contract.
       # See the header of each Dockerfile.
       - name: Build + push api
         id: api

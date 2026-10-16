@@ -5,7 +5,7 @@
  * `SERVED_VERSIONS` (or raising `MIN_SUPPORTED_VERSION`). The version gate reads only this module.
  */
 
-import type { ApiVersion } from "@civfix/shared/client"
+import type { ApiVersion } from "@civfix/contract/client"
 
 export type VersionLifecycle = "current" | "deprecated" | "sunset"
 

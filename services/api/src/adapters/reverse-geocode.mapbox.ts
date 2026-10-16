@@ -9,7 +9,7 @@
  * returned; anything coarser goes to the next provider.
  */
 
-import type { AddressPrecision } from "@civfix/shared"
+import type { AddressPrecision } from "@civfix/contract"
 import type { ReverseGeocode, ReverseResult } from "./reverse-geocode.chain.js"
 import { fetchJsonOrNull } from "./http-fetch.js"
 

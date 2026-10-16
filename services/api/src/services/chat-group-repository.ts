@@ -1,4 +1,4 @@
-import type { MediaDTO, PersonDTO } from "@civfix/shared"
+import type { MediaDTO, PersonDTO } from "@civfix/contract"
 import type { ChatGroupKind, ChatGroupVisibility } from "../db/schema/chat_groups.js"
 import type { GROUP_MEMBER_ROLE_VALUES } from "../db/schema/types.js"
 

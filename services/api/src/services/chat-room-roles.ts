@@ -1,5 +1,5 @@
-import type { CleanupMemberRole, RoomKind } from "@civfix/shared"
-import { can } from "@civfix/shared/host"
+import type { CleanupMemberRole, RoomKind } from "@civfix/contract"
+import { can } from "@civfix/contract/host"
 import type {
   ROLE_VALUES,
   REPORT_CHAT_ROLE_VALUES,

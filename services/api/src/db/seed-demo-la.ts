@@ -36,7 +36,7 @@
  */
 
 import { randomUUID } from "node:crypto"
-import { HANDLE_REGEX, REPORT_TYPE_TO_CATEGORY, type ReportType } from "@civfix/shared"
+import { HANDLE_REGEX, REPORT_TYPE_TO_CATEGORY, type ReportType } from "@civfix/contract"
 import type { Sql, TransactionSql } from "./client.js"
 import {
   allocateEventReferenceCode,

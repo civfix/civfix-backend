@@ -7,7 +7,7 @@
 
 import { describe, expect, it } from "vitest"
 import Fastify, { type FastifyInstance } from "fastify"
-import { FakeMailer } from "@civfix/shared/fakes"
+import { FakeMailer } from "@civfix/seams"
 import { makeFakeSql, type FakeSqlControl, type SqlHandler } from "../helpers/fake-sql.js"
 import type { Sql } from "../../src/db/client.js"
 import type { Container } from "../../src/di.js"

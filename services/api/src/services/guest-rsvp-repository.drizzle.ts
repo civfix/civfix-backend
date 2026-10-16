@@ -1,4 +1,4 @@
-import type { CleanupStatus, EventVisibility, GuestContactChannel } from "@civfix/shared"
+import type { CleanupStatus, EventVisibility, GuestContactChannel } from "@civfix/contract"
 import type { Sql } from "../db/client.js"
 import {
   keysetInstant,

@@ -1,4 +1,4 @@
-import type { FeedRankingConfig } from "@civfix/shared"
+import type { FeedRankingConfig } from "@civfix/contract"
 import type { TrustProxyValue } from "./parsers.js"
 import type { CommsEnv } from "./comms-env.js"
 import type { RegistrationEnv } from "./registration-env.js"

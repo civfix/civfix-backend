@@ -1,5 +1,5 @@
-import { UserSignalSchema, type UserSignal } from "@civfix/shared"
-import type { ChatConnection, UserChannel } from "@civfix/shared/interfaces"
+import { UserSignalSchema, type UserSignal } from "@civfix/contract"
+import type { ChatConnection, UserChannel } from "@civfix/seams"
 import type { FastifyBaseLogger } from "fastify"
 import type { ChatPubSub } from "./chat-pubsub.js"
 import { RefCountedSubscriptions } from "./ref-counted-subscriptions.js"

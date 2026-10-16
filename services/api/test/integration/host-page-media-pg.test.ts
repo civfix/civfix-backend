@@ -3,7 +3,7 @@ import { randomUUID } from "node:crypto"
 import { withPg, type PgHarness } from "../helpers/pg.js"
 import { seedCleanup } from "../helpers/cleanups.js"
 import { makeDrizzleHostRegistrationRepository } from "../../src/services/host/registration-repository.drizzle.js"
-import type { EventPageBlock } from "@civfix/shared"
+import type { EventPageBlock } from "@civfix/contract"
 import type { HostRegistrationRepository } from "../../src/services/host/registration-repository.js"
 import { userUploader } from "../../src/services/media-uploader.js"
 

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest"
-import { MAX_ORG_INVITES_PER_ORG, MAX_TEAM_INVITES_PER_EVENT } from "@civfix/shared"
+import { MAX_ORG_INVITES_PER_ORG, MAX_TEAM_INVITES_PER_EVENT } from "@civfix/contract"
 import { makeDrizzleHostTeamRepository } from "../../../src/services/host/host-team-repository.drizzle.js"
 import { makeDrizzleOrganizationRepository } from "../../../src/services/host/organization-repository.drizzle.js"
 import { makeFakeSql, type FakeSqlControl } from "../../helpers/fake-sql.js"

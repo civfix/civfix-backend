@@ -1,4 +1,4 @@
-import type { NotificationDTO, NotificationPrefsDTO, NotificationType } from "@civfix/shared"
+import type { NotificationDTO, NotificationPrefsDTO, NotificationType } from "@civfix/contract"
 import type { NotificationPrefsRecord, NotificationRecord } from "./notification-repository.js"
 import { MINUTES_PER_HOUR } from "../lib/time.js"
 

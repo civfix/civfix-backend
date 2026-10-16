@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest"
-import type { ChatMessageDTO } from "@civfix/shared"
+import type { ChatMessageDTO } from "@civfix/contract"
 import {
   makeReportChatSystemEmitter,
   type ReportChatSystemEmitterDeps,

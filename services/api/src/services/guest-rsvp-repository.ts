@@ -1,4 +1,4 @@
-import type { CleanupStatus, EventVisibility, GuestContactChannel } from "@civfix/shared"
+import type { CleanupStatus, EventVisibility, GuestContactChannel } from "@civfix/contract"
 import type { KeysetCursor } from "../db/cursor-helpers.js"
 
 export interface GuestOtpRecord {

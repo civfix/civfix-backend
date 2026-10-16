@@ -1,6 +1,6 @@
 import Fastify, { type FastifyInstance } from "fastify"
 import { afterEach, describe, expect, it } from "vitest"
-import { FakeStorage } from "@civfix/shared/fakes"
+import { FakeStorage } from "@civfix/seams"
 import { makeErrorHandler, makeNotFoundHandler } from "../../src/errors/http-mapper.js"
 import type { Container } from "../../src/di.js"
 import { registerAdminEventPageRoutes } from "../../src/routes/admin/pages.routes.js"

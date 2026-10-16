@@ -1,6 +1,6 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest"
 import { randomUUID } from "node:crypto"
-import type { CleanupStatus } from "@civfix/shared"
+import type { CleanupStatus } from "@civfix/contract"
 import { withPg, type PgHarness } from "../helpers/pg.js"
 import { seedCleanup } from "../helpers/cleanups.js"
 import { parseKeysetCursor, type KeysetCursor } from "../../src/db/cursor-helpers.js"

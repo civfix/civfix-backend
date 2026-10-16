@@ -1,5 +1,5 @@
-import { AppError } from "@civfix/shared"
-import type { ContentReportSubject } from "@civfix/shared"
+import { AppError } from "@civfix/contract"
+import type { ContentReportSubject } from "@civfix/contract"
 import type { Db, Sql } from "../db/client.js"
 import {
   authorizePostBound,

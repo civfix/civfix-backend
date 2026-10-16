@@ -1,4 +1,4 @@
-import type { Role } from "@civfix/shared"
+import type { Role } from "@civfix/contract"
 
 export type RevokeAllSessions = (userId: string) => Promise<number>
 

@@ -1,4 +1,4 @@
-import type { AdminEventCounts, EventKind, EventStatus } from "@civfix/shared"
+import type { AdminEventCounts, EventKind, EventStatus } from "@civfix/contract"
 import type { LinkedReportView } from "../cleanup-service.js"
 import type { AdminPersonRecord } from "./admin-person.js"
 

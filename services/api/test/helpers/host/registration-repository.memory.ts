@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto"
-import type { CheckinMethod } from "@civfix/shared"
+import type { CheckinMethod } from "@civfix/contract"
 import {
   encodeTimeCursor,
   pageBeforeTimeCursor,
@@ -12,7 +12,7 @@ import {
   eventWindowOf,
   hasEventEnded,
 } from "../../../src/services/cleanup-rules.js"
-import { LIVE_TAIL_MS } from "@civfix/shared/host"
+import { LIVE_TAIL_MS } from "@civfix/contract/host"
 import {
   ARRIVAL_BUCKET_MINUTES,
   buildCheckinResult,

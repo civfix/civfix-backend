@@ -1,11 +1,11 @@
 import { beforeEach, describe, expect, it } from "vitest"
-import { FakeMailer } from "@civfix/shared/fakes"
+import { FakeMailer } from "@civfix/seams"
 import {
   ANNOUNCEMENT_BROADCAST_KIND,
   MAX_EVENT_ANNOUNCEMENTS_PER_DAY,
   type OrganizationRefDTO,
   type PersonDTO,
-} from "@civfix/shared"
+} from "@civfix/contract"
 import { InMemoryCounterStore } from "../../../src/abuse/counter-store.js"
 import { InMemoryBroadcastRepository } from "../../helpers/host/broadcast-repository.memory.js"
 import {

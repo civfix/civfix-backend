@@ -1,4 +1,4 @@
-import type { ReportCategory } from "@civfix/shared"
+import type { ReportCategory } from "@civfix/contract"
 
 /** Two-period counter (this period vs the prior period) used to compute a KPI delta. */
 export interface PeriodCount {

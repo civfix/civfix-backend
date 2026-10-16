@@ -1,5 +1,5 @@
-import type { AbuseChecks } from "@civfix/shared/interfaces"
-import type { LatLng } from "@civfix/shared"
+import type { AbuseChecks } from "@civfix/seams"
+import type { LatLng } from "@civfix/contract"
 
 const CF_LAT_HEADER = "cf-iplatitude"
 const CF_LNG_HEADER = "cf-iplongitude"

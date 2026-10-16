@@ -14,7 +14,7 @@ import {
   FakeSmsSender,
   FakeStorage,
   FakeUserChannel,
-} from "@civfix/shared/fakes"
+} from "@civfix/seams"
 import { makeContainer, type Container } from "../../src/di.js"
 import { loadEnv } from "../../src/env.js"
 import { R2Storage } from "../../src/adapters/storage.r2.js"

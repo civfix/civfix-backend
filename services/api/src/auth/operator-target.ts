@@ -1,4 +1,4 @@
-import { AppError } from "@civfix/shared"
+import { AppError } from "@civfix/contract"
 import { isOfficialAccount } from "./official-account.js"
 
 export const OPERATOR_ROLE = "operator"

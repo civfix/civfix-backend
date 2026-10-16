@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto"
 import { describe, expect, it } from "vitest"
-import type { ChatMessageDTO } from "@civfix/shared"
+import type { ChatMessageDTO } from "@civfix/contract"
 import { toTombstoneDTO, liveMessageIds } from "../../src/services/chat-tombstone.js"
 import { InMemoryChatRepository } from "../helpers/chat.js"
 import { InMemoryDmRepository } from "../../src/services/dm-repository.memory.js"

@@ -6,7 +6,7 @@ import {
   type OrganizationMemberRole,
   type OrgVerificationKind,
   type OrgVerificationStatus,
-} from "@civfix/shared"
+} from "@civfix/contract"
 import type { Queryable, Sql } from "../../db/client.js"
 import { publicServedKeyExpr } from "../media-served-key.js"
 import { writeHostAudit } from "./host-audit.js"

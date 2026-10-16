@@ -1,5 +1,5 @@
 import type PgBoss from "pg-boss"
-import type { Jobs, EnqueueOptions, JobHandler } from "@civfix/shared/interfaces"
+import type { Jobs, EnqueueOptions, JobHandler } from "@civfix/seams"
 import type { JobHandlerArgWithAttempt } from "../services/job-attempt.js"
 import {
   ANON_HOLD_RELEASE_JOB,

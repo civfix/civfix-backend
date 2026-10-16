@@ -8,7 +8,7 @@ import {
   type GuestRsvpCancelResponse,
   type GuestRsvpRequestResponse,
   type GuestRsvpVerifyResponse,
-} from "@civfix/shared"
+} from "@civfix/contract"
 import { z } from "zod"
 import type { FastifyInstance, FastifyRequest } from "fastify"
 import type { Container } from "../di.js"

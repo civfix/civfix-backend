@@ -1,4 +1,4 @@
-import type { Jobs } from "@civfix/shared/interfaces"
+import type { Jobs } from "@civfix/seams"
 import { WAITLIST_PROMOTE_JOB } from "../../lib/queue-names.js"
 
 export interface WaitlistPromotionLogger {

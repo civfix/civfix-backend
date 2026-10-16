@@ -13,7 +13,7 @@ import {
   type UpdateSettingsResponse,
   type DeleteAccountResponse,
   type RequestDataExportResponse,
-} from "@civfix/shared"
+} from "@civfix/contract"
 import { z } from "zod"
 import type { FastifyBaseLogger, FastifyInstance } from "fastify"
 import type { Container } from "../di.js"

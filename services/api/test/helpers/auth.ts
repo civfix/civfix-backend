@@ -8,8 +8,8 @@
  */
 
 import type { FastifyInstance } from "fastify"
-import type { SessionResponse, UserDTO } from "@civfix/shared"
-import { FakeMailer } from "@civfix/shared/fakes"
+import type { SessionResponse, UserDTO } from "@civfix/contract"
+import { FakeMailer } from "@civfix/seams"
 import { makeServer, type MakeServerOptions } from "../../src/server.js"
 import { makeContainer, type Container } from "../../src/di.js"
 import { loadEnv, type Env } from "../../src/env.js"

@@ -20,8 +20,8 @@ import {
   SOCIAL_PLATFORMS,
   type Role,
   type SocialLinks,
-} from "@civfix/shared"
-import type { Jobs } from "@civfix/shared/interfaces"
+} from "@civfix/contract"
+import type { Jobs } from "@civfix/seams"
 import { decideHandleWrite, handleChanged } from "./handle-policy.js"
 import { avatarMediaRefOrThrow } from "../services/avatar-media.js"
 import {

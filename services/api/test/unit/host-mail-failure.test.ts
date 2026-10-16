@@ -1,6 +1,7 @@
 import Fastify from "fastify"
 import { describe, expect, it } from "vitest"
-import { AppError, ErrorCode, MailSendError } from "@civfix/shared"
+import { AppError, ErrorCode } from "@civfix/contract"
+import { MailSendError } from "@civfix/seams"
 import { LOG_REDACT_PATHS } from "../../src/server.js"
 import {
   isRetryableMailFailure,

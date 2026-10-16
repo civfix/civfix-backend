@@ -1,6 +1,6 @@
 import { describe, it, expect, vi } from "vitest"
-import { AppError, ErrorCode, MailSendError } from "@civfix/shared"
-import { FakeJobs } from "@civfix/shared/fakes"
+import { AppError, ErrorCode } from "@civfix/contract"
+import { MailSendError, FakeJobs } from "@civfix/seams"
 import type { Container } from "../../src/di.js"
 import type { DataExportService } from "../../src/services/data-export-service.js"
 import {

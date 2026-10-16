@@ -1,5 +1,5 @@
-import { MAX_CERTIFICATE_ENTRIES } from "@civfix/shared"
-import type { VolunteerHoursSource } from "@civfix/shared"
+import { MAX_CERTIFICATE_ENTRIES } from "@civfix/contract"
+import type { VolunteerHoursSource } from "@civfix/contract"
 import { resolveLocale } from "../i18n/locales.js"
 import { sha256HexSync } from "../lib/hash.js"
 import { renderMessage } from "../i18n/renderMessage.js"

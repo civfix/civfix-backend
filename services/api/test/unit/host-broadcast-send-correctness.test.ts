@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest"
-import { FakeMailer } from "@civfix/shared/fakes"
-import type { Mailer } from "@civfix/shared/interfaces"
+import { FakeMailer } from "@civfix/seams"
+import type { Mailer } from "@civfix/seams"
 import { InMemoryCacheClient } from "../../src/auth/cache.js"
 import { InMemoryCounterStore } from "../../src/abuse/counter-store.js"
 import { InMemoryBroadcastRepository } from "../helpers/host/broadcast-repository.memory.js"

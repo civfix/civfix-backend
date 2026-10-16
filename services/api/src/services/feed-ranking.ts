@@ -1,4 +1,4 @@
-import { quantizeFeedScore, type FeedRankingConfig } from "@civfix/shared"
+import { quantizeFeedScore, type FeedRankingConfig } from "@civfix/contract"
 import { MS_PER_HOUR, MS_PER_SECOND } from "../lib/time.js"
 
 export interface FeedCandidate {

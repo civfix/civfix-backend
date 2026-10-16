@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest"
-import { FakePushSender } from "@civfix/shared/fakes"
+import { FakePushSender } from "@civfix/seams"
 import { makeNotificationService } from "../../src/services/notification-service.js"
 import { InMemoryNotificationRepository } from "../helpers/notifications.js"
 

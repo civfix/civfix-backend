@@ -20,7 +20,7 @@ import type {
   GovClaimsRepository,
   ListGovClaimsArgs,
 } from "./gov-claims-repository.js"
-import type { GovCheckStatus, GovMethod, GovVerificationCheck } from "@civfix/shared"
+import type { GovCheckStatus, GovMethod, GovVerificationCheck } from "@civfix/contract"
 
 interface GovClaimRow {
   id: string

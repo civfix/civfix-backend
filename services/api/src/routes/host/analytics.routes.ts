@@ -7,8 +7,8 @@ import {
   HostedEventsAnalyticsRequestSchema,
   type AnalyticsRange,
   type PortfolioAnalyticsRange,
-} from "@civfix/shared"
-import { can, type HostStanding } from "@civfix/shared/host"
+} from "@civfix/contract"
+import { can, type HostStanding } from "@civfix/contract/host"
 import type { FastifyInstance, FastifyRequest } from "fastify"
 import type { ZodType } from "zod"
 import type { Container } from "../../di.js"

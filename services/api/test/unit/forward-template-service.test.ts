@@ -3,7 +3,7 @@ import {
   DEFAULT_FORWARD_BODY_TEMPLATE,
   FORWARD_TEMPLATE_SAMPLE_VALUES,
   templateUsesToken,
-} from "@civfix/shared"
+} from "@civfix/contract"
 import { InMemoryForwardTemplateRepository } from "../helpers/admin/forward-template-repository.memory.js"
 import {
   makeForwardTemplateService,

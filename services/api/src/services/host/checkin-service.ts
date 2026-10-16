@@ -1,4 +1,4 @@
-import { AppError } from "@civfix/shared"
+import { AppError } from "@civfix/contract"
 import type {
   CheckInEventSeatRequest,
   CheckinResultDTO,
@@ -12,7 +12,7 @@ import type {
   ScanEventTicketRequest,
   UndoEventCheckInRequest,
   UndoEventCheckInResponse,
-} from "@civfix/shared"
+} from "@civfix/contract"
 import { sha256Hex } from "../../auth/crypto.js"
 import { stripTrailingSlashes } from "../../lib/base-url.js"
 import { toEventRegistrationDTO, toSeatDTO } from "./registration-dto.js"

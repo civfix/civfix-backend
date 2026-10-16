@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto"
-import { AppError, DELETED_USER_LABEL } from "@civfix/shared"
-import type { Role, SocialLinks } from "@civfix/shared"
+import { AppError, DELETED_USER_LABEL } from "@civfix/contract"
+import type { Role, SocialLinks } from "@civfix/contract"
 import { decideHandleWrite, handleChanged } from "./handle-policy.js"
 
 export const HANDLE_RENAME_COOLDOWN_MS = 30 * 24 * 60 * 60 * 1000

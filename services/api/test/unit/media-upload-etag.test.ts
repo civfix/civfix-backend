@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest"
 import { drizzle } from "drizzle-orm/postgres-js"
-import { FakeJobs, FakeStorage } from "@civfix/shared/fakes"
+import { FakeJobs, FakeStorage } from "@civfix/seams"
 import type { Db, Sql } from "../../src/db/client.js"
 import { makeMediaIntakeService } from "../../src/services/media-intake-service.js"
 import { makeDrizzleMediaRepository } from "../../src/services/media-repository.drizzle.js"

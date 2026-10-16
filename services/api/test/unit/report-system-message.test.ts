@@ -6,7 +6,7 @@
  */
 
 import { describe, expect, it } from "vitest"
-import { ReportStatusSchema } from "@civfix/shared"
+import { ReportStatusSchema } from "@civfix/contract"
 import {
   mapSystemRow,
   type SystemChatRow,

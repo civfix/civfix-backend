@@ -38,7 +38,7 @@ import {
 import { clampLimit } from "../../../src/services/admin/pagination.js"
 import { pageBeforeTimeCursor, parseKeysetCursor } from "../../../src/db/cursor-helpers.js"
 import { MS_PER_DAY } from "../../../src/lib/time.js"
-import type { MailDelivery, MailStatsResponse, MailStatus, MailThreadDTO } from "@civfix/shared"
+import type { MailDelivery, MailStatsResponse, MailStatus, MailThreadDTO } from "@civfix/contract"
 
 export interface StoredMailEvent {
   id: string

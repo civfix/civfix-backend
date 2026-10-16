@@ -1,7 +1,12 @@
 import { randomUUID } from "node:crypto"
-import { avatarGradient, AppError } from "@civfix/shared"
-import type { ChatConnection, ChatHistoryPage, PersistChatInput } from "@civfix/shared/interfaces"
-import type { ChatMessageDTO, ReactionEmoji, ReactionSummaryDTO, ReplyToDTO } from "@civfix/shared"
+import { avatarGradient, AppError } from "@civfix/contract"
+import type { ChatConnection, ChatHistoryPage, PersistChatInput } from "@civfix/seams"
+import type {
+  ChatMessageDTO,
+  ReactionEmoji,
+  ReactionSummaryDTO,
+  ReplyToDTO,
+} from "@civfix/contract"
 import { PIN_LIST_CAP } from "../../src/services/chat-repository.drizzle.js"
 import type {
   ChatMessageMeta,

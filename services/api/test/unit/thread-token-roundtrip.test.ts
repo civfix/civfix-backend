@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest"
-import { FakeInboundMail } from "@civfix/shared/fakes"
-import type { ParsedMail } from "@civfix/shared/interfaces"
+import { FakeInboundMail } from "@civfix/seams"
+import type { ParsedMail } from "@civfix/seams"
 import { mintThreadToken } from "../../src/services/admin/mail-repository.drizzle.js"
 import { CfInboundMail } from "../../src/adapters/inbound-mail.cf.js"
 

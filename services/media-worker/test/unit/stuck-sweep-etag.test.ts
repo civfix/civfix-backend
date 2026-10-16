@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest"
-import { FakeStorage } from "@civfix/shared/fakes"
+import { FakeStorage } from "@civfix/seams"
 import { MEDIA_CHECKS_JOB } from "@civfix/api/queue-names"
 import { loadLimits } from "../../src/config.js"
 import { parsePayload } from "../../src/jobs/media-checks.js"

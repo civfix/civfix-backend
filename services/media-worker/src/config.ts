@@ -1,5 +1,5 @@
 import { dirname, join } from "node:path"
-import { MAX_VIDEO_BYTES } from "@civfix/shared"
+import { MAX_VIDEO_BYTES } from "@civfix/contract"
 import { MS_PER_HOUR } from "@civfix/api/time"
 
 export function assertRealSeamInProd(

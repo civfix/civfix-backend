@@ -1,4 +1,4 @@
-import { FakeMailer, FakePushSender } from "@civfix/shared/fakes"
+import { FakeMailer, FakePushSender } from "@civfix/seams"
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest"
 import { withPg, testHandle, type PgHarness } from "../helpers/pg.js"
 import { seedCleanup } from "../helpers/cleanups.js"

@@ -1,5 +1,5 @@
-import { AppError, MAX_EVENT_HOURS, MIN_EVENT_HOURS } from "@civfix/shared"
-import type { CleanupStatus } from "@civfix/shared"
+import { AppError, MAX_EVENT_HOURS, MIN_EVENT_HOURS } from "@civfix/contract"
+import type { CleanupStatus } from "@civfix/contract"
 import { MS_PER_HOUR, MS_PER_MINUTE } from "../lib/time.js"
 import { MIN_EVENT_DURATION_MS, eventWindowOf, hasEventEnded } from "./cleanup-rules.js"
 

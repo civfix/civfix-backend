@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach } from "vitest"
 import { RedisUserChannel, userChannel } from "../../src/adapters/user-channel.redis.js"
 import { InMemoryChatPubSub, type ChatPubSub } from "../../src/adapters/chat-pubsub.js"
 import { MockConnection } from "../helpers/chat.js"
-import { WsServerMessageSchema } from "@civfix/shared"
+import { WsServerMessageSchema } from "@civfix/contract"
 
 const ALICE = "11111111-1111-1111-1111-111111111111"
 const BOB = "22222222-2222-2222-2222-222222222222"

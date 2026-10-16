@@ -1,4 +1,4 @@
-import type { CleanupDTO } from "@civfix/shared"
+import type { CleanupDTO } from "@civfix/contract"
 import type { Container } from "../di.js"
 import { attachRegistrationFields } from "./host/registration-dto.js"
 import { withAffiliation } from "./affiliation.js"

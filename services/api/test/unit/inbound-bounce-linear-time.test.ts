@@ -1,4 +1,4 @@
-import type { ParsedMail } from "@civfix/shared/interfaces"
+import type { ParsedMail } from "@civfix/seams"
 import { describe, expect, it } from "vitest"
 import { CfInboundMail } from "../../src/adapters/inbound-mail.cf.js"
 import {

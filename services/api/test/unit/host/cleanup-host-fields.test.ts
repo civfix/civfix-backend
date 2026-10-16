@@ -1,6 +1,6 @@
 import { TEST_TICKET_SIGNER } from "../../helpers/ticket-signer.js"
 import { beforeEach, describe, expect, it } from "vitest"
-import type { CreateCleanupRequest } from "@civfix/shared"
+import type { CreateCleanupRequest } from "@civfix/contract"
 import { InMemoryCounterStore } from "../../../src/abuse/counter-store.js"
 import { InMemoryCleanupRepository } from "../../helpers/cleanups.js"
 import {

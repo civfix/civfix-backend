@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest"
 import type { FastifyRequest } from "fastify"
-import { AppError, ErrorCode } from "@civfix/shared"
+import { AppError, ErrorCode } from "@civfix/contract"
 import { makeCsrf, CSRF_HEADER } from "../../src/auth/csrf.js"
 import { CSRF_COOKIE, SESSION_COOKIE, SESSION_COOKIE_HOST } from "../../src/auth/transport.js"
 

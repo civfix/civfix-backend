@@ -3,8 +3,8 @@ import {
   ErrorCode,
   type LegalDocumentType,
   type LegalDocumentVersionDTO,
-} from "@civfix/shared"
-import { LEGAL_DOCUMENTS, legalDocument, type LegalDocumentVersion } from "@civfix/shared/legal"
+} from "@civfix/contract"
+import { LEGAL_DOCUMENTS, legalDocument, type LegalDocumentVersion } from "@civfix/contract/legal"
 
 export const LEGAL_VERSIONS_CACHE_SECONDS = 300
 

@@ -17,10 +17,15 @@
  * same seams.
  */
 
-import { AppError } from "@civfix/shared"
-import type { AddressPrecision, ReportAddressSource } from "@civfix/shared"
-import type { AnonReportResponse, ReportStatus } from "@civfix/shared"
-import type { LatLng } from "@civfix/shared"
+import { AppError } from "@civfix/contract"
+import type {
+  AddressPrecision,
+  ReportAddressSource,
+  AnonReportResponse,
+  ReportStatus,
+  LatLng,
+  ReportType,
+} from "@civfix/contract"
 import type { AnonTokenRecord } from "../../src/abuse/anon-token.js"
 import type {
   AnonReportRepository,
@@ -36,7 +41,6 @@ import type {
   ReleaseMediaView,
 } from "../../src/services/anon-hold-release-repository.js"
 import { formatReferenceCode, reportScopeKey, typeCodeFor } from "../../src/db/reference-code.js"
-import type { ReportType } from "@civfix/shared"
 
 /** A stored anon report row (the subset the anon flow reads). */
 export interface StoredAnonReport {

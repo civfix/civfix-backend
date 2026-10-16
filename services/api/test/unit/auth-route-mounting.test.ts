@@ -13,7 +13,7 @@
  */
 
 import { describe, it, expect } from "vitest"
-import { FakeMailer } from "@civfix/shared/fakes"
+import { FakeMailer } from "@civfix/seams"
 import { makeServer } from "../../src/server.js"
 import { loadEnv } from "../../src/env.js"
 import { makeInMemoryStores } from "../../src/auth/stores.js"

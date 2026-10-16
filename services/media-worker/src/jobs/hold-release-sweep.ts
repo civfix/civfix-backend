@@ -20,7 +20,7 @@
  * batch per run drains a backlog over several runs without one giant pass.
  */
 
-import type { AbuseChecks } from "@civfix/shared/interfaces"
+import type { AbuseChecks } from "@civfix/seams"
 import { releaseAnonHoldIfReady } from "@civfix/api/anon-hold-release"
 import type { AnonHoldReleaseRepository } from "@civfix/api/anon-hold-release-repository"
 import { ANON_HOLD_RELEASE_SWEEP_JOB } from "@civfix/api/queue-names"

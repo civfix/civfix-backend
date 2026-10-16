@@ -12,7 +12,7 @@ import type {
   AnalyticsTopContributorsResponse,
   AnalyticsTopJurisdictionsResponse,
   ReportCategory,
-} from "@civfix/shared"
+} from "@civfix/contract"
 import type { AnalyticsRepository } from "./analytics-repository.js"
 
 // The dashboard's fixed bar series, so a category with no reports still renders a 0 bar. Derived from

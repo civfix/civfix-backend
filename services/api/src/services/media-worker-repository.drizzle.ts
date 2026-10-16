@@ -8,7 +8,7 @@ import { reports } from "../db/schema/reports.js"
 import { jurisdictions } from "../db/schema/jurisdictions.js"
 import { users } from "../db/schema/users.js"
 import type { Db, Queryable, Sql } from "../db/client.js"
-import type { NearDuplicateResult } from "@civfix/shared/interfaces"
+import type { NearDuplicateResult } from "@civfix/seams"
 import type {
   LeakedObjectRow,
   LegacyServedKeyAdoption,

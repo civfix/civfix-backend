@@ -1,5 +1,5 @@
-import type { ChatMessageDTO } from "@civfix/shared"
-import type { ChatHistoryPage } from "@civfix/shared/interfaces"
+import type { ChatMessageDTO } from "@civfix/contract"
+import type { ChatHistoryPage } from "@civfix/seams"
 
 export interface RoomMessagesRepository {
   history(

@@ -1,4 +1,4 @@
-import type { ReportCategory } from "@civfix/shared"
+import type { ReportCategory } from "@civfix/contract"
 
 export interface OutreachDigest {
   geoid: string

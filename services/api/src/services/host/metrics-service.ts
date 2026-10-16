@@ -1,4 +1,4 @@
-import type { PageViewSource } from "@civfix/shared"
+import type { PageViewSource } from "@civfix/contract"
 import type { FastifyBaseLogger } from "fastify"
 import type { CacheClient } from "../../auth/cache.js"
 import type { MetricUpsert, MetricsRepository } from "./metrics-repository.js"

@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto"
-import { AppError, MAX_TEAM_INVITES_PER_EVENT } from "@civfix/shared"
-import type { CleanupMemberRole, EventTeamInviteStatus, EventTeamRole } from "@civfix/shared"
+import { AppError, MAX_TEAM_INVITES_PER_EVENT } from "@civfix/contract"
+import type { CleanupMemberRole, EventTeamInviteStatus, EventTeamRole } from "@civfix/contract"
 import {
   encodeTimeCursor,
   isBeforeTimeCursor,

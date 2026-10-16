@@ -1,7 +1,7 @@
 import { describe, it, expect, vi } from "vitest"
 import { makeExpoDispatcher, isExpoPushToken } from "../../src/adapters/push-expo.js"
 import type { PushLogger } from "../../src/adapters/push-sender.js"
-import type { PushPayload } from "@civfix/shared/interfaces"
+import type { PushPayload } from "@civfix/seams"
 
 const logger: PushLogger = { warn: () => {}, error: () => {} }
 const PAYLOAD: PushPayload = { title: "Hi", body: "there", link: "/x", data: { k: "v" } }

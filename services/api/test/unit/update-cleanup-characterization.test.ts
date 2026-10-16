@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
-import { FakeJobs } from "@civfix/shared/fakes"
-import { MAX_BRING_ITEMS, MAX_EVENT_SLOTS, MAX_LINKED_REPORTS } from "@civfix/shared"
+import { FakeJobs } from "@civfix/seams"
+import { MAX_BRING_ITEMS, MAX_EVENT_SLOTS, MAX_LINKED_REPORTS } from "@civfix/contract"
 import {
   makeCleanupService,
   type CleanupService,

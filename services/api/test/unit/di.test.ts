@@ -11,7 +11,7 @@ import {
   FakeGeocoder,
   FakeInboundMail,
   FakeRoutingProvider,
-} from "@civfix/shared/fakes"
+} from "@civfix/seams"
 import { R2Storage } from "../../src/adapters/storage.r2.js"
 import { PgBossJobs } from "../../src/adapters/jobs.pgboss.js"
 import { WsChatService } from "../../src/adapters/chat-service.ws.js"

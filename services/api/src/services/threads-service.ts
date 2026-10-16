@@ -1,5 +1,5 @@
-import { relativeAgo, avatarGradient } from "@civfix/shared"
-import type { MessageThreadDTO, PersonDTO, RoomKind } from "@civfix/shared"
+import { relativeAgo, avatarGradient } from "@civfix/contract"
+import type { MessageThreadDTO, PersonDTO, RoomKind } from "@civfix/contract"
 import {
   encodeTimeCursor,
   isBeforeTimeCursor,

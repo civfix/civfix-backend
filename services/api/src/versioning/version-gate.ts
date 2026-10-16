@@ -1,4 +1,4 @@
-import { AppError } from "@civfix/shared"
+import { AppError } from "@civfix/contract"
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify"
 import {
   isBelowMinSupported,

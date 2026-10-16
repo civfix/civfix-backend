@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from "vitest"
-import { avatarGradient, currentVersion } from "@civfix/shared"
-import type { RegisterForEventRequest } from "@civfix/shared"
+import { avatarGradient, currentVersion } from "@civfix/contract"
+import type { RegisterForEventRequest } from "@civfix/contract"
 import { InMemoryCounterStore, type CounterStore } from "../../src/abuse/counter-store.js"
 import { InMemoryCacheClient } from "../../src/auth/cache.js"
 import { sha256Hex } from "../../src/auth/crypto.js"

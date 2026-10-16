@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest"
-import { FakePushSender, FakeUserChannel } from "@civfix/shared/fakes"
+import { FakePushSender, FakeUserChannel } from "@civfix/seams"
 import type { Container } from "../../src/di.js"
 import { InMemoryCounterStore } from "../../src/abuse/counter-store.js"
 import { InMemoryBlocksRepository } from "../../src/services/dm-repository.memory.js"

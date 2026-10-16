@@ -1,4 +1,4 @@
-import type { GetLegalVersionsResponse } from "@civfix/shared"
+import type { GetLegalVersionsResponse } from "@civfix/contract"
 import type { FastifyInstance } from "fastify"
 import { perHost } from "../plugins/rate-limit.js"
 import type { Container } from "../di.js"

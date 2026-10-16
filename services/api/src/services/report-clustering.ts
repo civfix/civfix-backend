@@ -1,5 +1,5 @@
 import { latLngToCell } from "h3-js"
-import type { ReportCategory, ReportClusterDTO, ReportStatus, ReportType } from "@civfix/shared"
+import type { ReportCategory, ReportClusterDTO, ReportStatus, ReportType } from "@civfix/contract"
 import { REPORT_H3_RESOLUTION } from "./report-types.js"
 import type { ReportMapPoint } from "./report-repository.js"
 

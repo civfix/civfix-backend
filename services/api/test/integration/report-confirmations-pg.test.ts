@@ -10,7 +10,7 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest"
 import { randomUUID } from "node:crypto"
 import type { FastifyInstance, LightMyRequestResponse } from "fastify"
-import { FakeMailer, type FakeJobs } from "@civfix/shared/fakes"
+import { FakeMailer, type FakeJobs } from "@civfix/seams"
 import { withPg, testHandle, type PgHarness } from "../helpers/pg.js"
 import { clientQuery } from "../helpers/query.js"
 import { makeServer } from "../../src/server.js"

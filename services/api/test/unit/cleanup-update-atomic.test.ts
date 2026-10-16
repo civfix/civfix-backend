@@ -1,7 +1,7 @@
 import { TEST_TICKET_SIGNER } from "../helpers/ticket-signer.js"
 import { beforeEach, describe, expect, it } from "vitest"
 import { randomUUID } from "node:crypto"
-import { AppError } from "@civfix/shared"
+import { AppError } from "@civfix/contract"
 import { InMemoryCounterStore } from "../../src/abuse/counter-store.js"
 import type { Sql } from "../../src/db/client.js"
 import {

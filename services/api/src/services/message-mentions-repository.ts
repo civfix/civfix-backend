@@ -1,4 +1,4 @@
-import type { UserMentionDTO } from "@civfix/shared"
+import type { UserMentionDTO } from "@civfix/contract"
 import type { Queryable } from "../db/client.js"
 
 export interface MessageMentionRepository {

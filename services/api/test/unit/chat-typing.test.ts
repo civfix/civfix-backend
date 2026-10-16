@@ -4,7 +4,7 @@ import { WsChatService } from "../../src/adapters/chat-service.ws.js"
 import { InMemoryChatPubSub } from "../../src/adapters/chat-pubsub.js"
 import { InMemoryChatPresence } from "../../src/adapters/chat-presence.js"
 import { InMemoryChatRepository, MockConnection } from "../helpers/chat.js"
-import { WsServerMessageSchema } from "@civfix/shared"
+import { WsServerMessageSchema } from "@civfix/contract"
 
 /**
  * Typing indicators: a member's typing frame fans a {type:"typing"} to the OTHER members (the sender is

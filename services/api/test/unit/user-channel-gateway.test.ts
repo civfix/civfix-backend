@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach } from "vitest"
-import { FakeUserChannel } from "@civfix/shared/fakes"
-import { WsServerMessageSchema, UserSignalSchema } from "@civfix/shared"
+import { FakeUserChannel } from "@civfix/seams"
+import { WsServerMessageSchema, UserSignalSchema } from "@civfix/contract"
 import {
   handleClientFrame,
   registerChatGateway,

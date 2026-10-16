@@ -1,4 +1,4 @@
-import type { ChatMessageDTO } from "@civfix/shared"
+import type { ChatMessageDTO } from "@civfix/contract"
 
 export function neutralizeChatViewerFields(dto: ChatMessageDTO): ChatMessageDTO {
   const next: ChatMessageDTO = {

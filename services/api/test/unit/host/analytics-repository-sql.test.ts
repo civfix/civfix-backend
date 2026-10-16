@@ -6,7 +6,7 @@ import {
   makeDrizzleAnalyticsRepository,
 } from "../../../src/services/host/analytics-repository.drizzle.js"
 import { makeDrizzleEventAnalyticsRepository } from "../../../src/services/host/event-analytics-repository.drizzle.js"
-import { MAX_INSIGHTS_TOP_VOLUNTEERS } from "@civfix/shared"
+import { MAX_INSIGHTS_TOP_VOLUNTEERS } from "@civfix/contract"
 import type { Sql } from "../../../src/db/client.js"
 
 const EVENT = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"

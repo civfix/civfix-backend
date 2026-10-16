@@ -5,7 +5,7 @@ import type {
   OrgVerificationKind,
   OrgVerificationStatus,
   SocialLinks,
-} from "@civfix/shared"
+} from "@civfix/contract"
 import type { CleanupOrganizationView, CleanupPersonView } from "../cleanup-repository.js"
 
 export interface OrganizationBaseRecord {

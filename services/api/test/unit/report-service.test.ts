@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest"
-import { REPORT_TYPE_TO_CATEGORY, type CreateReportRequest, type ReportDTO } from "@civfix/shared"
+import { REPORT_TYPE_TO_CATEGORY, type CreateReportRequest, type ReportDTO } from "@civfix/contract"
 import {
   makeReportService,
   clusterByZoom,

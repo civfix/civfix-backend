@@ -12,7 +12,7 @@ import type {
   ThemeAccent,
   TicketTypeVisibility,
   WaitlistStatus,
-} from "@civfix/shared"
+} from "@civfix/contract"
 import type { Queryable } from "../../db/client.js"
 import { publicServedKeyExpr } from "../media-served-key.js"
 import type {

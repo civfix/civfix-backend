@@ -1,4 +1,4 @@
-import { AppError, avatarGradient } from "@civfix/shared"
+import { AppError, avatarGradient } from "@civfix/contract"
 import type {
   CleanupDTO,
   ConnectionsListQuery,
@@ -8,7 +8,7 @@ import type {
   PersonDTO,
   ProfileEventsResponse,
   UserProfileDTO,
-} from "@civfix/shared"
+} from "@civfix/contract"
 import { toCleanupDTO } from "./cleanup-service.js"
 import { attachAffiliations, type AffiliationLoader } from "./affiliation.js"
 import { officialPersonFlag } from "../auth/official-account.js"

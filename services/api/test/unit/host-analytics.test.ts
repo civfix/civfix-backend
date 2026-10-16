@@ -4,7 +4,7 @@ import {
   HostAnalyticsSummaryResponseSchema,
   HostedEventsAnalyticsResponseSchema,
   MAX_PORTFOLIO_TOP_VOLUNTEERS,
-} from "@civfix/shared"
+} from "@civfix/contract"
 import { InMemoryCacheClient } from "../../src/auth/cache.js"
 import {
   hostAnalyticsCacheKey,

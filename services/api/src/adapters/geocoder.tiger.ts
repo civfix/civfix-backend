@@ -11,8 +11,8 @@
  * DB access is a lazy `getSql` thunk so constructing the adapter in the DI container opens no connection.
  */
 
-import { AppError } from "@civfix/shared"
-import type { Geocoder } from "@civfix/shared/interfaces"
+import { AppError } from "@civfix/contract"
+import type { Geocoder } from "@civfix/seams"
 import type { Sql } from "../db/client.js"
 import { makeDrizzleJurisdictionRepository } from "../services/jurisdiction-repository.drizzle.js"
 import type { JurisdictionRepository } from "../services/jurisdiction-repository.js"

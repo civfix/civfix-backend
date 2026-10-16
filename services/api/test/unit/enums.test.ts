@@ -60,7 +60,7 @@ import {
   HostExportStatusSchema,
   LegalDocumentTypeSchema,
   ConsentSurfaceSchema,
-} from "@civfix/shared"
+} from "@civfix/contract"
 import {
   ABUSE_REASON_VALUES,
   ABUSE_SOURCE_VALUES,
@@ -133,7 +133,7 @@ import {
   CONSENT_SURFACE_VALUES,
 } from "../../src/db/schema/types-legal.js"
 
-describe("schema enum tuples mirror @civfix/shared", () => {
+describe("schema enum tuples mirror @civfix/contract", () => {
   it.each([
     ["Role", ROLE_VALUES, RoleSchema.options],
     ["ReportCategory", REPORT_CATEGORY_VALUES, ReportCategorySchema.options],

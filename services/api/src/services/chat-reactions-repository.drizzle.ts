@@ -2,7 +2,7 @@
 // uuids across both tables.
 
 import type { Queryable, Sql } from "../db/client.js"
-import type { ReactionEmoji, ReactionSummaryDTO } from "@civfix/shared"
+import type { ReactionEmoji, ReactionSummaryDTO } from "@civfix/contract"
 import {
   loadReactionsFor,
   makeMessageReactionRepository,

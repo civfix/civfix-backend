@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from "vitest"
-import { FakeMailer } from "@civfix/shared/fakes"
+import { FakeMailer } from "@civfix/seams"
 import { InMemoryMailRepository } from "../helpers/admin/mail-repository.memory.js"
 import type { InsertMessageInput } from "../../src/services/admin/mail-repository.js"
 import { ROUTE_CLAIM_STALE_SECONDS } from "../../src/services/admin/outbound-send-policy.js"

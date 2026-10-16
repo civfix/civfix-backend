@@ -1,4 +1,4 @@
-import type { CleanupDTO } from "@civfix/shared"
+import type { CleanupDTO } from "@civfix/contract"
 import type { FastifyBaseLogger } from "fastify"
 import type { Container } from "../di.js"
 import { makeCleanupService } from "./cleanup-service.js"

@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it } from "vitest"
-import { AppError, type ChatMessageDTO } from "@civfix/shared"
+import { AppError, type ChatMessageDTO } from "@civfix/contract"
 import { randomUUID } from "node:crypto"
 import type { ZodTypeAny } from "zod"
 import { parse } from "../../src/routes/_validate.js"
@@ -12,7 +12,7 @@ import {
   MockConnection,
 } from "../helpers/chat.js"
 import type { FastifyInstance } from "fastify"
-import { FakeMailer } from "@civfix/shared/fakes"
+import { FakeMailer } from "@civfix/seams"
 import { makeServer } from "../../src/server.js"
 import { loadEnv } from "../../src/env.js"
 import { InMemoryCacheClient } from "../../src/auth/cache.js"

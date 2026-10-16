@@ -1,4 +1,4 @@
-import { AppError, ErrorCode } from "@civfix/shared"
+import { AppError, ErrorCode } from "@civfix/contract"
 import type {
   AddGroupMembersRequest,
   ChatGroupDTO,
@@ -7,7 +7,7 @@ import type {
   ListGroupMembersRequest,
   ListGroupMembersResponse,
   UpdateChatGroupRequest,
-} from "@civfix/shared"
+} from "@civfix/contract"
 import type {
   ChatGroupRepository,
   ChatGroupView,

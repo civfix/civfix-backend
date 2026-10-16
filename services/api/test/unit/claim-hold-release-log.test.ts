@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest"
-import type { ReportDTO } from "@civfix/shared"
+import type { ReportDTO } from "@civfix/contract"
 import { sha256Hex } from "../../src/auth/crypto.js"
 import { makeClaimService } from "../../src/services/claim-service.js"
 import { InMemoryAnonStore } from "../helpers/anon.js"

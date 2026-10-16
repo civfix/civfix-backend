@@ -1,5 +1,5 @@
-import type { MediaKind, MediaStatus } from "@civfix/shared"
-import type { NearDuplicateResult } from "@civfix/shared/interfaces"
+import type { MediaKind, MediaStatus } from "@civfix/contract"
+import type { NearDuplicateResult } from "@civfix/seams"
 
 export type WorkerAbuseReason = "nsfw" | "phash_dup" | "gps"
 

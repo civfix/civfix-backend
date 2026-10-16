@@ -18,8 +18,9 @@ import type {
   TicketTypeVisibility,
   WaitlistClaimOutcome,
   WaitlistStatus,
-} from "@civfix/shared"
-import type { CleanupStatus, EventVisibility } from "@civfix/shared"
+  CleanupStatus,
+  EventVisibility,
+} from "@civfix/contract"
 
 export type RegistrationSubject =
   { kind: "user"; userId: string } | { kind: "guest"; guestId: string }

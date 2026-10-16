@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto"
 import { describe, expect, it } from "vitest"
-import type { ReportDTO } from "@civfix/shared"
+import type { ReportDTO } from "@civfix/contract"
 import { makeFakeSql, type FakeSqlControl } from "../helpers/fake-sql.js"
 import type { Queryable, Sql } from "../../src/db/client.js"
 import { mediaBoundElsewhere } from "../../src/services/media-bindings.js"

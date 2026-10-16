@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest"
-import { AppError, ErrorCode } from "@civfix/shared"
+import { AppError, ErrorCode } from "@civfix/contract"
 import { makeFakeSql } from "../helpers/fake-sql.js"
 import type { Sql } from "../../src/db/client.js"
 import { makeDrizzleAdminUserRepository } from "../../src/services/admin/admin-user-repository.drizzle.js"

@@ -1,11 +1,11 @@
 import { hash as argonHash, verify as argonVerify } from "@node-rs/argon2"
-import { AppError } from "@civfix/shared"
+import { AppError } from "@civfix/contract"
 import { constantTimeStringEqual, generateNumericCode } from "./crypto.js"
 import { normalizeIp } from "../abuse/ip-rate-limit.js"
 import type { CacheClient } from "./cache.js"
 import type { OAuthIdentityStore, OtpStore, UserRecord, UserStore } from "./stores.js"
 import { newAccountDisplayName } from "./official-account.js"
-import type { Mailer } from "@civfix/shared/interfaces"
+import type { Mailer } from "@civfix/seams"
 import type { WriteAuditInput } from "../services/admin/audit.js"
 
 export const OTP_CODE_LENGTH = 6

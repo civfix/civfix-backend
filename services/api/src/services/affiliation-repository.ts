@@ -1,4 +1,4 @@
-import type { OrganizationRefDTO } from "@civfix/shared"
+import type { OrganizationRefDTO } from "@civfix/contract"
 
 export interface AffiliationRow {
   user_id: string

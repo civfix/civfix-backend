@@ -1,4 +1,4 @@
-import { tokens } from "@civfix/shared"
+import { tokens } from "@civfix/tokens"
 import { escapeHtml } from "./mail-text.js"
 import type { EmailBlock } from "./email-blocks.js"
 import { WORDMARK_FONT_WOFF2_BASE64 } from "./email-wordmark-font.js"

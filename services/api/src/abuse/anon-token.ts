@@ -12,7 +12,7 @@
  */
 
 import { createHmac } from "node:crypto"
-import { AppError } from "@civfix/shared"
+import { AppError } from "@civfix/contract"
 import { generateToken, constantTimeStringEqual } from "../auth/crypto.js"
 
 export const ANON_TOKEN_TTL_SECONDS = 24 * 60 * 60

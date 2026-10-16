@@ -1,4 +1,4 @@
-import type { Jobs, Storage } from "@civfix/shared/interfaces"
+import type { Jobs, Storage } from "@civfix/seams"
 import type { MediaChecksJob } from "@civfix/api/media-repo"
 import type { MediaWorkerRepository, StuckMediaRow } from "@civfix/api/media-worker-repository"
 import {

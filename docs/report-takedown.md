@@ -12,7 +12,7 @@ removal of one specific published report **without** deleting their account.
 ## How a user requests takedown of their OWN report
 
 There is **no separate endpoint** (adding one would require a coordinated
-`@civfix/shared` endpoint-registry release, out of scope here). Instead the
+`@civfix/contract` endpoint-registry release, out of scope here). Instead the
 existing content-report channel carries it:
 
     POST /v1/content-reports

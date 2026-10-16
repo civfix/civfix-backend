@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
-import type { Storage } from "@civfix/shared/interfaces"
+import type { Storage } from "@civfix/seams"
 import { makeDownloader } from "../../src/download.js"
 import { loadHttpsProxy } from "../../src/config.js"
 

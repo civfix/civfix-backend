@@ -1,6 +1,6 @@
 import { describe, it, expect, afterEach } from "vitest"
 import type { FastifyInstance } from "fastify"
-import { FakeMailer } from "@civfix/shared/fakes"
+import { FakeMailer } from "@civfix/seams"
 import { makeServer } from "../../src/server.js"
 import { loadEnv } from "../../src/env.js"
 import { InMemoryCacheClient } from "../../src/auth/cache.js"
@@ -9,7 +9,7 @@ import { makeAuthServices, type AuthServices } from "../../src/auth/auth-service
 import { StubJwksVerifier } from "../helpers/auth.js"
 import type { WriteAuditInput } from "../../src/services/admin/audit.js"
 import type { AccessIdentity, VerifyAccessJwt } from "../../src/auth/cf-access.js"
-import type { Role } from "@civfix/shared"
+import type { Role } from "@civfix/contract"
 
 // Route-coverage only proves admin routes are registered; these drive the real Fastify stack to prove the
 // guard actually returns 401/403 and the Access exchange enforces the allowlist. The real Access

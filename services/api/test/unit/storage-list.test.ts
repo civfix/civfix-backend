@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest"
-import { FakeStorage } from "@civfix/shared/fakes"
+import { FakeStorage } from "@civfix/seams"
 
 /**
  * FakeStorage.list / getObject back the inbound sweep. The fake mirrors R2's keyset pagination (sorted

@@ -1,6 +1,6 @@
 import { TEST_TICKET_SIGNER } from "../helpers/ticket-signer.js"
 import { beforeEach, describe, expect, it } from "vitest"
-import { FakeJobs } from "@civfix/shared/fakes"
+import { FakeJobs } from "@civfix/seams"
 import { InMemoryCounterStore } from "../../src/abuse/counter-store.js"
 import { InMemoryCleanupRepository } from "../helpers/cleanups.js"
 import { makeCleanupService, type CleanupService } from "../../src/services/cleanup-service.js"

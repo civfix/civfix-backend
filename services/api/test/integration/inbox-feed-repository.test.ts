@@ -1,5 +1,5 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest"
-import { InboxFeedResponseSchema, type InboxFeedQuery } from "@civfix/shared"
+import { InboxFeedResponseSchema, type InboxFeedQuery } from "@civfix/contract"
 import { withPg, type PgHarness } from "../helpers/pg.js"
 import { LA_CITY } from "../../src/db/seed-fixtures.js"
 import { makeDrizzleInboundRepository } from "../../src/services/admin/inbound-repository.drizzle.js"

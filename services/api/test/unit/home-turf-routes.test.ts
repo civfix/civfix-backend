@@ -1,7 +1,6 @@
 import { describe, it, expect, afterEach } from "vitest"
 import type { FastifyInstance } from "fastify"
-import type { FakeMailer, FakeAbuseChecks } from "@civfix/shared/fakes"
-import type { OutboundEmail } from "@civfix/shared/interfaces"
+import type { FakeMailer, FakeAbuseChecks, OutboundEmail } from "@civfix/seams"
 import { makeServer } from "../../src/server.js"
 import { makeContainer } from "../../src/di.js"
 import { loadEnv } from "../../src/env.js"

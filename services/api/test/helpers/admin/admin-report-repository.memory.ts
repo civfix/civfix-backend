@@ -17,7 +17,7 @@ import type {
   ReportCategory,
   ReportTimelineItem,
   ReportVisibility,
-} from "@civfix/shared"
+} from "@civfix/contract"
 import { mapOutreachStatus } from "../../../src/services/admin/admin-report-repository.drizzle.js"
 import { isPacketKind, type MailMessageKind } from "../../../src/services/admin/mail-repository.js"
 import {

@@ -1,5 +1,5 @@
-import { REPORT_CATEGORY_LABELS } from "@civfix/shared"
-import type { JurisdictionDirectoryDTO, ReportCategory } from "@civfix/shared"
+import { REPORT_CATEGORY_LABELS } from "@civfix/contract"
+import type { JurisdictionDirectoryDTO, ReportCategory } from "@civfix/contract"
 import { ADMIN_CATEGORIES } from "./category-counts.js"
 import { UNMAPPED_GEOID, UNMAPPED_NAME } from "./jurisdiction-contacts-types.js"
 import type {

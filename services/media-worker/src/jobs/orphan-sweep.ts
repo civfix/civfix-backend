@@ -1,4 +1,4 @@
-import type { Storage } from "@civfix/shared/interfaces"
+import type { Storage } from "@civfix/seams"
 import type {
   LeakedObjectRow,
   MediaWorkerRepository,

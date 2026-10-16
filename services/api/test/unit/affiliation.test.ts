@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest"
-import type { PersonDTO } from "@civfix/shared"
+import type { PersonDTO } from "@civfix/contract"
 import type { Sql } from "../../src/db/client.js"
 import {
   attachAffiliations,

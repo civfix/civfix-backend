@@ -16,8 +16,8 @@ import type {
   PatchContactsInput,
   SaveContactsInput,
 } from "../../../src/services/admin/jurisdiction-contacts-repository.js"
-import { AppError } from "@civfix/shared"
-import type { JurisdictionLayer, ReportCategory } from "@civfix/shared"
+import { AppError } from "@civfix/contract"
+import type { JurisdictionLayer, ReportCategory } from "@civfix/contract"
 
 export interface SeededJurisdiction {
   geoid: string

@@ -1,5 +1,5 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest"
-import { DEFAULT_FEED_RANKING } from "@civfix/shared"
+import { DEFAULT_FEED_RANKING } from "@civfix/contract"
 import { withPg, type PgHarness, testHandle } from "../helpers/pg.js"
 import { makeFeedPresence } from "../../src/services/feed-presence.js"
 import { InMemoryCacheClient } from "../../src/auth/cache.js"

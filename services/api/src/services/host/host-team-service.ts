@@ -13,8 +13,8 @@ import {
   type ListEventTeamResponse,
   type ListMyEventInvitesResponse,
   type PendingEventTeamInviteDTO,
-} from "@civfix/shared"
-import { can } from "@civfix/shared/host"
+} from "@civfix/contract"
+import { can } from "@civfix/contract/host"
 import { InMemoryCounterStore, type CounterStore } from "../../abuse/counter-store.js"
 import { generateToken, sha256Hex } from "../../auth/crypto.js"
 import { toAttendeePersonDTO } from "../cleanup-dto.js"

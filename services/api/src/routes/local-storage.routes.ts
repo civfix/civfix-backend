@@ -1,5 +1,5 @@
 import { Transform, type Readable } from "node:stream"
-import { AppError, MAX_VIDEO_BYTES } from "@civfix/shared"
+import { AppError, MAX_VIDEO_BYTES } from "@civfix/contract"
 import { z } from "zod"
 import type { FastifyInstance, FastifyReply, FastifyRequest, RequestPayload } from "fastify"
 import {

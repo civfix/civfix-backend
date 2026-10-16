@@ -5,7 +5,7 @@
 
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest"
 import type { FastifyInstance } from "fastify"
-import { AppError, MESSAGE_BODY_MAX, type ChatMessageDTO } from "@civfix/shared"
+import { AppError, MESSAGE_BODY_MAX, type ChatMessageDTO } from "@civfix/contract"
 import type { Container } from "../../src/di.js"
 import type {
   GatewayDeps,

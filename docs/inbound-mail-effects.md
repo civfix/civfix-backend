@@ -116,7 +116,7 @@ What reaches the chat is `cityReplyChatBody(message.body, MAIL_REPLY_DOMAIN)`
 (`services/api/src/services/admin/inbound-thread-correlation.ts`): the **stored plain-text** body,
 conservatively stripped of quoted history, whitespace-trimmed, and clipped to `MESSAGE_BODY_MAX`
 (2000) so it passes chat validation. The clip is grapheme-safe (`clipToMessageBody` walks
-`segmentGraphemes` from `@civfix/shared` and stops before the code-unit budget), so the cut can never
+`segmentGraphemes` from `@civfix/contract` and stops before the code-unit budget), so the cut can never
 split a surrogate pair or a combining sequence and leave invalid text in the chat. The strip is deliberately conservative and is
 unit-tested.
 

@@ -1,5 +1,5 @@
-import type { ChatMessageDTO, UserMentionDTO } from "@civfix/shared"
-import type { PersistChatInput } from "@civfix/shared/interfaces"
+import type { ChatMessageDTO, UserMentionDTO } from "@civfix/contract"
+import type { PersistChatInput } from "@civfix/seams"
 import {
   resolveAndRecordChatMentions,
   type ChatMentionRecordSeam,

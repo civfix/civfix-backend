@@ -1,4 +1,4 @@
-import type { GetApproximateLocationResponse } from "@civfix/shared"
+import type { GetApproximateLocationResponse } from "@civfix/contract"
 import { CF_CITY_HEADER, headerValue, parseCfGeo, type HeaderBag } from "../abuse/gps-sanity.js"
 
 export const CF_IP_RADIUS_KM = 25

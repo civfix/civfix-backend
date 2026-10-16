@@ -1,4 +1,4 @@
-import type { GetLegalVersionsResponse } from "@civfix/shared"
+import type { GetLegalVersionsResponse } from "@civfix/contract"
 import type { FastifyInstance } from "fastify"
 import type { Container } from "../../di.js"
 import { route } from "../../versioning/route.js"

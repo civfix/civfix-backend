@@ -16,7 +16,7 @@ import type {
   EventKind,
   EventVisibility,
   SocialLinks,
-} from "@civfix/shared"
+} from "@civfix/contract"
 import {
   encodeNameCursor,
   encodeTimeCursor,

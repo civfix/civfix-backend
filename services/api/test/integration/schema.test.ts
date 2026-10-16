@@ -6,7 +6,7 @@ import {
   AddressPrecisionSchema,
   EventAddressSourceSchema,
   ReportAddressSourceSchema,
-} from "@civfix/shared"
+} from "@civfix/contract"
 import { withPg, type PgHarness } from "../helpers/pg.js"
 import { seedCleanup } from "../helpers/cleanups.js"
 import * as schema from "../../src/db/schema/index.js"

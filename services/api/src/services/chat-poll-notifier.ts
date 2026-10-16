@@ -1,5 +1,5 @@
 import type { FastifyBaseLogger } from "fastify"
-import type { ChatMessageDTO } from "@civfix/shared"
+import type { ChatMessageDTO } from "@civfix/contract"
 import type { Container } from "../di.js"
 import type { PollRoomKind } from "./chat-poll-service.js"
 import {

@@ -1,4 +1,4 @@
-import type { CheckinMethod } from "@civfix/shared"
+import type { CheckinMethod } from "@civfix/contract"
 import type { Sql } from "../../db/client.js"
 import { toSeatRecord, waitlistEntryNotBanned, type SeatRowSelect } from "./registration-sql.js"
 import { loadRegistrationById } from "./registration-repository-load.drizzle.js"

@@ -7,7 +7,7 @@
  */
 
 import { latLngToCell } from "h3-js"
-import { AppError } from "@civfix/shared"
+import { AppError } from "@civfix/contract"
 import type { CounterStore } from "./counter-store.js"
 
 /** r10 is ~130 m across and matches reports.h3_cell. */

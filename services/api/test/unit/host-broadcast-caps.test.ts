@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest"
-import { FakeMailer } from "@civfix/shared/fakes"
+import { FakeMailer } from "@civfix/seams"
 import { InMemoryCounterStore, type CounterStore } from "../../src/abuse/counter-store.js"
 import { InMemoryBroadcastRepository } from "../helpers/host/broadcast-repository.memory.js"
 import {

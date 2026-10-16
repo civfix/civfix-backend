@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest"
-import { ErrorCode, MailSendError, type OutboundEmail, type SentMail } from "@civfix/shared"
-import { FakeMailer } from "@civfix/shared/fakes"
+import { ErrorCode } from "@civfix/contract"
+import { MailSendError, type OutboundEmail, type SentMail, FakeMailer } from "@civfix/seams"
 import type { Sql } from "../../src/db/client.js"
 import { makeFakeSql, type FakeSqlControl, type SqlHandler } from "../helpers/fake-sql.js"
 import { InMemoryUserStore, type UserRecord } from "../../src/auth/stores.js"
@@ -9,7 +9,7 @@ import {
   DATA_EXPORT_FREE_TEXT_MAX_ROWS,
   DATA_EXPORT_MAX_ROWS,
 } from "../../src/services/data-export-service.js"
-import type { JobHandler } from "@civfix/shared/interfaces"
+import type { JobHandler } from "@civfix/seams"
 import type { Container } from "../../src/di.js"
 import { registerDataExportJobs, runDataExport } from "../../src/services/data-export-jobs.js"
 import { DATA_EXPORT_JOB } from "../../src/lib/queue-names.js"

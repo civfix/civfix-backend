@@ -1,4 +1,4 @@
-import type { CleanupPinDTO } from "@civfix/shared"
+import type { CleanupPinDTO } from "@civfix/contract"
 import type { CleanupBBox } from "./cleanup-repository.js"
 
 export interface CleanupMapRepository {

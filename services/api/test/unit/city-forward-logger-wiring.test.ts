@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from "vitest"
-import { FakePushSender } from "@civfix/shared/fakes"
-import type { ChatMessageDTO } from "@civfix/shared"
+import { FakePushSender } from "@civfix/seams"
+import type { ChatMessageDTO } from "@civfix/contract"
 import type { FastifyBaseLogger, FastifyInstance } from "fastify"
 import type { Container } from "../../src/di.js"
 import type { OnReportMessage } from "../../src/ws/types.js"

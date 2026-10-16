@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach } from "vitest"
-import { FakePushSender } from "@civfix/shared/fakes"
-import type { ChatMessageDTO, PersonDTO, ReplyToDTO, UserMentionDTO } from "@civfix/shared"
+import { FakePushSender } from "@civfix/seams"
+import type { ChatMessageDTO, PersonDTO, ReplyToDTO, UserMentionDTO } from "@civfix/contract"
 import {
   makeReportChatNotifier,
   REPORT_CHAT_FANOUT_MEMBER_CAP,
@@ -20,7 +20,7 @@ import {
   PUSH_FANOUT_BATCH_SIZE,
   type NotificationService,
 } from "../../src/services/notification-service.js"
-import type { PushSender } from "@civfix/shared/interfaces"
+import type { PushSender } from "@civfix/seams"
 import type { ConversationMutesRepository } from "../../src/services/conversation-mutes-repository.js"
 import type { ConversationMuteRoomKind } from "../../src/db/schema/conversation_mutes.js"
 

@@ -1,4 +1,4 @@
-import type { LatLng } from "@civfix/shared"
+import type { LatLng } from "@civfix/contract"
 
 export interface HeldReportView {
   id: string

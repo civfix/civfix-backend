@@ -1,4 +1,4 @@
-import type { PersonDTO } from "@civfix/shared"
+import type { PersonDTO } from "@civfix/contract"
 
 export interface ListBlockedArgs {
   cursor?: string | null

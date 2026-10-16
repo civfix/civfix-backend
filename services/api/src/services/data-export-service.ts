@@ -1,6 +1,6 @@
-import { AppError, ErrorCode } from "@civfix/shared"
+import { AppError, ErrorCode } from "@civfix/contract"
 import type { Sql } from "../db/client.js"
-import type { Mailer } from "@civfix/shared/interfaces"
+import type { Mailer } from "@civfix/seams"
 import type { UserStore } from "../auth/stores.js"
 import { heading, paragraph } from "../adapters/email-blocks.js"
 import { renderEmailBody } from "../adapters/email-layout.js"

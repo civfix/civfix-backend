@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest"
-import type { Jobs } from "@civfix/shared/interfaces"
+import type { Jobs } from "@civfix/seams"
 import { InMemoryCounterStore } from "../../src/abuse/counter-store.js"
 import type { Sql } from "../../src/db/client.js"
 import { makeDrizzleCleanupRepository } from "../../src/services/cleanup-repository.drizzle.js"

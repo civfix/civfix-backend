@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest"
-import { FakeAbuseChecks } from "@civfix/shared/fakes"
+import { FakeAbuseChecks } from "@civfix/seams"
 import { loadLimits, type WorkerLimits } from "../../src/config.js"
 
 type StubProbe = {

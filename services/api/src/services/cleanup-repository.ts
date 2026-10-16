@@ -12,8 +12,8 @@ import type {
   ReportCategory,
   ReportStatus,
   ReportType,
-} from "@civfix/shared"
-import type { HostStanding } from "@civfix/shared/host"
+} from "@civfix/contract"
+import type { HostStanding } from "@civfix/contract/host"
 
 export interface CleanupOrganizationView {
   id: string

@@ -1,4 +1,4 @@
-import { ANNOUNCEMENT_BROADCAST_KIND, AppError, MAX_BROADCAST_BODY } from "@civfix/shared"
+import { ANNOUNCEMENT_BROADCAST_KIND, AppError, MAX_BROADCAST_BODY } from "@civfix/contract"
 import {
   BroadcastLinkError,
   assertSafeBroadcastLinks,
@@ -10,8 +10,8 @@ import {
   smsBodyFrom,
   type BroadcastLinkIssue,
   type BroadcastVarValues,
-} from "@civfix/shared/host"
-import { markdownToPlainText, parseMarkdownSubset } from "@civfix/shared/markdown"
+} from "@civfix/contract/host"
+import { markdownToPlainText, parseMarkdownSubset } from "@civfix/contract/markdown"
 import { button, richList, richParagraph, type EmailBlock } from "../../adapters/email-blocks.js"
 import { eventFooter, renderEmailBody } from "../../adapters/email-layout.js"
 import type { BroadcastRecord, EventBroadcastContext } from "./broadcast-types.js"

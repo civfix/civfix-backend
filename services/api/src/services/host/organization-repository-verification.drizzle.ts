@@ -1,4 +1,4 @@
-import { AppError, type OrgVerificationKind, type OrgVerificationStatus } from "@civfix/shared"
+import { AppError, type OrgVerificationKind, type OrgVerificationStatus } from "@civfix/contract"
 import type { Queryable, Sql } from "../../db/client.js"
 import { encodeTimeCursor, pageWith, parseTimeCursor } from "../../db/cursor-helpers.js"
 import { likeContains } from "../../db/like.js"

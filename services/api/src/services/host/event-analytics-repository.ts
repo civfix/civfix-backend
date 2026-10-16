@@ -1,4 +1,4 @@
-import type { KeyCount } from "@civfix/shared/host"
+import type { KeyCount } from "@civfix/contract/host"
 
 export interface EventAnalyticsFacts {
   walkUps: number

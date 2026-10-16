@@ -1,4 +1,4 @@
-import type { AuditListQuery, AuditListResponse, AuditLogEntryDTO } from "@civfix/shared"
+import type { AuditListQuery, AuditListResponse, AuditLogEntryDTO } from "@civfix/contract"
 import { clampLimit } from "./pagination.js"
 import type { AuditRecord, AuditRepository, ListAuditArgs } from "./audit-repository.js"
 

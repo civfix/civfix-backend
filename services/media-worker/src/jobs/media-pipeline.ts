@@ -1,5 +1,5 @@
-import type { AbuseChecks } from "@civfix/shared/interfaces"
-import type { MediaKind, MediaStatus } from "@civfix/shared"
+import type { AbuseChecks } from "@civfix/seams"
+import type { MediaKind, MediaStatus } from "@civfix/contract"
 import type { WorkerAbuseReason } from "@civfix/api/media-worker-repository"
 import type { FindPhashDuplicateFn } from "@civfix/api/adapters/abuse-checks"
 import type { WorkerLimits } from "../config.js"

@@ -1,5 +1,5 @@
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest"
-import { endpoints } from "@civfix/shared/client"
+import { endpoints } from "@civfix/contract/client"
 import type { EndpointName, RouteOptions } from "../../src/versioning/route.js"
 import { makeAuthHarness, type AuthHarness } from "../helpers/auth.js"
 

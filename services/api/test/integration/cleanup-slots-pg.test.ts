@@ -8,7 +8,7 @@ import type {
   CleanupRepository,
   DesiredSlot,
 } from "../../src/services/cleanup-repository.js"
-import type { CleanupStatus } from "@civfix/shared"
+import type { CleanupStatus } from "@civfix/contract"
 
 const pg = await withPg()
 

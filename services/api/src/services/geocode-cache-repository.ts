@@ -1,4 +1,4 @@
-import type { AddressPrecision } from "@civfix/shared"
+import type { AddressPrecision } from "@civfix/contract"
 import type { GeocodeCacheEntry } from "./geocode-cache.js"
 
 export interface GeocodeCacheRowSelect {

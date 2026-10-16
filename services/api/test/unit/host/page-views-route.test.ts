@@ -1,6 +1,6 @@
 import Fastify, { type FastifyInstance } from "fastify"
 import { afterEach, describe, expect, it } from "vitest"
-import { RecordEventPageViewResponseSchema } from "@civfix/shared"
+import { RecordEventPageViewResponseSchema } from "@civfix/contract"
 import type { Container } from "../../../src/di.js"
 import { registerPageViewRoutes } from "../../../src/routes/host/page-views.routes.js"
 import type { CommsRuntime } from "../../../src/services/host/comms-wiring.js"

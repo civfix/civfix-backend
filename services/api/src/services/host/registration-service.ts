@@ -1,4 +1,4 @@
-import { AppError, currentVersion } from "@civfix/shared"
+import { AppError, currentVersion } from "@civfix/contract"
 import type {
   CancelEventRegistrationRequest,
   CancelEventRegistrationResponse,
@@ -16,9 +16,8 @@ import type {
   SetEventRegistrationNoteRequest,
   TransferEventRegistrationRequest,
   TransferEventRegistrationResponse,
-} from "@civfix/shared"
-import type { Jobs } from "@civfix/shared/interfaces"
-import type { UserChannel } from "@civfix/shared/interfaces"
+} from "@civfix/contract"
+import type { Jobs, UserChannel } from "@civfix/seams"
 import { assertNoSlur } from "../../abuse/slur-filter.js"
 import { eventEndedError, eventWindowOf, hasEventEnded } from "../cleanup-rules.js"
 import { sha256Hex } from "../../auth/crypto.js"

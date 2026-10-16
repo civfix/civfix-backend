@@ -1,6 +1,6 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest"
 import { randomUUID } from "node:crypto"
-import type { ChatMessageDTO } from "@civfix/shared"
+import type { ChatMessageDTO } from "@civfix/contract"
 import { withPg, type PgHarness, testHandle } from "../helpers/pg.js"
 import { seedCleanup } from "../helpers/cleanups.js"
 import { seedMediaAsset } from "../helpers/media-pg.js"

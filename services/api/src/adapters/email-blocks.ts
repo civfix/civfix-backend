@@ -1,9 +1,9 @@
-import { tokens } from "@civfix/shared"
+import { tokens } from "@civfix/tokens"
 import {
   markdownInlineToPlainText,
   type MarkdownInline,
   type MarkdownList,
-} from "@civfix/shared/markdown"
+} from "@civfix/contract/markdown"
 import { escapeHtml } from "./mail-text.js"
 
 export interface EmailBlock {

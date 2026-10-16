@@ -1,5 +1,5 @@
 import type { Sql } from "../db/client.js"
-import type { UserMentionDTO } from "@civfix/shared"
+import type { UserMentionDTO } from "@civfix/contract"
 import { isUuid } from "../db/cursor-helpers.js"
 import { MAX_MENTIONS_PER_MESSAGE } from "./discussion-mentions.js"
 

@@ -31,7 +31,7 @@ import type {
   AnonHoldReleaseRepository,
   HeldReportView,
 } from "@civfix/api/anon-hold-release-repository"
-import { FakeJobs, FakeStorage, FakeAbuseChecks } from "@civfix/shared/fakes"
+import { FakeJobs, FakeStorage, FakeAbuseChecks } from "@civfix/seams"
 import { InMemoryMediaWorkerRepository } from "../helpers/in-memory-media-worker-repository.js"
 import * as fx from "../fixtures/make.js"
 

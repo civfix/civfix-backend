@@ -5,9 +5,9 @@
  * this file.
  */
 
-import { AppError } from "@civfix/shared"
-import type { RoutingProvider, RouteStop, RouteOpts, Route } from "@civfix/shared/interfaces"
-import type { LatLng } from "@civfix/shared"
+import { AppError } from "@civfix/contract"
+import type { RoutingProvider, RouteStop, RouteOpts, Route } from "@civfix/seams"
+import type { LatLng } from "@civfix/contract"
 
 const NOT_IMPL = "adapter not implemented: routing-provider"
 

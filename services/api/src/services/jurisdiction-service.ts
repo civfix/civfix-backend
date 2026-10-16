@@ -1,5 +1,5 @@
-import type { JurisdictionDTO } from "@civfix/shared"
-import type { Geocoder, Jobs } from "@civfix/shared/interfaces"
+import type { JurisdictionDTO } from "@civfix/contract"
+import type { Geocoder, Jobs } from "@civfix/seams"
 import type { Sql } from "../db/client.js"
 import { formatCityStateLabel, uspsFromGeoid } from "../adapters/geocoder.tiger.js"
 import type {

@@ -1,4 +1,4 @@
-import { AppError } from "@civfix/shared"
+import { AppError } from "@civfix/contract"
 import type {
   AdminCreditUserHoursRequest,
   AdminCreditUserHoursResponse,
@@ -7,7 +7,7 @@ import type {
   AdminUserHoursResponse,
   AdminVoidUserHoursRequest,
   AdminVoidUserHoursResponse,
-} from "@civfix/shared"
+} from "@civfix/contract"
 import { isOfficialAccount } from "../../auth/official-account.js"
 import {
   assertTargetIsNotOfficialAccount,

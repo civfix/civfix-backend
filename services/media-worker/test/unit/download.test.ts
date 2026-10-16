@@ -1,7 +1,7 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest"
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http"
 import type { AddressInfo } from "node:net"
-import type { Storage } from "@civfix/shared/interfaces"
+import type { Storage } from "@civfix/seams"
 import {
   makeDownloader,
   DownloadTooLargeError,

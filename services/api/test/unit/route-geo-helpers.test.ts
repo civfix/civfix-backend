@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest"
-import { FakeGeocoder, FakeJobs } from "@civfix/shared/fakes"
+import { FakeGeocoder, FakeJobs } from "@civfix/seams"
 import type { Container } from "../../src/di.js"
 import type { Sql } from "../../src/db/client.js"
 import type {

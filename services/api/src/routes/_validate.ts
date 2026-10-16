@@ -1,4 +1,4 @@
-import { AppError } from "@civfix/shared"
+import { AppError } from "@civfix/contract"
 import type { FastifyRequest } from "fastify"
 import { z, type ZodTypeAny } from "zod"
 

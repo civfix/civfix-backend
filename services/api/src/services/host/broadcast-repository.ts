@@ -3,7 +3,7 @@ import type {
   BroadcastSegment,
   BroadcastStatus,
   DeliveryStatus,
-} from "@civfix/shared"
+} from "@civfix/contract"
 import type { KeysetCursor } from "../../db/cursor-helpers.js"
 import type { NotificationPrefsRecord } from "../notification-repository.js"
 import type { WriteAuditInput } from "../admin/audit.js"

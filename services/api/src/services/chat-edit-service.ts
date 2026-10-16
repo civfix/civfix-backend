@@ -7,8 +7,8 @@
  * The machine subcodes ride AppError's `fields` ({ code: "..." }) because ErrorCode is a closed enum;
  * clients key off httpStatus + fields.code.
  */
-import { AppError, EDIT_WINDOW_HOURS, ErrorCode } from "@civfix/shared"
-import type { ChatMessageDTO, ChatMessageKind, RoomKind, WsServerMessage } from "@civfix/shared"
+import { AppError, EDIT_WINDOW_HOURS, ErrorCode } from "@civfix/contract"
+import type { ChatMessageDTO, ChatMessageKind, RoomKind, WsServerMessage } from "@civfix/contract"
 import { assertNoSlur } from "../abuse/slur-filter.js"
 import { parseUserMentions } from "./discussion-mentions.js"
 import { broadcastMessageUpdate } from "../ws/frame-handler.js"

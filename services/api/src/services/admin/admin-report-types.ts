@@ -4,7 +4,7 @@ import type {
   AdminReportListResponse,
   AdminReportStatus,
   ReportMedia,
-} from "@civfix/shared"
+} from "@civfix/contract"
 import type { OutboundMailService } from "./outbound-mail-service.js"
 import type { FastifyBaseLogger } from "fastify"
 import type { NotificationService } from "../notification-service.js"

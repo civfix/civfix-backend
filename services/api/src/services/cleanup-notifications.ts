@@ -1,4 +1,4 @@
-import type { Jobs } from "@civfix/shared/interfaces"
+import type { Jobs } from "@civfix/seams"
 import type { MessageKey } from "../i18n/messages/en.js"
 import type { NotificationService } from "./notification-service.js"
 import { mapWithLimit } from "../lib/concurrency.js"

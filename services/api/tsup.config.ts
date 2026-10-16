@@ -34,4 +34,7 @@ export default defineConfig({
   clean: true,
   splitting: false,
   skipNodeModulesBundle: true,
+  // @civfix/seams ships TypeScript source (a private workspace package), so it is bundled in rather
+  // than resolved from node_modules at runtime.
+  noExternal: ["@civfix/seams"],
 })

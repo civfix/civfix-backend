@@ -1,4 +1,4 @@
-import type { NotificationType, PushPlatform, QuietHours } from "@civfix/shared"
+import type { NotificationType, PushPlatform, QuietHours } from "@civfix/contract"
 
 export interface NotificationRecord {
   id: string

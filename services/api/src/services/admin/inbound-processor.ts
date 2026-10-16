@@ -1,6 +1,6 @@
 import type { Container } from "../../di.js"
-import type { InboundMail, ParsedMail, Storage } from "@civfix/shared/interfaces"
-import type { MailAttachment } from "@civfix/shared"
+import type { InboundMail, ParsedMail, Storage } from "@civfix/seams"
+import type { MailAttachment } from "@civfix/contract"
 import {
   makeDrizzleMailRepository,
   type MailMessageRecord,

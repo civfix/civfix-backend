@@ -1,4 +1,4 @@
-import type { EventPageStatus, EventVisibility } from "@civfix/shared"
+import type { EventPageStatus, EventVisibility } from "@civfix/contract"
 import type { Queryable } from "../../db/client.js"
 import { keysetInstant, keysetPredicate } from "../../db/cursor-helpers.js"
 import { likeContains } from "../../db/like.js"

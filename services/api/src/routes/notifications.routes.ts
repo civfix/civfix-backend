@@ -10,7 +10,7 @@ import {
   type GetNotificationPrefsResponse,
   type NotificationPrefsDTO,
   type RegisterPushTokenResponse,
-} from "@civfix/shared"
+} from "@civfix/contract"
 import { z } from "zod"
 import type { FastifyInstance } from "fastify"
 import type { Container } from "../di.js"

@@ -1,6 +1,6 @@
-import { AppError } from "@civfix/shared"
+import { AppError } from "@civfix/contract"
 import type { Queryable } from "../db/client.js"
-import type { MediaDTO, MediaKind, MediaStatus } from "@civfix/shared"
+import type { MediaDTO, MediaKind, MediaStatus } from "@civfix/contract"
 import { claimableAsAttachment } from "./media-bindings.js"
 import { lockUploadsForClaimIn } from "./media-claim-repository.drizzle.js"
 import { mapWithLimit } from "../lib/concurrency.js"

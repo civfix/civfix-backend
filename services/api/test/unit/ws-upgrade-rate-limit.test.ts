@@ -1,7 +1,7 @@
 import { describe, it, expect, afterEach } from "vitest"
 import Fastify from "fastify"
 import type { FastifyInstance } from "fastify"
-import { ErrorCode } from "@civfix/shared"
+import { ErrorCode } from "@civfix/contract"
 import { registerRateLimit } from "../../src/plugins/rate-limit.js"
 import { applyWsUpgradeRateLimit } from "../../src/routes/chat-gateway-wiring.js"
 

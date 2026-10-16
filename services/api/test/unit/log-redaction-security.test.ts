@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest"
 import Fastify from "fastify"
-import { AppError, ErrorCode } from "@civfix/shared"
+import { AppError, ErrorCode } from "@civfix/contract"
 import { loggerOptions } from "../../src/server.js"
 import { loadEnv } from "../../src/env.js"
 import { redactLogObject } from "../../src/errors/log-redaction.js"

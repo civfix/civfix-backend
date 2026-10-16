@@ -1,5 +1,5 @@
-import { AppError, ErrorCode } from "@civfix/shared"
-import type { Mailer, SentMail } from "@civfix/shared/interfaces"
+import { AppError, ErrorCode } from "@civfix/contract"
+import type { Mailer, SentMail } from "@civfix/seams"
 import type { DbHandle } from "../../db/client.js"
 import type { Env } from "../../env/types.js"
 import {
@@ -10,7 +10,7 @@ import {
   type MailRepository,
   type MailThreadRecord,
 } from "./mail-repository.drizzle.js"
-import type { MailStatus } from "@civfix/shared"
+import type { MailStatus } from "@civfix/contract"
 import { domainOf } from "../../adapters/mail-text.js"
 import {
   outboundSendDeadlineMs,

@@ -1,4 +1,4 @@
-import type { ReportCategory } from "@civfix/shared"
+import type { ReportCategory } from "@civfix/contract"
 import type { Queryable, Sql, SqlFragment } from "../../db/client.js"
 import { insertAuditRow } from "./audit-repository.drizzle.js"
 import { clampLimit } from "./pagination.js"

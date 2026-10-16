@@ -11,7 +11,7 @@ import {
   DEFAULT_FORWARD_BODY_TEMPLATE,
   DEFAULT_FORWARD_SUBJECT_TEMPLATE,
   templateUsesToken,
-} from "@civfix/shared"
+} from "@civfix/contract"
 import { paragraph, kvTable, linkList } from "../../src/adapters/email-blocks.js"
 import { renderOtp, renderTemplate } from "../../src/adapters/mailer.oci.js"
 import { buildDataExportEmail } from "../../src/services/data-export-service.js"

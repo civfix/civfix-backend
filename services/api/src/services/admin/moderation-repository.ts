@@ -6,7 +6,7 @@ import type {
   ModerationSubjectType,
   Priority,
   ReportCategory,
-} from "@civfix/shared"
+} from "@civfix/contract"
 
 export type ModerationFilter = "all" | ModerationKind | "high"
 

@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach, vi } from "vitest"
-import { FakePushSender } from "@civfix/shared/fakes"
-import type { ChatMessageDTO } from "@civfix/shared"
+import { FakePushSender } from "@civfix/seams"
+import type { ChatMessageDTO } from "@civfix/contract"
 import type { Container } from "../../src/di.js"
 
 const stub = vi.hoisted(() => ({

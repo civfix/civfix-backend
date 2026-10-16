@@ -5,8 +5,8 @@ import {
   MAX_BRING_ITEMS,
   MAX_LINKED_REPORTS,
   collapseWhitespace,
-} from "@civfix/shared"
-import { can, hostCapabilities, NO_HOST_STANDING, type HostStanding } from "@civfix/shared/host"
+} from "@civfix/contract"
+import { can, hostCapabilities, NO_HOST_STANDING, type HostStanding } from "@civfix/contract/host"
 import { isUuid } from "../db/cursor-helpers.js"
 import { UNKNOWN_JURCODE } from "../db/reference-code.js"
 import { assertNoSlur } from "../abuse/slur-filter.js"
@@ -27,8 +27,8 @@ import type {
   RequestEventResourcesResponse,
   SetMemberRoleResponse,
   UpdateCleanupRequest,
-} from "@civfix/shared"
-import type { Jobs } from "@civfix/shared/interfaces"
+} from "@civfix/contract"
+import type { Jobs } from "@civfix/seams"
 import type { AddressResolver } from "./address-resolver.js"
 import type { NotificationService } from "./notification-service.js"
 import { EVENT_HOURS_MEMBER_CAP } from "./volunteer-hours-service.js"

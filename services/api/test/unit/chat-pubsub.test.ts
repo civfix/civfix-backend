@@ -2,7 +2,7 @@ import { describe, it, expect } from "vitest"
 import { InMemoryChatPubSub, chatChannel } from "../../src/adapters/chat-pubsub.js"
 import { WsChatService } from "../../src/adapters/chat-service.ws.js"
 import { InMemoryChatRepository, MockConnection } from "../helpers/chat.js"
-import type { ChatMessageDTO } from "@civfix/shared"
+import type { ChatMessageDTO } from "@civfix/contract"
 
 /**
  * Redis pub/sub fan-out, proven LOCALLY with an in-memory pub/sub standing in for Redis.

@@ -1,13 +1,13 @@
 import { randomUUID } from "node:crypto"
-import { AppError, REPORT_TYPE_TO_CATEGORY } from "@civfix/shared"
+import { AppError, REPORT_TYPE_TO_CATEGORY } from "@civfix/contract"
 import type {
   AnonReportRequest,
   AnonReportResponse,
   AnonReportStatusResponse,
   LatLng,
-} from "@civfix/shared"
+} from "@civfix/contract"
 import { assertNoSlur } from "../abuse/slur-filter.js"
-import type { AbuseChecks } from "@civfix/shared/interfaces"
+import type { AbuseChecks } from "@civfix/seams"
 import { reportH3Cell } from "./report-service.js"
 import type { CounterStore } from "../abuse/counter-store.js"
 import { honeypotTripped } from "../abuse/honeypot.js"

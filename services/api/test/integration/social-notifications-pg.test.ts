@@ -1,6 +1,6 @@
 import { TEST_TICKET_SIGNER } from "../helpers/ticket-signer.js"
 import { afterAll, beforeAll, describe, expect, it } from "vitest"
-import { FakePushSender } from "@civfix/shared/fakes"
+import { FakePushSender } from "@civfix/seams"
 import { withPg, type PgHarness, testHandle } from "../helpers/pg.js"
 import { flushNotificationDispatch } from "../helpers/notifications.js"
 import { makeDrizzleSocialRepository } from "../../src/services/social-repository.drizzle.js"

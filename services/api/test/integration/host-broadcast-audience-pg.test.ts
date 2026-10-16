@@ -1,4 +1,4 @@
-import type { BroadcastKind, BroadcastSegment } from "@civfix/shared"
+import type { BroadcastKind, BroadcastSegment } from "@civfix/contract"
 import { randomUUID } from "node:crypto"
 import { afterAll, beforeAll, describe, expect, it } from "vitest"
 import { withPg, type PgHarness } from "../helpers/pg.js"

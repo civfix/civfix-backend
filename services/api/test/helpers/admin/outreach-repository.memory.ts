@@ -5,7 +5,7 @@ import type {
   OutreachRepository,
 } from "../../../src/services/admin/outreach-repository.js"
 import type { OutreachStateRecord } from "../../../src/services/admin/mail-repository.js"
-import type { ReportCategory } from "@civfix/shared"
+import type { ReportCategory } from "@civfix/contract"
 
 interface SeededOutreachJurisdiction {
   geoid: string

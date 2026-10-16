@@ -1,4 +1,4 @@
-import type { Storage } from "@civfix/shared/interfaces"
+import type { Storage } from "@civfix/seams"
 import type { MediaWorkerRepository } from "@civfix/api/media-worker-repository"
 import { MEDIA_CHECKS_JOB } from "@civfix/api/queue-names"
 import type { JobLogFn, JobReportFn } from "./obs.js"

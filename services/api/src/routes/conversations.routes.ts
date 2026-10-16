@@ -6,7 +6,7 @@ import {
   type MarkThreadReadResponse,
   type ToggleMuteResponse,
   type ToggleHiddenResponse,
-} from "@civfix/shared"
+} from "@civfix/contract"
 import type { FastifyInstance } from "fastify"
 import { perIdentity } from "../plugins/rate-limit.js"
 import type { Container } from "../di.js"

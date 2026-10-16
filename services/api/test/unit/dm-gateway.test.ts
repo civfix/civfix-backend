@@ -13,7 +13,7 @@ import {
   InMemoryBlocksRepository,
   InMemoryDmRepository,
 } from "../../src/services/dm-repository.memory.js"
-import { WsServerMessageSchema, type ChatMessageDTO } from "@civfix/shared"
+import { WsServerMessageSchema, type ChatMessageDTO } from "@civfix/contract"
 
 const ALICE = "11111111-1111-1111-1111-111111111111"
 const BOB = "22222222-2222-2222-2222-222222222222"

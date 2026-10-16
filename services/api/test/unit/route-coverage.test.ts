@@ -1,8 +1,8 @@
 import { describe, it, expect, beforeAll, afterAll } from "vitest"
 import { randomUUID } from "node:crypto"
 import type { FastifyInstance, InjectOptions } from "fastify"
-import { FakeAbuseChecks, FakeMailer } from "@civfix/shared/fakes"
-import { endpoints, versionedPath, type EndpointDef } from "@civfix/shared/client"
+import { FakeAbuseChecks, FakeMailer } from "@civfix/seams"
+import { endpoints, versionedPath, type EndpointDef } from "@civfix/contract/client"
 import { makeServer } from "../../src/server.js"
 import { makeContainer } from "../../src/di.js"
 import { loadEnv } from "../../src/env.js"
@@ -33,7 +33,7 @@ import {
   ORGANIZER_STANDING,
 } from "../../src/services/host/registration-wiring.js"
 import { makeTicketTokenSigner } from "../../src/services/host/ticket-token.js"
-import { NO_HOST_STANDING } from "@civfix/shared/host"
+import { NO_HOST_STANDING } from "@civfix/contract/host"
 import { fakeCleanupReader } from "../helpers/host-team.js"
 
 const SIGNING_KEY = "test-anon-signing-key"

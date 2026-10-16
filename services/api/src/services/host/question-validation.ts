@@ -1,5 +1,5 @@
-import { MAX_LONG_TEXT_ANSWER, MAX_QUESTION_OPTIONS, MAX_SHORT_TEXT_ANSWER } from "@civfix/shared"
-import type { EventAnswerInput } from "@civfix/shared"
+import { MAX_LONG_TEXT_ANSWER, MAX_QUESTION_OPTIONS, MAX_SHORT_TEXT_ANSWER } from "@civfix/contract"
+import type { EventAnswerInput } from "@civfix/contract"
 import type { AnswerWrite, QuestionRecord } from "./registration-repository.js"
 
 export type AnswerValidation =

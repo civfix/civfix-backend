@@ -14,8 +14,8 @@
  */
 
 import { beforeEach, describe, expect, it, vi } from "vitest"
-import { FakeJobs } from "@civfix/shared/fakes"
-import type { JobHandler } from "@civfix/shared/interfaces"
+import { FakeJobs } from "@civfix/seams"
+import type { JobHandler } from "@civfix/seams"
 
 /** The recorded surface of the stub (kept in a hoisted box so the vi.mock factory can reach it). */
 interface StubBoss {

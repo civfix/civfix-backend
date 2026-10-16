@@ -4,7 +4,7 @@ import type {
   InboxListQuery,
   InboxListResponse,
   MailAttachment,
-} from "@civfix/shared"
+} from "@civfix/contract"
 
 export interface InboundEmailInsert {
   messageId: string

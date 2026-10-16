@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto"
-import { AppError } from "@civfix/shared"
+import { AppError, MAX_IMAGE_BYTES, MAX_VIDEO_BYTES } from "@civfix/contract"
 import type {
   CreateMediaUploadRequest,
   CreateMediaUploadResponse,
@@ -7,9 +7,8 @@ import type {
   FinalizeMediaResponse,
   MediaDTO,
   MediaKind,
-} from "@civfix/shared"
-import { MAX_IMAGE_BYTES, MAX_VIDEO_BYTES } from "@civfix/shared"
-import type { Jobs, Storage } from "@civfix/shared/interfaces"
+} from "@civfix/contract"
+import type { Jobs, Storage } from "@civfix/seams"
 import { readEtag } from "./media-etag.js"
 import { uploaderOf, uploadersOf } from "./media-uploader.js"
 import { MEDIA_CLAIM_WINDOW_SEC } from "./host/event-media.js"

@@ -1,4 +1,4 @@
-import { ReportContentRequestSchema, type ReportContentResponse } from "@civfix/shared"
+import { ReportContentRequestSchema, type ReportContentResponse } from "@civfix/contract"
 import type { FastifyInstance } from "fastify"
 import type { Container } from "../di.js"
 import { requireAuth } from "../auth/context.js"

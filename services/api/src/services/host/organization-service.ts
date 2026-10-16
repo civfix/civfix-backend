@@ -23,8 +23,8 @@ import {
   type OrgVerificationKind,
   type OrgVerificationStatus,
   type UpdateOrganizationRequest,
-} from "@civfix/shared"
-import { can } from "@civfix/shared/host"
+} from "@civfix/contract"
+import { can } from "@civfix/contract/host"
 import { assertNoSlur } from "../../abuse/slur-filter.js"
 import { InMemoryCounterStore, type CounterStore } from "../../abuse/counter-store.js"
 import { generateToken, sha256Hex } from "../../auth/crypto.js"

@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest"
-import { FakeMailer } from "@civfix/shared/fakes"
-import type { AdminReportStatus, ReportVisibility } from "@civfix/shared"
+import { FakeMailer } from "@civfix/seams"
+import type { AdminReportStatus, ReportVisibility } from "@civfix/contract"
 import { InMemoryAdminReportRepository } from "../helpers/admin/admin-report-repository.memory.js"
 import type { AdminReportMediaRecord } from "../../src/services/admin/admin-report-repository.js"
 import { makeAdminReportService } from "../../src/services/admin/admin-report-service.js"

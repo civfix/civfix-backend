@@ -1,5 +1,5 @@
-import { REPORT_CATEGORY_LABELS } from "@civfix/shared"
-import type { ReportCategory } from "@civfix/shared"
+import { REPORT_CATEGORY_LABELS } from "@civfix/contract"
+import type { ReportCategory } from "@civfix/contract"
 import { ADMIN_CATEGORIES } from "./category-counts.js"
 import { MS_PER_DAY } from "../../lib/time.js"
 import type { MailRepository } from "./mail-repository.drizzle.js"

@@ -4,7 +4,7 @@ import {
   OpenUnsubscribeBroadcastsRequestSchema,
   UnsubscribeBroadcastsRequestSchema,
   type UnsubscribeBroadcastsResponse,
-} from "@civfix/shared"
+} from "@civfix/contract"
 import type { FastifyInstance, FastifyRequest } from "fastify"
 import type { Container } from "../../di.js"
 import { perHost } from "../../plugins/rate-limit.js"

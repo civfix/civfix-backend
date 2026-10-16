@@ -1,4 +1,4 @@
-import type { KeyCount } from "@civfix/shared/host"
+import type { KeyCount } from "@civfix/contract/host"
 import type { Sql, SqlFragment } from "../../db/client.js"
 import type {
   EventAnalyticsFacts,

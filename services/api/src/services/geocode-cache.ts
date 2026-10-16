@@ -30,7 +30,7 @@
  * "no cache", never to a failed report.
  */
 
-import { isLocatedPrecision, type AddressPrecision } from "@civfix/shared"
+import { isLocatedPrecision, type AddressPrecision } from "@civfix/contract"
 import type { Queryable } from "../db/client.js"
 import { makeDrizzleGeocodeCacheRepository } from "./geocode-cache-repository.drizzle.js"
 

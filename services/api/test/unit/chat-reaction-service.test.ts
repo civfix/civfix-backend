@@ -4,7 +4,7 @@
  */
 
 import { describe, expect, it } from "vitest"
-import { AppError } from "@civfix/shared"
+import { AppError } from "@civfix/contract"
 import {
   makeChatReactionService,
   type ChatReactionService,

@@ -16,7 +16,7 @@ import type {
   MailStatus,
   MailThreadDTO,
   MailThreadListItemDTO,
-} from "@civfix/shared"
+} from "@civfix/contract"
 
 export interface ThreadRowSelect {
   id: string

@@ -9,7 +9,7 @@ import {
   type ChatMessageDTO,
   type ChatHistoryResponse,
   type ReportChatParticipantsResponse,
-} from "@civfix/shared"
+} from "@civfix/contract"
 import { z } from "zod"
 import type { FastifyInstance } from "fastify"
 import { perIdentity } from "../plugins/rate-limit.js"

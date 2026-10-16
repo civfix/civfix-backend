@@ -1,4 +1,4 @@
-import { AppError, avatarGradient } from "@civfix/shared"
+import { AppError, avatarGradient } from "@civfix/contract"
 import type {
   AdminUserCounts,
   AdminUserDTO,
@@ -14,7 +14,7 @@ import type {
   UserReportsResponse,
   UserStatus,
   UserSubListQuery,
-} from "@civfix/shared"
+} from "@civfix/contract"
 import { toRelAbs } from "./admin-format.js"
 import { clampLimit } from "./pagination.js"
 import { applyRoleChange } from "./role-change.js"

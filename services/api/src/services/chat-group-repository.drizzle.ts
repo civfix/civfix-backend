@@ -1,5 +1,5 @@
 import type { Sql } from "../db/client.js"
-import type { MediaDTO, MediaKind, MediaStatus } from "@civfix/shared"
+import type { MediaDTO, MediaKind, MediaStatus } from "@civfix/contract"
 import type { ChatGroupKind, ChatGroupVisibility } from "../db/schema/chat_groups.js"
 import type { PresignMedia } from "./media-presign.js"
 import { blockedPairExpr } from "./blocks-sql.js"

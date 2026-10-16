@@ -4,7 +4,7 @@
  */
 
 import type { Queryable, Sql } from "../db/client.js"
-import type { UserMentionDTO } from "@civfix/shared"
+import type { UserMentionDTO } from "@civfix/contract"
 import {
   loadMentionsFor,
   makeMessageMentionRepository,

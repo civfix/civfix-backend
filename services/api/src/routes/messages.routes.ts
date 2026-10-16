@@ -9,7 +9,7 @@ import {
   VotePollRequestSchema,
   type ChatMessageDTO,
   type SetMessagePinnedRequest,
-} from "@civfix/shared"
+} from "@civfix/contract"
 import { randomUUID } from "node:crypto"
 import { z } from "zod"
 import type { FastifyInstance } from "fastify"

@@ -1,4 +1,4 @@
-import { AppError, relativeAgo } from "@civfix/shared"
+import { AppError, relativeAgo } from "@civfix/contract"
 import type {
   ModerationItemDTO,
   ModerationSubjectType,
@@ -9,7 +9,7 @@ import type {
   ModerationSimilar,
   ModerationUser,
   UserStatus,
-} from "@civfix/shared"
+} from "@civfix/contract"
 import { clampLimit } from "./pagination.js"
 import { timelineKindForStatus } from "./admin-report-status.js"
 import { mapWithLimit } from "../../lib/concurrency.js"

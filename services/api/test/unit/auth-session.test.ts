@@ -8,7 +8,7 @@ import {
 } from "../../src/auth/session-service.js"
 import { sha256Hex } from "../../src/auth/crypto.js"
 import { applyRoleChange } from "../../src/services/admin/role-change.js"
-import type { Role } from "@civfix/shared"
+import type { Role } from "@civfix/contract"
 
 const USER = "11111111-1111-1111-1111-111111111111"
 

@@ -1,8 +1,8 @@
 import { describe, it, expect } from "vitest"
 import { randomUUID } from "node:crypto"
-import { FakeJobs, FakeMailer } from "@civfix/shared/fakes"
-import { AppError } from "@civfix/shared"
-import type { CreateReportRequest } from "@civfix/shared"
+import { FakeJobs, FakeMailer } from "@civfix/seams"
+import { AppError } from "@civfix/contract"
+import type { CreateReportRequest } from "@civfix/contract"
 import { InMemoryAdminReportRepository } from "../helpers/admin/admin-report-repository.memory.js"
 import { InMemoryAdminUserRepository } from "../helpers/admin/admin-user-repository.memory.js"
 import {

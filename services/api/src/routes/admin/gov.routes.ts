@@ -6,7 +6,7 @@ import {
   type GetGovClaimResponse,
   type GovClaimListResponse,
   type Role,
-} from "@civfix/shared"
+} from "@civfix/contract"
 import type { FastifyInstance } from "fastify"
 import type { Container } from "../../di.js"
 import { requireOperator } from "../../auth/admin-guard.js"

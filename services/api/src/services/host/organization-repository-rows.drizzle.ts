@@ -3,7 +3,7 @@ import type {
   OrgVerificationKind,
   OrgVerificationStatus,
   SocialLinks,
-} from "@civfix/shared"
+} from "@civfix/contract"
 import type { Queryable } from "../../db/client.js"
 import type { CleanupPersonView } from "../cleanup-repository.js"
 import { publicServedKeyExpr } from "../media-served-key.js"

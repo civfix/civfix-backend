@@ -1,5 +1,5 @@
-import { FakeStorage, FakeAbuseChecks } from "@civfix/shared/fakes"
-import type { AbuseChecks, Storage } from "@civfix/shared/interfaces"
+import { FakeStorage, FakeAbuseChecks } from "@civfix/seams"
+import type { AbuseChecks, Storage } from "@civfix/seams"
 import type { FindPhashDuplicateFn } from "@civfix/api/adapters/abuse-checks"
 import { makeDb, type DbHandle } from "@civfix/api/db"
 import { makeDrizzleMediaWorkerRepository } from "@civfix/api/media-repo"

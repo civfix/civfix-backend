@@ -1,4 +1,4 @@
-import { AppError } from "@civfix/shared"
+import { AppError } from "@civfix/contract"
 import type { CounterStore } from "../../abuse/counter-store.js"
 
 export interface CounterBudget {

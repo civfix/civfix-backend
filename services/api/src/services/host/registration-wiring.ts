@@ -6,8 +6,8 @@ import { makeGuestPromotionNotifier, type GuestPromotionNotifier } from "../gues
 import { stripTrailingSlashes, webBaseUrlOf } from "../../lib/base-url.js"
 import { makeDrizzleGuestRsvpRepository } from "../guest-rsvp-repository.drizzle.js"
 import { insertAuditRow } from "../admin/audit-repository.drizzle.js"
-import type { HostCapability } from "@civfix/shared"
-import { can, type HostStanding } from "@civfix/shared/host"
+import type { HostCapability } from "@civfix/contract"
+import { can, type HostStanding } from "@civfix/contract/host"
 import { makeDrizzleHostStandingRepository } from "./host-standing-repository.drizzle.js"
 import {
   makeInsightsGeneration,

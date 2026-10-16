@@ -1,4 +1,4 @@
-import type { Mailer } from "@civfix/shared/interfaces"
+import type { Mailer } from "@civfix/seams"
 import { formatEventWhen } from "./host/broadcast-render.js"
 import { DEFAULT_EVENT_TIME_ZONE } from "./host/event-fields.js"
 import type { GuestRsvpRepository } from "./guest-rsvp-repository.js"

@@ -1,15 +1,15 @@
 import { beforeEach, describe, expect, it } from "vitest"
-import { AppError } from "@civfix/shared"
-import { randomUUID } from "node:crypto"
-import { FakeAbuseChecks, FakeMailer, FakeSmsSender } from "@civfix/shared/fakes"
 import {
+  AppError,
   GUEST_OTP_ERROR_FIELD,
   GuestOtpErrorReason,
   MAX_GUEST_NAME,
   type GuestRsvpRequestRequest,
   type GuestRsvpVerifyRequest,
-} from "@civfix/shared"
-import { GUEST_RSVP_TURNSTILE_ACTION } from "@civfix/shared/host"
+} from "@civfix/contract"
+import { randomUUID } from "node:crypto"
+import { FakeAbuseChecks, FakeMailer, FakeSmsSender } from "@civfix/seams"
+import { GUEST_RSVP_TURNSTILE_ACTION } from "@civfix/contract/host"
 import { InMemoryCacheClient } from "../../src/auth/cache.js"
 import { InMemoryCounterStore, type CounterStore } from "../../src/abuse/counter-store.js"
 import { InMemoryGuestRsvpRepository } from "../helpers/guest-rsvp.js"

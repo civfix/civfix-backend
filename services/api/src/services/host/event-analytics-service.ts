@@ -13,7 +13,7 @@ import {
   type GetEventAnalyticsResponse,
   type Panel,
   type SeriesPoint,
-} from "@civfix/shared"
+} from "@civfix/contract"
 import {
   breakdown,
   dailySeries,
@@ -24,7 +24,7 @@ import {
   type DerivedBreakdownRow,
   type DerivedPanel,
   type KeyCount,
-} from "@civfix/shared/host"
+} from "@civfix/contract/host"
 import type {
   AnalyticsRepository,
   EventClockRecord,

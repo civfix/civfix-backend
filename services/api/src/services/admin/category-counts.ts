@@ -1,7 +1,7 @@
 // The counts are cast to text in SQL on purpose: postgres.js surfaces int8 without a lossless numeric
 // parser, so every count in this codebase crosses the wire as text and is parsed back here.
 
-import { ReportCategorySchema, type ReportCategory } from "@civfix/shared"
+import { ReportCategorySchema, type ReportCategory } from "@civfix/contract"
 
 /**
  * Derived from the shared zod enum so a new category cannot be half-added. Iteration order is

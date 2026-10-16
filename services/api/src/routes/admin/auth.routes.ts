@@ -5,7 +5,7 @@ import {
   type AdminOperatorDTO,
   type AdminSessionResponse,
   type AdminLogoutResponse,
-} from "@civfix/shared"
+} from "@civfix/contract"
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify"
 import type { Container } from "../../di.js"
 import type { AuthServices } from "../../auth/auth-services.js"

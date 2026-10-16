@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest"
-import type { ChatMessageDTO } from "@civfix/shared"
+import type { ChatMessageDTO } from "@civfix/contract"
 import { neutralizeChatViewerFields } from "../../src/routes/chat-route-helpers.js"
 
 const base: ChatMessageDTO = {

@@ -1,4 +1,4 @@
-import type { InboxFeedFilter, InboxFeedQuery, InboxFeedResponse } from "@civfix/shared"
+import type { InboxFeedFilter, InboxFeedQuery, InboxFeedResponse } from "@civfix/contract"
 import { clampLimit } from "../../../src/services/admin/pagination.js"
 import { parseTimeCursor, type TimeCursor } from "../../../src/db/cursor-helpers.js"
 import { INBOUND_AUTH_VERDICT_HEADER } from "../../../src/services/admin/inbound-repository.drizzle.js"

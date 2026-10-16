@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest"
-import type { PostDTO } from "@civfix/shared"
+import type { PostDTO } from "@civfix/contract"
 import type { Sql } from "../../src/db/client.js"
 import { makePostService } from "../../src/services/post-service.js"
 import { NIL_VIEWER_ID } from "../../src/services/post-repository.drizzle.js"

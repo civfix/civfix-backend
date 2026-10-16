@@ -1,4 +1,4 @@
-import type { PushPayload } from "@civfix/shared/interfaces"
+import type { PushPayload } from "@civfix/seams"
 import type { PushSenderConfig, PushLogger, PlatformDispatcher } from "./push-sender.js"
 import { hashForLog } from "./push-sender.js"
 

@@ -8,7 +8,7 @@ import type {
   AnalyticsResolutionByCategoryResponse,
   AnalyticsRetentionResponse,
   ReportCategory,
-} from "@civfix/shared"
+} from "@civfix/contract"
 import { ANALYTICS_CATEGORIES } from "./analytics-types.js"
 import type {
   CategoryCount,

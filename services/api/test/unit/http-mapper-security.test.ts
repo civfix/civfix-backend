@@ -1,7 +1,8 @@
 import { Writable } from "node:stream"
 import { beforeEach, describe, expect, it, vi } from "vitest"
 import Fastify, { type FastifyInstance } from "fastify"
-import { AppError, ErrorCode, MailSendError } from "@civfix/shared"
+import { AppError, ErrorCode } from "@civfix/contract"
+import { MailSendError } from "@civfix/seams"
 
 let prod = false
 vi.mock("../../src/env.js", async (importOriginal) => {

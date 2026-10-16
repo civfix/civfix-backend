@@ -11,7 +11,7 @@ import {
   CERTIFICATE_CODE_ALPHABET,
   CERTIFICATE_CODE_LENGTH,
   CERTIFICATE_CODE_RE,
-} from "@civfix/shared"
+} from "@civfix/contract"
 import { describe, expect, it } from "vitest"
 import {
   CERTIFICATE_CODE_MINT_ATTEMPTS,

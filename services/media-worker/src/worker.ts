@@ -1,4 +1,4 @@
-import type { JobHandler } from "@civfix/shared/interfaces"
+import type { JobHandler } from "@civfix/seams"
 import {
   ANON_HOLD_RELEASE_JOB,
   ANON_HOLD_RELEASE_SWEEP_JOB,
