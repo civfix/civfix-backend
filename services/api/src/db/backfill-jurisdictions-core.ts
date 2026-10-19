@@ -26,6 +26,8 @@ export const PRUNE_AFFECTED_TABLES = [
   "jurisdiction_contacts",
   "outreach_state",
   "jurisdiction_discovery_tasks",
+  "filing_routes",
+  "report_filings",
   "jurisdictions",
 ] as const
 
