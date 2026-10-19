@@ -252,11 +252,11 @@ async function insertEvidence(
   evidence: readonly FilingEvidenceInput[] | undefined,
 ): Promise<void> {
   if (evidence === undefined || evidence.length === 0) return
-  const rows = evidence.map((e) => ({ r2_key: e.r2Key, kind: e.kind, label: e.label ?? null }))
+  const rows = evidence.map((e) => ({ object_key: e.r2Key, kind: e.kind, label: e.label ?? null }))
   await tx`
     INSERT INTO filing_evidence (filing_id, r2_key, kind, label)
-    SELECT ${filingId}::uuid, e.r2_key, e.kind, e.label
-    FROM jsonb_to_recordset(${tx.json(rows)}) AS e(r2_key text, kind text, label text)
+    SELECT ${filingId}::uuid, e.object_key, e.kind, e.label
+    FROM jsonb_to_recordset(${tx.json(rows)}) AS e(object_key text, kind text, label text)
   `
 }
 
