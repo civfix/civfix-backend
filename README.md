@@ -421,17 +421,19 @@ full list, each with its written consequence, is `FAKE_SEAM_FLAGS` in `services/
 
 ### Outbound mail to cities is opt-in
 
-Two flags, both OFF by default in every environment, decide whether civfix ever emails a city without
-an operator pressing "Send to city" (or "Verify and send to city") on a report in the admin dashboard:
+One flag, OFF by default in every environment, decides whether civfix ever emails a city without an
+operator pressing "Send to city" (or "Verify and send to city") on a report in the admin dashboard:
 
 | Flag                        | When ON                                                                                     |
 | --------------------------- | ------------------------------------------------------------------------------------------- |
-| `REPORT_AUTOFORWARD_ENABLED` | report details set the `canForwardToCity` hint for the resident `@city` discussion forward |
 | `OUTREACH_DIGEST_ENABLED`    | the daily `outreach.digest` cron and the enqueue after saving a jurisdiction's contacts send the per-jurisdiction "reports awaiting your attention" digest |
 
-With both off, the only mail a city receives is the packet an operator sends per report. Enabling either
-is a SOPS edit to that environment's `secrets/<env>/api.sops.env` in civfix-infra followed by a deploy
-(both flags are read at boot; `OUTREACH_DIGEST_ENABLED` is also what schedules the cron).
+With it off, the only mail a city receives is the packet an operator sends per report. Enabling it is a
+SOPS edit to that environment's `secrets/<env>/api.sops.env` in civfix-infra followed by a deploy (the
+flag is read at boot and is also what schedules the cron).
+
+`REPORT_AUTOFORWARD_ENABLED` sends no mail: it only sets the `canForwardToCity` hint in report details
+for the resident `@city` discussion forward, and the forward itself does not read it.
 
 To exercise a real seam locally, run the dev infra from the civfix-infra repo
 (`compose/docker-compose.dev.yml` brings up PostGIS + Redis), set `DATABASE_URL` / `REDIS_URL`, and turn
