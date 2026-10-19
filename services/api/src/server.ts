@@ -56,7 +56,6 @@ import { registerOutreachJobs } from "./services/admin/outreach-jobs.js"
 import { registerInboundJobs } from "./services/admin/inbound-jobs.js"
 import { INBOUND_SWEEP_JOB } from "./lib/queue-names.js"
 import { registerDiscoveryJobs } from "./services/admin/discovery-jobs.js"
-import { registerAutoForwardJobs } from "./services/admin/autoforward-jobs.js"
 import { registerDataExportJobs } from "./services/data-export-jobs.js"
 import { registerChatRoomFanoutJob } from "./services/chat-fanout-jobs.js"
 import { registerCleanupCancelFanoutJob } from "./services/cleanup-jobs.js"
@@ -332,7 +331,6 @@ export async function startBackgroundJobs(app: FastifyInstance, env: Env): Promi
   await registerInboundJobs(app.container)
   await app.container.jobs.enqueue(INBOUND_SWEEP_JOB, {})
   await registerDiscoveryJobs(app.container)
-  if (env.REPORT_AUTOFORWARD_ENABLED) await registerAutoForwardJobs(app.container, app.log)
   await registerDataExportJobs(app.container, { logger: app.log })
   await registerCleanupCancelFanoutJob(app.container, app.log)
   await registerGuestJobs(app.container, app.log)

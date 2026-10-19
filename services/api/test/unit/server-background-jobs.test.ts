@@ -11,7 +11,6 @@ const stubRegistration = vi.hoisted(
 vi.mock("../../src/services/admin/outreach-jobs.js", stubRegistration("registerOutreachJobs"))
 vi.mock("../../src/services/admin/inbound-jobs.js", stubRegistration("registerInboundJobs"))
 vi.mock("../../src/services/admin/discovery-jobs.js", stubRegistration("registerDiscoveryJobs"))
-vi.mock("../../src/services/admin/autoforward-jobs.js", stubRegistration("registerAutoForwardJobs"))
 vi.mock("../../src/services/data-export-jobs.js", stubRegistration("registerDataExportJobs"))
 vi.mock("../../src/services/chat-fanout-jobs.js", stubRegistration("registerChatRoomFanoutJob"))
 vi.mock("../../src/services/cleanup-jobs.js", stubRegistration("registerCleanupCancelFanoutJob"))

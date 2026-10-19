@@ -77,8 +77,8 @@ export const FAKE_SEAM_FLAGS: ReadonlyArray<{ flag: keyof FakeFlags; consequence
   {
     flag: "USE_FAKE_JOBS",
     consequence:
-      "background jobs run in-process and die with the request: media stays 'validating', data exports " +
-      "and report autoforwards never complete",
+      "background jobs run in-process and die with the request: media stays 'validating' and data " +
+      "exports never complete",
   },
   {
     flag: "USE_FAKE_USER_CHANNEL",

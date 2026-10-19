@@ -11,17 +11,12 @@ import type {
   ReportType,
   ReportVisibility,
 } from "@civfix/contract"
-import type { Jobs } from "@civfix/seams"
 import type { LinkedEventView } from "./cleanup-service.js"
 import type { ReportChatSystemEmitter } from "./report-timeline-event.js"
 import type { AddressResolver } from "./address-resolver.js"
 import type { BBox, ReportRepository } from "./report-repository.js"
 
 export const REPORT_CREATE_SCOPE = "report_create"
-
-export interface ReportAutoForwardJob {
-  reportId: string
-}
 
 export const REPORT_VISIBILITY_TIMELINE_KIND = {
   hidden: "hidden",
@@ -88,9 +83,6 @@ export interface ReportServiceDeps {
   loadLinkedEventsForReports?: (reportIds: string[]) => Promise<Map<string, LinkedEventView[]>>
   loadDiscussionMeta?: (reportId: string) => Promise<ReportDiscussionMeta>
   loadReportChatMeta?: (reportId: string, viewerUserId: string | null) => Promise<ReportChatMeta>
-  jobs?: Jobs
-  autoForwardEnabled?: boolean
-  isReportVerified?: (userId: string) => Promise<boolean>
   joinReportChatAsOwner?: (reportId: string, userId: string) => Promise<void>
   reportChatEmitter?: ReportChatSystemEmitter
   logger?: { warn: (obj: unknown, msg?: string) => void }
