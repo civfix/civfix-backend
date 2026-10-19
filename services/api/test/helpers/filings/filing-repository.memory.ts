@@ -250,8 +250,6 @@ export class InMemoryFilingRepository implements FilingRepository {
         }),
         status: input.outcome,
         method: input.method,
-        reason: null,
-        reasonDetail: null,
         updatedAt: now,
         submittedAt: now,
       }

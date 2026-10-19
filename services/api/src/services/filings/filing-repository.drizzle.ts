@@ -252,11 +252,11 @@ async function insertEvidence(
   evidence: readonly FilingEvidenceInput[] | undefined,
 ): Promise<void> {
   if (evidence === undefined || evidence.length === 0) return
-  const rows = evidence.map((e) => ({ object_key: e.r2Key, kind: e.kind, label: e.label ?? null }))
+  const rows = evidence.map((e) => ({ r2_key: e.r2Key, kind: e.kind, label: e.label ?? null }))
   await tx`
     INSERT INTO filing_evidence (filing_id, r2_key, kind, label)
-    SELECT ${filingId}::uuid, e.object_key, e.kind, e.label
-    FROM jsonb_to_recordset(${tx.json(rows)}) AS e(object_key text, kind text, label text)
+    SELECT ${filingId}::uuid, e.r2_key, e.kind, e.label
+    FROM jsonb_to_recordset(${tx.json(rows)}) AS e(r2_key text, kind text, label text)
   `
 }
 
@@ -308,11 +308,10 @@ async function updateToSuccess(
   const attempts =
     input.from.attempts === undefined ? tx`` : tx`AND attempts = ${input.from.attempts}`
   const reason = input.from.reason === undefined ? tx`` : tx`AND reason = ${input.from.reason}`
-  // A completed filing no longer needs a human, so the reason it once did is cleared with it.
   const [row] = await tx<FilingRow[]>`
     WITH f AS (
       UPDATE report_filings
-      SET ${setList(tx, set)}, submitted_at = now(), reason = NULL, reason_detail = NULL
+      SET ${setList(tx, set)}, submitted_at = now()
       WHERE id = ${input.filingId}
         AND status = ANY(${[...input.from.status]}::text[])
         ${attempts}
