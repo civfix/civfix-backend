@@ -38,7 +38,7 @@ export interface JurisdictionContactsServiceDeps {
 
 /**
  * `actorId` is non-null because only operator-guarded routes call the mutations. The repository's audit
- * slot stays nullable: the outreach and autoforward jobs also drive its writes and have no operator.
+ * slot stays nullable: the outreach jobs also drive its writes and have no operator.
  */
 export interface JurisdictionContactsService {
   saveAndRoute(

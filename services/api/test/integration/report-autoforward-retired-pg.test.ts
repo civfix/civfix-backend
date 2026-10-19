@@ -35,11 +35,11 @@ describe.skipIf(!pg)("report.autoforward retired (integration)", () => {
   let on: Built
   let off: Built
 
-  async function build(autoForward: boolean): Promise<Built> {
+  async function build(flag: boolean): Promise<Built> {
     const env = loadEnv({
       NODE_ENV: "test",
       DATABASE_URL: h.uri,
-      REPORT_AUTOFORWARD_ENABLED: String(autoForward),
+      REPORT_AUTOFORWARD_ENABLED: String(flag),
     })
     const container = makeContainer(env)
     const authServices = makeAuthServices({

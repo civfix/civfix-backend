@@ -487,33 +487,6 @@ describe("createReport: derives the canonical category from the type (F060)", ()
   })
 })
 
-describe("createReport: auto-forward enqueue on replay (F062)", () => {
-  it("enqueues auto-forward exactly once and NOT again on an idempotent replay", async () => {
-    const repo = new InMemoryReportRepository()
-    const enqueued: { name: string; data: unknown }[] = []
-    const service = makeReportService({
-      repo,
-      resolveJurisdictionGeoid: () => Promise.resolve("0644000"),
-      presignMedia: fakePresign,
-      autoForwardEnabled: true,
-      isReportVerified: () => Promise.resolve(true),
-      jobs: {
-        enqueue: (name: string, data: unknown) => {
-          enqueued.push({ name, data })
-          return Promise.resolve("job-id")
-        },
-      },
-    } as unknown as Parameters<typeof makeReportService>[0])
-
-    const first = await service.createReport(createReq(), { userId: "u1" })
-    const replay = await service.createReport(createReq(), { userId: "u1" })
-
-    expect(replay.id).toBe(first.id)
-    expect(enqueued).toHaveLength(1)
-    expect(enqueued[0]!.data).toMatchObject({ reportId: first.id })
-  })
-})
-
 describe("createReport: credits no volunteer hours", () => {
   it("never reaches a report-hours award seam, and still creates the report", async () => {
     const awarded: unknown[][] = []

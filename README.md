@@ -426,7 +426,7 @@ an operator pressing "Send to city" (or "Verify and send to city") on a report i
 
 | Flag                        | When ON                                                                                     |
 | --------------------------- | ------------------------------------------------------------------------------------------- |
-| `REPORT_AUTOFORWARD_ENABLED` | new reports from report-verified reporters are forwarded at submission, and a citizen `@city` mention in a report discussion forwards the comment |
+| `REPORT_AUTOFORWARD_ENABLED` | report details set the `canForwardToCity` hint for the resident `@city` discussion forward |
 | `OUTREACH_DIGEST_ENABLED`    | the daily `outreach.digest` cron and the enqueue after saving a jurisdiction's contacts send the per-jurisdiction "reports awaiting your attention" digest |
 
 With both off, the only mail a city receives is the packet an operator sends per report. Enabling either
