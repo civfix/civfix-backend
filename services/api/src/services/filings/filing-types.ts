@@ -26,6 +26,7 @@ export const ACTIVE_FILING_STATUSES: readonly FilingStatus[] = ["queued", "runni
 
 export const SUCCESSFUL_FILING_STATUSES: readonly FilingStatus[] = ["submitted", "linked_existing"]
 
+export const FILING_LIST_DEFAULT_LIMIT = 25
 export const FILING_LIST_MAX_LIMIT = 50
 export const FILING_DUE_MAX_LIMIT = 100
 export const FILING_RUNNING_MAX = 100

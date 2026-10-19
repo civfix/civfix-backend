@@ -446,10 +446,13 @@ describe.skipIf(!pg)("makeDrizzleFilingRepository (integration)", () => {
       UPDATE report_filings SET updated_at = '2026-01-01T00:00:00.123456Z'::timestamptz
       WHERE id = ANY(${ids}::uuid[])
     `
-    const page1 = await w.repo.list({ group: "cancelled", limit: 1 })
-    const page2 = await w.repo.list({ group: "cancelled", limit: 1, cursor: page1.nextCursor })
-    const page3 = await w.repo.list({ group: "cancelled", limit: 1, cursor: page2.nextCursor })
-    const seen = [...page1.records, ...page2.records, ...page3.records].map((f) => f.id)
+    const seen: string[] = []
+    let cursor: string | null = null
+    do {
+      const page = await w.repo.list({ group: "cancelled", limit: 1, cursor })
+      seen.push(...page.records.map((f) => f.id))
+      cursor = page.nextCursor
+    } while (cursor !== null && seen.length <= ids.length)
     expect(seen.sort()).toEqual([...ids].sort())
   })
 })
