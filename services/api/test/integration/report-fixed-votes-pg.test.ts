@@ -299,7 +299,7 @@ describe.skipIf(!pg)("report fixed votes (integration)", () => {
       expect(before).toMatchObject({ confirmCount: 0, fixedCount: 1 })
     })
 
-    it("T3: B's \"I see this too\" moves to a fixed vote with a new created_at", async () => {
+    it('T3: B\'s "I see this too" moves to a fixed vote with a new created_at', async () => {
       const at = region()
       const [a, b] = [await resident(), await resident()]
       const r = await report(at, { reporter: a })
@@ -320,7 +320,7 @@ describe.skipIf(!pg)("report fixed votes (integration)", () => {
       expect(row!.created_at.getTime()).toBeGreaterThan(confirmedAt.getTime())
     })
 
-    it("T4: B's fixed vote moves to \"I see this too\" through confirm", async () => {
+    it('T4: B\'s fixed vote moves to "I see this too" through confirm', async () => {
       const at = region()
       const [a, b] = [await resident(), await resident()]
       const r = await report(at, { reporter: a })
@@ -348,7 +348,7 @@ describe.skipIf(!pg)("report fixed votes (integration)", () => {
       expect(body(again)).toEqual(NONE)
     })
 
-    it("T6: removing a fixed vote leaves B's \"I see this too\" in place", async () => {
+    it('T6: removing a fixed vote leaves B\'s "I see this too" in place', async () => {
       const at = region()
       const [a, b] = [await resident(), await resident()]
       const r = await report(at, { reporter: a })
@@ -364,7 +364,7 @@ describe.skipIf(!pg)("report fixed votes (integration)", () => {
       expect((await voteOf(r, b))?.kind).toBe("seen")
     })
 
-    it("T7: removing an \"I see this too\" leaves B's fixed vote in place", async () => {
+    it('T7: removing an "I see this too" leaves B\'s fixed vote in place', async () => {
       const at = region()
       const [a, b] = [await resident(), await resident()]
       const r = await report(at, { reporter: a })
@@ -458,7 +458,7 @@ describe.skipIf(!pg)("report fixed votes (integration)", () => {
       expect(res.json().code).toBe("FORBIDDEN")
     })
 
-    it("T30: a resolved R refuses moving B's \"I see this too\" to fixed and leaves the row alone", async () => {
+    it('T30: a resolved R refuses moving B\'s "I see this too" to fixed and leaves the row alone', async () => {
       const at = region()
       const [a, b] = [await resident(), await resident()]
       const r = await report(at, { reporter: a })
@@ -724,7 +724,11 @@ describe.skipIf(!pg)("report fixed votes (integration)", () => {
       const op = await operator()
       const asOperator = { cookie: op.cookie }
 
-      const list = await app.inject({ method: "GET", url: "/v1/admin/reports", headers: asOperator })
+      const list = await app.inject({
+        method: "GET",
+        url: "/v1/admin/reports",
+        headers: asOperator,
+      })
       expect(list.statusCode).toBe(200)
       const row = (list.json().items as { id: string; confirmations: number }[]).find(
         (x) => x.id === r,
