@@ -155,7 +155,7 @@ export const PRESSING_INDEX = "reports_pressing_idx"
 // The literal `confirm_count >= 1`, with publicReportFilter's literal visibility and deleted_at, is
 // what lets the planner prove PRESSING_INDEX's partial predicate (0195); parameterizing any of them
 // loses the index. A wide bbox walks the index in candidate order until PRESSING_CANDIDATES rows match.
-// Each candidate's last votes are one scan of report_confirmations_report_created_idx (0196), and only
+// Each candidate's last votes are one scan of report_confirmations_report_created_idx (0198), and only
 // the rows that make the list join their thumbnail. A candidate has at least one 'seen' row, so its last
 // votes are never empty.
 function pressingStatement(sql: Queryable, bbox: BBox, limit: number): SqlFragment {

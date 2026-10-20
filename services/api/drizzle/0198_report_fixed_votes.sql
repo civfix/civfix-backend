@@ -1,5 +1,5 @@
 -- =============================================================================
--- 0196_report_fixed_votes.sql
+-- 0198_report_fixed_votes.sql
 -- -----------------------------------------------------------------------------
 -- "This is fixed" on a report (DECISIONS §61 in @civfix/contract, epic #156
 -- revision 1): a resident's vote on someone else's report is either "I see

@@ -1,6 +1,6 @@
 /**
- * drizzle/0196_report_fixed_votes.sql against a real database. The template every other file clones
- * already has 0196 applied, so this file first takes its own database back to 0195 (drops what 0196
+ * drizzle/0198_report_fixed_votes.sql against a real database. The template every other file clones
+ * already has 0198 applied, so this file first takes its own database back to 0195 (drops what 0198
  * adds), then applies the canonical file as the runner does (one transaction, simple-query mode), twice.
  */
 
@@ -12,10 +12,10 @@ import { withPg, testHandle, type PgHarness } from "../helpers/pg.js"
 const pg = await withPg()
 
 const MIGRATION = fileURLToPath(
-  new URL("../../drizzle/0196_report_fixed_votes.sql", import.meta.url),
+  new URL("../../drizzle/0198_report_fixed_votes.sql", import.meta.url),
 )
 
-describe.skipIf(!pg)("0196 report fixed votes migration (integration)", () => {
+describe.skipIf(!pg)("0198 report fixed votes migration (integration)", () => {
   let h: PgHarness
   let text: string
 
