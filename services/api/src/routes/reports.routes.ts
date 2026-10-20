@@ -54,7 +54,7 @@ export const CREATE_REPORT_RATE_LIMIT = perIdentity({
   hostMax: 60,
 })
 
-// Its own bucket per route, so confirming and removing never spend each other's allowance (like post like).
+// Its own bucket per route, so no vote call spends another's allowance (like post like).
 export const CONFIRM_REPORT_RATE_LIMIT = perIdentity({ max: 60, timeWindow: "1 minute" })
 
 const MAP_REPORTS_RATE_LIMIT = { max: 60, timeWindow: "1 minute" } as const
@@ -173,8 +173,9 @@ const MapReportsResponseJsonSchema = {
           description: { type: "string", nullable: true },
           thumbUrl: { type: "string", nullable: true },
           confirmCount: { type: "integer" },
+          fixedCount: { type: "integer" },
         },
-        required: ["id", "category", "lat", "lng", "status", "confirmCount"],
+        required: ["id", "category", "lat", "lng", "status", "confirmCount", "fixedCount"],
       },
     },
     counts: {
@@ -288,6 +289,30 @@ export async function registerReportRoutes(
       const userId = requireAuth(request)
       const { id } = parse(ReportConfirmRequestSchema, request.params)
       const payload: ReportConfirmResponse = await service().unconfirmReport(userId, id)
+      reply.status(200).send(payload)
+    },
+  )
+
+  route(
+    app,
+    "markReportFixed",
+    { preHandler: csrfProtect, config: { rateLimit: CONFIRM_REPORT_RATE_LIMIT } },
+    async (request, reply) => {
+      const userId = requireAuth(request)
+      const { id } = parse(ReportConfirmRequestSchema, request.params)
+      const payload: ReportConfirmResponse = await service().markReportFixed(userId, id)
+      reply.status(200).send(payload)
+    },
+  )
+
+  route(
+    app,
+    "unmarkReportFixed",
+    { preHandler: csrfProtect, config: { rateLimit: CONFIRM_REPORT_RATE_LIMIT } },
+    async (request, reply) => {
+      const userId = requireAuth(request)
+      const { id } = parse(ReportConfirmRequestSchema, request.params)
+      const payload: ReportConfirmResponse = await service().unmarkReportFixed(userId, id)
       reply.status(200).send(payload)
     },
   )

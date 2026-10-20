@@ -38,9 +38,10 @@ staging `civfix-staging-api-<color>-1`); there is no `compose-api-1`.
 ### `reports_pressing_idx` (migration 0195)
 
 Back the pressing list (`findPressing` in
-`services/api/src/services/report-repository.drizzle.ts`), which ranks the open
-public reports in a bbox that have at least one Me too, most confirmed first.
-A wide bbox walks this index in list order until 20 rows match (it holds
+`services/api/src/services/report-repository.drizzle.ts`), which takes the open
+public reports in a bbox that have at least one "I see this too", most
+confirmed first, as its candidates, and ranks those by their last five votes.
+A wide bbox walks this index in candidate order until 200 rows match (it holds
 every confirmed public report, resolved ones included); without it the query
 checks every report in the bbox. Build it on staging before the change merges
 and on prod right after the release that carries it: migration 0194 adds

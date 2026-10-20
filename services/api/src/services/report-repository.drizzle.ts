@@ -22,17 +22,22 @@ import {
 import { allocateReportReferenceCode } from "../db/reference-code.js"
 import { likeContains } from "../db/like.js"
 import type { ReportVisibilityTimelineKind } from "./report-types.js"
-import type {
-  BBox,
-  CreateReportTxArgs,
-  CreateReportTxResult,
-  OwnerToggleStatus,
-  ReportConfirmationOutcome,
-  ReportMapPoint,
-  ReportMediaView,
-  ReportRecord,
-  ReportRepository,
-  ReportTimelineView,
+import {
+  PRESSING_CANDIDATES,
+  PRESSING_DROP_FIXED,
+  PRESSING_RECENT_VOTES,
+  type BBox,
+  type CreateReportTxArgs,
+  type CreateReportTxResult,
+  type OwnerToggleStatus,
+  type ReportConfirmationOutcome,
+  type ReportMapPoint,
+  type ReportMediaView,
+  type ReportRecord,
+  type ReportRepository,
+  type ReportTimelineView,
+  type ReportVote,
+  type VoteChange,
 } from "./report-repository.js"
 import { servedKeyExpr, servableMediaFilter } from "./media-served-key.js"
 import { claimableAsReportMedia } from "./media-bindings.js"
@@ -71,6 +76,7 @@ interface ConfirmationLockRow {
   visibility: ReportVisibility
   deleted_at: Date | null
   confirm_count: number
+  fixed_count: number
 }
 
 interface OwnerLockRow {
@@ -144,17 +150,19 @@ export async function isReportOwnedBy(
 
 export const PRESSING_INDEX = "reports_pressing_idx"
 
-// Confirmed reports are filtered and ranked in one step, never picked out of a newest-first window: a
+// The candidates are confirmed reports taken in one step, never picked out of a newest-first window: a
 // window would drop an older, heavily confirmed report behind newer unconfirmed ones in a busy bbox.
 // The literal `confirm_count >= 1`, with publicReportFilter's literal visibility and deleted_at, is
 // what lets the planner prove PRESSING_INDEX's partial predicate (0195); parameterizing any of them
-// loses the index. A wide bbox walks the index in list order until `limit` rows match. Only the rows
-// that make the list join their thumbnail.
+// loses the index. A wide bbox walks the index in candidate order until PRESSING_CANDIDATES rows match.
+// Each candidate's last votes are one scan of report_confirmations_report_created_idx (0196), and only
+// the rows that make the list join their thumbnail. A candidate has at least one 'seen' row, so its last
+// votes are never empty.
 function pressingStatement(sql: Queryable, bbox: BBox, limit: number): SqlFragment {
   return sql`
-    WITH pressing AS (
+    WITH candidates AS (
       SELECT r.id, r.geom, r.category, r.type, r.status, r.title, r.description, r.addr,
-             r.reference_code, r.confirm_count, r.created_at
+             r.reference_code, r.confirm_count, r.fixed_count, r.created_at
       FROM reports r
       WHERE ${publicReportFilter(sql)}
         AND r.status = ANY(${[...OPEN_REPORT_STATUSES]}::text[])
@@ -164,6 +172,23 @@ function pressingStatement(sql: Queryable, bbox: BBox, limit: number): SqlFragme
               ST_MakeEnvelope(${bbox.west}, ${bbox.south}, ${bbox.east}, ${bbox.north}, 4326)
             )
       ORDER BY r.confirm_count DESC, r.created_at DESC
+      LIMIT ${PRESSING_CANDIDATES}
+    ),
+    ranked AS (
+      SELECT c.*, c.confirm_count * recent.seen::numeric / recent.votes AS score
+      FROM candidates c
+      CROSS JOIN LATERAL (
+        SELECT count(*) FILTER (WHERE last.kind = 'seen') AS seen, count(*) AS votes
+        FROM (
+          SELECT rc.kind
+          FROM report_confirmations rc
+          WHERE rc.report_id = c.id
+          ORDER BY rc.created_at DESC
+          LIMIT ${PRESSING_RECENT_VOTES}
+        ) last
+      ) recent
+      WHERE recent.votes - recent.seen < ${PRESSING_DROP_FIXED}
+      ORDER BY score DESC, c.confirm_count DESC, c.created_at DESC
       LIMIT ${limit}
     )
     SELECT
@@ -180,10 +205,11 @@ function pressingStatement(sql: Queryable, bbox: BBox, limit: number): SqlFragme
       m.thumb_key,
       m.r2_key,
       r.confirm_count,
+      r.fixed_count,
       r.created_at
-    FROM pressing r
+    FROM ranked r
     ${firstReadyStillLateral(sql)}
-    ORDER BY r.confirm_count DESC, r.created_at DESC
+    ORDER BY r.score DESC, r.confirm_count DESC, r.created_at DESC
   `
 }
 
@@ -520,15 +546,18 @@ export function makeDrizzleReportRepository(sql: Sql): ReportRepository {
     async setConfirmation(
       reportId: string,
       userId: string,
-      action: "confirm" | "unconfirm",
+      vote: ReportVote,
+      change: VoteChange,
     ): Promise<ReportConfirmationOutcome> {
       return sql.begin(async (tx) => {
         // The row lock holds the verdict (status, visibility, ownership) true until the write commits, so
-        // a confirmation cannot land on a report an operator resolved in between, and the count a no-op
-        // reports is current. NO KEY UPDATE is the level the count UPDATE takes anyway; it leaves the FK
-        // checks of rows that reference the report (this insert included) unblocked.
+        // a vote cannot land on, or move on, a report an operator resolved in between. Every write of this
+        // report's votes takes it (the claim too), so the vote read below stays the user's vote until
+        // commit, and the counts a no-op reports are current. NO KEY UPDATE is the level the count UPDATE
+        // takes anyway; it leaves the FK checks of rows that reference the report (this insert included)
+        // unblocked.
         const rows = await tx<ConfirmationLockRow[]>`
-          SELECT reporter_user_id, status, visibility, deleted_at, confirm_count
+          SELECT reporter_user_id, status, visibility, deleted_at, confirm_count, fixed_count
           FROM reports
           WHERE id = ${reportId}
           FOR NO KEY UPDATE
@@ -543,41 +572,63 @@ export function makeDrizzleReportRepository(sql: Sql): ReportRepository {
             deletedAt: row.deleted_at,
           },
           userId,
-          action,
+          change,
         )
         if (verdict !== "allowed") return { kind: verdict }
 
-        const changed =
-          action === "confirm"
-            ? await tx<{ report_id: string }[]>`
-                INSERT INTO report_confirmations (report_id, user_id) VALUES (${reportId}, ${userId})
-                ON CONFLICT (report_id, user_id) DO NOTHING
-                RETURNING report_id
-              `
-            : await tx<{ report_id: string }[]>`
-                DELETE FROM report_confirmations
-                WHERE report_id = ${reportId} AND user_id = ${userId}
-                RETURNING report_id
-              `
-        if (changed.length === 0) return { kind: "applied", confirmCount: row.confirm_count }
-
-        const delta = action === "confirm" ? 1 : -1
-        const updated = await tx<{ confirm_count: number }[]>`
-          UPDATE reports SET confirm_count = GREATEST(confirm_count + ${delta}, 0)
-          WHERE id = ${reportId}
-          RETURNING confirm_count
+        const held = await tx<{ kind: ReportVote }[]>`
+          SELECT kind FROM report_confirmations
+          WHERE report_id = ${reportId} AND user_id = ${userId}
         `
-        return { kind: "applied", confirmCount: updated[0]!.confirm_count }
+        const before = held[0]?.kind ?? null
+        const after = change === "add" ? vote : before === vote ? null : before
+        if (after === before) {
+          return {
+            kind: "applied",
+            confirmCount: row.confirm_count,
+            fixedCount: row.fixed_count,
+            vote: before,
+          }
+        }
+
+        if (after === null) {
+          await tx`
+            DELETE FROM report_confirmations
+            WHERE report_id = ${reportId} AND user_id = ${userId}
+          `
+        } else {
+          // created_at is when the vote took its kind, so a move counts as a new vote in the pressing
+          // ranking's last five.
+          await tx`
+            INSERT INTO report_confirmations (report_id, user_id, kind)
+            VALUES (${reportId}, ${userId}, ${after})
+            ON CONFLICT (report_id, user_id) DO UPDATE SET kind = EXCLUDED.kind, created_at = now()
+            WHERE report_confirmations.kind <> EXCLUDED.kind
+          `
+        }
+        const delta = (kind: ReportVote) => (after === kind ? 1 : 0) - (before === kind ? 1 : 0)
+        const updated = await tx<{ confirm_count: number; fixed_count: number }[]>`
+          UPDATE reports
+          SET confirm_count = GREATEST(confirm_count + ${delta("seen")}, 0),
+              fixed_count = GREATEST(fixed_count + ${delta("fixed")}, 0)
+          WHERE id = ${reportId}
+          RETURNING confirm_count, fixed_count
+        `
+        return {
+          kind: "applied",
+          confirmCount: updated[0]!.confirm_count,
+          fixedCount: updated[0]!.fixed_count,
+          vote: after,
+        }
       })
     },
 
-    async isConfirmedBy(reportId: string, userId: string): Promise<boolean> {
-      const rows = await sql`
-        SELECT 1 FROM report_confirmations
+    async findVote(reportId: string, userId: string): Promise<ReportVote | null> {
+      const rows = await sql<{ kind: ReportVote }[]>`
+        SELECT kind FROM report_confirmations
         WHERE report_id = ${reportId} AND user_id = ${userId}
-        LIMIT 1
       `
-      return rows.length > 0
+      return rows[0]?.kind ?? null
     },
 
     async resolveByOwner(

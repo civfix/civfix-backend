@@ -91,6 +91,7 @@ export interface UnsignedReportPin {
   thumbKey: string | null
   r2Key: string | null
   confirmCount: number
+  fixedCount: number
 }
 
 export function mapPointToUnsignedPin(p: ReportMapPoint): UnsignedReportPin {
@@ -108,6 +109,7 @@ export function mapPointToUnsignedPin(p: ReportMapPoint): UnsignedReportPin {
     thumbKey: p.thumbKey,
     r2Key: p.r2Key,
     confirmCount: p.confirmCount,
+    fixedCount: p.fixedCount,
   }
 }
 

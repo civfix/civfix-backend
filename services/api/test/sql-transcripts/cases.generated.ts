@@ -2732,6 +2732,11 @@ export const cases: TranscriptCase[] = [
       (m45 as any).makeDrizzleDataExportRepository(sql).reportConfirmations("userId-1", 3),
   },
   {
+    key: "makeDrizzleDataExportRepository.reportFixedVotes",
+    run: async (sql: any) =>
+      (m45 as any).makeDrizzleDataExportRepository(sql).reportFixedVotes("userId-1", 3),
+  },
+  {
     key: "makeDrizzleDataExportRepository.reports",
     run: async (sql: any) =>
       (m45 as any).makeDrizzleDataExportRepository(sql).reports("userId-1", 3),
@@ -9625,6 +9630,11 @@ export const cases: TranscriptCase[] = [
     run: async (sql: any) => (m110 as any).isReportOwnedBy(sql, "reportId-1", "userId-1"),
   },
   {
+    key: "explainPressing",
+    run: async (sql: any) =>
+      (m110 as any).explainPressing(sql, { west: 3, south: 3, east: 3, north: 3 }, 3),
+  },
+  {
     key: "makeDrizzleReportRepository.countMediaStatesForReport",
     run: async (sql: any) =>
       (m110 as any).makeDrizzleReportRepository(sql).countMediaStatesForReport("reportId-1"),
@@ -9676,6 +9686,8 @@ export const cases: TranscriptCase[] = [
             linkedEvents: [undefined],
             confirmCount: 3,
             confirmedByMe: true,
+            fixedCount: 3,
+            fixedByMe: true,
             type: "graffiti",
             title: "title-1",
             description: "description-1",
@@ -9747,9 +9759,9 @@ export const cases: TranscriptCase[] = [
       (m110 as any).makeDrizzleReportRepository(sql).findTimelineForReports(["reportId-1"]),
   },
   {
-    key: "makeDrizzleReportRepository.isConfirmedBy",
+    key: "makeDrizzleReportRepository.findVote",
     run: async (sql: any) =>
-      (m110 as any).makeDrizzleReportRepository(sql).isConfirmedBy("reportId-1", "userId-1"),
+      (m110 as any).makeDrizzleReportRepository(sql).findVote("reportId-1", "userId-1"),
   },
   {
     key: "makeDrizzleReportRepository.listMyReports",
@@ -9779,7 +9791,7 @@ export const cases: TranscriptCase[] = [
     run: async (sql: any) =>
       (m110 as any)
         .makeDrizzleReportRepository(sql)
-        .setConfirmation("reportId-1", "userId-1", "confirm"),
+        .setConfirmation("reportId-1", "userId-1", "fixed", "remove"),
   },
   {
     key: "makeDrizzleReportRepository.setVisibilityByOwner",

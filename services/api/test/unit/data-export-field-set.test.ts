@@ -30,6 +30,7 @@ const EXPECTED_PROJECTIONS: ReadonlyArray<readonly [from: string, columns: strin
   ],
   ["reports", "r.id, r.category, r.title, r.description, j.name AS place, r.status, r.created_at"],
   ["report_confirmations", "report_id, created_at"],
+  ["report_confirmations", "report_id, created_at"],
   [
     "posts",
     "id, kind, body, visibility, reply_to_id, repost_of_id, created_at, updated_at, deleted_at",
@@ -78,6 +79,7 @@ const EXPECTED_TOP_LEVEL_KEYS = [
   "profile",
   "reports",
   "reportConfirmations",
+  "reportFixedVotes",
   "posts",
   "comments",
   "chatMessages",
@@ -175,6 +177,9 @@ describe("data export field set (BE-TEST-048)", () => {
     expect(exported.followers).toEqual(["user-follower"])
     expect(exported.blocks).toEqual(["user-blocked"])
     expect(exported.reportConfirmations).toEqual([
+      { reportId: "report-1", createdAt: "2026-01-01T00:00:00.000Z" },
+    ])
+    expect(exported.reportFixedVotes).toEqual([
       { reportId: "report-1", createdAt: "2026-01-01T00:00:00.000Z" },
     ])
     for (const section of [
