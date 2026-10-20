@@ -17,6 +17,7 @@ const SEED_MIGRATIONS = [
   "0151_legal_documents_consents.sql",
   "0171_legal_documents_2026_09_16.sql",
   "0172_legal_documents_2026_09_21.sql",
+  "0196_legal_documents_2026_10_20.sql",
 ] as const
 
 const RETIRED_TYPES = ["donations", "org_donation_agreement", "donation_disclosure"] as const
@@ -60,6 +61,31 @@ function latestByType(type: string): SeedRow | undefined {
 }
 
 describe("legal_documents seed", () => {
+  it("T1: seeds the 2026-10-20 terms and privacy rows exactly as the contract lists them", () => {
+    const expected = {
+      terms: "942aabae31cda45d9cdace018ee0953d28506b27d2f0c45b2d3cd554cfa66ed3",
+      privacy: "05dedba2376323c94697e2bfb43915f6b983761b806b74ba336d46c2f991ff8a",
+    } as const
+    for (const type of ["terms", "privacy"] as const) {
+      const document = LEGAL_DOCUMENTS.find((entry) => entry.type === type)
+      const row = latestByType(type)
+      expect(row).toEqual({
+        type,
+        version: "2026-10-20",
+        sha256: expected[type],
+        effectiveAt: "2026-10-20T00:00:00.000Z",
+        url: `https://civfix.org/legal/${type}`,
+      })
+      expect(row).toEqual({
+        type: document?.type,
+        version: document?.version,
+        sha256: document?.sha256,
+        effectiveAt: document?.effectiveAt,
+        url: document?.url,
+      })
+    }
+  })
+
   it("seeds the latest version of every current LEGAL_DOCUMENTS entry", () => {
     for (const document of LEGAL_DOCUMENTS) {
       const row = latestByType(document.type)

@@ -488,6 +488,53 @@ describe("registration service", () => {
     expect(write?.surface).toBe("web_register")
   })
 
+  it("T4: rejects the 2026-09-21 terms once 2026-10-20 is current", () => {
+    let thrown: unknown
+    try {
+      h.service.consentWriteOf({
+        termsVersion: "2026-09-21",
+        disclosureVersion: "2026-10-20",
+        hostContactOptIn: false,
+      })
+    } catch (err) {
+      thrown = err
+    }
+    expect(thrown).toBeInstanceOf(AppError)
+    expect(thrown).toMatchObject({
+      code: "VALIDATION",
+      httpStatus: 422,
+      fields: { "consent.termsVersion": "out of date, so re-accept the terms" },
+    })
+  })
+
+  it("T5: rejects the 2026-09-21 privacy notice once 2026-10-20 is current", () => {
+    let thrown: unknown
+    try {
+      h.service.consentWriteOf({
+        termsVersion: "2026-10-20",
+        disclosureVersion: "2026-09-21",
+        hostContactOptIn: false,
+      })
+    } catch (err) {
+      thrown = err
+    }
+    expect(thrown).toBeInstanceOf(AppError)
+    expect(thrown).toMatchObject({
+      code: "VALIDATION",
+      httpStatus: 422,
+      fields: { "consent.disclosureVersion": "out of date, so re-accept the privacy notice" },
+    })
+  })
+
+  it("T6: accepts the 2026-10-20 terms and privacy notice", () => {
+    const write = h.service.consentWriteOf({
+      termsVersion: "2026-10-20",
+      disclosureVersion: "2026-10-20",
+      hostContactOptIn: false,
+    })
+    expect(write).toMatchObject({ termsVersion: "2026-10-20", disclosureVersion: "2026-10-20" })
+  })
+
   it("caps registration flips per identity and fails closed on a broken counter", async () => {
     h.repo.seedTicketType({ cleanupId: EVENT, capacity: 500 })
     for (let i = 0; i < 20; i++) {
