@@ -1,5 +1,5 @@
 /**
- * drizzle/0196_legal_documents_2026_10_20.sql against a real database. The template every file clones
+ * drizzle/0197_legal_documents_2026_10_20.sql against a real database. The template every file clones
  * has already run the whole chain, so this applies the canonical file a second time, as the runner does
  * (one transaction, simple-query mode), and reads what `legal_documents` holds afterwards.
  */
@@ -12,10 +12,10 @@ import { withPg, type PgHarness } from "../helpers/pg.js"
 const pg = await withPg()
 
 const MIGRATION = fileURLToPath(
-  new URL("../../drizzle/0196_legal_documents_2026_10_20.sql", import.meta.url),
+  new URL("../../drizzle/0197_legal_documents_2026_10_20.sql", import.meta.url),
 )
 
-describe.skipIf(!pg)("0196 legal_documents 2026-10-20 seed (integration)", () => {
+describe.skipIf(!pg)("0197 legal_documents 2026-10-20 seed (integration)", () => {
   const h = pg as PgHarness
 
   afterAll(async () => {

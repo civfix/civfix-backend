@@ -1,5 +1,5 @@
 -- =============================================================================
--- 0196_legal_documents_2026_10_20.sql
+-- 0197_legal_documents_2026_10_20.sql
 -- -----------------------------------------------------------------------------
 -- WHY. Residents now need an account to file a report (GH#205), so the Terms
 -- of Service (section 5) and the Privacy Policy (section 6) were rewritten to
