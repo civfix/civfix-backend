@@ -19,6 +19,8 @@ jobs:
   build:
     name: lint / typecheck / build / test
     runs-on: ubuntu-latest
+    env:
+      PLAYWRIGHT_BROWSERS_PATH: /ms-playwright
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -36,6 +38,14 @@ jobs:
 
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
+
+      # The city-filer tests (services/city-filer) drive a real Chromium. This is the same
+      # playwright-core the kit and @playwright/mcp pin (epic civfix/issue-tracker#164 D9): change the three together.
+      - name: Install Playwright Chromium
+        run: |
+          sudo mkdir -p /ms-playwright
+          sudo chown "$(id -u):$(id -g)" /ms-playwright
+          npx --yes playwright-core@1.64.0-alpha-1790635538000 install --with-deps chromium
 
       # The backend depends ONLY on the framework-free @civfix/contract and @civfix/tokens; fail if it ever pulls in
       # frontend runtime deps (react / react-dom / react-native / react-native-web / @civfix/ui).
