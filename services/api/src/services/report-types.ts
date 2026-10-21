@@ -113,5 +113,7 @@ export interface ReportService {
   unlistReport(userId: string, reportId: string, unlisted: boolean): Promise<ReportDTO>
   confirmReport(userId: string, reportId: string): Promise<ReportConfirmResponse>
   unconfirmReport(userId: string, reportId: string): Promise<ReportConfirmResponse>
+  markReportFixed(userId: string, reportId: string): Promise<ReportConfirmResponse>
+  unmarkReportFixed(userId: string, reportId: string): Promise<ReportConfirmResponse>
   pressingReports(bbox: BBox): Promise<PressingReportsResponse>
 }

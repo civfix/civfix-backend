@@ -8,8 +8,12 @@ import type {
   ReportType,
   ReportVisibility,
 } from "@civfix/contract"
+import type { REPORT_VOTE_KIND_VALUES } from "../db/schema/types.js"
 import type { ReportVisibilityTimelineKind } from "./report-types.js"
 import type { ConfirmationVerdict } from "./report-visibility.js"
+
+/** A resident's vote on a report: "I see this too" (a confirmation) or "This is fixed". */
+export type ReportVote = (typeof REPORT_VOTE_KIND_VALUES)[number]
 
 export interface ReportMediaView {
   id: string
@@ -52,6 +56,7 @@ export interface ReportRecord {
   publishedAt: Date | null
   deletedAt: Date | null
   confirmCount: number
+  fixedCount: number
 }
 
 export interface ReportMapPoint {
@@ -68,10 +73,13 @@ export interface ReportMapPoint {
   thumbKey: string | null
   r2Key: string | null
   confirmCount: number
+  fixedCount: number
 }
 
+/** The report's counts after the call, and the caller's vote (null for none). */
 export type ReportConfirmationOutcome =
-  { kind: "applied"; confirmCount: number } | { kind: Exclude<ConfirmationVerdict, "allowed"> }
+  | { kind: "applied"; confirmCount: number; fixedCount: number; vote: ReportVote | null }
+  | { kind: Exclude<ConfirmationVerdict, "allowed"> }
 
 export interface CreateReportTxArgs {
   reportId: string
@@ -142,18 +150,24 @@ export interface ReportRepository {
     cursor: string | null
     limit: number
   }): Promise<{ points: ReportMapPoint[]; nextCursor: string | null }>
-  /** Open public reports in the bbox with at least one confirmation, most confirmed first, then newest. */
+  /**
+   * Open public reports in the bbox with at least one confirmation, ranked by their last five votes
+   * (DECISIONS §61): the first PRESSING_CANDIDATES by confirmations then newest, less those whose last five
+   * hold 3 or more fixed votes, by score, then confirmations, then newest.
+   */
   findPressing(bbox: BBox, limit: number): Promise<ReportMapPoint[]>
   /**
-   * Adds (confirm) or removes (unconfirm) the user's confirmation, judged by confirmationVerdict and
-   * applied atomically with reports.confirm_count. Repeating either is a no-op that reports the count.
+   * Makes the user's vote `vote` ("add", adding it or moving it from the other kind) or removes it when it
+   * is `vote` ("remove"), judged by confirmationVerdict and applied atomically with both counts. A call that
+   * changes nothing reports the current counts and vote.
    */
   setConfirmation(
     reportId: string,
     userId: string,
-    action: "confirm" | "unconfirm",
+    vote: ReportVote,
+    change: VoteChange,
   ): Promise<ReportConfirmationOutcome>
-  isConfirmedBy(reportId: string, userId: string): Promise<boolean>
+  findVote(reportId: string, userId: string): Promise<ReportVote | null>
   resolveByOwner(
     reportId: string,
     userId: string,
@@ -167,6 +181,15 @@ export interface ReportRepository {
 }
 
 export type OwnerToggleStatus = Extract<ReportStatus, "resolved" | "published">
+
+export type VoteChange = "add" | "remove"
+
+// The pressing ranking (DECISIONS §61): the first PRESSING_CANDIDATES reports by confirmations are ranked
+// over their last PRESSING_RECENT_VOTES votes, and one with PRESSING_DROP_FIXED or more fixed votes among
+// those is not listed.
+export const PRESSING_CANDIDATES = 200
+export const PRESSING_RECENT_VOTES = 5
+export const PRESSING_DROP_FIXED = 3
 
 export interface BBox {
   west: number

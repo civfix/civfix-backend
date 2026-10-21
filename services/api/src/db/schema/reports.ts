@@ -62,8 +62,10 @@ export const reports = pgTable(
     publishedAt: timestamp("published_at", { withTimezone: true }),
     deletedAt: timestamp("deleted_at", { withTimezone: true }),
     holdReleaseCheckedAt: timestamp("hold_release_checked_at", { withTimezone: true }),
-    /** Rows in report_confirmations for this report, moved in the same transaction as the row. */
+    /** 'seen' rows in report_confirmations for this report, moved in the same transaction as the row. */
     confirmCount: integer("confirm_count").notNull().default(0),
+    /** 'fixed' rows in report_confirmations for this report, moved in the same transaction as the row. */
+    fixedCount: integer("fixed_count").notNull().default(0),
   },
   (t) => [
     uniqueIndex("reports_idempotency_key_key").on(t.idempotencyKey),

@@ -211,3 +211,24 @@ describe("the export byte budget favors the small structured sections", () => {
     expect(parsed.truncated.capPerSection).toBe(DATA_EXPORT_MAX_ROWS)
   })
 })
+
+describe("the fixed votes section", () => {
+  it("T37: more fixed votes than DATA_EXPORT_MAX_ROWS keeps the cap and reports the section truncated", async () => {
+    const fixedRows = Array.from({ length: DATA_EXPORT_MAX_ROWS + 1 }, (_, i) => ({
+      report_id: `r${i}`,
+      created_at: new Date("2026-01-01T00:00:00.000Z"),
+    }))
+    const mailer = new FakeMailer()
+    const { service } = harness(mailer, [
+      { match: /FROM report_confirmations[\s\S]*'fixed'/, rows: fixedRows },
+    ])
+    await service.exportData(USER_ID)
+    const att = mailer.lastOutbound()!.attachments![0]!
+    const parsed = JSON.parse(new TextDecoder().decode(att.content)) as {
+      reportFixedVotes: unknown[]
+      truncated: { sections: string[] }
+    }
+    expect(parsed.reportFixedVotes).toHaveLength(DATA_EXPORT_MAX_ROWS)
+    expect(parsed.truncated.sections).toContain("reportFixedVotes")
+  })
+})

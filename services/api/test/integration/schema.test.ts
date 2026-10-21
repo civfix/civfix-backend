@@ -673,6 +673,7 @@ const MIRRORED_CHECKS: readonly MirroredCheck[] = [
   { table: "mail_messages", column: "direction", mirror: schema.MAIL_DIRECTION_VALUES },
   { table: "mail_threads", column: "status", mirror: schema.MAIL_THREAD_STATUS_VALUES },
   { table: "reports", column: "status", mirror: schema.REPORT_STATUS_VALUES },
+  { table: "report_confirmations", column: "kind", mirror: schema.REPORT_VOTE_KIND_VALUES },
   { table: "moderation_items", column: "kind", mirror: schema.MODERATION_KIND_VALUES },
   { table: "moderation_items", column: "priority", mirror: schema.MODERATION_PRIORITY_VALUES },
   { table: "moderation_items", column: "status", mirror: schema.MODERATION_STATUS_VALUES },
