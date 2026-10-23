@@ -19,6 +19,14 @@ export interface FeedCandidate {
   alreadySeen: boolean
 }
 
+export type FeedAuthorBoosts = ReadonlyMap<string, number>
+
+export const NO_AUTHOR_BOOSTS: FeedAuthorBoosts = new Map()
+
+export function authorBoost(_boosts: FeedAuthorBoosts, _authorId: string): number {
+  throw new Error("not implemented")
+}
+
 export interface RankedCandidate {
   id: string
   authorId: string
@@ -151,6 +159,7 @@ export function rankCandidates(
   cfg: FeedRankingConfig,
   nowMs: number,
   seed: number,
+  _boosts: FeedAuthorBoosts = NO_AUTHOR_BOOSTS,
 ): RankedCandidate[] {
   const nowBucketMs = quantizeClock(nowMs, cfg.clockBucketSeconds)
   const base = candidates.map((candidate) => ({

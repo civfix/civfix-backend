@@ -32,6 +32,7 @@ import {
   bucketSeed,
   quantizeClock,
   rankCandidates,
+  type FeedAuthorBoosts,
   type FeedCandidate,
   type RankedCandidate,
 } from "./feed-ranking.js"
@@ -128,6 +129,7 @@ export interface PostServiceDeps {
   blockedIdsAmong?: (actorId: string, candidateIds: string[]) => Promise<Set<string>>
   logger?: { warn(obj: unknown, msg: string): void }
   feedRanking?: FeedRankingConfig
+  feedAuthorBoosts?: FeedAuthorBoosts
   feedPresence?: FeedPresence
   userChannel?: UserChannel
   now?: () => number

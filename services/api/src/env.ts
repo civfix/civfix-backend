@@ -22,6 +22,7 @@ import {
   type FakeFlags,
 } from "./env/core-env.js"
 import { parseBool, parseBounds } from "./env/parsers.js"
+import { NO_AUTHOR_BOOSTS } from "./services/feed-ranking.js"
 
 export type { Env } from "./env/types.js"
 export { DEFAULT_TRUSTED_PROXY_CIDRS, SHUTDOWN_DRAIN_MS_MAX } from "./env/parsers.js"
@@ -160,6 +161,7 @@ export function loadEnv(source: NodeJS.ProcessEnv = process.env): Env {
     TILES_BOUNDS: parseBounds(source.TILES_BOUNDS, TILES_BOUNDS_DEFAULT),
     ...homeRegion,
     FEED_RANKING,
+    FEED_AUTHOR_BOOSTS: NO_AUTHOR_BOOSTS,
     ...mail,
     ...sms,
     ...schedules,
