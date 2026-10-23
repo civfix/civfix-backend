@@ -16,7 +16,13 @@ import type {
 import { DEFAULT_PREFS, isFeedVisibleType } from "../../src/services/notification-service.js"
 import { MAX_ACTIVE_PUSH_TOKENS_PER_USER } from "../../src/services/notification-repository.drizzle.js"
 import { paginate, parseTimeCursor } from "../../src/db/cursor-helpers.js"
-import type { NotificationDTO, NotificationType, PushPlatform } from "@civfix/contract"
+import { NOTIFICATION_CATEGORY_DEFAULTS } from "@civfix/contract"
+import type {
+  NotificationCategory,
+  NotificationDTO,
+  NotificationType,
+  PushPlatform,
+} from "@civfix/contract"
 import type { ReporterNotifier } from "../../src/services/admin/admin-report-service.js"
 
 export interface RecordedNotification extends CreateNotificationInput {
@@ -344,15 +350,43 @@ export class InMemoryNotificationSettingsRepository implements NotificationSetti
 
   now: () => Date = () => new Date()
 
-  getSettings(_userId: string): Promise<NotificationSettingRecord[]> {
-    throw new Error("not implemented")
+  getSettings(userId: string): Promise<NotificationSettingRecord[]> {
+    return this.getSettingsMany([userId])
   }
 
-  getSettingsMany(_userIds: string[]): Promise<NotificationSettingRecord[]> {
-    throw new Error("not implemented")
+  getSettingsMany(userIds: string[]): Promise<NotificationSettingRecord[]> {
+    const wanted = new Set(userIds)
+    return Promise.resolve(
+      [...this.rows.values()]
+        .filter((row) => wanted.has(row.userId))
+        .map(({ userId, category, enabled, push, email }) => ({
+          userId,
+          category,
+          enabled,
+          push,
+          email,
+        })),
+    )
   }
 
-  upsertSettings(_userId: string, _patch: NotificationSettingsPatch): Promise<void> {
-    throw new Error("not implemented")
+  upsertSettings(userId: string, patch: NotificationSettingsPatch): Promise<void> {
+    const at = this.now()
+    for (const [category, fields] of Object.entries(patch) as [
+      NotificationCategory,
+      NotificationSettingsPatch[NotificationCategory],
+    ][]) {
+      if (!fields) continue
+      const key = `${userId}:${category}`
+      const base = this.rows.get(key) ?? NOTIFICATION_CATEGORY_DEFAULTS[category]
+      this.rows.set(key, {
+        userId,
+        category,
+        enabled: fields.enabled ?? base.enabled,
+        push: fields.push ?? base.push,
+        email: fields.email ?? base.email,
+        updatedAt: at,
+      })
+    }
+    return Promise.resolve()
   }
 }

@@ -6628,6 +6628,33 @@ UPDATE push_tokens SET revoked_at = now() WHERE user_id = $1 AND revoked_at IS N
 => "stored""
 `;
 
+exports[`sql transcripts > makeDrizzleNotificationSettingsRepository.getSettings 1`] = `
+"-- empty
+SELECT user_id, category, enabled, push, email FROM notification_settings WHERE user_id = $1 -- ["userId-1"]
+=> []
+-- row
+SELECT user_id, category, enabled, push, email FROM notification_settings WHERE user_id = $1 -- ["userId-1"]
+=> [{"userId":"user_id-row","category":"category-row","enabled":"enabled-row","push":"push-row","email":"email-row"}]"
+`;
+
+exports[`sql transcripts > makeDrizzleNotificationSettingsRepository.getSettingsMany 1`] = `
+"-- empty
+SELECT user_id, category, enabled, push, email FROM notification_settings WHERE user_id = ANY($1::uuid[]) -- [["userId-1"]]
+=> []
+-- row
+SELECT user_id, category, enabled, push, email FROM notification_settings WHERE user_id = ANY($1::uuid[]) -- [["userId-1"]]
+=> [{"userId":"user_id-row","category":"category-row","enabled":"enabled-row","push":"push-row","email":"email-row"}]"
+`;
+
+exports[`sql transcripts > makeDrizzleNotificationSettingsRepository.upsertSettings 1`] = `
+"-- empty
+WITH input AS ( SELECT * FROM jsonb_to_recordset($1) AS i ( category text, enabled boolean, push boolean, email boolean, new_enabled boolean, new_push boolean, new_email boolean ) ) INSERT INTO notification_settings AS s (user_id, category, enabled, push, email) SELECT $2, i.category, i.new_enabled, i.new_push, i.new_email FROM input i ON CONFLICT (user_id, category) DO UPDATE SET (enabled, push, email) = ( SELECT COALESCE(i.enabled, s.enabled), COALESCE(i.push, s.push), COALESCE(i.email, s.email) FROM input i WHERE i.category = EXCLUDED.category ), updated_at = now() -- [{"<json>":[{"category":"events","enabled":null,"push":null,"email":null,"new_enabled":true,"new_push":true,"new_email":true},{"category":"organizations","enabled":null,"push":null,"email":null,"new_enabled":true,"new_push":false,"new_email":true},{"category":"reportUpdates","enabled":null,"push":null,"email":null,"new_enabled":true,"new_push":true,"new_email":false},{"category":"mentions","enabled":null,"push":null,"email":null,"new_enabled":true,"new_push":true,"new_email":false},{"category":"reportDiscussions","enabled":null,"push":null,"email":null,"new_enabled":true,"new_push":false,"new_email":false},{"category":"directMessages","enabled":null,"push":null,"email":null,"new_enabled":true,"new_push":true,"new_email":false},{"category":"groupChats","enabled":null,"push":null,"email":null,"new_enabled":true,"new_push":false,"new_email":false},{"category":"hostAnnouncements","enabled":null,"push":null,"email":null,"new_enabled":true,"new_push":true,"new_email":false},{"category":"eventTeam","enabled":null,"push":null,"email":null,"new_enabled":true,"new_push":true,"new_email":false},{"category":"followers","enabled":null,"push":null,"email":null,"new_enabled":true,"new_push":false,"new_email":false},{"category":"likesAndReposts","enabled":null,"push":null,"email":null,"new_enabled":true,"new_push":false,"new_email":false}]},"userId-1"]
+=> undefined
+-- row
+WITH input AS ( SELECT * FROM jsonb_to_recordset($1) AS i ( category text, enabled boolean, push boolean, email boolean, new_enabled boolean, new_push boolean, new_email boolean ) ) INSERT INTO notification_settings AS s (user_id, category, enabled, push, email) SELECT $2, i.category, i.new_enabled, i.new_push, i.new_email FROM input i ON CONFLICT (user_id, category) DO UPDATE SET (enabled, push, email) = ( SELECT COALESCE(i.enabled, s.enabled), COALESCE(i.push, s.push), COALESCE(i.email, s.email) FROM input i WHERE i.category = EXCLUDED.category ), updated_at = now() -- [{"<json>":[{"category":"events","enabled":null,"push":null,"email":null,"new_enabled":true,"new_push":true,"new_email":true},{"category":"organizations","enabled":null,"push":null,"email":null,"new_enabled":true,"new_push":false,"new_email":true},{"category":"reportUpdates","enabled":null,"push":null,"email":null,"new_enabled":true,"new_push":true,"new_email":false},{"category":"mentions","enabled":null,"push":null,"email":null,"new_enabled":true,"new_push":true,"new_email":false},{"category":"reportDiscussions","enabled":null,"push":null,"email":null,"new_enabled":true,"new_push":false,"new_email":false},{"category":"directMessages","enabled":null,"push":null,"email":null,"new_enabled":true,"new_push":true,"new_email":false},{"category":"groupChats","enabled":null,"push":null,"email":null,"new_enabled":true,"new_push":false,"new_email":false},{"category":"hostAnnouncements","enabled":null,"push":null,"email":null,"new_enabled":true,"new_push":true,"new_email":false},{"category":"eventTeam","enabled":null,"push":null,"email":null,"new_enabled":true,"new_push":true,"new_email":false},{"category":"followers","enabled":null,"push":null,"email":null,"new_enabled":true,"new_push":false,"new_email":false},{"category":"likesAndReposts","enabled":null,"push":null,"email":null,"new_enabled":true,"new_push":false,"new_email":false}]},"userId-1"]
+=> undefined"
+`;
+
 exports[`sql transcripts > makeDrizzleOrganizationRepository.acceptInviteTx 1`] = `
 "-- empty
 BEGIN tx1
