@@ -478,6 +478,7 @@ export function makeContainer(env: Env): Container {
       blockedIdsAmong: (actorId: string, candidateIds: string[]) =>
         blocksRepo.get().blockedIdsAmong(actorId, candidateIds),
       feedRanking: env.FEED_RANKING,
+      feedAuthorBoosts: env.FEED_AUTHOR_BOOSTS,
       feedPresence: feedPresence.get(),
       ...(env.USE_FAKE_USER_CHANNEL ? {} : { userChannel: userChannel.get() }),
     }),

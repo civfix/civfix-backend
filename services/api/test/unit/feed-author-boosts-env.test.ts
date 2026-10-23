@@ -66,3 +66,22 @@ describe("FEED_AUTHOR_BOOSTS env var", () => {
     expect(() => load(JSON.stringify({ [A]: null }))).toThrow(/FEED_AUTHOR_BOOSTS/)
   })
 })
+
+describe("FEED_AUTHOR_BOOSTS env var: details", () => {
+  it("never quotes a user ID or a multiplier in the boot error", () => {
+    expect(() => load(JSON.stringify({ [A]: 7.25 }))).toThrow(
+      expect.objectContaining({ message: expect.not.stringMatching(new RegExp(`${A}|7\\.25`)) }),
+    )
+  })
+
+  it("matches an upper-case key against the lower-case user ID postgres returns", () => {
+    const boosts = load(JSON.stringify({ [A.toUpperCase()]: 2 })).FEED_AUTHOR_BOOSTS
+    expect(authorBoost(boosts, A)).toBe(2)
+  })
+
+  it("refuses the same user ID listed twice in different case", () => {
+    expect(() => load(JSON.stringify({ [A]: 2, [A.toUpperCase()]: 3 }))).toThrow(
+      /FEED_AUTHOR_BOOSTS: lists the same user ID twice/,
+    )
+  })
+})

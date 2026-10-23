@@ -9,6 +9,7 @@ import {
   loadAccessLists,
   loadApnsProduction,
   loadCoreEnv,
+  loadFeedAuthorBoosts,
   loadFeedRanking,
   loadHomeRegion,
   loadLocalStorage,
@@ -22,7 +23,6 @@ import {
   type FakeFlags,
 } from "./env/core-env.js"
 import { parseBool, parseBounds } from "./env/parsers.js"
-import { NO_AUTHOR_BOOSTS } from "./services/feed-ranking.js"
 
 export type { Env } from "./env/types.js"
 export { DEFAULT_TRUSTED_PROXY_CIDRS, SHUTDOWN_DRAIN_MS_MAX } from "./env/parsers.js"
@@ -132,6 +132,7 @@ export function loadEnv(source: NodeJS.ProcessEnv = process.env): Env {
   const TRUST_PROXY = loadTrustProxy(r)
   const homeRegion = loadHomeRegion(r)
   const FEED_RANKING = loadFeedRanking(r, "FEED_RANKING")
+  const FEED_AUTHOR_BOOSTS = loadFeedAuthorBoosts(r, "FEED_AUTHOR_BOOSTS")
   const localStorage = loadLocalStorage(r, core.PUBLIC_API_URL)
   checkGeocoderDatabase(r, fakeFlags, core.DATABASE_URL)
   const r2 = loadR2Env(r, fakeFlags.USE_FAKE_STORAGE, localStorage.usesLocalStorage)
@@ -161,7 +162,7 @@ export function loadEnv(source: NodeJS.ProcessEnv = process.env): Env {
     TILES_BOUNDS: parseBounds(source.TILES_BOUNDS, TILES_BOUNDS_DEFAULT),
     ...homeRegion,
     FEED_RANKING,
-    FEED_AUTHOR_BOOSTS: NO_AUTHOR_BOOSTS,
+    FEED_AUTHOR_BOOSTS,
     ...mail,
     ...sms,
     ...schedules,
