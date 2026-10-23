@@ -29,7 +29,7 @@ interface Fixture {
   media: FixtureMedia | null
 }
 
-export const AVATAR_FIXTURES: Readonly<Record<AvatarFixtureName, Fixture>> = {
+const AVATAR_FIXTURES: Readonly<Record<AvatarFixtureName, Fixture>> = {
   P: {
     avatarUrl: "cdn.civfix.org/processed/uploads/2026/10/p1",
     media: {
