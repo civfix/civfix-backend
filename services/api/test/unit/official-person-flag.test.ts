@@ -139,7 +139,9 @@ function postRepo(id: string, deletedAt: Date | null = null) {
     id,
     followers: 0,
     following: 0,
-    avatar_r2_key: null,
+    avatar_media_status: null,
+    avatar_served_key: null,
+    avatar_thumb_key: null,
     is_following: false,
     deleted_at: deletedAt,
   }
@@ -174,7 +176,10 @@ function postRepo(id: string, deletedAt: Date | null = null) {
   return makeDrizzlePostRepository(
     fakeSql([
       { match: /FROM posts p WHERE p\.id = \?/, rows: [post] },
-      { match: /LEFT JOIN media_assets am ON am\.id = u\.avatar_media_id/, rows: [author] },
+      {
+        match: /FROM users u\s+LEFT JOIN media_assets am ON am\.id = u\.avatar_media_id/,
+        rows: [author],
+      },
       { match: /LEFT JOIN users u ON u\.id = p\.author_id/, rows: [original] },
       { match: /JOIN users u ON u\.id = c\.organizer_user_id/, rows: [event] },
     ]),
@@ -186,7 +191,14 @@ function postRepo(id: string, deletedAt: Date | null = null) {
 }
 
 async function announcementAuthor(id: string, deletedAt: Date | null = null) {
-  const row = { ...identity, id, avatar_r2_key: null, deleted_at: deletedAt }
+  const row = {
+    ...identity,
+    id,
+    avatar_media_status: null,
+    avatar_served_key: null,
+    avatar_thumb_key: null,
+    deleted_at: deletedAt,
+  }
   const repo = makeDrizzleAnnouncementIdentityRepository(
     fakeSql([{ match: /FROM users u\s+LEFT JOIN media_assets am/, rows: [row] }]),
     () => Promise.resolve("a"),
