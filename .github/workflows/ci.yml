@@ -1,11 +1,11 @@
 name: CI
 
 # main is the only long-lived branch (issue civfix/issue-tracker#108): main is the staging lane, and
-# production ships from a published v* release. PRs target main, or an epic's integration/<name>
-# lane, which lands on main in one PR.
+# production ships from a published v* release. Every PR runs it whatever its base: a stacked PR
+# targets its parent slice's branch, and the agents rely on this run as the full check of each slice
+# they push.
 on:
   pull_request:
-    branches: [main, "integration/**"]
   # main's merge queue waits for the required checks on its own gh-readonly-queue/* commit; without this
   # trigger they never report there and every queued PR times out.
   merge_group:
