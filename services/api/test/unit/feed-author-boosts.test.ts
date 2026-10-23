@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest"
 import { DEFAULT_FEED_RANKING, quantizeFeedScore } from "@civfix/contract"
-import type { FeedFilter, FeedRankingConfig, PostDTO } from "@civfix/contract"
+import type { FeedRankingConfig, PostDTO } from "@civfix/contract"
 import type { Sql } from "../../src/db/client.js"
 import {
   applyCutoff,
@@ -10,7 +10,11 @@ import {
   type FeedCandidate,
 } from "../../src/services/feed-ranking.js"
 import { makePostService, type PostService } from "../../src/services/post-service.js"
-import type { FeedCandidateRow, PostRepository } from "../../src/services/post-repository.js"
+import type {
+  FeedCandidateRow,
+  FeedFilter,
+  PostRepository,
+} from "../../src/services/post-repository.js"
 
 const A = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
 const B = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"
@@ -245,7 +249,7 @@ describe("feed author boosts: home feed", () => {
 
   it("T17: a boosted author's repost outranks an identical original by someone else", async () => {
     const posts = [
-      post(P1, A, { dto: { kind: "repost", repostOf: dto(ORIGINAL, C) } }),
+      post(P1, A, { dto: { kind: "repost", repostOf: { ...dto(ORIGINAL, C), excerpt: "hi" } } }),
       post(P2, B),
     ]
     const page = await service(posts, boostA).homeFeed(C, { filter: "all" })
