@@ -123,7 +123,12 @@ function contract(
         mentions: { push: true },
       })
       const [eventsBefore, mentionsBefore] = await s.stored(user)
-      expect(eventsBefore).toMatchObject({ category: "events", enabled: true, push: false, email: true })
+      expect(eventsBefore).toMatchObject({
+        category: "events",
+        enabled: true,
+        push: false,
+        email: true,
+      })
       expect(mentionsBefore).toMatchObject({
         category: "mentions",
         enabled: true,
