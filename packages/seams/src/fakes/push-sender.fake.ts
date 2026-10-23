@@ -39,6 +39,16 @@ export class FakePushSender implements PushSender {
     return Promise.resolve()
   }
 
+  readonly clears: unknown[] = []
+
+  sendEach(_items: unknown[]): Promise<void> {
+    throw new Error("not implemented")
+  }
+
+  clear(_userId: string, _target: unknown): Promise<void> {
+    throw new Error("not implemented")
+  }
+
   sendMany(userIds: string[], payload: PushPayload): Promise<void> {
     for (const userId of userIds) this.sent.push({ userId, payload })
     return Promise.resolve()

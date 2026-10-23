@@ -150,6 +150,14 @@ export class MultiPushSender implements PushSender {
     return this.deliver([userId], payload)
   }
 
+  sendEach(_items: unknown[]): Promise<void> {
+    throw new Error("not implemented")
+  }
+
+  clear(_userId: string, _target: unknown): Promise<void> {
+    throw new Error("not implemented")
+  }
+
   sendMany(userIds: string[], payload: PushPayload): Promise<void> {
     if (userIds.length === 0) return Promise.resolve()
     return this.deliver(userIds, payload)
