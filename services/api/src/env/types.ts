@@ -1,4 +1,5 @@
 import type { FeedRankingConfig } from "@civfix/contract"
+import type { FeedAuthorBoosts } from "../services/feed-ranking.js"
 import type { TrustProxyValue } from "./parsers.js"
 import type { CommsEnv } from "./comms-env.js"
 import type { RegistrationEnv } from "./registration-env.js"
@@ -36,6 +37,7 @@ export interface Env extends CommsEnv, RegistrationEnv {
   HOME_REGION_RADIUS_KM: number
 
   FEED_RANKING: FeedRankingConfig
+  FEED_AUTHOR_BOOSTS: FeedAuthorBoosts
 
   CENSUS_GEOCODER_URL: string
   CENSUS_GEOCODER_TIMEOUT_MS: number

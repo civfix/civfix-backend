@@ -19,6 +19,14 @@ export interface FeedCandidate {
   alreadySeen: boolean
 }
 
+export type FeedAuthorBoosts = ReadonlyMap<string, number>
+
+export const NO_AUTHOR_BOOSTS: FeedAuthorBoosts = new Map()
+
+export function authorBoost(boosts: FeedAuthorBoosts, authorId: string): number {
+  return boosts.get(authorId) ?? 1
+}
+
 export interface RankedCandidate {
   id: string
   authorId: string
@@ -130,6 +138,7 @@ export function scoreCandidate(
   cfg: FeedRankingConfig,
   nowBucketMs: number,
   seed: number,
+  boosts: FeedAuthorBoosts = NO_AUTHOR_BOOSTS,
 ): number {
   const ageHours = Math.max(0, (nowBucketMs - candidate.createdAtMs) / MS_PER_HOUR)
   const seen = candidate.alreadySeen ? cfg.seenDiscount : 1
@@ -137,6 +146,7 @@ export function scoreCandidate(
     Math.max(0, rawScore(candidate, cfg)) *
     recency(ageHours, cfg) *
     seen *
+    authorBoost(boosts, candidate.authorId) *
     jitterMultiplier(cfg, seed, candidate.id)
   )
 }
@@ -151,12 +161,13 @@ export function rankCandidates(
   cfg: FeedRankingConfig,
   nowMs: number,
   seed: number,
+  boosts: FeedAuthorBoosts = NO_AUTHOR_BOOSTS,
 ): RankedCandidate[] {
   const nowBucketMs = quantizeClock(nowMs, cfg.clockBucketSeconds)
   const base = candidates.map((candidate) => ({
     id: candidate.id,
     authorId: candidate.authorId,
-    score: quantizeFeedScore(scoreCandidate(candidate, cfg, nowBucketMs, seed)),
+    score: quantizeFeedScore(scoreCandidate(candidate, cfg, nowBucketMs, seed, boosts)),
   }))
   base.sort(byScoreThenId)
 
