@@ -1,4 +1,4 @@
-import type { PushSender, PushPayload } from "@civfix/seams"
+import type { Jobs, PushClearTarget, PushItem, PushPayload, PushSender } from "@civfix/seams"
 import type { PushPlatform } from "@civfix/contract"
 import type { Db } from "../db/client.js"
 import { pushTokens } from "../db/schema/push_tokens.js"
@@ -6,11 +6,15 @@ import { and, desc, inArray, isNull } from "drizzle-orm"
 import { makeApnsDispatcher } from "./push-apns.js"
 import { makeFcmDispatcher } from "./push-fcm.js"
 import { makeWebPushDispatcher } from "./push-webpush.js"
-import { makeExpoDispatcher, isExpoPushToken, type ExpoPushConfig } from "./push-expo.js"
+import type { NotificationMessage, PushMessage } from "./push-message.js"
+import type { PendingClears } from "./push-clears.js"
 import { mapWithLimit } from "../lib/concurrency.js"
 import { sha256HexSync } from "../lib/hash.js"
+import { PUSH_CLEAR_JOB } from "../lib/queue-names.js"
 import type { CounterStore } from "../abuse/counter-store.js"
-import type { PushAddressResolver } from "../services/push-token-policy.js"
+import { isExpoPushToken, type PushAddressResolver } from "../services/push-token-policy.js"
+
+export type { ClearMessage, NotificationMessage, PushMessage } from "./push-message.js"
 
 export interface PushSenderConfig {
   apns?: {
@@ -33,7 +37,6 @@ export interface PushSenderConfig {
     loadModule?: () => Promise<unknown>
     resolveAddresses?: PushAddressResolver
   }
-  expo?: ExpoPushConfig
 }
 
 export interface PushLogger {
@@ -49,7 +52,11 @@ export function hashForLog(value: string): string {
 
 const ACTIVE_TOKEN_SCAN_CAP_PER_USER = 20
 
-const NATIVE_PLATFORMS: readonly PushPlatform[] = ["ios", "android", "web"]
+// D7: one token query per this many recipients.
+const TOKEN_QUERY_USER_BATCH = 500
+
+// pg-boss holds the user's flush job this long, so every clear made meanwhile joins one push.
+export const PUSH_CLEAR_DELAY_SECONDS = 10
 
 // Only for callers that construct the sender without a logger; the API container always injects
 // its pino logger so redaction and request context apply.
@@ -64,16 +71,31 @@ export interface ActiveToken {
   token: string
 }
 
+export interface PushDelivery<M extends PushMessage = PushMessage> {
+  token: string
+  message: M
+}
+
+export interface PlatformDispatcher<M extends PushMessage = PushMessage> {
+  (deliveries: PushDelivery<M>[]): Promise<{ invalidTokens: string[] }>
+  close?(): Promise<void>
+}
+
 export interface PushDispatchers {
   ios?: PlatformDispatcher
   android?: PlatformDispatcher
-  web?: PlatformDispatcher
-  expo?: PlatformDispatcher
+  web?: PlatformDispatcher<NotificationMessage>
 }
 
-export interface PlatformDispatcher {
-  (tokens: string[], payload: PushPayload): Promise<{ invalidTokens: string[] }>
-  close?(): Promise<void>
+export interface PushClearDeps {
+  jobs: Pick<Jobs, "enqueue">
+  pending: PendingClears
+}
+
+interface PlatformDeliveries {
+  ios: PushDelivery[]
+  android: PushDelivery[]
+  web: PushDelivery<NotificationMessage>[]
 }
 
 export interface PushSenderDeps {
@@ -82,44 +104,76 @@ export interface PushSenderDeps {
   dispatchers?: PushDispatchers
   logger?: PushLogger
   counters?: CounterStore
+  clears?: PushClearDeps
+}
+
+export interface PushClearJob {
+  userId: string
+}
+
+interface RateBudget {
+  keyPrefix: string
+  capPerMinute: number
+  label: string
 }
 
 export const PUSH_MAX_PER_USER_PER_MINUTE = 60
 
+export const PUSH_CLEAR_MAX_PER_USER_PER_MINUTE = 30
+
+const VISIBLE_BUDGET: RateBudget = {
+  keyPrefix: "push:rate:",
+  capPerMinute: PUSH_MAX_PER_USER_PER_MINUTE,
+  label: "push",
+}
+
+// Clears never spend the visible budget, so reading a busy conversation can't mute new pushes (D8).
+const CLEAR_BUDGET: RateBudget = {
+  keyPrefix: "push:clear-rate:",
+  capPerMinute: PUSH_CLEAR_MAX_PER_USER_PER_MINUTE,
+  label: "clear push",
+}
+
 const PUSH_RATE_WINDOW_SECONDS = 60
 const PUSH_RATE_CHECK_CONCURRENCY = 16
-const PUSH_RATE_KEY_PREFIX = "push:rate:"
+
+async function withinBudget(
+  userIds: readonly string[],
+  budget: RateBudget,
+  counters: CounterStore | undefined,
+  logger: PushLogger,
+): Promise<boolean[]> {
+  if (!counters) return userIds.map(() => true)
+  const verdicts = await mapWithLimit(
+    [...userIds],
+    PUSH_RATE_CHECK_CONCURRENCY,
+    async (userId): Promise<boolean> => {
+      try {
+        const used = await counters.incr(`${budget.keyPrefix}${userId}`, PUSH_RATE_WINDOW_SECONDS)
+        return used <= budget.capPerMinute
+      } catch (err) {
+        logger.warn({ err }, `${budget.label}: per-user rate counter unavailable; allowing`)
+        return true
+      }
+    },
+  )
+  const dropped = verdicts.filter((v) => !v).length
+  if (dropped > 0) {
+    logger.warn(
+      { dropped, capPerMinute: budget.capPerMinute },
+      `${budget.label}: per-user rate cap reached; dropping excess device pushes`,
+    )
+  }
+  return verdicts
+}
 
 export async function allowedByPushRate(
   userIds: string[],
   counters: CounterStore | undefined,
   logger: PushLogger,
 ): Promise<string[]> {
-  if (!counters || userIds.length === 0) return userIds
-  const verdicts = await mapWithLimit(
-    userIds,
-    PUSH_RATE_CHECK_CONCURRENCY,
-    async (userId): Promise<boolean> => {
-      try {
-        const used = await counters.incr(
-          `${PUSH_RATE_KEY_PREFIX}${userId}`,
-          PUSH_RATE_WINDOW_SECONDS,
-        )
-        return used <= PUSH_MAX_PER_USER_PER_MINUTE
-      } catch (err) {
-        logger.warn({ err }, "push: per-user rate counter unavailable; allowing")
-        return true
-      }
-    },
-  )
-  const allowed = userIds.filter((_, i) => verdicts[i] === true)
-  if (allowed.length < userIds.length) {
-    logger.warn(
-      { dropped: userIds.length - allowed.length, capPerMinute: PUSH_MAX_PER_USER_PER_MINUTE },
-      "push: per-user rate cap reached; dropping excess device pushes",
-    )
-  }
-  return allowed
+  const verdicts = await withinBudget(userIds, VISIBLE_BUDGET, counters, logger)
+  return userIds.filter((_, i) => verdicts[i] === true)
 }
 
 export class MultiPushSender implements PushSender {
@@ -127,6 +181,7 @@ export class MultiPushSender implements PushSender {
   private readonly config: PushSenderConfig
   private readonly logger: PushLogger
   private readonly counters: CounterStore | undefined
+  private readonly clears: PushClearDeps | undefined
   private dispatchers: PushDispatchers | undefined
 
   constructor(deps: PushSenderDeps) {
@@ -134,6 +189,7 @@ export class MultiPushSender implements PushSender {
     this.config = deps.config
     this.logger = deps.logger ?? consoleLogger
     this.counters = deps.counters
+    this.clears = deps.clears
     if (deps.dispatchers) this.dispatchers = deps.dispatchers
   }
 
@@ -147,20 +203,34 @@ export class MultiPushSender implements PushSender {
   }
 
   send(userId: string, payload: PushPayload): Promise<void> {
-    return this.deliver([userId], payload)
+    return this.sendEach([{ userId, payload }])
   }
 
-  sendEach(_items: unknown[]): Promise<void> {
-    throw new Error("not implemented")
+  async sendEach(items: PushItem[]): Promise<void> {
+    for (let i = 0; i < items.length; i += TOKEN_QUERY_USER_BATCH) {
+      await this.deliverVisible(items.slice(i, i + TOKEN_QUERY_USER_BATCH))
+    }
   }
 
-  clear(_userId: string, _target: unknown): Promise<void> {
-    throw new Error("not implemented")
+  async clear(userId: string, target: PushClearTarget): Promise<void> {
+    if (!this.clears) throw new Error("push clears need a job queue and a pending-clears store")
+    if (!("all" in target) && target.ids.length === 0) return
+    await this.clears.pending.add(userId, target)
+    await this.clears.jobs.enqueue(PUSH_CLEAR_JOB, { userId } satisfies PushClearJob, {
+      singletonKey: userId,
+      startAfter: PUSH_CLEAR_DELAY_SECONDS,
+    })
   }
 
-  sendMany(userIds: string[], payload: PushPayload): Promise<void> {
-    if (userIds.length === 0) return Promise.resolve()
-    return this.deliver(userIds, payload)
+  /** The clear job's work: one silent push to the user's phones with everything queued since. */
+  async flushClears(userId: string): Promise<void> {
+    if (!this.clears) throw new Error("push clears need a job queue and a pending-clears store")
+    const target = await this.clears.pending.take(userId)
+    if (target === null) return
+    const [allowed] = await withinBudget([userId], CLEAR_BUDGET, this.counters, this.logger)
+    if (allowed !== true) return
+    const message: PushMessage = { kind: "clear", target }
+    await this.dispatch(await this.loadActiveTokens([userId]), () => [message])
   }
 
   async close(): Promise<void> {
@@ -168,73 +238,78 @@ export class MultiPushSender implements PushSender {
     await Promise.all(Object.values(this.dispatchers).map((d) => d?.close?.()))
   }
 
-  private async deliver(recipientIds: string[], payload: PushPayload): Promise<void> {
-    const userIds = await allowedByPushRate(recipientIds, this.counters, this.logger)
-    if (userIds.length === 0) return
-    const tokens = await this.loadActiveTokens(userIds)
-    if (tokens.length === 0) return
-
-    const dispatchers = this.getDispatchers()
-    const expoInvalid = await this.dispatchExpo(dispatchers.expo, tokens, payload)
-    const nativeInvalid = await this.dispatchNative(dispatchers, tokens, payload)
-    const invalidAll = [...expoInvalid, ...nativeInvalid]
-    if (invalidAll.length > 0) await this.pruneTokens(invalidAll)
+  private async deliverVisible(items: PushItem[]): Promise<void> {
+    const verdicts = await withinBudget(
+      items.map((item) => item.userId),
+      VISIBLE_BUDGET,
+      this.counters,
+      this.logger,
+    )
+    const allowed = items.filter((_, i) => verdicts[i] === true)
+    if (allowed.length === 0) return
+    const tokens = await this.loadActiveTokens([...new Set(allowed.map((item) => item.userId))])
+    const messagesByUser = new Map<string, PushMessage[]>()
+    for (const { userId, payload } of allowed) {
+      const messages = messagesByUser.get(userId) ?? []
+      messages.push({ kind: "notification", payload })
+      messagesByUser.set(userId, messages)
+    }
+    await this.dispatch(tokens, (userId) => messagesByUser.get(userId) ?? [])
   }
 
-  private async dispatchExpo(
-    expo: PlatformDispatcher | undefined,
+  private async dispatch(
     tokens: ActiveToken[],
-    payload: PushPayload,
+    messagesFor: (userId: string) => PushMessage[],
+  ): Promise<void> {
+    if (tokens.length === 0) return
+    // D7 stopped sending through Expo: a token still stored in its format is dead, so it goes.
+    const expoTokens = tokens.filter((t) => isExpoPushToken(t.token)).map((t) => t.token)
+    const deliveries: PlatformDeliveries = { ios: [], android: [], web: [] }
+    const seen = new Set<string>()
+    for (const t of tokens) {
+      if (isExpoPushToken(t.token)) continue
+      const key = `${t.platform}|${t.token}`
+      if (seen.has(key)) continue
+      seen.add(key)
+      for (const message of messagesFor(t.userId)) {
+        if (t.platform !== "web") deliveries[t.platform].push({ token: t.token, message })
+        // Browsers require every push to show something, so clears go to phones only (D8).
+        else if (message.kind === "notification") deliveries.web.push({ token: t.token, message })
+      }
+    }
+    const dispatchers = this.getDispatchers()
+    const invalid = (
+      await Promise.all([
+        this.dispatchPlatform("ios", dispatchers.ios, deliveries.ios),
+        this.dispatchPlatform("android", dispatchers.android, deliveries.android),
+        this.dispatchPlatform("web", dispatchers.web, deliveries.web),
+      ])
+    ).flat()
+    const revoke = [...expoTokens, ...invalid]
+    if (revoke.length > 0) await this.pruneTokens(revoke)
+  }
+
+  private async dispatchPlatform<M extends PushMessage>(
+    platform: PushPlatform,
+    dispatcher: PlatformDispatcher<M> | undefined,
+    batch: PushDelivery<M>[],
   ): Promise<string[]> {
-    const expoTokens = [
-      ...new Set(tokens.filter((t) => isExpoPushToken(t.token)).map((t) => t.token)),
-    ]
-    if (expoTokens.length === 0) return []
-    if (!expo) {
+    if (batch.length === 0) return []
+    if (!dispatcher) {
       this.logger.warn(
-        { count: expoTokens.length },
-        "push: expo tokens present but no expo dispatcher; skipping",
+        { platform, count: batch.length },
+        "push: platform has tokens but no configured credentials; skipping",
       )
       return []
     }
     try {
-      const { invalidTokens } = await expo(expoTokens, payload)
-      return invalidTokens
+      return (await dispatcher(batch)).invalidTokens
     } catch (err) {
-      this.logger.error({ err }, "push: expo dispatch failed")
+      this.logger.error({ err, platform }, "push: platform dispatch failed")
       return []
     }
   }
 
-  private async dispatchNative(
-    dispatchers: PushDispatchers,
-    tokens: ActiveToken[],
-    payload: PushPayload,
-  ): Promise<string[]> {
-    const byPlatform = groupByPlatform(tokens.filter((t) => !isExpoPushToken(t.token)))
-    const invalid: string[] = []
-    await Promise.all(
-      NATIVE_PLATFORMS.map(async (platform) => {
-        const platformTokens = byPlatform[platform]
-        if (!platformTokens || platformTokens.length === 0) return
-        const dispatcher = dispatchers[platform]
-        if (!dispatcher) {
-          this.logger.warn(
-            { platform, count: platformTokens.length },
-            "push: platform has tokens but no configured credentials; skipping",
-          )
-          return
-        }
-        try {
-          const { invalidTokens } = await dispatcher(platformTokens, payload)
-          invalid.push(...invalidTokens)
-        } catch (err) {
-          this.logger.error({ err, platform }, "push: platform dispatch failed")
-        }
-      }),
-    )
-    return invalid
-  }
   private async loadActiveTokens(userIds: string[]): Promise<ActiveToken[]> {
     const rows = await this.db
       .select({
@@ -268,25 +343,9 @@ export class MultiPushSender implements PushSender {
       ...(this.config.webPush
         ? { web: makeWebPushDispatcher(this.config.webPush, this.logger) }
         : {}),
-      expo: makeExpoDispatcher(this.config.expo ?? {}, this.logger),
     }
     return this.dispatchers
   }
-}
-
-export function groupByPlatform(tokens: ActiveToken[]): Record<PushPlatform, string[]> {
-  const out: Record<PushPlatform, string[]> = { ios: [], android: [], web: [] }
-  const seen: Record<PushPlatform, Set<string>> = {
-    ios: new Set(),
-    android: new Set(),
-    web: new Set(),
-  }
-  for (const t of tokens) {
-    if (seen[t.platform].has(t.token)) continue
-    seen[t.platform].add(t.token)
-    out[t.platform].push(t.token)
-  }
-  return out
 }
 
 export { isSafePushEndpoint, resolveSafePushTarget } from "../services/push-token-policy.js"

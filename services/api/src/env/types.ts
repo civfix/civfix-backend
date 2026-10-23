@@ -104,8 +104,6 @@ export interface Env extends CommsEnv, RegistrationEnv {
   VAPID_PRIVATE_KEY?: string
   VAPID_SUBJECT?: string
 
-  EXPO_ACCESS_TOKEN?: string
-
   GLITCHTIP_DSN?: string
   GLITCHTIP_DATABASE_URL?: string
 

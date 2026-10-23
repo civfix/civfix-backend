@@ -80,6 +80,7 @@ import { makeTicketTokenSigner, type TicketTokenSigner } from "./services/host/t
 import { RedisCounterStore, type CounterStore } from "./abuse/counter-store.js"
 import { InMemoryBlocksRepository, InMemoryDmRepository } from "./services/dm-repository.memory.js"
 import { MultiPushSender, type PushSenderConfig } from "./adapters/push-sender.js"
+import { RedisPendingClears } from "./adapters/push-clears.js"
 import { HttpRoutingProvider } from "./adapters/routing-provider.js"
 import { RealAbuseChecks } from "./adapters/abuse-checks.js"
 import { PgBossJobs } from "./adapters/jobs.pgboss.js"
@@ -440,6 +441,11 @@ export function makeContainer(env: Env): Container {
           ...(serverLogger !== undefined ? { logger: serverLogger } : {}),
         }),
   )
+
+  const jobs: Jobs = env.USE_FAKE_JOBS
+    ? new FakeJobs()
+    : new PgBossJobs({ connectionString: env.DATABASE_URL, logger: adapterLogger })
+
   const pushSender = lazy<PushSender>(() =>
     env.USE_FAKE_PUSH
       ? new FakePushSender()
@@ -448,6 +454,7 @@ export function makeContainer(env: Env): Container {
           config: buildPushConfig(env),
           counters: lazyCounters,
           logger: adapterLogger,
+          clears: { jobs, pending: new RedisPendingClears(getRedis) },
         }),
   )
 
@@ -490,10 +497,6 @@ export function makeContainer(env: Env): Container {
         pubsub: sharedPubSub.get(),
         logger: adapterLogger,
       })
-
-  const jobs: Jobs = env.USE_FAKE_JOBS
-    ? new FakeJobs()
-    : new PgBossJobs({ connectionString: env.DATABASE_URL, logger: adapterLogger })
 
   const memoized: ReadonlyArray<Lazy<unknown>> = [
     dmRepo,
@@ -622,9 +625,6 @@ function buildPushConfig(env: Env): PushSenderConfig {
       privateKey: env.VAPID_PRIVATE_KEY,
       subject: env.VAPID_SUBJECT,
     }
-  }
-  if (env.EXPO_ACCESS_TOKEN) {
-    config.expo = { accessToken: env.EXPO_ACCESS_TOKEN }
   }
   return config
 }

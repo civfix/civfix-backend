@@ -190,7 +190,10 @@ describe("MultiPushSender.sendEach", () => {
   it("T6: 1200 recipients load their tokens in selects of 500, 500 and 200 user ids", async () => {
     const fake = fakePushDb([])
     const sender = new MultiPushSender({ db: fake.db, config: {}, dispatchers: {} })
-    const items = Array.from({ length: 1200 }, (_, i) => ({ userId: `user-${i}`, payload: P(N(i + 1), null) }))
+    const items = Array.from({ length: 1200 }, (_, i) => ({
+      userId: `user-${i}`,
+      payload: P(N(i + 1), null),
+    }))
 
     await sender.sendEach(items)
 

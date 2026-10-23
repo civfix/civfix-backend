@@ -241,10 +241,7 @@ describe("FCM dispatcher", () => {
     }
 
     fcm.respond = () => [{ success: true }, invalidArgument]
-    const mixed = await fcmDispatcher()([
-      visible("good", P(N1, null)),
-      visible("bad", P(N2, null)),
-    ])
+    const mixed = await fcmDispatcher()([visible("good", P(N1, null)), visible("bad", P(N2, null))])
     expect(mixed.invalidTokens).toEqual(["bad"])
 
     fcm.respond = () => [invalidArgument, invalidArgument]

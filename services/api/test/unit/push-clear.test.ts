@@ -32,7 +32,10 @@ class SingletonQueue implements Pick<Jobs, "enqueue"> {
 
   enqueue(name: string, data: unknown, opts?: EnqueueOptions): Promise<string> {
     const key = opts?.singletonKey
-    if (key !== undefined && this.pending.some((j) => j.name === name && j.opts?.singletonKey === key)) {
+    if (
+      key !== undefined &&
+      this.pending.some((j) => j.name === name && j.opts?.singletonKey === key)
+    ) {
       return Promise.resolve("")
     }
     this.seq += 1
@@ -61,7 +64,7 @@ const I1 = "ab".repeat(32)
 let redis: RedisClient
 
 beforeEach(async () => {
-  redis = new RedisMock() as unknown as RedisClient
+  redis = new RedisMock()
   await redis.flushall()
 })
 
@@ -156,11 +159,15 @@ describe("MultiPushSender.clear and the clear flush job", () => {
 
   it("T20: web tokens never get a clear, and a web-only user gets nothing", async () => {
     const web = '{"endpoint":"https://push.example.test/1","keys":{"p256dh":"x","auth":"y"}}'
-    const h = harness([...nativeRows, { userId: "u1", platform: "web", token: web }, {
-      userId: "u2",
-      platform: "web",
-      token: web.replace("/1", "/2"),
-    }])
+    const h = harness([
+      ...nativeRows,
+      { userId: "u1", platform: "web", token: web },
+      {
+        userId: "u2",
+        platform: "web",
+        token: web.replace("/1", "/2"),
+      },
+    ])
 
     await h.sender.clear("u1", { ids: [N1] })
     await h.sender.clear("u2", { ids: [N2] })

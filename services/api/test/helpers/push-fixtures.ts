@@ -27,3 +27,11 @@ export function MAP(notificationId: string, category: string | null): Record<str
     link: "/reports/r1",
   }
 }
+
+/** One visible push of `payload` to each token, as a dispatcher receives it. */
+export function visibleTo(
+  tokens: readonly string[],
+  payload: PushPayload,
+): { token: string; message: { kind: "notification"; payload: PushPayload } }[] {
+  return tokens.map((token) => ({ token, message: { kind: "notification", payload } }))
+}
