@@ -30,6 +30,7 @@ import {
   resolveUserAvatarUrl,
   userAvatarColumns,
   userAvatarSource,
+  resolveAvatarColumns,
   type UserAvatarColumns,
 } from "./user-avatar.js"
 import { PRESIGN_CONCURRENCY, type PresignMedia } from "./media-presign.js"
@@ -136,7 +137,7 @@ interface AuthorRow extends UserAvatarColumns {
   deleted_at: Date | null
 }
 
-interface EventRow {
+interface EventRow extends UserAvatarColumns<"org_"> {
   id: string
   title: string
   event_kind: LinkedEventRef["eventKind"]
@@ -151,7 +152,6 @@ interface EventRow {
   org_name: string
   org_handle: string | null
   org_bio: string | null
-  org_avatar_url: string | null
   org_donation_url: string | null
 }
 
@@ -641,13 +641,15 @@ export function makeDrizzlePostRepository(sql: Sql, deps: PostRepoDeps): PostRep
         u.display_name AS org_name,
         u.handle AS org_handle,
         u.bio AS org_bio,
-        u.avatar_url AS org_avatar_url,
+        ${userAvatarColumns(sql, "u", "am", "org_")},
         u.donation_url AS org_donation_url
       FROM cleanups c
       JOIN users u ON u.id = c.organizer_user_id
+      LEFT JOIN media_assets am ON am.id = u.avatar_media_id
       WHERE c.id = ANY(${ids}::uuid[])
         AND c.visibility = 'public'
     `
+    await resolveAvatarColumns(deps.presignAvatar, rows, ["org_"])
     for (const r of rows) {
       const organizer: PersonDTO = {
         id: r.org_id,

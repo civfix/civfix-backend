@@ -39,6 +39,7 @@ import {
 } from "./export-service.js"
 import { registerEventExportBuilders } from "./host-export-builders.js"
 import { requireCapability } from "./authz.js"
+import { avatarPresigner } from "../user-avatar.js"
 
 const BROADCAST_JOB_RETRY_LIMIT = 3
 
@@ -197,7 +198,7 @@ export function makeCommsRuntime(container: Container, logger?: CommsLogger): Co
     ...optionalLogger,
   })
 
-  const analyticsRepo = makeDrizzleAnalyticsRepository(sql)
+  const analyticsRepo = makeDrizzleAnalyticsRepository(sql, avatarPresigner(container.storage))
   const analyticsCache = makeHostAnalyticsCache({
     cache: container.getCache(),
     ttlSeconds: env.HOST_ANALYTICS_CACHE_TTL_SEC,

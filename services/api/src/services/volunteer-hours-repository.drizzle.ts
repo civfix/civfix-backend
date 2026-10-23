@@ -54,6 +54,12 @@ import type {
   VoidedEntry,
 } from "./volunteer-hours-repository.js"
 import { MS_PER_SECOND } from "../lib/time.js"
+import {
+  userAvatarColumns,
+  resolveAvatarColumns,
+  type AvatarPresigner,
+  type UserAvatarColumns,
+} from "./user-avatar.js"
 
 const MORE_PAGES = "more"
 
@@ -321,7 +327,10 @@ async function refuseUnvoidable(tx: TransactionSql, args: OperatorVoidArgs): Pro
   throw AppError.conflict("Report credits are retired and can't be voided.")
 }
 
-export function makeDrizzleVolunteerHoursRepository(sql: Sql): VolunteerHoursRepository {
+export function makeDrizzleVolunteerHoursRepository(
+  sql: Sql,
+  presignAvatar?: AvatarPresigner,
+): VolunteerHoursRepository {
   return {
     async logEventHours(args: LogEventHoursArgs): Promise<LogEventHoursResult> {
       if (args.entries.length === 0) return { credited: 0, changed: [], anomalies: [] }
@@ -415,24 +424,24 @@ export function makeDrizzleVolunteerHoursRepository(sql: Sql): VolunteerHoursRep
           SELECT name FROM jurisdictions WHERE geoid = ${geoid} LIMIT 1
         `,
         sql<
-          {
+          (UserAvatarColumns & {
             user_id: string
             name: string
             handle: string | null
-            avatar_url: string | null
             hours: number
             blocked_pair: boolean
-          }[]
+          })[]
         >`
           SELECT
             ujh.user_id,
             u.display_name AS name,
             u.handle,
-            u.avatar_url,
+            ${userAvatarColumns(sql, "u", "am")},
             ${blockedPair} AS blocked_pair,
             ujh.total_hours::float8 AS hours
           FROM user_jurisdiction_hours ujh
           JOIN users u ON u.id = ujh.user_id
+          LEFT JOIN media_assets am ON am.id = u.avatar_media_id
           WHERE ujh.jurisdiction_geoid = ${geoid}
             AND ujh.total_hours > 0
             AND u.deleted_at IS NULL
@@ -484,6 +493,7 @@ export function makeDrizzleVolunteerHoursRepository(sql: Sql): VolunteerHoursRep
       const participantCount = countRows === null ? null : (countRows[0]?.count ?? 0)
 
       const { items: page, nextCursor: more } = pageWith(rows, limit, () => MORE_PAGES)
+      await resolveAvatarColumns(presignAvatar, page)
       const entries: LeaderboardEntryDTO[] = page.map((r, i) => {
         const rankAndHours = { rank: offset + i + 1, userId: r.user_id, hours: r.hours }
         if (r.blocked_pair) {

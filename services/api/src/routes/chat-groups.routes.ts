@@ -36,6 +36,7 @@ import { nudgeThreads } from "../services/threads-nudge.js"
 import { makeDrizzleChatRepository } from "../services/chat-repository.drizzle.js"
 import { makeConversationMutesRepository } from "../services/conversation-mutes-repository.drizzle.js"
 import { wireChatPowers } from "./chat-powers-wiring.js"
+import { avatarPresigner } from "../services/user-avatar.js"
 
 export const CreateChatGroupBodySchema = trimTextFields(
   CreateChatGroupRequestSchema,
@@ -70,6 +71,7 @@ export async function registerChatGroupRoutes(
   container: Container,
 ): Promise<void> {
   const csrfProtect = container.csrf.protect
+  const presignAvatar = avatarPresigner(container.storage)
 
   const overrides = app.chatOverrides
 
@@ -79,6 +81,7 @@ export async function registerChatGroupRoutes(
     (groupsRepo ??= makeChatGroupRepository(
       container.getDb().sql,
       makePrivateMediaPresigner(container.storage),
+      presignAvatar,
     ))
 
   let chatRepo: ChatRepository | undefined
@@ -87,6 +90,7 @@ export async function registerChatGroupRoutes(
     (chatRepo ??= makeDrizzleChatRepository(
       container.getDb().sql,
       makePrivateMediaPresigner(container.storage),
+      presignAvatar,
     ))
 
   // With chatOverrides present but no mutes fake, getDb() must not be touched (offline harness), so

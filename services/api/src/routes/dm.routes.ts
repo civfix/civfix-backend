@@ -33,6 +33,7 @@ import {
 } from "./chat-route-helpers.js"
 import { neutralizeChatViewerFields } from "../services/chat-viewer-fields.js"
 import { chatMentionDeps, type ChatMentionSeam } from "./chat-gateway-wiring.js"
+import { avatarPresigner, resolveUserAvatarUrl } from "../services/user-avatar.js"
 
 const DmIdParamsSchema = z.object({ id: IdSchema }).strict()
 
@@ -61,6 +62,7 @@ export async function registerDmRoutes(app: FastifyInstance, container: Containe
     app.chatOverrides?.chatMentions ??
     (container.env.USE_FAKE_CHAT ? undefined : chatMentionDeps(app, container))
 
+  const presignAvatar = avatarPresigner(container.storage)
   const loadUser: DmUserLookup = async (userId) => {
     const store = app.authServices?.users
     if (!store) return null
@@ -71,7 +73,7 @@ export async function registerDmRoutes(app: FastifyInstance, container: Containe
       displayName: u.displayName,
       handle: u.handle,
       bio: null,
-      avatarUrl: u.avatarUrl,
+      avatarUrl: await resolveUserAvatarUrl(presignAvatar, u),
       allowDirectMessages: u.allowDirectMessages,
     }
   }

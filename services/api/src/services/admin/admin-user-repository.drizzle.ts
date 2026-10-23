@@ -30,6 +30,12 @@ import type {
   UserStatus,
 } from "@civfix/contract"
 import { likeContains } from "../../db/like.js"
+import {
+  userAvatarColumns,
+  resolveAvatarColumns,
+  type AvatarPresigner,
+  type UserAvatarColumns,
+} from "../user-avatar.js"
 
 const ADMIN_USER_ORGANIZATIONS_LIMIT = 25
 
@@ -83,7 +89,7 @@ async function resolveCityMatchUserIds(sql: Queryable, q: string): Promise<strin
   return rows.map((r) => r.id)
 }
 
-interface UserRowSelect {
+interface UserRowSelect extends UserAvatarColumns {
   id: string
   name: string | null
   handle: string | null
@@ -103,7 +109,6 @@ interface UserRowSelect {
   flagged: boolean
   flag_reason: string | null
   report_verified: boolean
-  avatar_url: string | null
   deleted_at: Date | null
 }
 
@@ -157,7 +162,7 @@ function userSelect(
         ORDER BY r.created_at DESC LIMIT 1
       ) AS city,
       u.role,
-      u.avatar_url,
+      ${userAvatarColumns(sql, "u", "am")},
       u.created_at,
       ${keysetInstant(sql, sql`u.created_at`)} AS cursor_at,
       u.deleted_at,
@@ -174,13 +179,17 @@ function userSelect(
       COALESCE(um.report_verified, false) AS report_verified
     FROM users u
     LEFT JOIN user_moderation um ON um.user_id = u.id
+    LEFT JOIN media_assets am ON am.id = u.avatar_media_id
     WHERE TRUE
     ${extraWhere}
     ${orderLimit}
   `
 }
 
-export function makeDrizzleAdminUserRepository(sql: Sql): AdminUserRepository {
+export function makeDrizzleAdminUserRepository(
+  sql: Sql,
+  presignAvatar?: AvatarPresigner,
+): AdminUserRepository {
   return {
     async listUsers(
       args: ListUsersArgs,
@@ -214,6 +223,7 @@ export function makeDrizzleAdminUserRepository(sql: Sql): AdminUserRepository {
         atText: r.cursor_at ?? EPOCH.toISOString(),
         id: r.id,
       }))
+      await resolveAvatarColumns(presignAvatar, items)
       return { records: items.map(toRecord), nextCursor }
     },
 
@@ -271,6 +281,7 @@ export function makeDrizzleAdminUserRepository(sql: Sql): AdminUserRepository {
         sql`LIMIT 1`,
         true,
       )) as unknown as UserRowSelect[]
+      await resolveAvatarColumns(presignAvatar, rows)
       return rows[0] ? toRecord(rows[0]) : null
     },
 

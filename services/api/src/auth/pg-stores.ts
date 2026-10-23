@@ -314,9 +314,6 @@ export class PgUserStore implements UserStore {
             ),
           )
           set.avatarMediaId = media.id
-          if (input.presignAvatar && media.servedKey !== null) {
-            set.avatarUrl = await input.presignAvatar(media.servedKey)
-          }
         }
         return tx
           .update(users)

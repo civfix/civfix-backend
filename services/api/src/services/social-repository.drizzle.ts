@@ -30,7 +30,13 @@ import {
 } from "../db/cursor-helpers.js"
 import { likeContains } from "../db/like.js"
 import { cleanupStatusExpr, goingScalar } from "./cleanup-sql.js"
-import { userAvatarColumns, userAvatarSource, type UserAvatarColumns } from "./user-avatar.js"
+import {
+  userAvatarColumns,
+  userAvatarSource,
+  resolveAvatarColumns,
+  type AvatarPresigner,
+  type UserAvatarColumns,
+} from "./user-avatar.js"
 import { CIVFIX_OFFICIAL_USER_ID } from "../auth/official-account.js"
 
 const SUGGEST_NEARBY_METERS = 25_000
@@ -83,7 +89,7 @@ function pagePeople(rows: PersonRowSelectWithFollow[], limit: number): PeoplePag
   }
 }
 
-interface CleanupRowSelect {
+interface CleanupRowSelect extends UserAvatarColumns<"org_"> {
   id: string
   organizer_user_id: string
   type: CleanupType
@@ -109,7 +115,6 @@ interface CleanupRowSelect {
   org_display_name: string
   org_handle: string | null
   org_bio: string | null
-  org_avatar_url: string | null
   org_donation_url: string | null
 }
 
@@ -206,11 +211,12 @@ function profileEventRows(
       u.display_name AS org_display_name,
       u.handle AS org_handle,
       u.bio AS org_bio,
-      u.avatar_url AS org_avatar_url,
+      ${userAvatarColumns(sql, "u", "am", "org_")},
       u.donation_url AS org_donation_url
     FROM cleanups c
     JOIN ids ON ids.cleanup_id = c.id
     JOIN users u ON u.id = c.organizer_user_id
+    LEFT JOIN media_assets am ON am.id = u.avatar_media_id
     WHERE c.status <> 'cancelled'
       AND c.visibility = 'public'
       ${args.where}
@@ -430,7 +436,15 @@ export async function explainSuggestFollows(
   return rows.map((r) => Object.values(r)[0] ?? "").join("\n")
 }
 
-export function makeDrizzleSocialRepository(sql: Sql): SocialRepository {
+export function makeDrizzleSocialRepository(
+  sql: Sql,
+  presignAvatar?: AvatarPresigner,
+): SocialRepository {
+  async function toCleanupRecords(rows: readonly CleanupRowSelect[]): Promise<CleanupRecord[]> {
+    await resolveAvatarColumns(presignAvatar, rows, ["org_"])
+    return rows.map(toCleanupRecord)
+  }
+
   async function findPerson(keyFilter: SqlFragment): Promise<PersonView | null> {
     const rows = await sql<PersonRowSelect[]>`
       SELECT
@@ -624,7 +638,7 @@ export function makeDrizzleSocialRepository(sql: Sql): SocialRepository {
       const { items, nextCursor } = pageWith(rows, args.limit, (last) =>
         encodeTimeCursor({ at: last.scheduled_at, id: last.id }),
       )
-      return { items: items.map(toCleanupRecord), nextCursor }
+      return { items: await toCleanupRecords(items), nextCursor }
     },
 
     async upcomingEventsFor(userId: string, args: UpcomingEventsArgs): Promise<CleanupRecord[]> {
@@ -636,7 +650,7 @@ export function makeDrizzleSocialRepository(sql: Sql): SocialRepository {
         order: sql`ORDER BY c.scheduled_at ASC, c.id ASC`,
         limit: args.limit,
       })
-      return rows.map(toCleanupRecord)
+      return toCleanupRecords(rows)
     },
 
     async statsFor(userId: string): Promise<ProfileStats> {

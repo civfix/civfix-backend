@@ -47,7 +47,14 @@ function fakeSql(handlers: SqlHandler[]): Sql {
   return makeFakeSql(handlers).sql as unknown as Sql
 }
 
-const identity = { display_name: "Name", handle: "name", bio: null, avatar_url: null }
+const noAvatarMedia = { avatar_media_status: null, avatar_served_key: null, avatar_thumb_key: null }
+const identity = {
+  display_name: "Name",
+  handle: "name",
+  bio: null,
+  avatar_url: null,
+  ...noAvatarMedia,
+}
 const person = { displayName: "Name", handle: "name", bio: null, avatarUrl: null }
 
 const messageRow = (senderId: string, deletedAt: Date | null) => ({
@@ -65,6 +72,9 @@ const messageRow = (senderId: string, deletedAt: Date | null) => ({
   sender_handle: "name",
   sender_bio: null,
   sender_avatar_url: null,
+  sender_avatar_media_status: null,
+  sender_avatar_served_key: null,
+  sender_avatar_thumb_key: null,
   sender_deleted_at: deletedAt,
 })
 
@@ -79,7 +89,7 @@ async function chatSender(id: string, deletedAt: Date | null = null) {
     system_body: null,
   }
   const repo = makeDrizzleChatRepository(
-    fakeSql([{ match: /FROM chat_messages cm LEFT JOIN users u/, rows: [row] }]),
+    fakeSql([{ match: /FROM chat_messages cm\s+LEFT JOIN users u/, rows: [row] }]),
   )
   return (await repo.findMessage(ROOM, MESSAGE, VIEWER))?.from
 }
@@ -87,7 +97,7 @@ async function chatSender(id: string, deletedAt: Date | null = null) {
 async function dmSender(id: string, deletedAt: Date | null = null) {
   const row = { ...messageRow(id, deletedAt), thread_id: ROOM }
   const repo = makeDrizzleDmRepository(
-    fakeSql([{ match: /FROM dm_messages dm JOIN users u/, rows: [row] }]),
+    fakeSql([{ match: /FROM dm_messages dm\s+JOIN users u/, rows: [row] }]),
   )
   return (await repo.findMessage(ROOM, MESSAGE, VIEWER))?.from
 }

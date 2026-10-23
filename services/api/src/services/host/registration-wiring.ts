@@ -31,6 +31,7 @@ import { makeTicketTypeService, type TicketTypeService } from "./ticket-type-ser
 import { makeWaitlistService, type WaitlistService } from "./waitlist-service.js"
 import type { TicketTokenSigner } from "./ticket-token.js"
 import type { HostRegistrationRepository } from "./registration-repository.js"
+import { avatarPresigner } from "../user-avatar.js"
 
 export interface HostServiceLogger {
   warn(obj: unknown, msg?: string): void
@@ -124,7 +125,9 @@ function resolveRegistrationDeps(
   logger: HostServiceLogger | undefined,
 ): ResolvedRegistrationDeps {
   const sql = overrides?.repo === undefined ? container.getDb().sql : undefined
-  const repo = overrides?.repo ?? makeDrizzleHostRegistrationRepository(sql as Sql)
+  const repo =
+    overrides?.repo ??
+    makeDrizzleHostRegistrationRepository(sql as Sql, avatarPresigner(container.storage))
   const tokens = overrides?.tokens ?? container.getTicketTokenSigner()
   const audit = overrides?.audit ?? (sql === undefined ? undefined : auditWriter(sql, logger))
   const team = sql === undefined ? undefined : makeDrizzleHostTeamRepository(sql)

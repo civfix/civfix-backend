@@ -31,6 +31,7 @@ import { makePrivateMediaPresigner } from "../../services/media-presign.js"
 import { makeContainerReportChatSendDeps } from "../../services/report-chat-send-wiring.js"
 import { chatMentionDeps } from "../chat-gateway-wiring.js"
 import type { ReportChatSendDeps } from "../../services/report-chat-send.js"
+import { avatarPresigner } from "../../services/user-avatar.js"
 
 export interface AdminReportChatRouteOverrides {
   repo: AdminReportChatRepository
@@ -78,7 +79,11 @@ export async function registerAdminReportChatRoutes(
   function makeContainerService(): AdminReportChatService {
     const sql = container.getDb().sql
     const getChatRepo = (): ChatRepository =>
-      (chatRepo ??= makeDrizzleChatRepository(sql, makePrivateMediaPresigner(container.storage)))
+      (chatRepo ??= makeDrizzleChatRepository(
+        sql,
+        makePrivateMediaPresigner(container.storage),
+        avatarPresigner(container.storage),
+      ))
     return makeAdminReportChatService({
       repo: makeDrizzleAdminReportChatRepository(sql),
       historySource: historySourceFrom(getChatRepo),

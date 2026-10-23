@@ -314,6 +314,35 @@ describe.skipIf(!pg)("user avatar URLs on chat, event, org and admin routes (int
     })
   })
 
+  it("GET /people/:id/events and a post sharing P's event show organizer P with the thumbnail URL", async () => {
+    const u = await seedAvatarUsers(h.sql)
+    const cleanupId = await hostedEvent(u.P, {
+      scheduledAt: new Date(Date.now() - 3 * DAY_MS),
+      endsAt: new Date(Date.now() - 2 * DAY_MS),
+    })
+    const [post] = await h.sql<{ id: string }[]>`
+      INSERT INTO posts (author_id, kind, body, event_id)
+      VALUES (${u.N.id}, 'post', 'join us', ${cleanupId})
+      RETURNING id
+    `
+    const session = await signIn(u.N)
+    const events = await getJson<{ items: Array<{ id: string; organizer: WithAvatar }> }>(
+      session,
+      `/v1/people/${u.P.id}/events`,
+    )
+    const shared = await getJson<{ event: { organizer: WithAvatar } | null }>(
+      session,
+      `/v1/posts/${post!.id}`,
+    )
+    expect({
+      events: events.items.find((c) => c.id === cleanupId)?.organizer.avatarUrl,
+      post: shared.event?.organizer.avatarUrl,
+    }).toEqual({
+      events: "memory://thumbs/uploads/2026/10/p1.jpg",
+      post: "memory://thumbs/uploads/2026/10/p1.jpg",
+    })
+  })
+
   it("T7: GET /cleanups/:id/attendees shows P with the thumbnail and S with the served copy", async () => {
     const u = await seedAvatarUsers(h.sql)
     const cleanupId = await hostedEvent(u.N)

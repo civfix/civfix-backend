@@ -4,7 +4,9 @@
 
 import type { Storage } from "@civfix/seams"
 import type { Queryable, SqlFragment } from "../db/client.js"
+import { mapWithLimit } from "../lib/concurrency.js"
 import { MEDIA_GET_URL_TTL_SEC } from "./media-intake-service.js"
+import { PRESIGN_CONCURRENCY } from "./media-presign.js"
 import type { MediaAlias } from "./media-served-key.js"
 
 export interface AvatarMedia {
@@ -20,12 +22,19 @@ export interface UserAvatarSource {
 
 export type AvatarPresigner = (key: string) => Promise<string>
 
-export interface UserAvatarColumns {
+interface AvatarColumnFields {
   avatar_url: string | null
   avatar_media_status: string | null
   avatar_served_key: string | null
   avatar_thumb_key: string | null
 }
+
+// A row that carries several users (an invite's invitee and inviter) names each one's columns with a prefix.
+export type UserAvatarColumns<P extends string = ""> = {
+  [K in keyof AvatarColumnFields as `${P}${K}`]: AvatarColumnFields[K]
+}
+
+type AvatarMediaAlias = MediaAlias | "uam" | "iam" | "bam"
 
 export function avatarPresigner(storage: Pick<Storage, "presignGet">): AvatarPresigner {
   return (key) => storage.presignGet(key, MEDIA_GET_URL_TTL_SEC)
@@ -46,26 +55,52 @@ export async function resolveUserAvatarUrl(
 export function userAvatarColumns(
   sql: Queryable,
   userAlias: string,
-  mediaAlias: MediaAlias,
+  mediaAlias: AvatarMediaAlias,
+  prefix = "",
 ): SqlFragment {
   return sql`
-    ${sql(userAlias)}.avatar_url,
-    ${sql(mediaAlias)}.status AS avatar_media_status,
-    ${sql(mediaAlias)}.served_key AS avatar_served_key,
-    ${sql(mediaAlias)}.thumb_key AS avatar_thumb_key
+    ${sql(userAlias)}.avatar_url AS ${sql(`${prefix}avatar_url`)},
+    ${sql(mediaAlias)}.status AS ${sql(`${prefix}avatar_media_status`)},
+    ${sql(mediaAlias)}.served_key AS ${sql(`${prefix}avatar_served_key`)},
+    ${sql(mediaAlias)}.thumb_key AS ${sql(`${prefix}avatar_thumb_key`)}
   `
 }
 
-export function userAvatarSource(row: UserAvatarColumns): UserAvatarSource {
+export function userAvatarSource<P extends string = "">(
+  row: UserAvatarColumns<P>,
+  prefix: P = "" as P,
+): UserAvatarSource {
+  const col = row as unknown as Record<string, string | null>
+  const status = col[`${prefix}avatar_media_status`] ?? null
   return {
-    avatarUrl: row.avatar_url,
+    avatarUrl: col[`${prefix}avatar_url`] ?? null,
     avatarMedia:
-      row.avatar_media_status === null
+      status === null
         ? null
         : {
-            status: row.avatar_media_status,
-            servedKey: row.avatar_served_key,
-            thumbKey: row.avatar_thumb_key,
+            status,
+            servedKey: col[`${prefix}avatar_served_key`] ?? null,
+            thumbKey: col[`${prefix}avatar_thumb_key`] ?? null,
           },
   }
+}
+
+// Writes the resolved URL over each row's stored `${prefix}avatar_url`, in place, so a row mapper written
+// against the column shows the resolved avatar as it is. A repository built without a presigner keeps the
+// stored URL.
+export async function resolveAvatarColumns<P extends string = "">(
+  presign: AvatarPresigner | undefined,
+  rows: readonly UserAvatarColumns<P>[],
+  prefixes: readonly P[] = ["" as P],
+): Promise<void> {
+  if (presign === undefined) return
+  await mapWithLimit(rows, PRESIGN_CONCURRENCY, async (row) => {
+    const columns = row as unknown as Record<string, string | null>
+    for (const prefix of prefixes) {
+      columns[`${prefix}avatar_url`] = await resolveUserAvatarUrl(
+        presign,
+        userAvatarSource(row, prefix),
+      )
+    }
+  })
 }
