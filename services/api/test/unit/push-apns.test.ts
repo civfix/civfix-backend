@@ -133,6 +133,8 @@ async function startServer(): Promise<TestServer> {
     open++
     state.maxOpen = Math.max(state.maxOpen, open)
     stream.on("close", () => open--)
+    // Resets in the failure cases surface here too; the client's side is what the tests assert.
+    stream.on("error", () => {})
     let body = ""
     stream.setEncoding("utf8")
     stream.on("data", (chunk: string) => (body += chunk))
@@ -387,14 +389,20 @@ describe("makeApnsDispatcher: the session", () => {
   it("a stream refused by a GOAWAY is sent again on a new session", async () => {
     const { logger, logged } = recordingLogger()
     const dispatch = dispatcherFor(logger)
+    const D2 = deviceToken(2)
+    let lastProcessed: number | undefined
     server.handler = (req) => {
-      if (server.sessions.length === 1) req.session.goaway(http2.constants.NGHTTP2_NO_ERROR, 0)
-      else answer(req, 200)
+      if (req.session !== server.sessions[0]) return answer(req, 200)
+      if (lastProcessed !== undefined) return
+      lastProcessed = req.stream.id
+      req.session.goaway(http2.constants.NGHTTP2_NO_ERROR, lastProcessed)
+      answer(req, 200)
     }
 
-    await expect(dispatch([D1], P)).resolves.toEqual({ invalidTokens: [] })
+    await expect(dispatch([D1, D2], P)).resolves.toEqual({ invalidTokens: [] })
     expect(server.sessions).toHaveLength(2)
-    expect(server.requests).toHaveLength(2)
+    const resent = server.requests.filter((r) => r.session === server.sessions[1])
+    expect(resent).toHaveLength(1)
     expect(logged).toEqual([])
   })
 
@@ -496,6 +504,7 @@ describe("makeApnsDispatcher: failures", () => {
   })
 
   it("a request with no answer is abandoned after its deadline and the next send reconnects", async () => {
+    vi.useRealTimers()
     vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"] })
     at(T0)
     const { logger, warns } = recordingLogger()
