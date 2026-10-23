@@ -33,6 +33,7 @@ import {
 } from "../../services/admin/admin-user-service.js"
 import type { AdminUserRepository } from "../../services/admin/admin-user-repository.js"
 import { makeDrizzleAdminUserRepository } from "../../services/admin/admin-user-repository.drizzle.js"
+import { avatarPresigner } from "../../services/user-avatar.js"
 
 export interface AdminUserRouteOverrides {
   repo: AdminUserRepository
@@ -62,7 +63,10 @@ export async function registerAdminUsersRoutes(
         ...spreadNow(overrides),
       }),
     () => {
-      const repo: AdminUserRepository = makeDrizzleAdminUserRepository(container.getDb().sql)
+      const repo: AdminUserRepository = makeDrizzleAdminUserRepository(
+        container.getDb().sql,
+        avatarPresigner(container.storage),
+      )
       const sessionSvc = app.authServices.sessions
       const sessions: SessionControl = {
         applyStatus: (userId, status) => sessionSvc.applyAccountStatus(userId, status),

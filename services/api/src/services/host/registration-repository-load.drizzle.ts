@@ -1,5 +1,6 @@
 import type { Queryable } from "../../db/client.js"
 import { cleanupStatusExpr } from "../cleanup-sql.js"
+import { resolveAvatarColumns, type AvatarPresigner } from "../user-avatar.js"
 import {
   pageColumns,
   pageJoins,
@@ -130,11 +131,15 @@ async function loadSeats(
 export async function hydrate(
   tag: Queryable,
   rows: readonly RegistrationRowSelect[],
+  presignAvatar: AvatarPresigner | undefined,
 ): Promise<RegistrationRecord[]> {
-  const seats = await loadSeats(
-    tag,
-    rows.map((r) => r.id),
-  )
+  const [seats] = await Promise.all([
+    loadSeats(
+      tag,
+      rows.map((r) => r.id),
+    ),
+    resolveAvatarColumns(presignAvatar, rows, ["person_"]),
+  ])
   return rows.map((r) => toRegistrationRecord(r, seats.get(r.id) ?? []))
 }
 
@@ -142,6 +147,7 @@ export async function loadRegistrationById(
   tag: Queryable,
   cleanupId: string,
   registrationId: string,
+  presignAvatar: AvatarPresigner | undefined,
 ): Promise<RegistrationRecord | null> {
   const rows = await tag<RegistrationRowSelect[]>`
     SELECT ${registrationColumns(tag)}
@@ -150,7 +156,7 @@ export async function loadRegistrationById(
      WHERE r.id = ${registrationId} AND r.cleanup_id = ${cleanupId}
      LIMIT 1
   `
-  const hydrated = await hydrate(tag, rows)
+  const hydrated = await hydrate(tag, rows, presignAvatar)
   return hydrated[0] ?? null
 }
 
@@ -200,6 +206,7 @@ export async function loadWaitlistEntry(
   tag: Queryable,
   cleanupId: string,
   waitlistId: string,
+  presignAvatar: AvatarPresigner | undefined,
 ): Promise<WaitlistRecord | null> {
   const rows = await tag<WaitlistRowSelect[]>`
     SELECT ${waitlistColumns(tag)}
@@ -208,6 +215,7 @@ export async function loadWaitlistEntry(
      WHERE w.id = ${waitlistId} AND w.cleanup_id = ${cleanupId}
      LIMIT 1
   `
+  await resolveAvatarColumns(presignAvatar, rows, ["person_"])
   const row = rows[0]
   return row === undefined ? null : toWaitlistRecord(row)
 }

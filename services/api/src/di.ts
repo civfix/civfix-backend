@@ -383,7 +383,9 @@ export function makeContainer(env: Env): Container {
 
   const seams = makeStatelessSeams(env, adapterLogger, getDb)
 
-  const volunteerHoursRepo = lazy(() => makeDrizzleVolunteerHoursRepository(getDb().sql))
+  const volunteerHoursRepo = lazy(() =>
+    makeDrizzleVolunteerHoursRepository(getDb().sql, presignAvatar),
+  )
   const certificateRepo = lazy(() => makeDrizzleCertificateRepository(getDb().sql))
   const blocksRepo = lazy<BlocksRepository>(() =>
     hasDatabase
@@ -391,7 +393,9 @@ export function makeContainer(env: Env): Container {
       : new InMemoryBlocksRepository(),
   )
   const dmRepo = lazy<DmRepository>(() => {
-    if (hasDatabase) return makeDrizzleDmRepository(getDb().sql, presignPrivateMedia)
+    if (hasDatabase) {
+      return makeDrizzleDmRepository(getDb().sql, presignPrivateMedia, presignAvatar)
+    }
     const blocks = blocksRepo.get()
     return new InMemoryDmRepository((a, b) => blocks.isBlockedEitherWay(a, b))
   })
@@ -489,7 +493,7 @@ export function makeContainer(env: Env): Container {
   const chatService: ChatService = env.USE_FAKE_CHAT
     ? new FakeChatService()
     : new WsChatService({
-        repo: makeDrizzleChatRepository(getDb().sql, presignPrivateMedia),
+        repo: makeDrizzleChatRepository(getDb().sql, presignPrivateMedia, presignAvatar),
         pubsub: sharedPubSub.get(),
         logger: adapterLogger,
       })

@@ -24,10 +24,20 @@ import type {
 } from "./organization-repository.js"
 import type { InviterStanding } from "./organization-rules.js"
 import { inviterRevocationReason, ORG_INVITE_CAP_MESSAGE } from "./organization-rules.js"
+import {
+  userAvatarColumns,
+  resolveAvatarColumns,
+  type AvatarPresigner,
+  type UserAvatarColumns,
+} from "../user-avatar.js"
 
 type InviteLookup = { tokenHash: string } | { inviteId: string }
 
-interface InviteRowSelect {
+type InvitePrefix = "user_" | "invited_by_"
+
+const INVITE_PEOPLE: readonly InvitePrefix[] = ["user_", "invited_by_"]
+
+interface InviteRowSelect extends UserAvatarColumns<InvitePrefix> {
   id: string
   organization_id: string
   email: string | null
@@ -39,15 +49,13 @@ interface InviteRowSelect {
   user_name: string | null
   user_handle: string | null
   user_bio: string | null
-  user_avatar_url: string | null
   invited_by_id: string | null
   invited_by_name: string | null
   invited_by_handle: string | null
   invited_by_bio: string | null
-  invited_by_avatar_url: string | null
 }
 
-interface PendingInviteForUserRowSelect {
+interface PendingInviteForUserRowSelect extends UserAvatarColumns<"invited_by_"> {
   id: string
   role: OrganizationInviteRole
   created_at: Date
@@ -56,7 +64,6 @@ interface PendingInviteForUserRowSelect {
   invited_by_name: string | null
   invited_by_handle: string | null
   invited_by_bio: string | null
-  invited_by_avatar_url: string | null
   organization_id: string
   organization_slug: string
   organization_name: string
@@ -88,13 +95,30 @@ function inviteColumns(sql: Queryable) {
     au.display_name AS user_name,
     au.handle AS user_handle,
     au.bio AS user_bio,
-    au.avatar_url AS user_avatar_url,
+    ${userAvatarColumns(sql, "au", "uam", "user_")},
     iu.id AS invited_by_id,
     iu.display_name AS invited_by_name,
     iu.handle AS invited_by_handle,
     iu.bio AS invited_by_bio,
-    iu.avatar_url AS invited_by_avatar_url
+    ${userAvatarColumns(sql, "iu", "iam", "invited_by_")}
   `
+}
+
+function invitePeopleJoins(sql: Queryable) {
+  return sql`
+    LEFT JOIN users iu ON iu.id = i.invited_by
+    LEFT JOIN media_assets iam ON iam.id = iu.avatar_media_id
+    LEFT JOIN users au ON au.id = i.user_id
+    LEFT JOIN media_assets uam ON uam.id = au.avatar_media_id
+  `
+}
+
+async function toInviteRecords(
+  presignAvatar: AvatarPresigner | undefined,
+  rows: readonly InviteRowSelect[],
+): Promise<OrganizationInviteRecord[]> {
+  await resolveAvatarColumns(presignAvatar, rows, INVITE_PEOPLE)
+  return rows.map(toInviteRecord)
 }
 
 function inviterViewOf(row: InviteRowSelect | PendingInviteForUserRowSelect, fallbackName: string) {
@@ -158,20 +182,24 @@ function toPendingInviteForUser(
 async function readInvite(
   tag: Queryable,
   inviteId: string,
+  presignAvatar: AvatarPresigner | undefined,
 ): Promise<OrganizationInviteRecord | null> {
   const rows = await tag<InviteRowSelect[]>`
     SELECT ${inviteColumns(tag)}
     FROM organization_invites i
-    LEFT JOIN users iu ON iu.id = i.invited_by
-    LEFT JOIN users au ON au.id = i.user_id
+    ${invitePeopleJoins(tag)}
     WHERE i.id = ${inviteId}
     LIMIT 1
   `
-  return rows[0] ? toInviteRecord(rows[0]) : null
+  return (await toInviteRecords(presignAvatar, rows))[0] ?? null
 }
 
-async function requireInvite(tag: Queryable, inviteId: string): Promise<OrganizationInviteRecord> {
-  const invite = await readInvite(tag, inviteId)
+async function requireInvite(
+  tag: Queryable,
+  inviteId: string,
+  presignAvatar: AvatarPresigner | undefined,
+): Promise<OrganizationInviteRecord> {
+  const invite = await readInvite(tag, inviteId, presignAvatar)
   if (invite === null) throw AppError.internal()
   return invite
 }
@@ -345,6 +373,7 @@ async function seatInviteeInTx(
 
 export function makeOrganizationInviteMethods(
   sql: Sql,
+  presignAvatar: AvatarPresigner | undefined,
 ): Pick<
   OrganizationRepository,
   | "countPendingInvites"
@@ -401,7 +430,10 @@ export function makeOrganizationInviteMethods(
           `
           const openId = open[0]?.id
           if (openId === undefined) throw AppError.internal()
-          return { kind: "already_invited", invite: await requireInvite(tx, openId) }
+          return {
+            kind: "already_invited",
+            invite: await requireInvite(tx, openId, presignAvatar),
+          }
         }
         await writeHostAudit(tx, {
           actorId: args.invitedBy,
@@ -409,7 +441,7 @@ export function makeOrganizationInviteMethods(
           target: `organization:${args.organizationId}`,
           meta: { inviteId: args.inviteId, role: args.role },
         })
-        return { kind: "created", invite: await requireInvite(tx, args.inviteId) }
+        return { kind: "created", invite: await requireInvite(tx, args.inviteId, presignAvatar) }
       })
     },
 
@@ -422,13 +454,12 @@ export function makeOrganizationInviteMethods(
       const rows = await sql<InviteRowSelect[]>`
         SELECT ${inviteColumns(sql)}
         FROM organization_invites i
-        LEFT JOIN users iu ON iu.id = i.invited_by
-        LEFT JOIN users au ON au.id = i.user_id
+        ${invitePeopleJoins(sql)}
         WHERE i.organization_id = ${organizationId}
         ORDER BY (i.status = 'pending') DESC, i.created_at DESC, i.id DESC
         LIMIT ${limit}
       `
-      return rows.map(toInviteRecord)
+      return toInviteRecords(presignAvatar, rows)
     },
 
     async revokeInviteTx(args: {
@@ -482,7 +513,7 @@ export function makeOrganizationInviteMethods(
           iu.display_name AS invited_by_name,
           iu.handle AS invited_by_handle,
           iu.bio AS invited_by_bio,
-          iu.avatar_url AS invited_by_avatar_url,
+          ${userAvatarColumns(sql, "iu", "iam", "invited_by_")},
           o.id AS organization_id,
           o.slug AS organization_slug,
           o.name AS organization_name,
@@ -492,6 +523,7 @@ export function makeOrganizationInviteMethods(
         FROM organization_invites i
         JOIN organizations o ON o.id = i.organization_id
         LEFT JOIN users iu ON iu.id = i.invited_by
+        LEFT JOIN media_assets iam ON iam.id = iu.avatar_media_id
         LEFT JOIN media_assets am ON am.id = o.logo_media_id
         WHERE i.status = 'pending'
           AND i.expires_at > ${args.now}
@@ -505,6 +537,7 @@ export function makeOrganizationInviteMethods(
         ORDER BY i.created_at DESC, i.id DESC
         LIMIT ${args.limit}
       `
+      await resolveAvatarColumns(presignAvatar, rows, ["invited_by_"])
       return rows.map(toPendingInviteForUser)
     },
 

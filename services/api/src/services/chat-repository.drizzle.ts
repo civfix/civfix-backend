@@ -31,6 +31,7 @@ import {
   senderColumns,
   type MessageCoreRow,
 } from "./chat-message-core-sql.js"
+import { resolveAvatarColumns, type AvatarPresigner } from "./user-avatar.js"
 import type {
   ChatMessageMeta,
   ChatRepository,
@@ -187,10 +188,15 @@ function selectChatRowFrom(tag: Queryable, cte: string, includeForward: boolean)
       ${forward}
     FROM ${tag(cte)}
     LEFT JOIN users u ON u.id = ${tag(cte)}.sender_id
+    LEFT JOIN media_assets am ON am.id = u.avatar_media_id
   `
 }
 
-export function makeDrizzleChatRepository(sql: Sql, presign?: PresignMedia): ChatRepository {
+export function makeDrizzleChatRepository(
+  sql: Sql,
+  presign?: PresignMedia,
+  presignAvatar?: AvatarPresigner,
+): ChatRepository {
   type RoomScope = { column: "cleanup_id" | "report_id" | "group_id"; id: string }
 
   const anchorScope = (scope: RoomScope) => sql`${sql(scope.column)} = ${scope.id}`
@@ -209,11 +215,16 @@ export function makeDrizzleChatRepository(sql: Sql, presign?: PresignMedia): Cha
     return { geoid: row.geoid, name: row.name ?? row.geoid, handle: row.handle }
   }
 
+  function withSenderAvatars(rows: readonly ChatRowSelect[]): Promise<void> {
+    return resolveAvatarColumns(presignAvatar, rows, ["sender_"])
+  }
+
   async function hydrateRows(
     page: ChatRowSelect[],
     viewerUserId: string | null,
     reportCity: ReportCityContext | null,
   ): Promise<ChatMessageDTO[]> {
+    await withSenderAvatars(page)
     const pollIds = page.filter((r) => r.kind === "poll" && r.deleted_at === null).map((r) => r.id)
     const [partsFor, pollsByMessage] = await Promise.all([
       loadMessageExtras(sql, "chat_messages", page, viewerUserId, presign),
@@ -234,6 +245,7 @@ export function makeDrizzleChatRepository(sql: Sql, presign?: PresignMedia): Cha
     row: ChatRowSelect,
     viewerUserId: string | null,
   ): Promise<ChatMessageDTO> {
+    await withSenderAvatars([row])
     const pollIds = row.kind === "poll" && row.deleted_at === null ? [row.id] : []
     const liveIds = liveMessageIds([row])
     const [reactions, mentions, attachmentsByMessage, reportCity, replyByTarget, pollsByMessage] =
@@ -268,7 +280,11 @@ export function makeDrizzleChatRepository(sql: Sql, presign?: PresignMedia): Cha
           ? anchorScope(scope)
           : sql`${sql(prefix)}.${sql(scope.column)} = ${scope.id}`,
       columns: chatColumns(sql, isReport),
-      from: sql`FROM chat_messages cm LEFT JOIN users u ON u.id = cm.sender_id`,
+      from: sql`
+        FROM chat_messages cm
+        LEFT JOIN users u ON u.id = cm.sender_id
+        LEFT JOIN media_assets am ON am.id = u.avatar_media_id
+      `,
       context: () => resolveReportCity(scope),
       hydratePage: hydrateRows,
       hydrateOne: (row, viewerUserId) => hydrateRow(scope, row, viewerUserId),
@@ -370,6 +386,7 @@ export function makeDrizzleChatRepository(sql: Sql, presign?: PresignMedia): Cha
       `,
       resolveReportCity(scope),
     ])
+    await withSenderAvatars(rows)
     const row = rows[0]
     if (!row) return null
     const replyByTarget = await replyMapForRows(sql, "chat_messages", [row])
@@ -442,6 +459,7 @@ export function makeDrizzleChatRepository(sql: Sql, presign?: PresignMedia): Cha
       const attachments = wantsMedia
         ? ((await loadChatAttachments(sql, [id], presign, input.userId)).get(id) ?? [])
         : []
+      await withSenderAvatars(rows)
       return toMessageDTO(rows[0]!, {
         viewerUserId: input.userId,
         clientId: input.clientId,

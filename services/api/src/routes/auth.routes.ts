@@ -37,7 +37,6 @@ import { route } from "../versioning/route.js"
 import { parse } from "./_validate.js"
 import { setCsrfCookie, clearCsrfCookie, type Csrf } from "../auth/csrf.js"
 import { makeSingleUseSecretStore, type SingleUseSecretStore } from "../auth/single-use-secret.js"
-import { MEDIA_GET_URL_TTL_SEC } from "../services/media-intake-service.js"
 import {
   clientKind,
   bearerToken,
@@ -356,24 +355,13 @@ function registerProfileRoutes(app: FastifyInstance, ctx: AuthRouteContext): voi
       }
     }
 
-    const avatarUrlDurable = (container.env.R2_PUBLIC_BASE ?? "").length > 0
     const updated = await services.users.updateProfile(userId, {
       handle: body.handle,
       displayName: body.displayName,
       ...(body.bio !== undefined ? { bio: body.bio } : {}),
       ...(body.socialLinks !== undefined ? { socialLinks: body.socialLinks } : {}),
       ...(body.donationUrl !== undefined ? { donationUrl: body.donationUrl } : {}),
-      ...(body.avatarUploadId !== undefined
-        ? {
-            avatarUploadId: body.avatarUploadId,
-            ...(avatarUrlDurable
-              ? {
-                  presignAvatar: (k: string) =>
-                    container.storage.presignGet(k, MEDIA_GET_URL_TTL_SEC),
-                }
-              : {}),
-          }
-        : {}),
+      ...(body.avatarUploadId !== undefined ? { avatarUploadId: body.avatarUploadId } : {}),
     })
     const payload: UpdateProfileResponse = { user: await toUserDTO(updated, ctx.presignAvatar) }
     reply.status(200).send(payload)

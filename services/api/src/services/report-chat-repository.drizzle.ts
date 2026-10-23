@@ -9,6 +9,7 @@ import type { ReportChatMeta } from "./report-types.js"
 import { monotonicReadWatermarkUpdate } from "./read-watermark-repository.drizzle.js"
 import { blockedPairExpr } from "./blocks-sql.js"
 import { toRoomMemberPerson, type RoomMemberIdentityRow } from "./room-member-person.js"
+import { userAvatarColumns, resolveAvatarColumns, type AvatarPresigner } from "./user-avatar.js"
 import type {
   ReportChatMetaQueries,
   ReportChatRepository,
@@ -64,6 +65,7 @@ export function mapSystemRow(row: SystemChatRow): ChatMessageDTO {
 export function makeReportChatRepository(
   sql: Sql,
   _presignMedia?: PresignMedia,
+  presignAvatar?: AvatarPresigner,
 ): ReportChatRepository & ReportChatMetaQueries {
   return {
     async isMember(reportId: string, userId: string): Promise<boolean> {
@@ -176,7 +178,7 @@ export function makeReportChatRepository(
           u.display_name,
           u.handle,
           u.bio,
-          u.avatar_url,
+          ${userAvatarColumns(sql, "u", "am")},
           u.deleted_at AS user_deleted_at,
           EXISTS (
             SELECT 1 FROM follows_people f
@@ -185,11 +187,13 @@ export function makeReportChatRepository(
           ${blockedPairExpr(sql, viewerId, sql`u.id`)} AS blocked_pair
         FROM report_chat_members m
         JOIN users u ON u.id = m.user_id
+        LEFT JOIN media_assets am ON am.id = u.avatar_media_id
         WHERE m.report_id = ${reportId}
         ORDER BY CASE m.role WHEN 'owner' THEN 0 ELSE 1 END ASC,
                  m.joined_at ASC, m.user_id ASC
         LIMIT ${REPORT_CHAT_ROSTER_CAP}
       `
+      await resolveAvatarColumns(presignAvatar, rows)
       return rows.map(toReportParticipantDTO)
     },
 

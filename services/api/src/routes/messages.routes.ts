@@ -45,6 +45,7 @@ import { wireChatPowers } from "./chat-powers-wiring.js"
 import { makeChatPollRepository } from "../services/chat-poll-repository.drizzle.js"
 import { makeChatPollService } from "../services/chat-poll-service.js"
 import { makeContainerPollNotifier } from "../services/chat-poll-notifier.js"
+import { avatarPresigner } from "../services/user-avatar.js"
 
 export const EditMessageBodySchema = trimTextFields(EditMessageRequestSchema, "body")
 
@@ -106,6 +107,7 @@ function makeMessagesDeps(app: FastifyInstance, container: Container): MessagesD
     (chatRepo ??= makeDrizzleChatRepository(
       container.getDb().sql,
       makePrivateMediaPresigner(container.storage),
+      avatarPresigner(container.storage),
     ))
 
   let reportChatRepo: ReportChatRepository | undefined

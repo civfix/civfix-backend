@@ -172,7 +172,6 @@ export interface UpdateProfileInput {
   displayName: string
   bio?: string | null
   avatarUploadId?: string
-  presignAvatar?: (avatarKey: string) => Promise<string>
   socialLinks?: SocialLinks | null
   donationUrl?: string | null
 }

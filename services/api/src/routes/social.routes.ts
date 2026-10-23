@@ -32,6 +32,7 @@ import { perIdentity } from "../plugins/rate-limit.js"
 import { route } from "../versioning/route.js"
 import { isUuid } from "../db/cursor-helpers.js"
 import { parse } from "./_validate.js"
+import { avatarPresigner } from "../services/user-avatar.js"
 
 export const FOLLOW_RATE_LIMIT = perIdentity({ max: 30, timeWindow: "1 minute" })
 
@@ -61,11 +62,12 @@ export async function registerSocialRoutes(
   container: Container,
 ): Promise<void> {
   const csrfProtect = container.csrf.protect
+  const presignAvatar = avatarPresigner(container.storage)
 
   function repo(): SocialRepository {
     const overrides = app.socialOverrides
     if (overrides) return overrides.repo
-    return makeDrizzleSocialRepository(container.getDb().sql)
+    return makeDrizzleSocialRepository(container.getDb().sql, presignAvatar)
   }
 
   function notifier(): SocialNotifier | undefined {

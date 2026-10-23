@@ -118,7 +118,6 @@ function makeMediaChecksHandler(
       limits: seams.limits,
       download: seams.download,
       ...(seams.findPhashDuplicate ? { findPhashDuplicate: seams.findPhashDuplicate } : {}),
-      ...(seams.publicMediaBase ? { publicMediaBase: seams.publicMediaBase } : {}),
       report: seams.report,
       stopSignal,
     })

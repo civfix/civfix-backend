@@ -17,6 +17,7 @@ import type {
   OrgVerificationStatus,
 } from "@civfix/contract"
 import { publicServedKeyExpr } from "./media-served-key.js"
+import { userAvatarColumns, type UserAvatarColumns } from "./user-avatar.js"
 
 export function cleanupStatusExpr(sql: Queryable) {
   return sql`CASE
@@ -34,7 +35,7 @@ export function adminEventStatusExpr(sql: Queryable) {
     ELSE 'upcoming' END`
 }
 
-export interface CleanupRowSelect {
+export interface CleanupRowSelect extends UserAvatarColumns<"org_"> {
   id: string
   organizer_user_id: string
   type: CleanupType
@@ -60,7 +61,6 @@ export interface CleanupRowSelect {
   org_display_name: string
   org_handle: string | null
   org_bio: string | null
-  org_avatar_url: string | null
   org_donation_url: string | null
   ends_at: Date
   timezone: string | null
@@ -85,12 +85,11 @@ export interface CleanupRowSelect {
   organization_suspended: boolean | null
 }
 
-export interface AttendeeRowSelect {
+export interface AttendeeRowSelect extends UserAvatarColumns {
   id: string
   display_name: string
   handle: string | null
   bio: string | null
-  avatar_url: string | null
   role: CleanupMemberRole
   is_following: boolean
 }
@@ -209,7 +208,7 @@ export function cleanupColumns(sql: Queryable, near: NearPoint | null) {
     u.display_name AS org_display_name,
     u.handle AS org_handle,
     u.bio AS org_bio,
-    u.avatar_url AS org_avatar_url,
+    ${userAvatarColumns(sql, "u", "uam", "org_")},
     u.donation_url AS org_donation_url
   `
 }
@@ -229,11 +228,13 @@ export function goingScalar(sql: Queryable) {
   return sql`(${memberCountScalar(sql)} + ${activeGuestCountScalar(sql)})`
 }
 
+// The query must JOIN users u on the organizer.
 export function eventHostJoins(sql: Queryable) {
   return sql`
     LEFT JOIN media_assets ma ON ma.id = c.cover_media_id
     LEFT JOIN organizations o ON o.id = c.organization_id AND o.deleted_at IS NULL
-    LEFT JOIN media_assets am ON am.id = o.logo_media_id`
+    LEFT JOIN media_assets am ON am.id = o.logo_media_id
+    LEFT JOIN media_assets uam ON uam.id = u.avatar_media_id`
 }
 
 export function goingJoin(sql: Queryable) {
