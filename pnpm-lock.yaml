@@ -69,8 +69,8 @@ importers:
   packages/seams:
     dependencies:
       '@civfix/contract':
-        specifier: ^0.63.0
-        version: 0.63.0
+        specifier: 0.64.0-b-feat-notification-center-contract.gc3da707
+        version: 0.64.0-b-feat-notification-center-contract.gc3da707
     devDependencies:
       '@civfix/config':
         specifier: workspace:*
@@ -100,8 +100,8 @@ importers:
         specifier: ^3.1147.0
         version: 3.1147.0
       '@civfix/contract':
-        specifier: ^0.63.0
-        version: 0.63.0
+        specifier: 0.64.0-b-feat-notification-center-contract.gc3da707
+        version: 0.64.0-b-feat-notification-center-contract.gc3da707
       '@civfix/tokens':
         specifier: ^0.1.0
         version: 0.1.0
@@ -251,8 +251,8 @@ importers:
         specifier: workspace:*
         version: link:../api
       '@civfix/contract':
-        specifier: ^0.63.0
-        version: 0.63.0
+        specifier: 0.64.0-b-feat-notification-center-contract.gc3da707
+        version: 0.64.0-b-feat-notification-center-contract.gc3da707
       '@sentry/node':
         specifier: ^10.76.1
         version: 10.76.1(@opentelemetry/core@2.12.0(@opentelemetry/api@1.9.1))
@@ -408,8 +408,8 @@ packages:
   '@balena/dockerignore@1.0.2':
     resolution: {integrity: sha512-wMue2Sy4GAVTk6Ic4tJVcnfdau+gx2EnG7S+uAEe+TWJFqE4YoWN4/H8MSLj4eYJKxGg26lZwboEniNiNwZQ6Q==}
 
-  '@civfix/contract@0.63.0':
-    resolution: {integrity: sha512-6cyQPVeLPI7gH3hsF/wDtaFdvhZgnLb6U3bL+xNAAOuhZ/LddC7wMSWuGfmTNoUQb03Q2c9D0VmCVsqc1Rjt6A==}
+  '@civfix/contract@0.64.0-b-feat-notification-center-contract.gc3da707':
+    resolution: {integrity: sha512-fYVy67bnuPXOKflobzK8NDu68sLIKxvkGLEH6xFuicTxYxeZGwUBxP7R366heQEIYurhON9FZB+K5GAfouFMPA==}
     engines: {node: '>=20'}
 
   '@civfix/tokens@0.1.0':
@@ -4511,7 +4511,7 @@ snapshots:
 
   '@balena/dockerignore@1.0.2': {}
 
-  '@civfix/contract@0.63.0':
+  '@civfix/contract@0.64.0-b-feat-notification-center-contract.gc3da707':
     dependencies:
       zod: 3.25.76
 

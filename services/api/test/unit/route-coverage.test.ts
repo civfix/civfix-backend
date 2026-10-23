@@ -40,6 +40,20 @@ const SIGNING_KEY = "test-anon-signing-key"
 
 const PARAM_VALUE = "11111111-1111-1111-1111-111111111111"
 
+// Notification center epic (#211, D14): the contract snapshot carries these endpoints ahead of their
+// routes. Each must stay unregistered while it is listed, so the sub-issue that registers one also removes
+// it here, and the one that removes the last name deletes the set.
+const PENDING_IN_EPIC: ReadonlySet<string> = new Set([
+  "getNotificationSettings",
+  "updateNotificationSettings",
+  "getNotificationUnread",
+  "markAllNotificationsRead",
+  "dismissNotification",
+  "getPushWebConfig",
+  "unsubscribeNotificationEmail",
+  "openUnsubscribeNotificationEmail",
+])
+
 async function buildFullFakeServer(): Promise<FastifyInstance> {
   const env = loadEnv({ NODE_ENV: "test" })
 
@@ -216,6 +230,15 @@ describe("route-coverage: every shared endpoint is registered (offline boot smok
   })
 
   for (const [name, ep] of Object.entries(endpoints)) {
+    if (PENDING_IN_EPIC.has(name)) {
+      it(`T4: ${name} is pending in the epic and not registered yet: ${ep.method} ${ep.path}`, async () => {
+        const res = await app.inject(injectArgs(ep))
+        expect(res.statusCode).toBe(404)
+        const body = res.json<{ message?: string }>()
+        expect(body.message?.startsWith(`Route ${ep.method} `)).toBe(true)
+      })
+      continue
+    }
     it(`registers ${name}: ${ep.method} ${ep.path}`, async () => {
       const res = await app.inject(injectArgs(ep))
 
@@ -231,8 +254,24 @@ describe("route-coverage: every shared endpoint is registered (offline boot smok
     })
   }
 
-  it("T42: covers ALL 341 endpoints in the registry (no endpoint skipped)", () => {
-    expect(Object.keys(endpoints).length).toBe(341)
+  it("T2: covers ALL 349 endpoints in the registry (no endpoint skipped)", () => {
+    expect(Object.keys(endpoints).length).toBe(349)
+  })
+
+  it("T3: PENDING_IN_EPIC names exactly the eight notification-center endpoints, each in the registry", () => {
+    expect([...PENDING_IN_EPIC].sort()).toEqual(
+      [
+        "getNotificationSettings",
+        "updateNotificationSettings",
+        "getNotificationUnread",
+        "markAllNotificationsRead",
+        "dismissNotification",
+        "getPushWebConfig",
+        "unsubscribeNotificationEmail",
+        "openUnsubscribeNotificationEmail",
+      ].sort(),
+    )
+    for (const name of PENDING_IN_EPIC) expect(Object.keys(endpoints)).toContain(name)
   })
 
   it("the discriminator is not vacuous: a bogus path IS detected as route-missing", async () => {

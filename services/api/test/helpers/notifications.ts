@@ -8,6 +8,11 @@ import type {
   NotificationRepository,
   PushTokenUpsertOutcome,
 } from "../../src/services/notification-repository.js"
+import type {
+  NotificationSettingRecord,
+  NotificationSettingsPatch,
+  NotificationSettingsRepository,
+} from "../../src/services/notification-settings-repository.js"
 import { DEFAULT_PREFS, isFeedVisibleType } from "../../src/services/notification-service.js"
 import { MAX_ACTIVE_PUSH_TOKENS_PER_USER } from "../../src/services/notification-repository.drizzle.js"
 import { paginate, parseTimeCursor } from "../../src/db/cursor-helpers.js"
@@ -326,5 +331,28 @@ export class InMemoryNotificationRepository implements NotificationRepository {
       if (locale !== undefined) out.set(userId, locale)
     }
     return Promise.resolve(out)
+  }
+}
+
+export interface StoredNotificationSetting extends NotificationSettingRecord {
+  updatedAt: Date
+}
+
+export class InMemoryNotificationSettingsRepository implements NotificationSettingsRepository {
+  /** Keyed `${userId}:${category}`, the table's primary key. */
+  readonly rows = new Map<string, StoredNotificationSetting>()
+
+  now: () => Date = () => new Date()
+
+  getSettings(_userId: string): Promise<NotificationSettingRecord[]> {
+    throw new Error("not implemented")
+  }
+
+  getSettingsMany(_userIds: string[]): Promise<NotificationSettingRecord[]> {
+    throw new Error("not implemented")
+  }
+
+  upsertSettings(_userId: string, _patch: NotificationSettingsPatch): Promise<void> {
+    throw new Error("not implemented")
   }
 }
