@@ -13,6 +13,7 @@ import { makeDrizzleReportRepository } from "../../src/services/report-repositor
 import { makeDrizzleNotificationRepository } from "../../src/services/notification-repository.drizzle.js"
 import { makeDrizzlePostRepository } from "../../src/services/post-repository.drizzle.js"
 import { makeDrizzleBlocksRepository } from "../../src/services/blocks-repository.drizzle.js"
+import { fakeAvatarPresigner } from "../helpers/avatar-fixtures.js"
 import { makeDrizzleSocialRepository } from "../../src/services/social-repository.drizzle.js"
 import { makeDrizzleVolunteerHoursRepository } from "../../src/services/volunteer-hours-repository.drizzle.js"
 import { makeDrizzleGovClaimsRepository } from "../../src/services/admin/gov-claims-repository.drizzle.js"
@@ -227,7 +228,7 @@ describe("consumer keyset lists carry microsecond cursors", () => {
     const ctl = makeFakeSql([
       { match, rows: twoRows({ created_at: AT, display_name: "B", handle: null, bio: null }) },
     ])
-    const repo = makeDrizzleBlocksRepository(ctl.sql as unknown as Sql)
+    const repo = makeDrizzleBlocksRepository(ctl.sql as unknown as Sql, fakeAvatarPresigner)
     const page1 = await repo.listBlocked(VIEWER, { cursor: null, limit: 1 })
     expect(page1.nextCursor).toBe(CURSOR)
     await repo.listBlocked(VIEWER, { cursor: CURSOR, limit: 1 })

@@ -3,25 +3,39 @@ import { avatarGradient } from "@civfix/contract"
 import type { UserSearchResultDTO } from "@civfix/contract"
 import { likeContains, likePrefix } from "../db/like.js"
 import type { UserSearchRepository } from "./user-search-repository.js"
+import { mapWithLimit } from "../lib/concurrency.js"
+import { PRESIGN_CONCURRENCY } from "./media-presign.js"
+import {
+  resolveUserAvatarUrl,
+  userAvatarColumns,
+  userAvatarSource,
+  type AvatarPresigner,
+  type UserAvatarColumns,
+} from "./user-avatar.js"
 
-interface UserSearchRow {
+interface UserSearchRow extends UserAvatarColumns {
   id: string
   handle: string
   display_name: string
-  avatar_url: string | null
 }
 
-function toSearchResult(r: UserSearchRow): UserSearchResultDTO {
-  return {
-    id: r.id,
-    handle: r.handle,
-    displayName: r.display_name,
-    avatar: avatarGradient(r.id),
-    ...(r.avatar_url !== null ? { avatarUrl: r.avatar_url } : {}),
+export function makeDrizzleUserSearchRepository(
+  sql: Sql,
+  presignAvatar: AvatarPresigner,
+): UserSearchRepository {
+  function toSearchResults(rows: UserSearchRow[]): Promise<UserSearchResultDTO[]> {
+    return mapWithLimit(rows, PRESIGN_CONCURRENCY, async (r) => {
+      const avatarUrl = await resolveUserAvatarUrl(presignAvatar, userAvatarSource(r))
+      return {
+        id: r.id,
+        handle: r.handle,
+        displayName: r.display_name,
+        avatar: avatarGradient(r.id),
+        ...(avatarUrl !== null ? { avatarUrl } : {}),
+      }
+    })
   }
-}
 
-export function makeDrizzleUserSearchRepository(sql: Sql): UserSearchRepository {
   return {
     // Locked product rule: DM search never surfaces the viewer, deleted or handle-less users, accounts with
     // DMs turned off, or anyone blocked in either direction. The result shape carries no email, bio or
@@ -33,8 +47,9 @@ export function makeDrizzleUserSearchRepository(sql: Sql): UserSearchRepository 
     ): Promise<UserSearchResultDTO[]> {
       const prefix = likePrefix(q)
       const rows = await sql<UserSearchRow[]>`
-        SELECT u.id, u.handle, u.display_name, u.avatar_url
+        SELECT u.id, u.handle, u.display_name, ${userAvatarColumns(sql, "u", "am")}
         FROM users u
+        LEFT JOIN media_assets am ON am.id = u.avatar_media_id
         WHERE u.deleted_at IS NULL
           AND u.handle IS NOT NULL
           AND u.allow_direct_messages = true
@@ -50,7 +65,7 @@ export function makeDrizzleUserSearchRepository(sql: Sql): UserSearchRepository 
         ORDER BY u.handle ASC
         LIMIT ${limit}
       `
-      return rows.map(toSearchResult)
+      return toSearchResults(rows)
     },
 
     // Keeps DM-disabled accounts (anyone is taggable) but, like DM search, never suggests a user blocked in
@@ -63,8 +78,9 @@ export function makeDrizzleUserSearchRepository(sql: Sql): UserSearchRepository 
     ): Promise<UserSearchResultDTO[]> {
       const term = likeContains(q)
       const rows = await sql<UserSearchRow[]>`
-        SELECT u.id, u.handle, u.display_name, u.avatar_url
+        SELECT u.id, u.handle, u.display_name, ${userAvatarColumns(sql, "u", "am")}
         FROM users u
+        LEFT JOIN media_assets am ON am.id = u.avatar_media_id
         WHERE u.deleted_at IS NULL
           AND u.handle IS NOT NULL
           AND u.id <> ${viewerId}
@@ -79,7 +95,7 @@ export function makeDrizzleUserSearchRepository(sql: Sql): UserSearchRepository 
         ORDER BY u.handle ASC, u.display_name ASC
         LIMIT ${limit}
       `
-      return rows.map(toSearchResult)
+      return toSearchResults(rows)
     },
   }
 }

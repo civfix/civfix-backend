@@ -116,10 +116,11 @@ import * as m112 from "../../src/services/retention-repository.drizzle.js"
 import * as m113 from "../../src/services/room-messages-repository.drizzle.js"
 import * as m114 from "../../src/services/social-repository.drizzle.js"
 import * as m115 from "../../src/services/threads-repository.drizzle.js"
-import * as m116 from "../../src/services/user-search-repository.drizzle.js"
-import * as m117 from "../../src/services/users-repository.drizzle.js"
-import * as m118 from "../../src/services/volunteer-hours-credit.drizzle.js"
-import * as m119 from "../../src/services/volunteer-hours-repository.drizzle.js"
+import * as m116 from "../../src/services/user-avatar.js"
+import * as m117 from "../../src/services/user-search-repository.drizzle.js"
+import * as m118 from "../../src/services/users-repository.drizzle.js"
+import * as m119 from "../../src/services/volunteer-hours-credit.drizzle.js"
+import * as m120 from "../../src/services/volunteer-hours-repository.drizzle.js"
 
 export interface TranscriptCase {
   key: string
@@ -1530,34 +1531,44 @@ export const cases: TranscriptCase[] = [
   {
     key: "makeDrizzleBlocksRepository.block",
     run: async (sql: any) =>
-      (m28 as any).makeDrizzleBlocksRepository(sql).block("blockerId-1", "blockedId-1"),
+      (m28 as any)
+        .makeDrizzleBlocksRepository(sql, () => Promise.resolve("presignAvatarResult-1"))
+        .block("blockerId-1", "blockedId-1"),
   },
   {
     key: "makeDrizzleBlocksRepository.blockedIdsAmong",
     run: async (sql: any) =>
-      (m28 as any).makeDrizzleBlocksRepository(sql).blockedIdsAmong("actorId-1", ["candidateId-1"]),
+      (m28 as any)
+        .makeDrizzleBlocksRepository(sql, () => Promise.resolve("presignAvatarResult-1"))
+        .blockedIdsAmong("actorId-1", ["candidateId-1"]),
   },
   {
     key: "makeDrizzleBlocksRepository.blockState",
     run: async (sql: any) =>
-      (m28 as any).makeDrizzleBlocksRepository(sql).blockState("viewerId-1", "targetId-1"),
+      (m28 as any)
+        .makeDrizzleBlocksRepository(sql, () => Promise.resolve("presignAvatarResult-1"))
+        .blockState("viewerId-1", "targetId-1"),
   },
   {
     key: "makeDrizzleBlocksRepository.isBlockedEitherWay",
     run: async (sql: any) =>
-      (m28 as any).makeDrizzleBlocksRepository(sql).isBlockedEitherWay("a-1", "b-1"),
+      (m28 as any)
+        .makeDrizzleBlocksRepository(sql, () => Promise.resolve("presignAvatarResult-1"))
+        .isBlockedEitherWay("a-1", "b-1"),
   },
   {
     key: "makeDrizzleBlocksRepository.listBlocked",
     run: async (sql: any) =>
       (m28 as any)
-        .makeDrizzleBlocksRepository(sql)
+        .makeDrizzleBlocksRepository(sql, () => Promise.resolve("presignAvatarResult-1"))
         .listBlocked("blockerId-1", { cursor: "cursor-1", limit: 3 }),
   },
   {
     key: "makeDrizzleBlocksRepository.unblock",
     run: async (sql: any) =>
-      (m28 as any).makeDrizzleBlocksRepository(sql).unblock("blockerId-1", "blockedId-1"),
+      (m28 as any)
+        .makeDrizzleBlocksRepository(sql, () => Promise.resolve("presignAvatarResult-1"))
+        .unblock("blockerId-1", "blockedId-1"),
   },
   {
     key: "blockedPairExpr",
@@ -2768,6 +2779,7 @@ export const cases: TranscriptCase[] = [
                 email: undefined,
                 emailVerified: undefined,
                 avatarUrl: undefined,
+                avatarMedia: undefined,
                 profileComplete: undefined,
                 allowDirectMessages: undefined,
                 showVolunteerHours: undefined,
@@ -2786,6 +2798,7 @@ export const cases: TranscriptCase[] = [
                 email: undefined,
                 emailVerified: undefined,
                 avatarUrl: undefined,
+                avatarMedia: undefined,
                 profileComplete: undefined,
                 allowDirectMessages: undefined,
                 showVolunteerHours: undefined,
@@ -2804,6 +2817,7 @@ export const cases: TranscriptCase[] = [
                 email: undefined,
                 emailVerified: undefined,
                 avatarUrl: undefined,
+                avatarMedia: undefined,
                 profileComplete: undefined,
                 allowDirectMessages: undefined,
                 showVolunteerHours: undefined,
@@ -2822,6 +2836,7 @@ export const cases: TranscriptCase[] = [
                 email: undefined,
                 emailVerified: undefined,
                 avatarUrl: undefined,
+                avatarMedia: undefined,
                 profileComplete: undefined,
                 allowDirectMessages: undefined,
                 showVolunteerHours: undefined,
@@ -2840,6 +2855,7 @@ export const cases: TranscriptCase[] = [
                 email: undefined,
                 emailVerified: undefined,
                 avatarUrl: undefined,
+                avatarMedia: undefined,
                 profileComplete: undefined,
                 allowDirectMessages: undefined,
                 showVolunteerHours: undefined,
@@ -2858,6 +2874,7 @@ export const cases: TranscriptCase[] = [
                 email: undefined,
                 emailVerified: undefined,
                 avatarUrl: undefined,
+                avatarMedia: undefined,
                 profileComplete: undefined,
                 allowDirectMessages: undefined,
                 showVolunteerHours: undefined,
@@ -2876,6 +2893,7 @@ export const cases: TranscriptCase[] = [
                 email: undefined,
                 emailVerified: undefined,
                 avatarUrl: undefined,
+                avatarMedia: undefined,
                 profileComplete: undefined,
                 allowDirectMessages: undefined,
                 showVolunteerHours: undefined,
@@ -2894,6 +2912,7 @@ export const cases: TranscriptCase[] = [
                 email: undefined,
                 emailVerified: undefined,
                 avatarUrl: undefined,
+                avatarMedia: undefined,
                 profileComplete: undefined,
                 allowDirectMessages: undefined,
                 showVolunteerHours: undefined,
@@ -2931,6 +2950,7 @@ export const cases: TranscriptCase[] = [
                 email: undefined,
                 emailVerified: undefined,
                 avatarUrl: undefined,
+                avatarMedia: undefined,
                 profileComplete: undefined,
                 allowDirectMessages: undefined,
                 showVolunteerHours: undefined,
@@ -2949,6 +2969,7 @@ export const cases: TranscriptCase[] = [
                 email: undefined,
                 emailVerified: undefined,
                 avatarUrl: undefined,
+                avatarMedia: undefined,
                 profileComplete: undefined,
                 allowDirectMessages: undefined,
                 showVolunteerHours: undefined,
@@ -2967,6 +2988,7 @@ export const cases: TranscriptCase[] = [
                 email: undefined,
                 emailVerified: undefined,
                 avatarUrl: undefined,
+                avatarMedia: undefined,
                 profileComplete: undefined,
                 allowDirectMessages: undefined,
                 showVolunteerHours: undefined,
@@ -2985,6 +3007,7 @@ export const cases: TranscriptCase[] = [
                 email: undefined,
                 emailVerified: undefined,
                 avatarUrl: undefined,
+                avatarMedia: undefined,
                 profileComplete: undefined,
                 allowDirectMessages: undefined,
                 showVolunteerHours: undefined,
@@ -3003,6 +3026,7 @@ export const cases: TranscriptCase[] = [
                 email: undefined,
                 emailVerified: undefined,
                 avatarUrl: undefined,
+                avatarMedia: undefined,
                 profileComplete: undefined,
                 allowDirectMessages: undefined,
                 showVolunteerHours: undefined,
@@ -3021,6 +3045,7 @@ export const cases: TranscriptCase[] = [
                 email: undefined,
                 emailVerified: undefined,
                 avatarUrl: undefined,
+                avatarMedia: undefined,
                 profileComplete: undefined,
                 allowDirectMessages: undefined,
                 showVolunteerHours: undefined,
@@ -3039,6 +3064,7 @@ export const cases: TranscriptCase[] = [
                 email: undefined,
                 emailVerified: undefined,
                 avatarUrl: undefined,
+                avatarMedia: undefined,
                 profileComplete: undefined,
                 allowDirectMessages: undefined,
                 showVolunteerHours: undefined,
@@ -3057,6 +3083,7 @@ export const cases: TranscriptCase[] = [
                 email: undefined,
                 emailVerified: undefined,
                 avatarUrl: undefined,
+                avatarMedia: undefined,
                 profileComplete: undefined,
                 allowDirectMessages: undefined,
                 showVolunteerHours: undefined,
@@ -9791,7 +9818,7 @@ export const cases: TranscriptCase[] = [
     run: async (sql: any) =>
       (m110 as any)
         .makeDrizzleReportRepository(sql)
-        .setConfirmation("reportId-1", "userId-1", "fixed", "remove"),
+        .setConfirmation("reportId-1", "userId-1", "seen", "remove"),
   },
   {
     key: "makeDrizzleReportRepository.setVisibilityByOwner",
@@ -10453,42 +10480,48 @@ export const cases: TranscriptCase[] = [
       }),
   },
   {
+    key: "userAvatarColumns",
+    run: async (sql: any) => (m116 as any).userAvatarColumns(sql, "userAlias-1", "m"),
+  },
+  {
     key: "makeDrizzleUserSearchRepository.searchByHandlePrefix",
     run: async (sql: any) =>
-      (m116 as any)
-        .makeDrizzleUserSearchRepository(sql)
+      (m117 as any)
+        .makeDrizzleUserSearchRepository(sql, () => Promise.resolve("presignAvatarResult-1"))
         .searchByHandlePrefix("q-1", "viewerId-1", 3),
   },
   {
     key: "makeDrizzleUserSearchRepository.searchMentionable",
     run: async (sql: any) =>
-      (m116 as any).makeDrizzleUserSearchRepository(sql).searchMentionable("q-1", "viewerId-1", 3),
+      (m117 as any)
+        .makeDrizzleUserSearchRepository(sql, () => Promise.resolve("presignAvatarResult-1"))
+        .searchMentionable("q-1", "viewerId-1", 3),
   },
   {
     key: "makeDrizzleUsersRepository.findRoleAndEmail",
     run: async (sql: any) =>
-      (m117 as any).makeDrizzleUsersRepository(sql).findRoleAndEmail("userId-1"),
+      (m118 as any).makeDrizzleUsersRepository(sql).findRoleAndEmail("userId-1"),
   },
   {
     key: "lockEventCredits",
-    run: async (sql: any) => (m118 as any).lockEventCredits(sql, "cleanupId-1", ["userId-1"]),
+    run: async (sql: any) => (m119 as any).lockEventCredits(sql, "cleanupId-1", ["userId-1"]),
   },
   {
     key: "lockUserCredits",
-    run: async (sql: any) => (m118 as any).lockUserCredits(sql, ["userId-1"]),
+    run: async (sql: any) => (m119 as any).lockUserCredits(sql, ["userId-1"]),
   },
   {
     key: "sameDayEventHours",
-    run: async (sql: any) => (m118 as any).sameDayEventHours(sql, "cleanupId-1", ["userId-1"]),
+    run: async (sql: any) => (m119 as any).sameDayEventHours(sql, "cleanupId-1", ["userId-1"]),
   },
   {
     key: "hoursHeldOnServiceDate",
-    run: async (sql: any) => (m118 as any).hoursHeldOnServiceDate(sql, "userId-1", "serviceDate-1"),
+    run: async (sql: any) => (m119 as any).hoursHeldOnServiceDate(sql, "userId-1", "serviceDate-1"),
   },
   {
     key: "writeEventCredits",
     run: async (sql: any) =>
-      (m118 as any).writeEventCredits(sql, {
+      (m119 as any).writeEventCredits(sql, {
         cleanupId: "cleanupId-1",
         geoid: "geoid-1",
         actorId: "actorId-1",
@@ -10501,7 +10534,7 @@ export const cases: TranscriptCase[] = [
   {
     key: "makeDrizzleVolunteerHoursRepository.creditEventAsOperator",
     run: async (sql: any) =>
-      (m119 as any).makeDrizzleVolunteerHoursRepository(sql).creditEventAsOperator({
+      (m120 as any).makeDrizzleVolunteerHoursRepository(sql).creditEventAsOperator({
         operatorId: "operatorId-1",
         userId: "userId-1",
         cleanupId: "cleanupId-1",
@@ -10514,7 +10547,7 @@ export const cases: TranscriptCase[] = [
   {
     key: "makeDrizzleVolunteerHoursRepository.creditManual",
     run: async (sql: any) =>
-      (m119 as any).makeDrizzleVolunteerHoursRepository(sql).creditManual({
+      (m120 as any).makeDrizzleVolunteerHoursRepository(sql).creditManual({
         operatorId: "operatorId-1",
         userId: "userId-1",
         hours: 3,
@@ -10526,7 +10559,7 @@ export const cases: TranscriptCase[] = [
   {
     key: "makeDrizzleVolunteerHoursRepository.entriesForCertificate",
     run: async (sql: any) =>
-      (m119 as any).makeDrizzleVolunteerHoursRepository(sql).entriesForCertificate({
+      (m120 as any).makeDrizzleVolunteerHoursRepository(sql).entriesForCertificate({
         userId: "userId-1",
         geoid: "geoid-1",
         from: new Date("2026-03-04T05:06:07.000Z"),
@@ -10537,19 +10570,19 @@ export const cases: TranscriptCase[] = [
   {
     key: "makeDrizzleVolunteerHoursRepository.hoursVisibilityFor",
     run: async (sql: any) =>
-      (m119 as any).makeDrizzleVolunteerHoursRepository(sql).hoursVisibilityFor("userId-1"),
+      (m120 as any).makeDrizzleVolunteerHoursRepository(sql).hoursVisibilityFor("userId-1"),
   },
   {
     key: "makeDrizzleVolunteerHoursRepository.leaderboard",
     run: async (sql: any) =>
-      (m119 as any)
+      (m120 as any)
         .makeDrizzleVolunteerHoursRepository(sql)
         .leaderboard("geoid-1", 3, 3, "viewerId-1", true),
   },
   {
     key: "makeDrizzleVolunteerHoursRepository.listEntries",
     run: async (sql: any) =>
-      (m119 as any).makeDrizzleVolunteerHoursRepository(sql).listEntries({
+      (m120 as any).makeDrizzleVolunteerHoursRepository(sql).listEntries({
         userId: "userId-1",
         cursor: { atText: "atText-1", at: new Date("2026-03-04T05:06:07.000Z"), id: "id-1" },
         limit: 3,
@@ -10559,14 +10592,14 @@ export const cases: TranscriptCase[] = [
   {
     key: "makeDrizzleVolunteerHoursRepository.listEventHours",
     run: async (sql: any) =>
-      (m119 as any)
+      (m120 as any)
         .makeDrizzleVolunteerHoursRepository(sql)
         .listEventHours("cleanupId-1", "viewerId-1"),
   },
   {
     key: "makeDrizzleVolunteerHoursRepository.listOperatorLedger",
     run: async (sql: any) =>
-      (m119 as any).makeDrizzleVolunteerHoursRepository(sql).listOperatorLedger({
+      (m120 as any).makeDrizzleVolunteerHoursRepository(sql).listOperatorLedger({
         userId: "userId-1",
         cursor: { atText: "atText-1", at: new Date("2026-03-04T05:06:07.000Z"), id: "id-1" },
         limit: 3,
@@ -10575,7 +10608,7 @@ export const cases: TranscriptCase[] = [
   {
     key: "makeDrizzleVolunteerHoursRepository.logEventHours",
     run: async (sql: any) =>
-      (m119 as any).makeDrizzleVolunteerHoursRepository(sql).logEventHours({
+      (m120 as any).makeDrizzleVolunteerHoursRepository(sql).logEventHours({
         actorId: "actorId-1",
         cleanupId: "cleanupId-1",
         geoid: "geoid-1",
@@ -10587,22 +10620,22 @@ export const cases: TranscriptCase[] = [
   {
     key: "makeDrizzleVolunteerHoursRepository.operatorLedgerTotals",
     run: async (sql: any) =>
-      (m119 as any).makeDrizzleVolunteerHoursRepository(sql).operatorLedgerTotals("userId-1"),
+      (m120 as any).makeDrizzleVolunteerHoursRepository(sql).operatorLedgerTotals("userId-1"),
   },
   {
     key: "makeDrizzleVolunteerHoursRepository.totalHoursFor",
     run: async (sql: any) =>
-      (m119 as any).makeDrizzleVolunteerHoursRepository(sql).totalHoursFor("userId-1"),
+      (m120 as any).makeDrizzleVolunteerHoursRepository(sql).totalHoursFor("userId-1"),
   },
   {
     key: "makeDrizzleVolunteerHoursRepository.totalsFor",
     run: async (sql: any) =>
-      (m119 as any).makeDrizzleVolunteerHoursRepository(sql).totalsFor("userId-1"),
+      (m120 as any).makeDrizzleVolunteerHoursRepository(sql).totalsFor("userId-1"),
   },
   {
     key: "makeDrizzleVolunteerHoursRepository.voidEntry",
     run: async (sql: any) =>
-      (m119 as any).makeDrizzleVolunteerHoursRepository(sql).voidEntry({
+      (m120 as any).makeDrizzleVolunteerHoursRepository(sql).voidEntry({
         operatorId: "operatorId-1",
         userId: "userId-1",
         entryId: "entryId-1",

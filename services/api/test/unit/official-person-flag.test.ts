@@ -8,6 +8,7 @@ import { CIVFIX_OFFICIAL_USER_ID, officialPersonFlag } from "../../src/auth/offi
 import { makeDrizzleChatRepository } from "../../src/services/chat-repository.drizzle.js"
 import { makeDrizzleDmRepository } from "../../src/services/dm-repository.drizzle.js"
 import { makeDrizzleBlocksRepository } from "../../src/services/blocks-repository.drizzle.js"
+import { fakeAvatarPresigner } from "../helpers/avatar-fixtures.js"
 import {
   InMemoryBlocksRepository,
   InMemoryDmRepository,
@@ -138,7 +139,9 @@ function postRepo(id: string, deletedAt: Date | null = null) {
     id,
     followers: 0,
     following: 0,
-    avatar_r2_key: null,
+    avatar_media_status: null,
+    avatar_served_key: null,
+    avatar_thumb_key: null,
     is_following: false,
     deleted_at: deletedAt,
   }
@@ -173,7 +176,10 @@ function postRepo(id: string, deletedAt: Date | null = null) {
   return makeDrizzlePostRepository(
     fakeSql([
       { match: /FROM posts p WHERE p\.id = \?/, rows: [post] },
-      { match: /LEFT JOIN media_assets am ON am\.id = u\.avatar_media_id/, rows: [author] },
+      {
+        match: /FROM users u\s+LEFT JOIN media_assets am ON am\.id = u\.avatar_media_id/,
+        rows: [author],
+      },
       { match: /LEFT JOIN users u ON u\.id = p\.author_id/, rows: [original] },
       { match: /JOIN users u ON u\.id = c\.organizer_user_id/, rows: [event] },
     ]),
@@ -185,7 +191,14 @@ function postRepo(id: string, deletedAt: Date | null = null) {
 }
 
 async function announcementAuthor(id: string, deletedAt: Date | null = null) {
-  const row = { ...identity, id, avatar_r2_key: null, deleted_at: deletedAt }
+  const row = {
+    ...identity,
+    id,
+    avatar_media_status: null,
+    avatar_served_key: null,
+    avatar_thumb_key: null,
+    deleted_at: deletedAt,
+  }
   const repo = makeDrizzleAnnouncementIdentityRepository(
     fakeSql([{ match: /FROM users u\s+LEFT JOIN media_assets am/, rows: [row] }]),
     () => Promise.resolve("a"),
@@ -271,7 +284,7 @@ describe.each(PEOPLE)("PersonDTO projections of %s", (_label, id, official) => {
     repo.seedUser({ id, displayName: "Name" })
     const [view] = (await repo.listPeople({ viewerId: null, q: null, cursor: null, limit: 1 }))
       .items
-    expectFlag(toPersonDTO(view!, false), official)
+    expectFlag(toPersonDTO(view!, false, null), official)
     const open = makeSocialService({ repo })
     expectFlag((await open.getProfile(id, { userId: VIEWER })).profile, official)
     const blocked = makeSocialService({
@@ -309,6 +322,7 @@ describe.each(PEOPLE)("PersonDTO projections of %s", (_label, id, official) => {
       fakeSql([
         { match: /FROM user_blocks b\s+JOIN users u/, rows: [{ ...identity, id, created_at: AT }] },
       ]),
+      fakeAvatarPresigner,
     )
     expectFlag((await drizzleBlocks.listBlocked(VIEWER)).blocked[0], official)
   })

@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto"
-import { and, desc, eq, gt, isNull, ne, sql } from "drizzle-orm"
+import { and, desc, eq, getTableColumns, gt, isNull, ne, sql } from "drizzle-orm"
 import type { Db } from "../db/client.js"
 import {
   cleanups,
@@ -62,6 +62,7 @@ import {
 } from "./stores.js"
 import { isUniqueViolation } from "../db/pg-errors.js"
 import { mapWithLimit } from "../lib/concurrency.js"
+import type { AvatarMedia } from "../services/user-avatar.js"
 
 const ERASURE_HANDLE_RETRIES = 5
 
@@ -71,6 +72,19 @@ const ERASURE_SIDE_EFFECT_CONCURRENCY = 4
 const HOST_TRANSFER_TITLE_KEY = "notification.cleanup_role.promoted.title"
 
 const HOST_TRANSFER_BODY_KEY = "notification.cleanup_role.promoted.body"
+
+// RETURNING cannot join, so the avatar media comes along as a primary-key lookup in the same statement,
+// one expression for every read and write that returns a user.
+const userColumns = {
+  ...getTableColumns(users),
+  avatarMedia: sql<AvatarMedia | null>`(
+    SELECT json_build_object('status', m.status, 'servedKey', m.served_key, 'thumbKey', m.thumb_key)
+    FROM media_assets m
+    WHERE m.id = ${users.avatarMediaId}
+  )`,
+}
+
+type UserRow = typeof users.$inferSelect & { avatarMedia: AvatarMedia | null }
 
 export class PgSessionStore implements SessionStore {
   constructor(private readonly db: Db) {}
@@ -181,14 +195,14 @@ export class PgUserStore implements UserStore {
   }
 
   async findById(id: string): Promise<UserRecord | null> {
-    const rows = await this.db.select().from(users).where(eq(users.id, id)).limit(1)
+    const rows = await this.db.select(userColumns).from(users).where(eq(users.id, id)).limit(1)
     const r = rows[0]
     return r ? toUserRecord(r) : null
   }
 
   async findByEmail(email: string): Promise<UserRecord | null> {
     const rows = await this.db
-      .select()
+      .select(userColumns)
       .from(users)
       .where(eq(users.email, email.toLowerCase()))
       .limit(1)
@@ -212,7 +226,7 @@ export class PgUserStore implements UserStore {
         ...(input.profileComplete !== undefined ? { profileComplete: input.profileComplete } : {}),
       })
       .onConflictDoNothing({ target: users.email, where: sql`${users.email} is not null` })
-      .returning()
+      .returning(userColumns)
     const row = inserted[0]
     if (row) return toUserRecord(row)
 
@@ -227,7 +241,11 @@ export class PgUserStore implements UserStore {
   }
 
   async findByHandle(handle: string): Promise<UserRecord | null> {
-    const rows = await this.db.select().from(users).where(eq(users.handle, handle)).limit(1)
+    const rows = await this.db
+      .select(userColumns)
+      .from(users)
+      .where(eq(users.handle, handle))
+      .limit(1)
     const r = rows[0]
     return r ? toUserRecord(r) : null
   }
@@ -286,7 +304,7 @@ export class PgUserStore implements UserStore {
           ? isNull(users.handle)
           : eq(users.handle, current.handle)
     const avatarUploadId = input.avatarUploadId
-    let updated: (typeof users.$inferSelect)[]
+    let updated: UserRow[]
     try {
       updated = await this.db.transaction(async (tx) => {
         if (avatarUploadId !== undefined) {
@@ -304,7 +322,7 @@ export class PgUserStore implements UserStore {
           .update(users)
           .set(set)
           .where(and(eq(users.id, id), isNull(users.deletedAt), renameGuard))
-          .returning()
+          .returning(userColumns)
       })
     } catch (err) {
       if (isUniqueViolation(err)) throw AppError.conflict("That username is taken.")
@@ -319,7 +337,11 @@ export class PgUserStore implements UserStore {
   }
 
   async setRole(id: string, role: Role): Promise<UserRecord> {
-    const updated = await this.db.update(users).set({ role }).where(eq(users.id, id)).returning()
+    const updated = await this.db
+      .update(users)
+      .set({ role })
+      .where(eq(users.id, id))
+      .returning(userColumns)
     const r = updated[0]
     if (!r) throw new Error("PgUserStore.setRole: user not found")
     return toUserRecord(r)
@@ -345,7 +367,11 @@ export class PgUserStore implements UserStore {
       if (!current) throw new Error("PgUserStore.updateSettings: user not found")
       return current
     }
-    const updated = await this.db.update(users).set(set).where(eq(users.id, id)).returning()
+    const updated = await this.db
+      .update(users)
+      .set(set)
+      .where(eq(users.id, id))
+      .returning(userColumns)
     const r = updated[0]
     if (!r) throw new Error("PgUserStore.updateSettings: user not found")
     return toUserRecord(r)
@@ -410,7 +436,7 @@ export class PgUserStore implements UserStore {
     return erasure.record
   }
 
-  private async tombstoneUser(tx: DbTransaction, id: string): Promise<typeof users.$inferSelect> {
+  private async tombstoneUser(tx: DbTransaction, id: string): Promise<UserRow> {
     const updated = await tx
       .update(users)
       .set({
@@ -430,7 +456,7 @@ export class PgUserStore implements UserStore {
         primaryOrganizationId: null,
       })
       .where(eq(users.id, id))
-      .returning()
+      .returning(userColumns)
     const r = updated[0]
     if (!r) throw new Error("PgUserStore.softDeleteAndAnonymize: user not found")
     return r
@@ -639,6 +665,7 @@ interface UserRowLike {
   email: string | null
   emailVerified: boolean
   avatarUrl: string | null
+  avatarMedia: AvatarMedia | null
   profileComplete: boolean
   allowDirectMessages: boolean
   showVolunteerHours: boolean | null
@@ -658,6 +685,7 @@ function toUserRecord(r: UserRowLike): UserRecord {
     email: r.email,
     emailVerified: r.emailVerified,
     avatarUrl: r.avatarUrl,
+    avatarMedia: r.avatarMedia,
     profileComplete: r.profileComplete,
     allowDirectMessages: r.allowDirectMessages,
     showVolunteerHours: r.showVolunteerHours,

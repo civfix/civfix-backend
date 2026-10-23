@@ -386,7 +386,9 @@ export function makeContainer(env: Env): Container {
   const volunteerHoursRepo = lazy(() => makeDrizzleVolunteerHoursRepository(getDb().sql))
   const certificateRepo = lazy(() => makeDrizzleCertificateRepository(getDb().sql))
   const blocksRepo = lazy<BlocksRepository>(() =>
-    hasDatabase ? makeDrizzleBlocksRepository(getDb().sql) : new InMemoryBlocksRepository(),
+    hasDatabase
+      ? makeDrizzleBlocksRepository(getDb().sql, presignAvatar)
+      : new InMemoryBlocksRepository(),
   )
   const dmRepo = lazy<DmRepository>(() => {
     if (hasDatabase) return makeDrizzleDmRepository(getDb().sql, presignPrivateMedia)
