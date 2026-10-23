@@ -30,7 +30,7 @@ import {
 } from "../db/cursor-helpers.js"
 import { likeContains } from "../db/like.js"
 import { cleanupStatusExpr, goingScalar } from "./cleanup-sql.js"
-import { publicServedKeyExpr } from "./media-served-key.js"
+import { userAvatarColumns, userAvatarSource, type UserAvatarColumns } from "./user-avatar.js"
 import { CIVFIX_OFFICIAL_USER_ID } from "../auth/official-account.js"
 
 const SUGGEST_NEARBY_METERS = 25_000
@@ -42,15 +42,13 @@ export const SUGGEST_CANDIDATE_RADIUS_DEG = 2.5
 export const SUGGEST_KNN_INDEX = "users_last_activity_gist"
 export const SUGGEST_RECENCY_INDEX = "users_last_activity_at_idx"
 
-export interface PersonRowSelect {
+export interface PersonRowSelect extends UserAvatarColumns {
   id: string
   display_name: string
   handle: string | null
   bio: string | null
   followers: number
   following: number
-  avatar_r2_key: string | null
-  avatar_url: string | null
   social_links?: SocialLinks | null
   donation_url?: string | null
   show_volunteer_hours: boolean | null
@@ -68,8 +66,7 @@ export function toPersonView(r: PersonRowSelect): PersonView {
     bio: r.bio,
     followers: Number(r.followers),
     following: Number(r.following),
-    avatarR2Key: r.avatar_r2_key,
-    avatarUrl: r.avatar_url,
+    ...userAvatarSource(r),
     socialLinks: r.social_links ?? null,
     donationUrl: r.donation_url ?? null,
     showVolunteerHours: r.show_volunteer_hours === undefined ? false : r.show_volunteer_hours,
@@ -270,8 +267,7 @@ async function connectionsPage(
       u.bio,
       u.follower_count AS followers,
       u.following_count AS following,
-      ${publicServedKeyExpr(sql, "am")} AS avatar_r2_key,
-      u.avatar_url,
+      ${userAvatarColumns(sql, "u", "am")},
       u.show_volunteer_hours,
       u.cursor_at,
       ${followingExpr} AS is_following
@@ -409,8 +405,7 @@ function suggestFollowsStatement(
           c.bio,
           c.followers,
           c.following,
-          ${publicServedKeyExpr(sql, "am")} AS avatar_r2_key,
-          c.avatar_url,
+          ${userAvatarColumns(sql, "c", "am")},
           c.show_volunteer_hours,
           c.is_organizer
         FROM ranked c
@@ -445,8 +440,7 @@ export function makeDrizzleSocialRepository(sql: Sql): SocialRepository {
         u.bio,
         u.follower_count AS followers,
         u.following_count AS following,
-        ${publicServedKeyExpr(sql, "am")} AS avatar_r2_key,
-        u.avatar_url,
+        ${userAvatarColumns(sql, "u", "am")},
         u.social_links,
         u.donation_url,
         u.show_volunteer_hours
@@ -500,8 +494,7 @@ export function makeDrizzleSocialRepository(sql: Sql): SocialRepository {
           u.bio,
           u.follower_count AS followers,
           u.following_count AS following,
-          ${publicServedKeyExpr(sql, "am")} AS avatar_r2_key,
-          u.avatar_url,
+          ${userAvatarColumns(sql, "u", "am")},
           u.show_volunteer_hours,
           ${followingExpr} AS is_following
         FROM (

@@ -45,6 +45,7 @@ import { roomKeyFor } from "../../src/ws/gateway.js"
 import { makeDrizzleChatRepository } from "../../src/services/chat-repository.drizzle.js"
 import { makeDrizzleDmRepository } from "../../src/services/dm-repository.drizzle.js"
 import { makeDrizzleBlocksRepository } from "../../src/services/blocks-repository.drizzle.js"
+import { fakeAvatarPresigner } from "../helpers/avatar-fixtures.js"
 import { makeDrizzleCleanupRepository } from "../../src/services/cleanup-repository.drizzle.js"
 import { makeReportChatRepository } from "../../src/services/report-chat-repository.drizzle.js"
 import { makeChatGroupRepository } from "../../src/services/chat-group-repository.drizzle.js"
@@ -92,7 +93,7 @@ describe.skipIf(!pg)("chat polls: create / vote / close + hydration (integration
       threadsRepo: new InMemoryThreadsRepository(),
       dmRepo,
       chatRepo: makeDrizzleChatRepository(h.sql),
-      blocksRepo: makeDrizzleBlocksRepository(h.sql),
+      blocksRepo: makeDrizzleBlocksRepository(h.sql, fakeAvatarPresigner),
       reportChat,
       groups,
       chatPolls: makeChatPollRepository(h.sql),
@@ -728,7 +729,7 @@ describe.skipIf(!pg)("chat polls: create / vote / close + hydration (integration
         getDb: () => ({ sql: h.sql }),
         pushSender: new FakePushSender(),
         userChannel: undefined,
-        getBlocksRepo: () => makeDrizzleBlocksRepository(h.sql),
+        getBlocksRepo: () => makeDrizzleBlocksRepository(h.sql, fakeAvatarPresigner),
       }) as unknown as Container
 
     /** The poll service exactly as messages.routes wires it, with the REAL notifier as notifyRoom. */
@@ -778,7 +779,7 @@ describe.skipIf(!pg)("chat polls: create / vote / close + hydration (integration
 
       // Real rows in the real gate tables.
       await makeConversationMutesRepository(h.sql).setMuted(mutedId, "report", reportId, true)
-      await makeDrizzleBlocksRepository(h.sql).block(blockedId, authorId)
+      await makeDrizzleBlocksRepository(h.sql, fakeAvatarPresigner).block(blockedId, authorId)
 
       const created = await pollServiceWithBells().createPoll({
         roomKind: "report",

@@ -386,7 +386,9 @@ export function makeContainer(env: Env): Container {
   const volunteerHoursRepo = lazy(() => makeDrizzleVolunteerHoursRepository(getDb().sql))
   const certificateRepo = lazy(() => makeDrizzleCertificateRepository(getDb().sql))
   const blocksRepo = lazy<BlocksRepository>(() =>
-    hasDatabase ? makeDrizzleBlocksRepository(getDb().sql) : new InMemoryBlocksRepository(),
+    hasDatabase
+      ? makeDrizzleBlocksRepository(getDb().sql, presignAvatar)
+      : new InMemoryBlocksRepository(),
   )
   const dmRepo = lazy<DmRepository>(() => {
     if (hasDatabase) return makeDrizzleDmRepository(getDb().sql, presignPrivateMedia)
@@ -478,6 +480,7 @@ export function makeContainer(env: Env): Container {
       blockedIdsAmong: (actorId: string, candidateIds: string[]) =>
         blocksRepo.get().blockedIdsAmong(actorId, candidateIds),
       feedRanking: env.FEED_RANKING,
+      feedAuthorBoosts: env.FEED_AUTHOR_BOOSTS,
       feedPresence: feedPresence.get(),
       ...(env.USE_FAKE_USER_CHANNEL ? {} : { userChannel: userChannel.get() }),
     }),

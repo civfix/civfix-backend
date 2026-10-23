@@ -15,7 +15,7 @@
     "clean": "rimraf .turbo *.tsbuildinfo"
   },
   "dependencies": {
-    "@civfix/contract": "0.62.1-b-chore-legal-terms-privacy-2026-10-20.g1dc2dd5"
+    "@civfix/contract": "^0.63.1"
   },
   "devDependencies": {
     "@civfix/config": "workspace:*",

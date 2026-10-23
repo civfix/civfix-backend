@@ -48,6 +48,7 @@ import {
   type ClientKind,
 } from "../auth/transport.js"
 import type { UserRecord } from "../auth/stores.js"
+import { avatarPresigner, type AvatarPresigner } from "../services/user-avatar.js"
 
 const OAUTH_STATE_COOKIE = "civfix_oauth"
 const OAUTH_STATE_TTL_SECONDS = 10 * 60
@@ -71,6 +72,7 @@ interface AuthRouteContext {
   container: Container
   services: AuthServices
   csrf: Csrf
+  presignAvatar: AvatarPresigner
   guestSmsEnabled: boolean
   webOrigins: readonly string[]
   oauthNonces: SingleUseSecretStore
@@ -106,6 +108,7 @@ export async function registerAuthRoutes(
     container,
     services,
     csrf: container.csrf,
+    presignAvatar: avatarPresigner(container.storage),
     guestSmsEnabled: guestSmsEnabledFor(container.env),
     webOrigins: container.env.WEB_ORIGINS,
     oauthNonces: makeSingleUseSecretStore(services.cache, {
@@ -121,7 +124,7 @@ export async function registerAuthRoutes(
 }
 
 function registerOtpRoutes(app: FastifyInstance, ctx: AuthRouteContext): void {
-  const { services, csrf, guestSmsEnabled } = ctx
+  const { services, guestSmsEnabled } = ctx
 
   route(
     app,
@@ -142,13 +145,13 @@ function registerOtpRoutes(app: FastifyInstance, ctx: AuthRouteContext): void {
     async (request, reply) => {
       const body = parse(EmailOtpVerifyRequestSchema, request.body)
       const userId = await services.otp.verifyOtp(body.email, body.code, request.ip || null)
-      await issueSession(services, csrf, request, reply, userId, { guestSmsEnabled })
+      await issueSession(ctx, request, reply, userId, { guestSmsEnabled })
     },
   )
 }
 
 function registerNativeOAuthRoutes(app: FastifyInstance, ctx: AuthRouteContext): void {
-  const { container, services, csrf, guestSmsEnabled, oauthNonces } = ctx
+  const { container, services, guestSmsEnabled, oauthNonces } = ctx
 
   app.post(
     "/v1/auth/oauth/nonce",
@@ -170,7 +173,7 @@ function registerNativeOAuthRoutes(app: FastifyInstance, ctx: AuthRouteContext):
       body.fullName,
       expectedNonce,
     )
-    await issueSessionForUser(services, csrf, request, reply, user, { guestSmsEnabled })
+    await issueSessionForUser(ctx, request, reply, user, { guestSmsEnabled })
   })
 
   route(
@@ -184,13 +187,13 @@ function registerNativeOAuthRoutes(app: FastifyInstance, ctx: AuthRouteContext):
         log: request.log,
       })
       const user = await services.oauth.signInWithGoogleIdToken(body.idToken, expectedNonce)
-      await issueSessionForUser(services, csrf, request, reply, user, { guestSmsEnabled })
+      await issueSessionForUser(ctx, request, reply, user, { guestSmsEnabled })
     },
   )
 }
 
 async function registerWebOAuthRoutes(app: FastifyInstance, ctx: AuthRouteContext): Promise<void> {
-  const { services, csrf, guestSmsEnabled, webOrigins } = ctx
+  const { services, guestSmsEnabled, webOrigins } = ctx
 
   route(app, "googleStart", { config: { rateLimit: OAUTH_RATE_LIMIT } }, async (request, reply) => {
     const redirect = allowedStartRedirect(request, webOrigins)
@@ -221,7 +224,7 @@ async function registerWebOAuthRoutes(app: FastifyInstance, ctx: AuthRouteContex
       clearOAuthStateCookie(reply)
       const user = await services.oauth.completeGoogleCallback(query.code, stash.codeVerifier)
       const target = resolvePostLoginRedirect(stash.redirect, webOrigins)
-      await issueSessionForUser(services, csrf, request, reply, user, {
+      await issueSessionForUser(ctx, request, reply, user, {
         forceKind: "web",
         webRedirectTo: target,
         guestSmsEnabled,
@@ -261,7 +264,7 @@ async function registerWebOAuthRoutes(app: FastifyInstance, ctx: AuthRouteContex
         const fullName = appleFullNameFromUserField(body.user)
         const user = await services.oauth.completeAppleCallback(body.code, fullName)
         const target = resolvePostLoginRedirect(stash.redirect, webOrigins)
-        await issueSessionForUser(services, csrf, request, reply, user, {
+        await issueSessionForUser(ctx, request, reply, user, {
           forceKind: "web",
           webRedirectTo: target,
           guestSmsEnabled,
@@ -276,7 +279,7 @@ function registerSessionRoutes(app: FastifyInstance, ctx: AuthRouteContext): voi
   const wsTickets = makeWsTicketStore(services.cache)
 
   route(app, "session", async (request, reply) => {
-    const payload = await buildSessionCheck(services, csrf, request, reply)
+    const payload = await buildSessionCheck(ctx, request, reply)
     reply.status(200).send({ ...payload, guestSmsEnabled })
   })
 
@@ -372,7 +375,7 @@ function registerProfileRoutes(app: FastifyInstance, ctx: AuthRouteContext): voi
           }
         : {}),
     })
-    const payload: UpdateProfileResponse = { user: toUserDTO(updated) }
+    const payload: UpdateProfileResponse = { user: await toUserDTO(updated, ctx.presignAvatar) }
     reply.status(200).send(payload)
   })
 }
@@ -413,24 +416,24 @@ interface IssueSessionOptions {
   guestSmsEnabled?: boolean
 }
 
+type SessionContext = Pick<AuthRouteContext, "services" | "csrf" | "presignAvatar">
+
 async function issueSession(
-  services: AuthServices,
-  csrf: Csrf,
+  ctx: SessionContext,
   request: FastifyRequest,
   reply: FastifyReply,
   userId: string,
   opts: IssueSessionOptions = {},
 ): Promise<void> {
-  const user = await services.users.findById(userId)
+  const user = await ctx.services.users.findById(userId)
   if (!user) {
     throw AppError.internal("User vanished after sign-in.")
   }
-  await issueSessionForUser(services, csrf, request, reply, user, opts)
+  await issueSessionForUser(ctx, request, reply, user, opts)
 }
 
 async function issueSessionForUser(
-  services: AuthServices,
-  csrf: Csrf,
+  { services, csrf, presignAvatar }: SessionContext,
   request: FastifyRequest,
   reply: FastifyReply,
   user: UserRecord,
@@ -449,7 +452,7 @@ async function issueSessionForUser(
     ip: request.ip || null,
     accountStatus,
   })
-  const dto: UserDTO = toUserDTO(user)
+  const dto: UserDTO = await toUserDTO(user, presignAvatar)
   const ttl = services.sessions.ttl
 
   const guestSms =
@@ -473,8 +476,7 @@ async function issueSessionForUser(
 }
 
 async function buildSessionCheck(
-  services: AuthServices,
-  csrf: Csrf,
+  { services, csrf, presignAvatar }: SessionContext,
   request: FastifyRequest,
   reply: FastifyReply,
 ): Promise<SessionCheckResponse> {
@@ -497,7 +499,7 @@ async function buildSessionCheck(
 
   return {
     authenticated: true,
-    user: toUserDTO(user),
+    user: await toUserDTO(user, presignAvatar),
     roles: auth.roles,
     ...enabledProviders,
     ...(csrfToken !== null ? { csrfToken } : {}),

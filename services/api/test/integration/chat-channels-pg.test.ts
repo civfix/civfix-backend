@@ -48,6 +48,7 @@ import { InMemoryChatPresence } from "../../src/adapters/chat-presence.js"
 import { makeDrizzleChatRepository } from "../../src/services/chat-repository.drizzle.js"
 import { makeDrizzleDmRepository } from "../../src/services/dm-repository.drizzle.js"
 import { makeDrizzleBlocksRepository } from "../../src/services/blocks-repository.drizzle.js"
+import { fakeAvatarPresigner } from "../helpers/avatar-fixtures.js"
 import { makeReportChatRepository } from "../../src/services/report-chat-repository.drizzle.js"
 import {
   canPostToGroup,
@@ -138,7 +139,7 @@ describe.skipIf(!pg)("chat channels: read-only enforcement + public join (integr
         threadsRepo: new InMemoryThreadsRepository(),
         dmRepo: makeDrizzleDmRepository(h.sql),
         chatRepo: makeDrizzleChatRepository(h.sql),
-        blocksRepo: makeDrizzleBlocksRepository(h.sql),
+        blocksRepo: makeDrizzleBlocksRepository(h.sql, fakeAvatarPresigner),
         reportChat: makeReportChatRepository(h.sql),
         groups: makeChatGroupRepository(h.sql),
       }

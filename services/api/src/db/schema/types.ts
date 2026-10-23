@@ -112,6 +112,8 @@ export const OAUTH_PROVIDER_VALUES = ["apple", "google", "email"] as const
 
 export const REPORT_CHAT_ROLE_VALUES = ["owner", "member"] as const
 
+export const REPORT_VOTE_KIND_VALUES = ["seen", "fixed"] as const
+
 export const GROUP_MEMBER_ROLE_VALUES = ["owner", "admin", "member"] as const
 
 export const GUEST_CONTACT_CHANNEL_VALUES = ["email", "sms"] as const

@@ -117,6 +117,7 @@ function buildDataExportUndeliverableEmail(supportEmail: string): {
 const DATA_EXPORT_BODY_ORDER = [
   "reports",
   "reportConfirmations",
+  "reportFixedVotes",
   "posts",
   "comments",
   "chatMessages",
@@ -163,6 +164,7 @@ const DATA_EXPORT_FIT_ORDER = [
   "followers",
   "blocks",
   "reportConfirmations",
+  "reportFixedVotes",
   "reports",
   "comments",
   "eventAnswers",
@@ -208,6 +210,16 @@ const DATA_EXPORT_BODY: BodyParts = {
     kind: "section",
     rowCap: DATA_EXPORT_MAX_ROWS,
     load: (repo, userId, rowCap) => repo.reportConfirmations(userId, rowCap),
+    present: (row: ReportConfirmationExportRow) => ({
+      reportId: row.report_id,
+      createdAt: row.created_at,
+    }),
+  },
+
+  reportFixedVotes: {
+    kind: "section",
+    rowCap: DATA_EXPORT_MAX_ROWS,
+    load: (repo, userId, rowCap) => repo.reportFixedVotes(userId, rowCap),
     present: (row: ReportConfirmationExportRow) => ({
       reportId: row.report_id,
       createdAt: row.created_at,
