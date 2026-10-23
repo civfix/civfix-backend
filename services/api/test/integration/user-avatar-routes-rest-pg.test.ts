@@ -34,6 +34,15 @@ const pg = await withPg()
 
 const OPERATOR_EMAIL = "avatar-operator@civfix.test"
 
+// One allowlisted address per admin exchange case: every case seeds fresh users, and users.email is unique.
+const EXCHANGE_EMAILS = {
+  T21: "avatar-exchange-t21@civfix.test",
+  T22: "avatar-exchange-t22@civfix.test",
+  T23: "avatar-exchange-t23@civfix.test",
+  T24: "avatar-exchange-t24@civfix.test",
+  T25: "avatar-exchange-t25@civfix.test",
+} as const
+
 const DAY_MS = 86_400_000
 
 interface Session {
@@ -57,7 +66,7 @@ describe.skipIf(!pg)("user avatar URLs on chat, event, org and admin routes (int
     const env = loadEnv({
       NODE_ENV: "test",
       DATABASE_URL: h.uri,
-      ADMIN_EMAILS: OPERATOR_EMAIL,
+      ADMIN_EMAILS: [OPERATOR_EMAIL, ...Object.values(EXCHANGE_EMAILS)].join(","),
       R2_PUBLIC_BASE: "cdn.civfix.org",
     })
     container = makeContainer(env)
@@ -511,6 +520,59 @@ describe.skipIf(!pg)("user avatar URLs on chat, event, org and admin routes (int
       list: "memory://thumbs/uploads/2026/10/p1.jpg",
       detail: "memory://thumbs/uploads/2026/10/p1.jpg",
     })
+  })
+
+  async function exchangeAs(
+    user: SeededAvatarUser,
+    email: string,
+  ): Promise<{ id: string; avatarUrl?: string | null }> {
+    await h.sql`UPDATE users SET email = ${email} WHERE id = ${user.id}`
+    app.adminAuthOverrides = {
+      auditSink: () => Promise.resolve(),
+      verifyAccessJwt: () => Promise.resolve({ email, commonName: null, sub: user.id, raw: {} }),
+    }
+    try {
+      const res = await app.inject({
+        method: "POST",
+        url: "/v1/admin/auth/access/exchange",
+        headers: { "cf-access-jwt-assertion": "stub.jwt.token" },
+      })
+      const body = okJson<{ user: { id: string; avatarUrl?: string | null } }>(res)
+      expect(body.user.id).toBe(user.id)
+      return body.user
+    } finally {
+      delete app.adminAuthOverrides
+    }
+  }
+
+  it("T21: POST /admin/auth/access/exchange answers P with the thumbnail URL", async () => {
+    const u = await seedAvatarUsers(h.sql)
+    const user = await exchangeAs(u.P, EXCHANGE_EMAILS.T21)
+    expect(user.avatarUrl).toBe("memory://thumbs/uploads/2026/10/p1.jpg")
+  })
+
+  it("T22: POST /admin/auth/access/exchange answers S with the served copy", async () => {
+    const u = await seedAvatarUsers(h.sql)
+    const user = await exchangeAs(u.S, EXCHANGE_EMAILS.T22)
+    expect(user.avatarUrl).toBe("memory://processed/uploads/2026/10/s1")
+  })
+
+  it("T23: POST /admin/auth/access/exchange answers V, whose avatar is validating, with the stored URL", async () => {
+    const u = await seedAvatarUsers(h.sql)
+    const user = await exchangeAs(u.V, EXCHANGE_EMAILS.T23)
+    expect(user.avatarUrl).toBe("https://lh3.googleusercontent.com/a/v-old")
+  })
+
+  it("T24: POST /admin/auth/access/exchange answers O, with no avatar media, with the stored URL", async () => {
+    const u = await seedAvatarUsers(h.sql)
+    const user = await exchangeAs(u.O, EXCHANGE_EMAILS.T24)
+    expect(user.avatarUrl).toBe("https://lh3.googleusercontent.com/a/o")
+  })
+
+  it("T25: POST /admin/auth/access/exchange answers N with a null avatarUrl", async () => {
+    const u = await seedAvatarUsers(h.sql)
+    const user = await exchangeAs(u.N, EXCHANGE_EMAILS.T25)
+    expect(user).toHaveProperty("avatarUrl", null)
   })
 
   async function saveProfilePhoto(
