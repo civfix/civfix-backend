@@ -6,7 +6,12 @@
 import { randomUUID } from "node:crypto"
 import type { Queryable } from "../../src/db/client.js"
 import { userUploader } from "../../src/services/media-uploader.js"
-import type { UserAvatarSource } from "../../src/services/user-avatar.js"
+import { FakeStorage } from "@civfix/seams"
+import {
+  avatarPresigner,
+  type AvatarPresigner,
+  type UserAvatarSource,
+} from "../../src/services/user-avatar.js"
 import { seedMediaAsset, type SeedMediaStatus } from "./media-pg.js"
 
 export type AvatarFixtureName = "P" | "S" | "V" | "R" | "O" | "N"
@@ -110,3 +115,6 @@ export async function seedAvatarUsers(
   }
   return out
 }
+
+/** The container's avatar presigner over the seams fake storage: a key becomes memory://<key>. */
+export const fakeAvatarPresigner: AvatarPresigner = avatarPresigner(new FakeStorage())

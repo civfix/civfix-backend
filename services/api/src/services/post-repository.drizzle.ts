@@ -26,6 +26,12 @@ import { lockUploadsForClaimIn } from "./media-claim-repository.drizzle.js"
 import { uploadersOf } from "./media-uploader.js"
 import { publicServedKeyExpr } from "./media-served-key.js"
 import { mapWithLimit } from "../lib/concurrency.js"
+import {
+  resolveUserAvatarUrl,
+  userAvatarColumns,
+  userAvatarSource,
+  type UserAvatarColumns,
+} from "./user-avatar.js"
 import { PRESIGN_CONCURRENCY, type PresignMedia } from "./media-presign.js"
 import { actorDisplayName, FALLBACK_ACTOR_NAME, publicAuthorIdentity } from "./public-author.js"
 import { officialPersonFlag } from "../auth/official-account.js"
@@ -119,15 +125,13 @@ interface PostRowSelect {
 
 type KeysetPostRow = PostRowSelect & { cursor_at: string }
 
-interface AuthorRow {
+interface AuthorRow extends UserAvatarColumns {
   id: string
   display_name: string
   handle: string | null
   bio: string | null
   followers: number
   following: number
-  avatar_r2_key: string | null
-  avatar_url: string | null
   is_following: boolean
   deleted_at: Date | null
 }
@@ -164,7 +168,7 @@ interface ReportRow {
   thumb_r2_key: string | null
 }
 
-interface RefRow {
+interface RefRow extends UserAvatarColumns {
   id: string
   kind: PostKind
   body: string | null
@@ -181,7 +185,6 @@ interface RefRow {
   display_name: string | null
   handle: string | null
   bio: string | null
-  avatar_url: string | null
   organization_id: string | null
 }
 
@@ -264,7 +267,7 @@ interface PostLookups {
   organizations: Map<string, OrganizationRefDTO>
 }
 
-function refAuthorOf(r: RefRow): PersonDTO | null {
+function refAuthorOf(r: RefRow, avatarUrl: string | null): PersonDTO | null {
   if (r.author_id === null) return null
   return {
     id: r.author_id,
@@ -272,7 +275,7 @@ function refAuthorOf(r: RefRow): PersonDTO | null {
     handle: r.handle,
     bio: r.bio,
     avatar: avatarGradient(r.author_id),
-    ...(r.avatar_url !== null ? { avatarUrl: r.avatar_url } : {}),
+    ...(avatarUrl !== null ? { avatarUrl } : {}),
     followers: 0,
     following: 0,
     isFollowing: false,
@@ -576,8 +579,7 @@ export function makeDrizzlePostRepository(sql: Sql, deps: PostRepoDeps): PostRep
         u.bio,
         u.follower_count AS followers,
         u.following_count AS following,
-        ${publicServedKeyExpr(sql, "am")} AS avatar_r2_key,
-        u.avatar_url,
+        ${userAvatarColumns(sql, "u", "am")},
         u.deleted_at,
         EXISTS (
           SELECT 1 FROM follows_people f WHERE f.follower_id = ${viewerId} AND f.followee_id = u.id
@@ -588,9 +590,9 @@ export function makeDrizzlePostRepository(sql: Sql, deps: PostRepoDeps): PostRep
     `
     const resolved = await mapWithLimit(rows, PRESIGN_CONCURRENCY, async (r) => {
       const rawAvatarUrl =
-        r.deleted_at === null && r.avatar_r2_key !== null
-          ? await deps.presignAvatar(r.avatar_r2_key)
-          : r.avatar_url
+        r.deleted_at === null
+          ? await resolveUserAvatarUrl(deps.presignAvatar, userAvatarSource(r))
+          : null
       const identity = publicAuthorIdentity({
         id: r.id,
         displayName: r.display_name,
@@ -740,9 +742,11 @@ export function makeDrizzlePostRepository(sql: Sql, deps: PostRepoDeps): PostRep
         p.like_count, p.repost_count, p.reply_count, p.save_count,
         p.created_at, p.deleted_at, p.visibility,
         p.organization_id,
-        u.id AS author_id, u.display_name, u.handle, u.bio, u.avatar_url
+        u.id AS author_id, u.display_name, u.handle, u.bio,
+        ${userAvatarColumns(sql, "u", "am")}
       FROM posts p
       LEFT JOIN users u ON u.id = p.author_id AND u.deleted_at IS NULL
+      LEFT JOIN media_assets am ON am.id = u.avatar_media_id
       WHERE p.id = ANY(${ids}::uuid[])
         AND NOT EXISTS (
           SELECT 1 FROM user_blocks b
@@ -750,9 +754,15 @@ export function makeDrizzlePostRepository(sql: Sql, deps: PostRepoDeps): PostRep
              OR (b.blocker_id = p.author_id AND b.blocked_id = ${viewerId})
         )
     `
-    for (const r of rows) {
-      const deleted = r.deleted_at !== null || r.visibility !== "public"
-      const author = deleted ? null : refAuthorOf(r)
+    const readable = (r: RefRow): boolean => r.deleted_at === null && r.visibility === "public"
+    const avatarUrls = await mapWithLimit(rows, PRESIGN_CONCURRENCY, (r) =>
+      readable(r)
+        ? resolveUserAvatarUrl(deps.presignAvatar, userAvatarSource(r))
+        : Promise.resolve(null),
+    )
+    for (const [i, r] of rows.entries()) {
+      const deleted = !readable(r)
+      const author = deleted ? null : refAuthorOf(r, avatarUrls[i] ?? null)
       if (author !== null) authorIds.push(author.id)
       if (!deleted && r.organization_id != null) orgIds.set(r.id, r.organization_id)
       out.set(r.id, {

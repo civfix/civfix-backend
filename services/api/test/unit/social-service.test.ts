@@ -89,13 +89,13 @@ describe("toPersonDTO", () => {
       bio: "hi",
       followers: 3,
       following: 7,
-      avatarR2Key: null,
       avatarUrl: null,
+      avatarMedia: null,
       socialLinks: null,
       donationUrl: "https://give.example.org/jane",
       showVolunteerHours: null,
     }
-    const dto = toPersonDTO(view, true)
+    const dto = toPersonDTO(view, true, null)
     expect(dto).toEqual({
       id: A,
       name: "Jane",
@@ -110,7 +110,7 @@ describe("toPersonDTO", () => {
     expect(dto.avatarUrl).toBeUndefined()
   })
 
-  it("surfaces the canonical avatar_url directly (no presign) when set", () => {
+  it("surfaces the resolved avatar URL it is given", () => {
     const view: PersonView = {
       id: A,
       displayName: "Jane",
@@ -118,13 +118,15 @@ describe("toPersonDTO", () => {
       bio: null,
       followers: 0,
       following: 0,
-      avatarR2Key: null,
-      avatarUrl: "https://cdn.example.test/avatars/jane.jpg",
+      avatarUrl: null,
+      avatarMedia: null,
       socialLinks: null,
       donationUrl: null,
       showVolunteerHours: null,
     }
-    expect(toPersonDTO(view, false).avatarUrl).toBe("https://cdn.example.test/avatars/jane.jpg")
+    expect(toPersonDTO(view, false, "https://cdn.example.test/avatars/jane.jpg").avatarUrl).toBe(
+      "https://cdn.example.test/avatars/jane.jpg",
+    )
   })
 })
 

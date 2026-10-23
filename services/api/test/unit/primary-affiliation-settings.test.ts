@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it } from "vitest"
 import { InMemoryUserStore, PRIMARY_ORGANIZATION_NOT_A_MEMBER } from "../../src/auth/stores.js"
 import { toUserDTO } from "../../src/auth/auth-services.js"
+import { fakeAvatarPresigner } from "../helpers/avatar-fixtures.js"
 
 const ORG_A = "11111111-1111-4111-8111-111111111111"
 const ORG_B = "22222222-2222-4222-8222-222222222222"
@@ -66,12 +67,12 @@ describe("toUserDTO", () => {
   it("echoes the stored pin so the settings picker renders without a second call", async () => {
     const id = await seeded()
     const updated = await store.updateSettings(id, { primaryOrganizationId: ORG_A })
-    expect(toUserDTO(updated).primaryOrganizationId).toBe(ORG_A)
+    expect((await toUserDTO(updated, fakeAvatarPresigner)).primaryOrganizationId).toBe(ORG_A)
   })
 
   it("echoes null when nothing is pinned", async () => {
     const id = await seeded()
     const user = await store.findById(id)
-    expect(toUserDTO(user!).primaryOrganizationId).toBeNull()
+    expect((await toUserDTO(user!, fakeAvatarPresigner)).primaryOrganizationId).toBeNull()
   })
 })
