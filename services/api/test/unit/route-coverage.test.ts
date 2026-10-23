@@ -35,24 +35,11 @@ import {
 import { makeTicketTokenSigner } from "../../src/services/host/ticket-token.js"
 import { NO_HOST_STANDING } from "@civfix/contract/host"
 import { fakeCleanupReader } from "../helpers/host-team.js"
+import { PENDING_IN_EPIC } from "../helpers/pending-in-epic.js"
 
 const SIGNING_KEY = "test-anon-signing-key"
 
 const PARAM_VALUE = "11111111-1111-1111-1111-111111111111"
-
-// Notification center epic (#211, D14): the contract snapshot carries these endpoints ahead of their
-// routes. Each must stay unregistered while it is listed, so the sub-issue that registers one also removes
-// it here, and the one that removes the last name deletes the set.
-const PENDING_IN_EPIC: ReadonlySet<string> = new Set([
-  "getNotificationSettings",
-  "updateNotificationSettings",
-  "getNotificationUnread",
-  "markAllNotificationsRead",
-  "dismissNotification",
-  "getPushWebConfig",
-  "unsubscribeNotificationEmail",
-  "openUnsubscribeNotificationEmail",
-])
 
 async function buildFullFakeServer(): Promise<FastifyInstance> {
   const env = loadEnv({ NODE_ENV: "test" })
