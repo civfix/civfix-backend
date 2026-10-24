@@ -389,7 +389,7 @@ describe("DELETE /v1/notifications/:id", () => {
     const h = await makeHarness()
     const n = await row(h, h.a.userId, "post_like")
     const res = await dismiss(h, "not-a-uuid", withCsrf(h.a))
-    expect(res.statusCode).toBe(400)
+    expect(res.statusCode).toBe(422)
     expect(res.json().code).toBe("VALIDATION")
     expect(byId(h, n.id)).toBeDefined()
     expect(h.repo.notifications).toHaveLength(1)
