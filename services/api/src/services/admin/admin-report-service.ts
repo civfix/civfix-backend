@@ -1,9 +1,4 @@
-import {
-  ADMIN_REPORT_STATUS_LABELS,
-  AppError,
-  canTransitionReportStatus,
-  ErrorCode,
-} from "@civfix/contract"
+import { ADMIN_REPORT_STATUS_LABELS, AppError, canTransitionReportStatus } from "@civfix/contract"
 import type {
   AdminReportCounts,
   AdminReportDTO,
@@ -56,14 +51,6 @@ const ALREADY_ROUTED_CONFLICT = "This report has already been sent to its jurisd
 
 export const SEND_IN_FLIGHT_CONFLICT =
   "A send to this jurisdiction is still in progress. Check back shortly to see the outcome on the outreach trail."
-
-export function isAlreadyRoutedConflict(err: unknown): boolean {
-  return (
-    err instanceof AppError &&
-    err.code === ErrorCode.CONFLICT &&
-    err.message === ALREADY_ROUTED_CONFLICT
-  )
-}
 
 const REPORT_NOT_FOUND = "Report not found"
 

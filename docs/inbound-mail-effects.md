@@ -274,8 +274,6 @@ non-delivery**:
   recorded `failed` standing.
 - `assertRoutable` refuses a re-route (409, `SEND_IN_FLIGHT_CONFLICT`) while the newest attempt is in
   flight, including the `retargeted` branch. `MailService.reply`/`resend` apply the same guard.
-- `runAutoForwardWith` classifies the deadline error distinctly and does **not** retry it. Retrying would
-  put a second packet in front of a government contact for a message that very likely sent.
 - The operator sees a **409 CONFLICT** with "the send is still in progress", not a 500, so the console's
   existing conflict handling applies and the error tracker is not spammed for an expected outcome.
 
