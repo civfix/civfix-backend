@@ -15,7 +15,7 @@
     "clean": "rimraf .turbo *.tsbuildinfo"
   },
   "dependencies": {
-    "@civfix/contract": "0.64.0-b-feat-zod-4.geb5566a"
+    "@civfix/contract": "0.64.0-b-feat-zod-4.g7a7f70c"
   },
   "devDependencies": {
     "@civfix/config": "workspace:*",

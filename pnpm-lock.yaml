@@ -69,8 +69,8 @@ importers:
   packages/seams:
     dependencies:
       '@civfix/contract':
-        specifier: 0.64.0-b-feat-zod-4.geb5566a
-        version: 0.64.0-b-feat-zod-4.geb5566a
+        specifier: 0.64.0-b-feat-zod-4.g7a7f70c
+        version: 0.64.0-b-feat-zod-4.g7a7f70c
     devDependencies:
       '@civfix/config':
         specifier: workspace:*
@@ -100,8 +100,8 @@ importers:
         specifier: ^3.1147.0
         version: 3.1147.0
       '@civfix/contract':
-        specifier: 0.64.0-b-feat-zod-4.geb5566a
-        version: 0.64.0-b-feat-zod-4.geb5566a
+        specifier: 0.64.0-b-feat-zod-4.g7a7f70c
+        version: 0.64.0-b-feat-zod-4.g7a7f70c
       '@civfix/tokens':
         specifier: ^0.1.0
         version: 0.1.0
@@ -251,8 +251,8 @@ importers:
         specifier: workspace:*
         version: link:../api
       '@civfix/contract':
-        specifier: 0.64.0-b-feat-zod-4.geb5566a
-        version: 0.64.0-b-feat-zod-4.geb5566a
+        specifier: 0.64.0-b-feat-zod-4.g7a7f70c
+        version: 0.64.0-b-feat-zod-4.g7a7f70c
       '@sentry/node':
         specifier: ^10.76.1
         version: 10.76.1(@opentelemetry/core@2.12.0(@opentelemetry/api@1.9.1))
@@ -408,8 +408,8 @@ packages:
   '@balena/dockerignore@1.0.2':
     resolution: {integrity: sha512-wMue2Sy4GAVTk6Ic4tJVcnfdau+gx2EnG7S+uAEe+TWJFqE4YoWN4/H8MSLj4eYJKxGg26lZwboEniNiNwZQ6Q==}
 
-  '@civfix/contract@0.64.0-b-feat-zod-4.geb5566a':
-    resolution: {integrity: sha512-RBCgycI4QG67tF/e6mwrWxi3e/lQjyUNGfV1WqI8ekAJaqva5yqFA7KNGGBD9u/jXfTLNn/hG6KgQrPZtmaZTQ==}
+  '@civfix/contract@0.64.0-b-feat-zod-4.g7a7f70c':
+    resolution: {integrity: sha512-pmRY7JORXc5j3HrZnCV5Eh8H/oc8P/C2kwoiHE4f6IM6LKpNCgzGcXaOl7CGYf/q5Nu6hoVcQHNZPzOVEwiBtQ==}
     engines: {node: '>=20'}
 
   '@civfix/tokens@0.1.0':
@@ -4508,7 +4508,7 @@ snapshots:
 
   '@balena/dockerignore@1.0.2': {}
 
-  '@civfix/contract@0.64.0-b-feat-zod-4.geb5566a':
+  '@civfix/contract@0.64.0-b-feat-zod-4.g7a7f70c':
     dependencies:
       zod: 4.6.7
 
