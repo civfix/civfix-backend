@@ -1,7 +1,7 @@
 import { describe, it, expect, vi } from "vitest"
 import { hashForLog, type PushLogger } from "../../src/adapters/push-sender.js"
 import { makeFcmDispatcher } from "../../src/adapters/push-fcm.js"
-import { visibleTo } from "../helpers/push-fixtures.js"
+import { N1, P, visibleTo } from "../helpers/push-fixtures.js"
 
 const sendEach = vi.fn()
 
@@ -46,7 +46,7 @@ describe("push(fcm) never logs the raw device token (F021)", () => {
     })
 
     const dispatch = makeFcmDispatcher({ serviceAccountJson: "{}" }, logger)
-    const { invalidTokens } = await dispatch(visibleTo([rawToken], { title: "Hi" }))
+    const { invalidTokens } = await dispatch(visibleTo([rawToken], P(N1, null)))
 
     expect(invalidTokens).toEqual([])
     expect(warns).toHaveLength(1)

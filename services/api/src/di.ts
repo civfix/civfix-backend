@@ -73,6 +73,7 @@ import {
   type NotificationService,
 } from "./services/notification-service.js"
 import { makeDrizzleNotificationRepository } from "./services/notification-repository.drizzle.js"
+import { makeDrizzleNotificationSettingsRepository } from "./services/notification-settings-repository.drizzle.js"
 import { MEDIA_GET_URL_TTL_SEC } from "./services/media-intake-service.js"
 import { makeAffiliationLoader, type AffiliationLoader } from "./services/affiliation.js"
 import { RedisByteMeter, type ByteMeter } from "./services/media-byte-quota.js"
@@ -473,6 +474,7 @@ export function makeContainer(env: Env): Container {
     if (notificationService === undefined || (logger !== undefined && !notificationLoggerWired)) {
       notificationService = makeNotificationService({
         repo: makeDrizzleNotificationRepository(getDb().sql),
+        settingsRepo: makeDrizzleNotificationSettingsRepository(getDb().sql),
         pushSender: pushSender.get(),
         userChannel: userChannel.get(),
         ...(logger !== undefined ? { logger } : {}),

@@ -9,7 +9,10 @@ import { InMemoryCacheClient } from "../../src/auth/cache.js"
 import { makeInMemoryStores } from "../../src/auth/stores.js"
 import { makeAuthServices } from "../../src/auth/auth-services.js"
 import { StubJwksVerifier } from "../helpers/auth.js"
-import { InMemoryNotificationRepository } from "../helpers/notifications.js"
+import {
+  InMemoryNotificationRepository,
+  InMemoryNotificationSettingsRepository,
+} from "../helpers/notifications.js"
 import {
   MARK_NOTIFICATIONS_READ_MAX_IDS,
   type NotificationServiceOverrides,
@@ -52,7 +55,10 @@ async function makeHarness(
 
   const repo = new InMemoryNotificationRepository()
   if (seed) seed(repo)
-  const notificationOverrides: NotificationServiceOverrides = { repo }
+  const notificationOverrides: NotificationServiceOverrides = {
+    repo,
+    settingsRepo: new InMemoryNotificationSettingsRepository(),
+  }
 
   const container = makeContainer(env)
   const push = container.pushSender as FakePushSender

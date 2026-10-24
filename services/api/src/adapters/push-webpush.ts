@@ -1,6 +1,7 @@
+import { encodePushMessageData } from "@civfix/contract"
 import type { PushSenderConfig, PushLogger, PlatformDispatcher } from "./push-sender.js"
 import { hashForLog } from "./push-sender.js"
-import { encodeMessageData, type NotificationMessage } from "./push-message.js"
+import { pushMessageData, type NotificationMessage } from "./push-message.js"
 import {
   boundedAddressResolver,
   parseSubscription,
@@ -274,8 +275,8 @@ function webPushBody(message: NotificationMessage): string {
     title: payload.title,
     ...(payload.body !== undefined ? { body: payload.body } : {}),
     ...(payload.link !== undefined ? { link: payload.link } : {}),
-    ...(payload.notificationId !== undefined ? { tag: payload.notificationId } : {}),
-    data: encodeMessageData(message),
+    tag: payload.notificationId,
+    data: encodePushMessageData(pushMessageData(message)),
   })
 }
 

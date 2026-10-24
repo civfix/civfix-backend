@@ -6,10 +6,7 @@ import { describe, expect, it, vi } from "vitest"
 import { FakePushSender, FakeUserChannel } from "@civfix/seams"
 import { NotificationCategorySchema } from "@civfix/contract"
 import type { NotificationCategory } from "@civfix/contract"
-import {
-  DEFAULT_PREFS,
-  makeNotificationService,
-} from "../../src/services/notification-service.js"
+import { DEFAULT_PREFS, makeNotificationService } from "../../src/services/notification-service.js"
 import {
   InMemoryNotificationRepository,
   InMemoryNotificationSettingsRepository,
@@ -66,7 +63,20 @@ function harness() {
   const signals = () => channel.published.filter((p) => p.signal.topic === "notifications")
   const signalled = () => signals().map((p) => p.userId)
 
-  return { repo, settings, push, channel, service, set, setAll, quietNoon, rows, pushItems, signals, signalled }
+  return {
+    repo,
+    settings,
+    push,
+    channel,
+    service,
+    set,
+    setAll,
+    quietNoon,
+    rows,
+    pushItems,
+    signals,
+    signalled,
+  }
 }
 
 async function settle(): Promise<void> {
@@ -248,7 +258,11 @@ describe("createNotification gated by category settings", () => {
   it('T14: push "always" skips the Push checkbox but never an Off category', async () => {
     const h = harness()
     await h.set(A, "events", [true, false, false])
-    const input = { type: "cleanup_cancelled" as const, title: "Cancelled", push: "always" as const }
+    const input = {
+      type: "cleanup_cancelled" as const,
+      title: "Cancelled",
+      push: "always" as const,
+    }
 
     await h.service.createNotification(A, input)
     await settle()

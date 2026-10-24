@@ -1,7 +1,6 @@
+import { NOTIFICATION_SECTIONS } from "@civfix/contract"
+import type { NotificationCategory, PushMessageData } from "@civfix/contract"
 import type { PushClearTarget, PushPayload } from "@civfix/seams"
-
-// Hand-written to match the contract's encodePushMessageData and NOTIFICATION_SECTIONS until the
-// backend adopts that contract (GH#221 replaces both).
 
 export interface NotificationMessage {
   kind: "notification"
@@ -15,46 +14,30 @@ export interface ClearMessage {
 
 export type PushMessage = NotificationMessage | ClearMessage
 
+/** What the app decodes from every push, before the contract's encodePushMessageData flattens it. */
+export function pushMessageData(message: PushMessage): PushMessageData {
+  if (message.kind === "clear") return { kind: "clear", ...message.target }
+  const { payload } = message
+  return {
+    kind: "notification",
+    notificationId: payload.notificationId,
+    type: payload.type,
+    category: payload.category,
+    link: payload.link ?? null,
+  }
+}
+
 // Section ids are also the Android notification channel ids, so renaming one orphans that channel on
 // every installed device.
-const SECTION_BY_CATEGORY: Readonly<Record<string, string>> = {
-  reportUpdates: "reports",
-  reportDiscussions: "reports",
-  directMessages: "messages",
-  mentions: "messages",
-  groupChats: "messages",
-  events: "events",
-  hostAnnouncements: "events",
-  eventTeam: "events",
-  followers: "social",
-  likesAndReposts: "social",
-  organizations: "organizations",
-}
+const SECTION_BY_CATEGORY: ReadonlyMap<NotificationCategory, string> = new Map(
+  NOTIFICATION_SECTIONS.flatMap((section) =>
+    section.categories.map((category) => [category, section.id] as const),
+  ),
+)
 
 const DEFAULT_ANDROID_CHANNEL = "default"
 
-export function androidChannelFor(category: string | null | undefined): string {
-  if (category === undefined || category === null) return DEFAULT_ANDROID_CHANNEL
-  return SECTION_BY_CATEGORY[category] ?? DEFAULT_ANDROID_CHANNEL
-}
-
-// FCM data carries only string values and APNs gets the same map, so absent fields are left out and
-// arrays and booleans travel as strings.
-export function encodeMessageData(message: PushMessage): Record<string, string> {
-  if (message.kind === "clear") {
-    return "all" in message.target
-      ? { kind: "clear", all: "true" }
-      : { kind: "clear", ids: JSON.stringify(message.target.ids) }
-  }
-  const { payload } = message
-  const type = payload.data?.type
-  return {
-    kind: "notification",
-    ...(payload.notificationId !== undefined ? { notificationId: payload.notificationId } : {}),
-    ...(typeof type === "string" ? { type } : {}),
-    ...(payload.category !== undefined && payload.category !== null
-      ? { category: payload.category }
-      : {}),
-    ...(payload.link !== undefined ? { link: payload.link } : {}),
-  }
+export function androidChannelFor(category: NotificationCategory | null): string {
+  if (category === null) return DEFAULT_ANDROID_CHANNEL
+  return SECTION_BY_CATEGORY.get(category) ?? DEFAULT_ANDROID_CHANNEL
 }

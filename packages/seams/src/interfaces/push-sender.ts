@@ -1,15 +1,16 @@
 export type { PushPlatform } from "@civfix/contract"
-import type { PushPlatform } from "@civfix/contract"
+import type { NotificationCategory, NotificationType, PushPlatform } from "@civfix/contract"
 
 export interface PushPayload {
   title: string
   body?: string
-  data?: Record<string, unknown>
   link?: string
   channelId?: string
   /** The recipient's own notification row: devices use it to tag, collapse and later clear the push. */
-  notificationId?: string
-  category?: string | null
+  notificationId: string
+  type: NotificationType
+  /** `null` for an Always on notification. */
+  category: NotificationCategory | null
 }
 
 export interface PushItem {

@@ -13,6 +13,7 @@ import {
   NotificationCategorySchema,
   decodePushMessageData,
   encodePushMessageData,
+  type NotificationCategory,
 } from "@civfix/contract"
 import type { PushDelivery, PushLogger } from "../../src/adapters/push-sender.js"
 import { fakePushDb } from "../helpers/push-db.js"
@@ -218,7 +219,7 @@ describe("FCM dispatcher", () => {
       likesAndReposts: "social",
       organizations: "organizations",
     }
-    const categories = Object.keys(expected)
+    const categories = Object.keys(expected) as NotificationCategory[]
     expect(categories).toHaveLength(11)
 
     await fcmDispatcher()(categories.map((c) => visible(`fcm-${c}`, P(N1, c))))

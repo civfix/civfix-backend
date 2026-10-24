@@ -24,6 +24,7 @@ import type {
   ChatConnection,
   PushPayload,
 } from "../src/interfaces/index.js"
+import type { NotificationCategory } from "@civfix/contract"
 
 const enc = new TextEncoder()
 
@@ -224,22 +225,22 @@ describe("FakeUserChannel", () => {
 describe("FakePushSender", () => {
   const N1 = "00000000-0000-4000-8000-000000000001"
   const N2 = "00000000-0000-4000-8000-000000000002"
-  const P = (notificationId: string, category: string | null): PushPayload => ({
+  const P = (notificationId: string, category: NotificationCategory | null): PushPayload => ({
     title: "Status changed",
     body: "Your report is in progress",
     link: "/reports/r1",
     notificationId,
+    type: "report_update",
     category,
-    data: { type: "report_update" },
   })
 
   it("captures registrations and sends", async () => {
     const p = new FakePushSender()
     await p.registerToken("u1", "tok", "ios", "dev-1")
-    await p.send("u1", { title: "Hi" })
+    await p.send("u1", P(N1, null))
     await p.sendEach([
-      { userId: "u2", payload: { title: "Bulk" } },
-      { userId: "u3", payload: { title: "Bulk" } },
+      { userId: "u2", payload: P(N1, null) },
+      { userId: "u3", payload: P(N2, null) },
     ])
     expect(p.tokens).toHaveLength(1)
     expect(p.sent).toHaveLength(3)

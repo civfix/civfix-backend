@@ -13,6 +13,7 @@ import { makeDmBellNotifier } from "../../src/services/chat-bells.js"
 import {
   InMemoryNotificationRepository,
   flushNotificationDispatch,
+  InMemoryNotificationSettingsRepository,
 } from "../helpers/notifications.js"
 import type { NotificationPrefsRecord } from "../../src/services/notification-repository.js"
 import {
@@ -127,7 +128,11 @@ function reportNotifs(userId: string): typeof notifRepo.notifications {
 beforeEach(() => {
   notifRepo = new InMemoryNotificationRepository()
   push = new FakePushSender()
-  notifications = makeNotificationService({ repo: notifRepo, pushSender: push })
+  notifications = makeNotificationService({
+    repo: notifRepo,
+    settingsRepo: new InMemoryNotificationSettingsRepository(),
+    pushSender: push,
+  })
 })
 
 describe("makeReportChatNotifier (D-E2)", () => {
@@ -502,6 +507,14 @@ class BatchCountingPushSender implements PushSender {
   }
 }
 
+// Group chats default to in-app only (D1), so these members check Push.
+async function groupChatsPush(userIds: string[]): Promise<InMemoryNotificationSettingsRepository> {
+  const settings = new InMemoryNotificationSettingsRepository()
+  for (const userId of userIds)
+    await settings.upsertSettings(userId, { groupChats: { push: true } })
+  return settings
+}
+
 describe("F084: the shared room fan-out batches push delivery", () => {
   it("delivers an over-100-recipient roster in sendEach batches, never one send per recipient", async () => {
     const roster = Array.from(
@@ -509,7 +522,11 @@ describe("F084: the shared room fan-out batches push delivery", () => {
       (_, i) => `00000000-0000-4000-a000-${String(i).padStart(12, "0")}`,
     )
     const pushSpy = new BatchCountingPushSender()
-    const service = makeNotificationService({ repo: notifRepo, pushSender: pushSpy })
+    const service = makeNotificationService({
+      repo: notifRepo,
+      settingsRepo: await groupChatsPush(roster),
+      pushSender: pushSpy,
+    })
     const notify = makeRoomFanoutNotifier(
       { kind: "group", titleFallbackKey: "notification.group_chat.title_fallback" },
       {
@@ -539,11 +556,13 @@ describe("F084: the shared room fan-out batches push delivery", () => {
       { length: 120 },
       (_, i) => `00000000-0000-4000-b000-${String(i).padStart(12, "0")}`,
     )
-    for (const userId of roster.slice(0, 20)) {
-      await notifRepo.upsertPrefs(userId, { cleanupChat: false })
-    }
+    const settings = await groupChatsPush(roster.slice(20))
     const pushSpy = new BatchCountingPushSender()
-    const service = makeNotificationService({ repo: notifRepo, pushSender: pushSpy })
+    const service = makeNotificationService({
+      repo: notifRepo,
+      settingsRepo: settings,
+      pushSender: pushSpy,
+    })
     const notify = makeRoomFanoutNotifier(
       { kind: "group", titleFallbackKey: "notification.group_chat.title_fallback" },
       {
@@ -594,18 +613,24 @@ class BatchPrefsRepository extends InMemoryNotificationRepository {
 }
 
 describe("F084: an unreadable prefs row suppresses push (consent gate fails CLOSED)", () => {
+  const NOON = new Date("2026-10-24T12:00:00Z")
   const rosterOf = (n: number, tag: string): string[] =>
     Array.from({ length: n }, (_, i) => `00000000-0000-4000-${tag}-${String(i).padStart(12, "0")}`)
 
-  const fanOutWith = (
+  const fanOutWith = async (
     repo: InMemoryNotificationRepository,
     pushSpy: BatchCountingPushSender,
     roster: string[],
-  ): ((roomId: string, message: ChatMessageDTO) => Promise<void>) =>
+  ): Promise<(roomId: string, message: ChatMessageDTO) => Promise<void>> =>
     makeRoomFanoutNotifier(
       { kind: "group", titleFallbackKey: "notification.group_chat.title_fallback" },
       {
-        notificationService: makeNotificationService({ repo, pushSender: pushSpy }),
+        notificationService: makeNotificationService({
+          repo,
+          settingsRepo: await groupChatsPush(roster),
+          pushSender: pushSpy,
+          now: () => NOON,
+        }),
         listMemberIds: () => Promise.resolve(roster),
         isMuted: () => Promise.resolve(false),
         roomKey: (id) => `group:${id}`,
@@ -618,7 +643,9 @@ describe("F084: an unreadable prefs row suppresses push (consent gate fails CLOS
     const repo = new UnreadablePrefsRepository()
     const pushSpy = new BatchCountingPushSender()
 
-    await fanOutWith(repo, pushSpy, roster)(REPORT, systemMessage())
+    await (
+      await fanOutWith(repo, pushSpy, roster)
+    )(REPORT, systemMessage())
 
     expect(repo.notifications.filter((n) => n.type === "group_chat")).toHaveLength(roster.length)
     await flushNotificationDispatch()
@@ -632,7 +659,9 @@ describe("F084: an unreadable prefs row suppresses push (consent gate fails CLOS
     const repo = new UnreadableBatchPrefsRepository()
     const pushSpy = new BatchCountingPushSender()
 
-    await fanOutWith(repo, pushSpy, roster)(REPORT, systemMessage())
+    await (
+      await fanOutWith(repo, pushSpy, roster)
+    )(REPORT, systemMessage())
 
     expect(repo.notifications.filter((n) => n.type === "group_chat")).toHaveLength(roster.length)
     await flushNotificationDispatch()
@@ -641,13 +670,17 @@ describe("F084: an unreadable prefs row suppresses push (consent gate fails CLOS
     expect(pushSpy.singleSends).toHaveLength(0)
   })
 
-  it("the batched prefs lane is used when the repo offers it, and its opt-outs are honoured", async () => {
+  it("the batched prefs lane is used when the repo offers it, and its quiet hours are honoured", async () => {
     const roster = rosterOf(120, "e000")
     const repo = new BatchPrefsRepository()
-    for (const userId of roster.slice(0, 20)) await repo.upsertPrefs(userId, { cleanupChat: false })
+    for (const userId of roster.slice(0, 20)) {
+      await repo.upsertPrefs(userId, { quietHours: { start: "11:00", end: "13:00", tz: "UTC" } })
+    }
     const pushSpy = new BatchCountingPushSender()
 
-    await fanOutWith(repo, pushSpy, roster)(REPORT, systemMessage())
+    await (
+      await fanOutWith(repo, pushSpy, roster)
+    )(REPORT, systemMessage())
 
     expect(repo.batchCalls).toEqual([roster.length])
     await flushNotificationDispatch()
