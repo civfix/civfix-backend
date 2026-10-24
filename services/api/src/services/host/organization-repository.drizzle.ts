@@ -5,13 +5,17 @@ import { makeOrganizationMemberMethods } from "./organization-repository-members
 import { makeOrganizationProfileMethods } from "./organization-repository-profile.drizzle.js"
 import type { OrganizationRepository } from "./organization-repository.js"
 import { makeOrganizationVerificationMethods } from "./organization-repository-verification.drizzle.js"
+import type { AvatarPresigner } from "../user-avatar.js"
 
-export function makeDrizzleOrganizationRepository(sql: Sql): OrganizationRepository {
+export function makeDrizzleOrganizationRepository(
+  sql: Sql,
+  presignAvatar?: AvatarPresigner,
+): OrganizationRepository {
   return {
     ...makeOrganizationProfileMethods(sql),
-    ...makeOrganizationMemberMethods(sql),
+    ...makeOrganizationMemberMethods(sql, presignAvatar),
     ...makeOrganizationVerificationMethods(sql),
     ...makeOrganizationAdminMethods(sql),
-    ...makeOrganizationInviteMethods(sql),
+    ...makeOrganizationInviteMethods(sql, presignAvatar),
   }
 }

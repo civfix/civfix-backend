@@ -452,7 +452,9 @@ describe("PostRepository listReplies inlines the focal author's latest answers",
     bio: null,
     followers: 0,
     following: 0,
-    avatar_r2_key: null,
+    avatar_media_status: null,
+    avatar_served_key: null,
+    avatar_thumb_key: null,
     avatar_url: null,
     is_following: false,
     deleted_at: null,
@@ -482,7 +484,7 @@ describe("PostRepository listReplies inlines the focal author's latest answers",
   const LIST = /WHERE p\.reply_to_id = \? AND p\.deleted_at IS NULL/
   const ANSWERS =
     /SELECT DISTINCT ON \(p\.reply_to_id\)[\s\S]*WHERE p\.reply_to_id = ANY\(\?::uuid\[\]\)\s+AND p\.author_id = \?/
-  const AUTHORS = /LEFT JOIN media_assets am ON am\.id = u\.avatar_media_id/
+  const AUTHORS = /FROM users u\s+LEFT JOIN media_assets am ON am\.id = u\.avatar_media_id/
 
   function repoOver(listRows: unknown[], answerRows: unknown[]) {
     const fake = makeFakeSql([
@@ -835,7 +837,7 @@ describe("PostRepository.loadRefs: a hidden original is an unavailable embed", (
         ],
       },
       {
-        match: /LEFT JOIN media_assets am ON am\.id = u\.avatar_media_id/,
+        match: /FROM users u\s+LEFT JOIN media_assets am ON am\.id = u\.avatar_media_id/,
         rows: [
           {
             id: AUTHOR,
@@ -845,7 +847,9 @@ describe("PostRepository.loadRefs: a hidden original is an unavailable embed", (
             followers: 0,
             following: 0,
             verified: false,
-            avatar_r2_key: null,
+            avatar_media_status: null,
+            avatar_served_key: null,
+            avatar_thumb_key: null,
             avatar_url: null,
             is_following: false,
             deleted_at: null,
@@ -998,7 +1002,9 @@ describe("PostRepository organization hydration", () => {
     bio: null,
     followers: 0,
     following: 0,
-    avatar_r2_key: null,
+    avatar_media_status: null,
+    avatar_served_key: null,
+    avatar_thumb_key: null,
     avatar_url: null,
     is_following: false,
     deleted_at: null,
@@ -1028,7 +1034,10 @@ describe("PostRepository organization hydration", () => {
   function repoOver(organizationId: string | null) {
     const fake = makeFakeSql([
       { match: /FROM posts p WHERE p\.id = \?/, rows: [postRow(organizationId)] },
-      { match: /LEFT JOIN media_assets am ON am\.id = u\.avatar_media_id/, rows: [authorRow] },
+      {
+        match: /FROM users u\s+LEFT JOIN media_assets am ON am\.id = u\.avatar_media_id/,
+        rows: [authorRow],
+      },
     ])
     const repo = makeDrizzlePostRepository(fake.sql as unknown as Sql, {
       presignMedia: () => Promise.resolve({ url: "u" }),
@@ -1087,7 +1096,10 @@ describe("PostRepository organization hydration", () => {
         match: /FROM posts p WHERE p\.id = \?/,
         rows: [{ ...postRow(null), organization_id: undefined }],
       },
-      { match: /LEFT JOIN media_assets am ON am\.id = u\.avatar_media_id/, rows: [authorRow] },
+      {
+        match: /FROM users u\s+LEFT JOIN media_assets am ON am\.id = u\.avatar_media_id/,
+        rows: [authorRow],
+      },
     ])
     const repo = makeDrizzlePostRepository(fake.sql as unknown as Sql, {
       presignMedia: () => Promise.resolve({ url: "u" }),
@@ -1113,7 +1125,9 @@ describe("PostRepository hydration drops missing reference ids", () => {
     bio: null,
     followers: 0,
     following: 0,
-    avatar_r2_key: null,
+    avatar_media_status: null,
+    avatar_served_key: null,
+    avatar_thumb_key: null,
     avatar_url: null,
     is_following: false,
     deleted_at: null,
@@ -1140,7 +1154,10 @@ describe("PostRepository hydration drops missing reference ids", () => {
   function repoOver(row: Record<string, unknown>) {
     const fake = makeFakeSql([
       { match: /FROM posts p WHERE p\.id = \?/, rows: [row] },
-      { match: /LEFT JOIN media_assets am ON am\.id = u\.avatar_media_id/, rows: [authorRow] },
+      {
+        match: /FROM users u\s+LEFT JOIN media_assets am ON am\.id = u\.avatar_media_id/,
+        rows: [authorRow],
+      },
     ])
     const repo = makeDrizzlePostRepository(fake.sql as unknown as Sql, {
       presignMedia: () => Promise.resolve({ url: "u" }),

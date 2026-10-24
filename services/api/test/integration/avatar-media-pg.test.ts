@@ -265,29 +265,33 @@ describe.skipIf(!pg)("CVX-004 avatar media validation (integration)", () => {
       return row!.avatar_media_id
     }
 
-    it("accepts a ready, unbound image and canonicalizes avatar_url", async () => {
+    it("binds a ready, unbound image and leaves avatar_url as stored", async () => {
       const { store, id, handle } = await makeUser()
       const media = await seedMedia()
       const updated = await store.updateProfile(id, {
         handle,
         displayName: "Avatar User",
         avatarUploadId: media.uploadId,
-        presignAvatar: (key) => Promise.resolve(`https://cdn.example.test/${key}`),
       })
-      expect(updated.avatarUrl).toBe(`https://cdn.example.test/${media.servedKey}`)
+      expect(updated.avatarUrl).toBeNull()
+      expect(updated.avatarMedia).toEqual({
+        status: "ready",
+        servedKey: media.servedKey,
+        thumbKey: null,
+      })
       expect(await avatarMediaIdOf(id)).toBe(media.id)
     })
 
-    it("binds a finalized-but-validating upload and leaves avatar_url for the worker to publish", async () => {
+    it("binds a finalized-but-validating upload and leaves avatar_url as stored", async () => {
       const { store, id, handle } = await makeUser()
       const media = await seedMedia({ status: "validating", finalizedAt: new Date() })
       const updated = await store.updateProfile(id, {
         handle,
         displayName: "Avatar User",
         avatarUploadId: media.uploadId,
-        presignAvatar: (key) => Promise.resolve(`https://cdn.example.test/${key}`),
       })
       expect(updated.avatarUrl).toBeNull()
+      expect(updated.avatarMedia?.status).toBe("validating")
       expect(await avatarMediaIdOf(id)).toBe(media.id)
     })
 

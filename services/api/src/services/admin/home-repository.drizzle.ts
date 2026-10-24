@@ -3,6 +3,7 @@ import { makeDrizzleMailRepository } from "./mail-repository.drizzle.js"
 import { flaggedReportExpr } from "./admin-report-repository.drizzle.js"
 import { flaggedEventExpr } from "./admin-event-repository.drizzle.js"
 import { reportRoutableExpr } from "./sql-fragments.js"
+import { STATUS_BUCKETS } from "./admin-report-status.js"
 import { toEventStatus } from "./event-status.js"
 import { DISCOVERY_SLA_HOURS } from "./discovery-service.js"
 import type {
@@ -16,6 +17,8 @@ import type {
 } from "./home-repository.js"
 import type { EventKind, ReportCategory } from "@civfix/contract"
 import { adminEventStatusExpr } from "../cleanup-sql.js"
+
+const OPEN_REPORT_STATUSES = [...STATUS_BUCKETS.submitted, ...STATUS_BUCKETS.in_progress]
 
 function num(value: string | null | undefined): number {
   if (value == null) return 0
@@ -161,6 +164,8 @@ export function makeDrizzleHomeRepository(sql: Sql): HomeRepository {
       return num(rows[0]?.n)
     },
 
+    // The map shows only what still needs attention: reports in an open bucket and events the status
+    // expression calls upcoming or in progress. Both filters run before LIMIT so closed rows never take a pin.
     async recentPins(limit: number): Promise<HomeMapPinRecord[]> {
       const half = Math.max(1, Math.floor(limit / 2))
       const [reportRows, eventRows] = await Promise.all([
@@ -188,6 +193,7 @@ export function makeDrizzleHomeRepository(sql: Sql): HomeRepository {
           FROM reports r
           LEFT JOIN jurisdictions j ON j.geoid = r.jurisdiction_geoid
           WHERE r.deleted_at IS NULL AND r.visibility = 'public' AND r.created_at IS NOT NULL
+            AND r.status = ANY(${OPEN_REPORT_STATUSES})
           ORDER BY r.created_at DESC
           LIMIT ${half}
         `,
@@ -215,6 +221,7 @@ export function makeDrizzleHomeRepository(sql: Sql): HomeRepository {
             c.address AS place,
             (SELECT COUNT(*) FROM cleanup_members m WHERE m.cleanup_id = c.id)::text AS attendees
           FROM cleanups c
+          WHERE c.status <> 'cancelled' AND c.ends_at > now()
           ORDER BY c.scheduled_at DESC
           LIMIT ${half}
         `,

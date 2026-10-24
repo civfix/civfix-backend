@@ -59,6 +59,7 @@ import { perHost, perIdentity } from "../plugins/rate-limit.js"
 import { route } from "../versioning/route.js"
 import { chatHistoryPayload, clampChatHistoryLimit } from "./chat-route-helpers.js"
 import { CappedBBoxQueryParam, LatLngQueryParam } from "./query-encoding.js"
+import { avatarPresigner } from "../services/user-avatar.js"
 
 export interface CleanupServiceOverrides {
   repo: CleanupRepository
@@ -222,7 +223,9 @@ export function makeContainerCleanupService(
 ): CleanupService {
   const overrides = app.cleanupOverrides
   const repo: CleanupRepository =
-    overrides !== undefined ? overrides.repo : makeDrizzleCleanupRepository(container.getDb().sql)
+    overrides !== undefined
+      ? overrides.repo
+      : makeDrizzleCleanupRepository(container.getDb().sql, avatarPresigner(container.storage))
   const tickets = container.getTicketTokenSigner()
   const deps =
     overrides !== undefined
@@ -237,11 +240,12 @@ export async function registerCleanupRoutes(
 ): Promise<void> {
   const csrfProtect = container.csrf.protect
   const webOrigin = webBaseUrlOf(container.env)
+  const presignAvatar = avatarPresigner(container.storage)
 
   function repo(): CleanupRepository {
     const overrides = app.cleanupOverrides
     if (overrides) return overrides.repo
-    return makeDrizzleCleanupRepository(container.getDb().sql)
+    return makeDrizzleCleanupRepository(container.getDb().sql, presignAvatar)
   }
 
   let pinsChatRepo: ChatRepository | undefined
@@ -251,6 +255,7 @@ export async function registerCleanupRoutes(
     return (pinsChatRepo ??= makeDrizzleChatRepository(
       container.getDb().sql,
       makePrivateMediaPresigner(container.storage),
+      presignAvatar,
     ))
   }
 

@@ -6,6 +6,7 @@ import { NIL_VIEWER_ID } from "../../src/services/post-repository.drizzle.js"
 import type { PostBrief, PostRepository } from "../../src/services/post-repository.js"
 import type { PostNotifier } from "../../src/services/notification-service.js"
 import { makeDrizzleBlocksRepository } from "../../src/services/blocks-repository.drizzle.js"
+import { fakeAvatarPresigner } from "../helpers/avatar-fixtures.js"
 import { InMemoryBlocksRepository } from "../../src/services/dm-repository.memory.js"
 import { makeFakeSql } from "../helpers/fake-sql.js"
 
@@ -180,7 +181,7 @@ describe("post reads by the anonymous viewer skip the block gate", () => {
 describe("blockedIdsAmong", () => {
   it("binds the candidates as one uuid array per side, not one parameter per id", async () => {
     const fake = makeFakeSql([{ match: /FROM user_blocks b/, rows: [{ other_id: BLOCKED }] }])
-    const repo = makeDrizzleBlocksRepository(fake.sql as unknown as Sql)
+    const repo = makeDrizzleBlocksRepository(fake.sql as unknown as Sql, fakeAvatarPresigner)
     const ids = MENTIONED.slice(0, 5)
 
     const blocked = await repo.blockedIdsAmong(AUTHOR, ids)
@@ -194,7 +195,7 @@ describe("blockedIdsAmong", () => {
 
   it("runs no statement for an empty candidate list", async () => {
     const fake = makeFakeSql()
-    const repo = makeDrizzleBlocksRepository(fake.sql as unknown as Sql)
+    const repo = makeDrizzleBlocksRepository(fake.sql as unknown as Sql, fakeAvatarPresigner)
     expect(await repo.blockedIdsAmong(AUTHOR, [])).toEqual(new Set())
     expect(fake.statements).toHaveLength(0)
   })

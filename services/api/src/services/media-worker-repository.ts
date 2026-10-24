@@ -82,7 +82,6 @@ export interface MediaWorkerRepository {
     kind?: "image" | "duplicate"
     note?: string | null
   }): Promise<void>
-  refreshAvatarUrls?(mediaId: string, avatarUrl: string): Promise<number>
 
   recordLeakedObjects(input: {
     mediaId: string | null
