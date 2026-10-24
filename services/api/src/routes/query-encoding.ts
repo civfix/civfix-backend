@@ -33,7 +33,7 @@ function jsonParam<S extends z.ZodTypeAny>(inner: S) {
 }
 
 /** An unknown token is a 422, not a silent drop; omit the key entirely for "no filter". */
-function csvOrRepeated<S extends z.ZodTypeAny>(element: S) {
+function csvOrRepeated<S extends z.ZodType<unknown, string>>(element: S) {
   return z
     .union([z.string(), z.array(z.string())])
     .transform((value) => {

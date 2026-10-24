@@ -12,6 +12,7 @@ import {
   makeMessageUpdateAnnouncer,
   type MessageUpdateAnnouncer,
 } from "../../services/admin/admin-report-chat-service.js"
+import { avatarPresigner } from "../../services/user-avatar.js"
 
 export { parse }
 
@@ -89,8 +90,9 @@ export function makeContainerMessageUpdateAnnouncer(
 ): MessageUpdateAnnouncer {
   const sql = container.getDb().sql
   const presign = makePrivateMediaPresigner(container.storage)
-  const chatRepo = makeDrizzleChatRepository(sql, presign)
-  const dmRepo = makeDrizzleDmRepository(sql, presign)
+  const presignAvatar = avatarPresigner(container.storage)
+  const chatRepo = makeDrizzleChatRepository(sql, presign, presignAvatar)
+  const dmRepo = makeDrizzleDmRepository(sql, presign, presignAvatar)
   const historyAround = (kind: RoomKind, roomId: string, messageId: string) => {
     switch (kind) {
       case "dm":

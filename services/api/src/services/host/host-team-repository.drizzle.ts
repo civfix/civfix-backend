@@ -34,13 +34,23 @@ import type {
 } from "./host-team-repository.js"
 import { TEAM_INVITE_CAP_MESSAGE } from "./host-team-rules.js"
 import { personViewOf, UNKNOWN_PERSON_NAME } from "./organization-repository-rows.drizzle.js"
+import {
+  userAvatarColumns,
+  resolveAvatarColumns,
+  type AvatarPresigner,
+  type UserAvatarColumns,
+} from "../user-avatar.js"
 
 const TEAM_INVITE_PENDING_CONSTRAINTS = [
   "cleanup_team_invites_pending_user_uidx",
   "cleanup_team_invites_pending_email_uidx",
 ]
 
-interface InviteRowSelect {
+type InvitePrefix = "invitee_" | "inviter_"
+
+const INVITE_PEOPLE: readonly InvitePrefix[] = ["invitee_", "inviter_"]
+
+interface InviteRowSelect extends UserAvatarColumns<InvitePrefix> {
   id: string
   cleanup_id: string
   role: EventTeamRole
@@ -52,11 +62,9 @@ interface InviteRowSelect {
   invitee_id: string | null
   invitee_name: string | null
   invitee_handle: string | null
-  invitee_avatar_url: string | null
   inviter_id: string | null
   inviter_name: string | null
   inviter_handle: string | null
-  inviter_avatar_url: string | null
 }
 
 function inviteColumns(sql: Queryable) {
@@ -72,12 +80,29 @@ function inviteColumns(sql: Queryable) {
     iu.id AS invitee_id,
     iu.display_name AS invitee_name,
     iu.handle AS invitee_handle,
-    iu.avatar_url AS invitee_avatar_url,
+    ${userAvatarColumns(sql, "iu", "iam", "invitee_")},
     bu.id AS inviter_id,
     bu.display_name AS inviter_name,
     bu.handle AS inviter_handle,
-    bu.avatar_url AS inviter_avatar_url
+    ${userAvatarColumns(sql, "bu", "bam", "inviter_")}
   `
+}
+
+function invitePeopleJoins(sql: Queryable) {
+  return sql`
+    LEFT JOIN users iu ON iu.id = i.invited_user_id
+    LEFT JOIN media_assets iam ON iam.id = iu.avatar_media_id
+    LEFT JOIN users bu ON bu.id = i.invited_by
+    LEFT JOIN media_assets bam ON bam.id = bu.avatar_media_id
+  `
+}
+
+async function toInviteRecords(
+  presignAvatar: AvatarPresigner | undefined,
+  rows: readonly InviteRowSelect[],
+): Promise<EventTeamInviteRecord[]> {
+  await resolveAvatarColumns(presignAvatar, rows, INVITE_PEOPLE)
+  return rows.map(toInviteRecord)
 }
 
 function toInviteRecord(row: InviteRowSelect): EventTeamInviteRecord {
@@ -113,7 +138,7 @@ function toInviteRecord(row: InviteRowSelect): EventTeamInviteRecord {
   }
 }
 
-interface PendingInviteForUserRowSelect {
+interface PendingInviteForUserRowSelect extends UserAvatarColumns<"inviter_"> {
   id: string
   role: EventTeamRole
   created_at: Date
@@ -129,7 +154,6 @@ interface PendingInviteForUserRowSelect {
   inviter_id: string | null
   inviter_name: string | null
   inviter_handle: string | null
-  inviter_avatar_url: string | null
 }
 
 function toPendingInviteForUser(row: PendingInviteForUserRowSelect): PendingInviteForUserRecord {
@@ -164,12 +188,12 @@ function toPendingInviteForUser(row: PendingInviteForUserRowSelect): PendingInvi
 async function readOpenInvite(
   tag: Queryable,
   args: OpenTeamInviteQuery,
+  presignAvatar: AvatarPresigner | undefined,
 ): Promise<EventTeamInviteRecord | null> {
   const rows = await tag<InviteRowSelect[]>`
     SELECT ${inviteColumns(tag)}
     FROM cleanup_team_invites i
-    LEFT JOIN users iu ON iu.id = i.invited_user_id
-    LEFT JOIN users bu ON bu.id = i.invited_by
+    ${invitePeopleJoins(tag)}
     WHERE i.cleanup_id = ${args.cleanupId}
       AND i.status = 'pending'
       AND (
@@ -179,15 +203,15 @@ async function readOpenInvite(
     ORDER BY i.created_at DESC, i.id DESC
     LIMIT 1
   `
-  const row = rows[0]
-  return row === undefined ? null : toInviteRecord(row)
+  return (await toInviteRecords(presignAvatar, rows))[0] ?? null
 }
 
 async function reofferOpenInvite(
   tx: Queryable,
   args: CreateTeamInviteArgs,
+  presignAvatar: AvatarPresigner | undefined,
 ): Promise<Extract<CreateTeamInviteOutcome, { kind: "already_invited" | "updated" }> | null> {
-  const open = await readOpenInvite(tx, args)
+  const open = await readOpenInvite(tx, args, presignAvatar)
   if (open === null) return null
   if (open.role === args.role) return { kind: "already_invited", invite: open }
   const rows = await tx<{ id: string }[]>`
@@ -328,23 +352,27 @@ async function seatFromInviteInTx(
   return role
 }
 
-export function makeDrizzleHostTeamRepository(sql: Sql): HostTeamRepository {
+export function makeDrizzleHostTeamRepository(
+  sql: Sql,
+  presignAvatar?: AvatarPresigner,
+): HostTeamRepository {
   return {
     async listTeam(cleanupId: string, limit: number): Promise<EventTeamMemberRecord[]> {
       const rows = await sql<
-        {
+        (UserAvatarColumns & {
           id: string
           display_name: string
           handle: string | null
           bio: string | null
-          avatar_url: string | null
           role: CleanupMemberRole
           joined_at: Date | null
-        }[]
+        })[]
       >`
-        SELECT u.id, u.display_name, u.handle, u.bio, u.avatar_url, m.role, m.joined_at
+        SELECT u.id, u.display_name, u.handle, u.bio, ${userAvatarColumns(sql, "u", "am")},
+               m.role, m.joined_at
         FROM cleanup_members m
         JOIN users u ON u.id = m.user_id
+        LEFT JOIN media_assets am ON am.id = u.avatar_media_id
         WHERE m.cleanup_id = ${cleanupId} AND m.role <> 'member'
         ORDER BY
           CASE m.role
@@ -354,6 +382,7 @@ export function makeDrizzleHostTeamRepository(sql: Sql): HostTeamRepository {
           u.id ASC
         LIMIT ${limit}
       `
+      await resolveAvatarColumns(presignAvatar, rows)
       return rows.map((r) => ({
         person: {
           id: r.id,
@@ -371,13 +400,12 @@ export function makeDrizzleHostTeamRepository(sql: Sql): HostTeamRepository {
       const rows = await sql<InviteRowSelect[]>`
         SELECT ${inviteColumns(sql)}
         FROM cleanup_team_invites i
-        LEFT JOIN users iu ON iu.id = i.invited_user_id
-        LEFT JOIN users bu ON bu.id = i.invited_by
+        ${invitePeopleJoins(sql)}
         WHERE i.cleanup_id = ${cleanupId} AND i.status = 'pending'
         ORDER BY i.created_at DESC, i.id DESC
         LIMIT ${limit}
       `
-      return rows.map(toInviteRecord)
+      return toInviteRecords(presignAvatar, rows)
     },
 
     async countPendingInvites(cleanupId: string): Promise<number> {
@@ -389,7 +417,7 @@ export function makeDrizzleHostTeamRepository(sql: Sql): HostTeamRepository {
     },
 
     findOpenInvite(query: OpenTeamInviteQuery): Promise<EventTeamInviteRecord | null> {
-      return readOpenInvite(sql, query)
+      return readOpenInvite(sql, query, presignAvatar)
     },
 
     async resolveUserByHandle(
@@ -419,7 +447,7 @@ export function makeDrizzleHostTeamRepository(sql: Sql): HostTeamRepository {
               return { kind: "banned" }
             }
           }
-          const open = await reofferOpenInvite(tx, args)
+          const open = await reofferOpenInvite(tx, args, presignAvatar)
           if (open !== null) return open
           // Serializes concurrent inviters on one event so the cap is counted, not raced.
           await tx`SELECT pg_advisory_xact_lock(hashtext('team_invites:' || ${args.cleanupId}))`
@@ -451,11 +479,10 @@ export function makeDrizzleHostTeamRepository(sql: Sql): HostTeamRepository {
             )
             SELECT ${inviteColumns(tx)}
             FROM ins i
-            LEFT JOIN users iu ON iu.id = i.invited_user_id
-            LEFT JOIN users bu ON bu.id = i.invited_by
+            ${invitePeopleJoins(tx)}
           `
-          const row = inserted[0]
-          if (row === undefined) throw AppError.internal()
+          const [invite] = await toInviteRecords(presignAvatar, inserted)
+          if (invite === undefined) throw AppError.internal()
           await writeHostAudit(tx, {
             actorId: args.invitedBy,
             action: "event.team_invited",
@@ -467,11 +494,11 @@ export function makeDrizzleHostTeamRepository(sql: Sql): HostTeamRepository {
               byEmail: args.invitedEmail !== null,
             },
           })
-          return { kind: "created", invite: toInviteRecord(row) }
+          return { kind: "created", invite }
         })
       } catch (err) {
         if (isUniqueViolationOn(err, ...TEAM_INVITE_PENDING_CONSTRAINTS)) {
-          const open = await sql.begin((tx) => reofferOpenInvite(tx, args))
+          const open = await sql.begin((tx) => reofferOpenInvite(tx, args, presignAvatar))
           if (open === null) throw err
           return open
         }
@@ -587,11 +614,12 @@ export function makeDrizzleHostTeamRepository(sql: Sql): HostTeamRepository {
           bu.id AS inviter_id,
           bu.display_name AS inviter_name,
           bu.handle AS inviter_handle,
-          bu.avatar_url AS inviter_avatar_url
+          ${userAvatarColumns(sql, "bu", "bam", "inviter_")}
         FROM cleanup_team_invites i
         JOIN cleanups c ON c.id = i.cleanup_id
         LEFT JOIN media_assets ma ON ma.id = c.cover_media_id
         LEFT JOIN users bu ON bu.id = i.invited_by
+        LEFT JOIN media_assets bam ON bam.id = bu.avatar_media_id
         WHERE i.invited_user_id = ${args.userId}
           AND i.status = 'pending'
           AND i.expires_at > ${args.now}
@@ -604,6 +632,7 @@ export function makeDrizzleHostTeamRepository(sql: Sql): HostTeamRepository {
         atText: last.cursor_at,
         id: last.id,
       }))
+      await resolveAvatarColumns(presignAvatar, page.items, ["inviter_"])
       return { items: page.items.map(toPendingInviteForUser), nextCursor: page.nextCursor }
     },
 

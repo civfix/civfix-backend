@@ -22,6 +22,7 @@ import { isOfficialAccount } from "../auth/official-account.js"
 import { clearCsrfCookie } from "../auth/csrf.js"
 import { clearSessionCookie } from "../auth/transport.js"
 import { makeDrizzleUserSearchRepository } from "../services/user-search-repository.drizzle.js"
+import { avatarPresigner } from "../services/user-avatar.js"
 import { toUserDTO, type AuthServices } from "../auth/auth-services.js"
 import { exposeMessage } from "../errors/exposed-message.js"
 import { insertAuditRow } from "../services/admin/audit-repository.drizzle.js"
@@ -71,6 +72,7 @@ export async function registerUsersRoutes(
   container: Container,
 ): Promise<void> {
   const csrfProtect = container.csrf.protect
+  const presignAvatar = avatarPresigner(container.storage)
 
   function blocksRepo(): BlocksRepository {
     return app.chatOverrides?.blocksRepo ?? container.getBlocksRepo()
@@ -88,11 +90,10 @@ export async function registerUsersRoutes(
       const results =
         term.length === 0
           ? []
-          : await makeDrizzleUserSearchRepository(container.getDb().sql).searchByHandlePrefix(
-              term,
-              userId,
-              limit,
-            )
+          : await makeDrizzleUserSearchRepository(
+              container.getDb().sql,
+              presignAvatar,
+            ).searchByHandlePrefix(term, userId, limit)
       const payload: SearchUsersResponse = { results }
       reply.status(200).send(payload)
     },
@@ -109,11 +110,10 @@ export async function registerUsersRoutes(
       const results =
         term.length === 0
           ? []
-          : await makeDrizzleUserSearchRepository(container.getDb().sql).searchMentionable(
-              term,
-              userId,
-              USER_SEARCH_DEFAULT_LIMIT,
-            )
+          : await makeDrizzleUserSearchRepository(
+              container.getDb().sql,
+              presignAvatar,
+            ).searchMentionable(term, userId, USER_SEARCH_DEFAULT_LIMIT)
       const payload: SearchUsersResponse = { results }
       reply.status(200).send(payload)
     },
@@ -194,7 +194,7 @@ export async function registerUsersRoutes(
         ? await store.findById(userId)
         : await store.updateSettings(userId, patch)
     if (!updated) throw AppError.unauthorized(AUTH_REQUIRED_MESSAGE)
-    const payload: UpdateSettingsResponse = { user: toUserDTO(updated) }
+    const payload: UpdateSettingsResponse = { user: await toUserDTO(updated, presignAvatar) }
     reply.status(200).send(payload)
   })
 

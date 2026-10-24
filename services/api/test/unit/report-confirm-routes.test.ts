@@ -149,7 +149,12 @@ describe("POST /v1/reports/:id/confirm", () => {
     const h = await makeHarness()
     const res = await confirm(h, h.b, h.r.id)
     expect(res.statusCode).toBe(200)
-    expect(res.json()).toEqual({ confirmCount: 1, confirmedByMe: true })
+    expect(res.json()).toEqual({
+      confirmCount: 1,
+      confirmedByMe: true,
+      fixedCount: 0,
+      fixedByMe: false,
+    })
     expect(rowsOf(h, h.r.id)).toEqual([h.b.userId])
     expect(countOf(h, h.r.id)).toBe(1)
   })
@@ -159,7 +164,12 @@ describe("POST /v1/reports/:id/confirm", () => {
     await confirm(h, h.b, h.r.id)
     const res = await confirm(h, h.b, h.r.id)
     expect(res.statusCode).toBe(200)
-    expect(res.json()).toEqual({ confirmCount: 1, confirmedByMe: true })
+    expect(res.json()).toEqual({
+      confirmCount: 1,
+      confirmedByMe: true,
+      fixedCount: 0,
+      fixedByMe: false,
+    })
     expect(rowsOf(h, h.r.id)).toEqual([h.b.userId])
     expect(countOf(h, h.r.id)).toBe(1)
   })
@@ -169,7 +179,12 @@ describe("POST /v1/reports/:id/confirm", () => {
     await confirm(h, h.b, h.r.id)
     const res = await confirm(h, h.c, h.r.id)
     expect(res.statusCode).toBe(200)
-    expect(res.json()).toEqual({ confirmCount: 2, confirmedByMe: true })
+    expect(res.json()).toEqual({
+      confirmCount: 2,
+      confirmedByMe: true,
+      fixedCount: 0,
+      fixedByMe: false,
+    })
   })
 
   it("T4: B confirms an acknowledged R and an in_progress second report", async () => {
@@ -179,7 +194,12 @@ describe("POST /v1/reports/:id/confirm", () => {
     for (const id of [h.r.id, second.id]) {
       const res = await confirm(h, h.b, id)
       expect(res.statusCode).toBe(200)
-      expect(res.json()).toEqual({ confirmCount: 1, confirmedByMe: true })
+      expect(res.json()).toEqual({
+        confirmCount: 1,
+        confirmedByMe: true,
+        fixedCount: 0,
+        fixedByMe: false,
+      })
     }
   })
 
@@ -202,7 +222,12 @@ describe("DELETE /v1/reports/:id/confirm", () => {
     await confirm(h, h.c, h.r.id)
     const res = await unconfirm(h, h.b, h.r.id)
     expect(res.statusCode).toBe(200)
-    expect(res.json()).toEqual({ confirmCount: 1, confirmedByMe: false })
+    expect(res.json()).toEqual({
+      confirmCount: 1,
+      confirmedByMe: false,
+      fixedCount: 0,
+      fixedByMe: false,
+    })
     expect(rowsOf(h, h.r.id)).toEqual([h.c.userId])
   })
 
@@ -213,7 +238,12 @@ describe("DELETE /v1/reports/:id/confirm", () => {
     await unconfirm(h, h.b, h.r.id)
     const res = await unconfirm(h, h.b, h.r.id)
     expect(res.statusCode).toBe(200)
-    expect(res.json()).toEqual({ confirmCount: 1, confirmedByMe: false })
+    expect(res.json()).toEqual({
+      confirmCount: 1,
+      confirmedByMe: false,
+      fixedCount: 0,
+      fixedByMe: false,
+    })
     expect(countOf(h, h.r.id)).toBe(1)
   })
 
@@ -221,7 +251,12 @@ describe("DELETE /v1/reports/:id/confirm", () => {
     const h = await makeHarness()
     const res = await unconfirm(h, h.b, h.r.id)
     expect(res.statusCode).toBe(200)
-    expect(res.json()).toEqual({ confirmCount: 0, confirmedByMe: false })
+    expect(res.json()).toEqual({
+      confirmCount: 0,
+      confirmedByMe: false,
+      fixedCount: 0,
+      fixedByMe: false,
+    })
     expect(countOf(h, h.r.id)).toBe(0)
   })
 
@@ -231,7 +266,12 @@ describe("DELETE /v1/reports/:id/confirm", () => {
     h.repo.reports.get(h.r.id)!.status = "resolved"
     const res = await unconfirm(h, h.b, h.r.id)
     expect(res.statusCode).toBe(200)
-    expect(res.json()).toEqual({ confirmCount: 0, confirmedByMe: false })
+    expect(res.json()).toEqual({
+      confirmCount: 0,
+      confirmedByMe: false,
+      fixedCount: 0,
+      fixedByMe: false,
+    })
     expect(rowsOf(h, h.r.id)).toEqual([])
   })
 })

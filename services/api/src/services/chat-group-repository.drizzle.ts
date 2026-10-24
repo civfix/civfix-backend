@@ -9,6 +9,7 @@ import { userUploader } from "./media-uploader.js"
 import { monotonicReadWatermarkUpdate } from "./read-watermark-repository.drizzle.js"
 import { isUuid } from "../db/cursor-helpers.js"
 import { publicServedKeyExpr } from "./media-served-key.js"
+import { userAvatarColumns, resolveAvatarColumns, type AvatarPresigner } from "./user-avatar.js"
 import type {
   ChatGroupRepository,
   ChatGroupView,
@@ -74,7 +75,11 @@ async function toGroupAvatar(r: GroupRowSelect, presign?: PresignMedia): Promise
   }
 }
 
-export function makeChatGroupRepository(sql: Sql, presign?: PresignMedia): ChatGroupRepository {
+export function makeChatGroupRepository(
+  sql: Sql,
+  presign?: PresignMedia,
+  presignAvatar?: AvatarPresigner,
+): ChatGroupRepository {
   async function toGroupView(r: GroupRowSelect): Promise<ChatGroupView> {
     const avatar = await toGroupAvatar(r, presign)
     return {
@@ -103,7 +108,7 @@ export function makeChatGroupRepository(sql: Sql, presign?: PresignMedia): ChatG
       u.display_name,
       u.handle,
       u.bio,
-      u.avatar_url,
+      ${userAvatarColumns(sql, "u", "am")},
       u.deleted_at AS user_deleted_at,
       ${followingExpr} AS is_following,
       ${blockedPair} AS blocked_pair
@@ -289,9 +294,11 @@ export function makeChatGroupRepository(sql: Sql, presign?: PresignMedia): ChatG
         SELECT ${memberColumns(viewerId)}
         FROM chat_group_members m
         JOIN users u ON u.id = m.user_id
+        LEFT JOIN media_assets am ON am.id = u.avatar_media_id
         WHERE m.group_id = ${groupId} AND m.user_id = ${userId}
         LIMIT 1
       `
+      await resolveAvatarColumns(presignAvatar, rows)
       const row = rows[0]
       return row ? toMemberView(row) : null
     },
@@ -324,6 +331,7 @@ export function makeChatGroupRepository(sql: Sql, presign?: PresignMedia): ChatG
         SELECT ${memberColumns(viewerId)}
         FROM chat_group_members m
         JOIN users u ON u.id = m.user_id
+        LEFT JOIN media_assets am ON am.id = u.avatar_media_id
         WHERE m.group_id = ${groupId}
           ${cursorFilter}
         ORDER BY CASE m.role WHEN 'owner' THEN 0 WHEN 'admin' THEN 1 ELSE 2 END ASC,
@@ -332,6 +340,7 @@ export function makeChatGroupRepository(sql: Sql, presign?: PresignMedia): ChatG
       `
       const hasMore = rows.length > limit
       const page = hasMore ? rows.slice(0, limit) : rows
+      await resolveAvatarColumns(presignAvatar, page)
       const last = page[page.length - 1]
       return {
         members: page.map(toMemberView),

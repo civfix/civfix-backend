@@ -37,6 +37,7 @@ export interface ReportRowSelect {
   published_at: Date | null
   deleted_at: Date | null
   confirm_count: number
+  fixed_count: number
 }
 
 export function toRecord(r: ReportRowSelect): ReportRecord {
@@ -62,6 +63,7 @@ export function toRecord(r: ReportRowSelect): ReportRecord {
     publishedAt: r.published_at,
     deletedAt: r.deleted_at,
     confirmCount: r.confirm_count,
+    fixedCount: r.fixed_count,
   }
 }
 
@@ -70,7 +72,7 @@ export function reportColumns(sql: Queryable) {
     id, reporter_user_id, anon_session_id, category, type, title, description, addr, addr_source,
     addr_precision, status, visibility,
     ST_X(geom) AS lng, ST_Y(geom) AS lat, geom_source, jurisdiction_geoid, reference_code,
-    created_at, published_at, deleted_at, confirm_count
+    created_at, published_at, deleted_at, confirm_count, fixed_count
   `
 }
 
@@ -147,6 +149,7 @@ export interface PublicPinRow {
   thumb_key: string | null
   r2_key: string | null
   confirm_count: number
+  fixed_count: number
   created_at: Date
   cursor_at: string | null
 }
@@ -166,6 +169,7 @@ export function toMapPoint(r: Omit<PublicPinRow, "cursor_at">): ReportMapPoint {
     thumbKey: r.thumb_key,
     r2Key: r.r2_key,
     confirmCount: r.confirm_count,
+    fixedCount: r.fixed_count,
   }
 }
 
@@ -190,6 +194,7 @@ export async function selectPublicPins(
       m.thumb_key,
       m.r2_key,
       r.confirm_count,
+      r.fixed_count,
       r.created_at,
       ${keysetInstant(sql, sql`r.created_at`)} AS cursor_at
     FROM reports r

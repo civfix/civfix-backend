@@ -23,6 +23,7 @@ import { makeDrizzleCleanupRepository } from "../../src/services/cleanup-reposit
 import { makeDrizzleChatRepository } from "../../src/services/chat-repository.drizzle.js"
 import { makeDrizzleDmRepository } from "../../src/services/dm-repository.drizzle.js"
 import { makeDrizzleBlocksRepository } from "../../src/services/blocks-repository.drizzle.js"
+import { fakeAvatarPresigner } from "../helpers/avatar-fixtures.js"
 import { makeReportChatRepository } from "../../src/services/report-chat-repository.drizzle.js"
 import { makeCleanupService } from "../../src/services/cleanup-service.js"
 import { makeChatEditService } from "../../src/services/chat-edit-service.js"
@@ -86,7 +87,7 @@ describe.skipIf(!pg)("chat message edit (integration)", () => {
   function makeService(frames: { roomKey: string; frame: WsServerMessage }[] = []) {
     const chat = makeDrizzleChatRepository(h.sql)
     const dm = makeDrizzleDmRepository(h.sql)
-    const blocks = makeDrizzleBlocksRepository(h.sql)
+    const blocks = makeDrizzleBlocksRepository(h.sql, fakeAvatarPresigner)
     const cleanups = makeDrizzleCleanupRepository(h.sql)
     const reportChat = makeReportChatRepository(h.sql)
     return makeChatEditService({
@@ -355,7 +356,7 @@ describe.skipIf(!pg)("chat message edit (integration)", () => {
       threadsRepo: new InMemoryThreadsRepository(),
       dmRepo: makeDrizzleDmRepository(h.sql),
       chatRepo: new InMemoryChatRepository(),
-      blocksRepo: makeDrizzleBlocksRepository(h.sql),
+      blocksRepo: makeDrizzleBlocksRepository(h.sql, fakeAvatarPresigner),
     }
     const app: FastifyInstance = await makeServer({ env, authServices, chatOverrides: overrides })
 
@@ -418,7 +419,7 @@ describe.skipIf(!pg)("chat message edit (integration)", () => {
         threadsRepo: new InMemoryThreadsRepository(),
         dmRepo: makeDrizzleDmRepository(h.sql),
         chatRepo: makeDrizzleChatRepository(h.sql),
-        blocksRepo: makeDrizzleBlocksRepository(h.sql),
+        blocksRepo: makeDrizzleBlocksRepository(h.sql, fakeAvatarPresigner),
         reportChat: makeReportChatRepository(h.sql),
       }
       container = makeContainer(env)
@@ -591,7 +592,7 @@ describe.skipIf(!pg)("chat message edit (integration)", () => {
         threadsRepo: new InMemoryThreadsRepository(),
         dmRepo: dm,
         chatRepo: makeDrizzleChatRepository(h.sql),
-        blocksRepo: makeDrizzleBlocksRepository(h.sql),
+        blocksRepo: makeDrizzleBlocksRepository(h.sql, fakeAvatarPresigner),
         reportChat,
         groups,
         chatPolls: makeChatPollRepository(h.sql),

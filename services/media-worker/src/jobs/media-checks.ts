@@ -61,16 +61,11 @@ export interface MediaChecksDeps extends JobObsDeps {
   limits: WorkerLimits
   download: DownloadFn
   findPhashDuplicate?: FindPhashDuplicateFn
-  publicMediaBase?: string
   /**
    * Aborted when the worker interrupts in-flight jobs on stop; it also kills the sandbox children then.
    * A job that sees it before persisting anything hands itself back instead of judging the upload.
    */
   stopSignal?: AbortSignal
-}
-
-function publicMediaUrl(base: string, key: string): string {
-  return `${base.replace(/\/+$/, "")}/${key.replace(/^\/+/, "")}`
 }
 
 export interface MediaChecksPayload {
@@ -203,7 +198,7 @@ async function processAsset(
   if (applied === null) {
     return settleTerminalRace(asset, deps, { attempted: result.status, uploaded })
   }
-  await afterApply(asset, result, applied, uploaded, deps)
+  await afterApply(asset, result, uploaded, deps)
   return result.status
 }
 
@@ -388,7 +383,6 @@ async function persistResult(
 async function afterApply(
   asset: MediaWorkerAsset,
   result: MediaProcessResult,
-  applied: MediaWorkerAsset,
   uploaded: boolean,
   deps: MediaChecksDeps,
 ): Promise<void> {
@@ -405,7 +399,7 @@ async function afterApply(
     await onHeld(asset, result, deps, log)
     return
   }
-  await onReady(asset, result, applied, deps, log)
+  logReady(asset, result, log)
 }
 
 async function onHeld(
@@ -432,13 +426,7 @@ async function onHeld(
     )
 }
 
-async function onReady(
-  asset: MediaWorkerAsset,
-  result: MediaProcessResult,
-  applied: MediaWorkerAsset,
-  deps: MediaChecksDeps,
-  log: JobLogFn,
-): Promise<void> {
+function logReady(asset: MediaWorkerAsset, result: MediaProcessResult, log: JobLogFn): void {
   log("media.checks: ready", {
     mediaId: asset.id,
     kind: asset.kind,
@@ -447,12 +435,6 @@ async function onReady(
     codec: result.codec,
     exifGpsPresent: result.exifGps !== null,
   })
-  if (!applied.servedKey || !deps.publicMediaBase || !deps.repo.refreshAvatarUrls) return
-  await deps.repo
-    .refreshAvatarUrls(asset.id, publicMediaUrl(deps.publicMediaBase, applied.servedKey))
-    .catch((err: unknown) =>
-      log("media.checks: avatar url refresh failed (non-fatal)", { err: String(err) }),
-    )
 }
 
 async function settleTerminalRace(
