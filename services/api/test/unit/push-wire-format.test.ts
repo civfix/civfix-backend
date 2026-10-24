@@ -8,6 +8,13 @@ import type { ClientHttp2Session, IncomingHttpHeaders } from "node:http2"
 import { generateKeyPairSync } from "node:crypto"
 import type { AddressInfo } from "node:net"
 import type { PushPayload } from "@civfix/seams"
+import {
+  NOTIFICATION_SECTIONS,
+  NotificationCategorySchema,
+  decodePushMessageData,
+  encodePushMessageData,
+  type NotificationCategory,
+} from "@civfix/contract"
 import type { PushDelivery, PushLogger } from "../../src/adapters/push-sender.js"
 import { fakePushDb } from "../helpers/push-db.js"
 import { MAP, N1, N2, P } from "../helpers/push-fixtures.js"
@@ -212,7 +219,7 @@ describe("FCM dispatcher", () => {
       likesAndReposts: "social",
       organizations: "organizations",
     }
-    const categories = Object.keys(expected)
+    const categories = Object.keys(expected) as NotificationCategory[]
     expect(categories).toHaveLength(11)
 
     await fcmDispatcher()(categories.map((c) => visible(`fcm-${c}`, P(N1, c))))
@@ -224,14 +231,6 @@ describe("FCM dispatcher", () => {
       expect(channel, category).toBe(expected[category])
     }
     expect(fcmMessages()).toHaveLength(11)
-  })
-
-  it("T12: a push with no id or category gets the default channel, no tag, and only kind and type", async () => {
-    await fcmDispatcher()([visible("fcm-a", { title: "Hi", data: { type: "system" } })])
-
-    const [message] = fcmMessages()
-    expect(message!.android).toEqual({ notification: { channelId: "default" } })
-    expect(message!.data).toEqual({ kind: "notification", type: "system" })
   })
 
   it("T13: invalid-argument prunes a token only when another message in the same call succeeded", async () => {
@@ -290,15 +289,6 @@ describe("APNs dispatcher", () => {
       },
       body: MAP(N1, "reportUpdates"),
     })
-  })
-
-  it("T15: a push with no id or category has no collapse id and no thread id", async () => {
-    await apnsDispatcher()([visible("ab".repeat(32), { title: "Hi", data: { type: "system" } })])
-
-    const { headers, body } = apnsRequests[0]!
-    expect(headers["apns-collapse-id"]).toBeUndefined()
-    expect(body.aps).not.toHaveProperty("thread-id")
-    expect(body.body).toEqual({ kind: "notification", type: "system" })
   })
 
   it("T21: a silent clear is a background push at priority 5 with only content-available", async () => {
@@ -393,5 +383,130 @@ describe("no provider is reached", () => {
     expect(apnsRequests).toHaveLength(2)
     expect(fcmMessages()).toHaveLength(2)
     expect(webModuleLoads).toBe(1)
+  })
+})
+
+// GH#221: the dispatchers build PushMessageData from the payload and encode it with the contract's codec,
+// so the app decodes exactly what the backend sent.
+describe("GH#221: the contract's push codec on the wire", () => {
+  const notificationData = (category: PushPayload["category"]) =>
+    ({
+      kind: "notification",
+      notificationId: N1,
+      type: "report_update",
+      category,
+      link: "/reports/r1",
+    }) as const
+
+  function webDispatcher(sent: string[]) {
+    const d = makeWebPushDispatcher(
+      {
+        publicKey: "pub",
+        privateKey: "priv",
+        subject: "mailto:ops@civfix.test",
+        resolveAddresses: () => Promise.resolve(["93.184.216.34"]),
+        loadModule: () =>
+          Promise.resolve({
+            setVapidDetails: () => {},
+            sendNotification: (_sub: unknown, body: string) => {
+              sent.push(body)
+              return Promise.resolve({ statusCode: 201 })
+            },
+          }),
+      },
+      quietLogger().logger,
+    )
+    closers.push(() => d.close?.() ?? Promise.resolve())
+    return d
+  }
+
+  const subscription = JSON.stringify({
+    endpoint: "https://push.example.test/sub/1",
+    keys: { p256dh: "p".repeat(87), auth: "a".repeat(22) },
+  })
+
+  it("T27: FCM data is encodePushMessageData's map, decodable back, on the section's channel", async () => {
+    await fcmDispatcher()([visible("fcm-a", P(N1, "likesAndReposts"))])
+
+    const [message] = fcmMessages()
+    const expected = notificationData("likesAndReposts")
+    expect(message!.data).toEqual(encodePushMessageData(expected))
+    expect(decodePushMessageData(message!.data)).toEqual(expected)
+    expect(message!.android).toEqual({ notification: { tag: N1, channelId: "social" } })
+  })
+
+  it("T28: each category's channel is the id of the NOTIFICATION_SECTIONS entry listing it", async () => {
+    const categories = NotificationCategorySchema.options
+    expect(categories).toHaveLength(11)
+
+    await fcmDispatcher()(categories.map((c) => visible(`fcm-${c}`, P(N1, c))))
+
+    const messages = fcmMessages()
+    expect(messages).toHaveLength(11)
+    for (const message of messages) {
+      const category = String(message.token).slice("fcm-".length)
+      const section = NOTIFICATION_SECTIONS.find((s) =>
+        (s.categories as readonly string[]).includes(category),
+      )
+      const channel = (message.android as { notification: { channelId: string } }).notification
+        .channelId
+      expect(channel, category).toBe(section!.id)
+    }
+  })
+
+  it("T29: an Always on push with no link gets the default channel and only kind, id and type", async () => {
+    await fcmDispatcher()([
+      visible("fcm-a", { title: "Hi", notificationId: N1, type: "system", category: null }),
+    ])
+
+    const [message] = fcmMessages()
+    expect(message!.android).toEqual({ notification: { tag: N1, channelId: "default" } })
+    expect(message!.data).toEqual({ kind: "notification", notificationId: N1, type: "system" })
+  })
+
+  it("T30: APNs carries the encoded map under body, the category as thread id, the id as collapse id", async () => {
+    const dispatch = apnsDispatcher()
+    await dispatch([visible("ab".repeat(32), P(N1, "events"))])
+    await dispatch([visible("ab".repeat(32), P(N1, null))])
+
+    expect(apnsRequests).toHaveLength(2)
+    const [first, second] = apnsRequests
+    expect(first!.body.body).toEqual(encodePushMessageData(notificationData("events")))
+    expect((first!.body.aps as Record<string, unknown>)["thread-id"]).toBe("events")
+    expect(first!.headers["apns-collapse-id"]).toBe(N1)
+    expect(second!.body.aps).not.toHaveProperty("thread-id")
+    expect(second!.headers["apns-collapse-id"]).toBe(N1)
+    expect(second!.body.body).not.toHaveProperty("category")
+  })
+
+  it("T31: web push data is the encoded map, tagged with the notification id", async () => {
+    const sent: string[] = []
+    await webDispatcher(sent)([
+      { token: subscription, message: { kind: "notification", payload: P(N1, "followers") } },
+    ])
+
+    expect(sent).toHaveLength(1)
+    const body = JSON.parse(sent[0]!) as Record<string, unknown>
+    expect(body.data).toEqual(encodePushMessageData(notificationData("followers")))
+    expect(body.tag).toBe(N1)
+  })
+
+  it("T32: clears on FCM and APNs carry encodePushMessageData's clear map", async () => {
+    const fcmD = fcmDispatcher()
+    const apnsD = apnsDispatcher()
+    const ids: PushDelivery["message"] = { kind: "clear", target: { ids: [N1, N2] } }
+    const all: PushDelivery["message"] = { kind: "clear", target: { all: true } }
+
+    await fcmD([{ token: "fcm-a", message: ids }])
+    await fcmD([{ token: "fcm-a", message: all }])
+    await apnsD([{ token: "ab".repeat(32), message: ids }])
+    await apnsD([{ token: "ab".repeat(32), message: all }])
+
+    const idsMap = encodePushMessageData({ kind: "clear", ids: [N1, N2] })
+    const allMap = encodePushMessageData({ kind: "clear", all: true })
+    expect(idsMap).toEqual({ kind: "clear", ids: JSON.stringify([N1, N2]) })
+    expect(allMap).toEqual({ kind: "clear", all: "true" })
+    expect(fcmMessages().map((m) => m.data)).toEqual([idsMap, allMap])
+    expect(apnsRequests.map((r) => r.body.body)).toEqual([idsMap, allMap])
   })
 })

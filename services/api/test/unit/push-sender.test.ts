@@ -83,7 +83,14 @@ function fakeDb(rows: TokenRow[], prune: PruneCapture): Db {
   return db as unknown as Db
 }
 
-const PAYLOAD: PushPayload = { title: "Hi", body: "there", link: "/x", data: { k: "v" } }
+const PAYLOAD: PushPayload = {
+  title: "Hi",
+  body: "there",
+  link: "/x",
+  notificationId: "00000000-0000-4000-8000-000000000001",
+  type: "system",
+  category: null,
+}
 
 describe("MultiPushSender.send routing", () => {
   it("routes each platform's tokens to the matching dispatcher (ios->ios, android->fcm, web->webpush)", async () => {

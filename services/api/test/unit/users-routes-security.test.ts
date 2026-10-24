@@ -1,6 +1,9 @@
 import { afterEach, describe, expect, it } from "vitest"
 import { makeAuthHarness, type AuthHarness } from "../helpers/auth.js"
-import { InMemoryNotificationRepository } from "../helpers/notifications.js"
+import {
+  InMemoryNotificationRepository,
+  InMemoryNotificationSettingsRepository,
+} from "../helpers/notifications.js"
 
 const EMAIL = "leaving@example.com"
 const BAN_MARKER_PREFIX = "banned:"
@@ -96,7 +99,12 @@ describe("DELETE /v1/me after the erasure commits", () => {
   it("purges the user's push tokens and notifications with the erasure", async () => {
     const notificationRepo = new InMemoryNotificationRepository()
     harness = await makeAuthHarness({
-      server: { notificationOverrides: { repo: notificationRepo } },
+      server: {
+        notificationOverrides: {
+          repo: notificationRepo,
+          settingsRepo: new InMemoryNotificationSettingsRepository(),
+        },
+      },
     })
     const { token, userId } = await harness.signIn(EMAIL)
     await notificationRepo.upsertPushToken({

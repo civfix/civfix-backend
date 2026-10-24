@@ -13,7 +13,10 @@ import {
   resolveSafePushTarget,
   type PushAddressResolver,
 } from "../../src/services/push-token-policy.js"
-import { InMemoryNotificationRepository } from "../helpers/notifications.js"
+import {
+  InMemoryNotificationRepository,
+  InMemoryNotificationSettingsRepository,
+} from "../helpers/notifications.js"
 
 const U = "11111111-1111-1111-1111-111111111111"
 
@@ -33,6 +36,7 @@ function harness(safeEndpoints: (endpoint: string) => boolean = () => true) {
   const push = new FakePushSender()
   const service = makeNotificationService({
     repo,
+    settingsRepo: new InMemoryNotificationSettingsRepository(),
     pushSender: push,
     isSafePushEndpoint: (endpoint) => Promise.resolve(safeEndpoints(endpoint)),
   })

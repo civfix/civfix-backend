@@ -20,6 +20,7 @@ import {
   type NotificationService,
 } from "../services/notification-service.js"
 import type { NotificationRepository } from "../services/notification-repository.js"
+import type { NotificationSettingsRepository } from "../services/notification-settings-repository.js"
 import { makeRouteNotificationService } from "../services/route-notifier.js"
 import { perIdentity } from "../plugins/rate-limit.js"
 import { route } from "../versioning/route.js"
@@ -66,6 +67,7 @@ const ListNotificationsResponseJsonSchema = {
 
 export interface NotificationServiceOverrides {
   repo: NotificationRepository
+  settingsRepo: NotificationSettingsRepository
 }
 
 declare module "fastify" {
@@ -85,6 +87,7 @@ export async function registerNotificationRoutes(
     if (!overrides) return makeRouteNotificationService(container, app.log)
     return makeNotificationService({
       repo: overrides.repo,
+      settingsRepo: overrides.settingsRepo,
       pushSender: container.pushSender,
       userChannel: container.userChannel,
       logger: app.log,

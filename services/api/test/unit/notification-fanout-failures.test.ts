@@ -1,7 +1,10 @@
 import { describe, expect, it, vi } from "vitest"
 import { FakePushSender } from "@civfix/seams"
 import { makeNotificationService } from "../../src/services/notification-service.js"
-import { InMemoryNotificationRepository } from "../helpers/notifications.js"
+import {
+  InMemoryNotificationRepository,
+  InMemoryNotificationSettingsRepository,
+} from "../helpers/notifications.js"
 
 const OK_USER = "11111111-1111-1111-1111-111111111111"
 const BROKEN_USER = "22222222-2222-2222-2222-222222222222"
@@ -18,7 +21,11 @@ function repoFailingFor(userId: string): InMemoryNotificationRepository {
 describe("fan-out notifications report the recipients whose row was never written", () => {
   it("names exactly the recipient whose insert failed, so a caller can retry only them", async () => {
     const repo = repoFailingFor(BROKEN_USER)
-    const service = makeNotificationService({ repo, pushSender: new FakePushSender() })
+    const service = makeNotificationService({
+      repo,
+      settingsRepo: new InMemoryNotificationSettingsRepository(),
+      pushSender: new FakePushSender(),
+    })
 
     const result = await service.createNotificationsReportingFailures(
       [OK_USER, BROKEN_USER, OTHER_USER],
@@ -36,7 +43,11 @@ describe("fan-out notifications report the recipients whose row was never writte
 
   it("counts a deduped recipient as delivered, not as a failure", async () => {
     const repo = new InMemoryNotificationRepository()
-    const service = makeNotificationService({ repo, pushSender: new FakePushSender() })
+    const service = makeNotificationService({
+      repo,
+      settingsRepo: new InMemoryNotificationSettingsRepository(),
+      pushSender: new FakePushSender(),
+    })
     const input = {
       type: "event_broadcast" as const,
       title: "Parking moved",
@@ -55,6 +66,7 @@ describe("fan-out notifications report the recipients whose row was never writte
   it("reports no failures for an empty recipient list", async () => {
     const service = makeNotificationService({
       repo: new InMemoryNotificationRepository(),
+      settingsRepo: new InMemoryNotificationSettingsRepository(),
       pushSender: new FakePushSender(),
     })
 
@@ -72,7 +84,12 @@ describe("fan-out notifications report the recipients whose row was never writte
     repo.insertNotification = () => Promise.reject(new Error("insert failed"))
     repo.upsertCoalescedNotification = () => Promise.reject(new Error("upsert failed"))
     const logger = { warn: vi.fn(), error: vi.fn() }
-    const service = makeNotificationService({ repo, pushSender: new FakePushSender(), logger })
+    const service = makeNotificationService({
+      repo,
+      settingsRepo: new InMemoryNotificationSettingsRepository(),
+      pushSender: new FakePushSender(),
+      logger,
+    })
 
     const result = await service.createNotificationsReportingFailures(recipients, {
       type: "group_chat",
@@ -99,7 +116,11 @@ describe("fan-out notifications report the recipients whose row was never writte
 describe("deduped notifications written concurrently", () => {
   it("writes one row when two writers race on the same dedupe key", async () => {
     const repo = new InMemoryNotificationRepository()
-    const service = makeNotificationService({ repo, pushSender: new FakePushSender() })
+    const service = makeNotificationService({
+      repo,
+      settingsRepo: new InMemoryNotificationSettingsRepository(),
+      pushSender: new FakePushSender(),
+    })
     const input = {
       type: "event_broadcast" as const,
       title: "Parking moved",

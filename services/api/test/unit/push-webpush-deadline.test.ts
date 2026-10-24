@@ -7,7 +7,7 @@ import {
 import type { Agent } from "node:https"
 import type { PushLogger } from "../../src/adapters/push-sender.js"
 import { boundedAddressResolver } from "../../src/services/push-token-policy.js"
-import { visibleTo } from "../helpers/push-fixtures.js"
+import { N1, P, visibleTo } from "../helpers/push-fixtures.js"
 
 const PUBLIC_ENDPOINT = "https://93.184.216.34/push/abc"
 
@@ -70,7 +70,7 @@ describe("web push request deadline (H15)", () => {
       stubPool(),
     )
 
-    await dispatch(visibleTo([subscriptionToken()], { title: "hi" }))
+    await dispatch(visibleTo([subscriptionToken()], P(N1, null)))
 
     expect(calls).toHaveLength(1)
     expect(calls[0]!.timeout).toBe(50)
@@ -96,7 +96,7 @@ describe("web push request deadline (H15)", () => {
       )
 
       const settled = { done: false }
-      const run = dispatch(visibleTo([subscriptionToken()], { title: "hi" })).then((r) => {
+      const run = dispatch(visibleTo([subscriptionToken()], P(N1, null))).then((r) => {
         settled.done = true
         return r
       })
@@ -136,7 +136,7 @@ describe("web push request deadline (H15)", () => {
       const tokens = Array.from({ length: 40 }, (_, i) =>
         subscriptionToken(`https://93.184.216.34/push/${i}`),
       )
-      const run = dispatch(visibleTo(tokens, { title: "hi" }))
+      const run = dispatch(visibleTo(tokens, P(N1, null)))
       await vi.advanceTimersByTimeAsync(60_000)
       await run
 
@@ -187,7 +187,7 @@ describe("send-time endpoint resolution is bounded (R3b)", () => {
             subscriptionToken("https://blackhole.example/push/1"),
             subscriptionToken("https://good.example/push/2"),
           ],
-          { title: "hi" },
+          P(N1, null),
         ),
       )
       await vi.advanceTimersByTimeAsync(5_000)

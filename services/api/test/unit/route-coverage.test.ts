@@ -19,7 +19,10 @@ import { InMemoryCleanupRepository } from "../helpers/cleanups.js"
 import { InMemoryGuestRsvpRepository } from "../helpers/guest-rsvp.js"
 import { InMemorySocialRepository } from "../helpers/social.js"
 import { InMemoryVolunteerHoursRepository } from "../helpers/volunteer-hours-repository.memory.js"
-import { InMemoryNotificationRepository } from "../helpers/notifications.js"
+import {
+  InMemoryNotificationRepository,
+  InMemoryNotificationSettingsRepository,
+} from "../helpers/notifications.js"
 import { InMemoryMediaRepository } from "../helpers/media.js"
 import { InMemoryThreadsRepository } from "../helpers/chat.js"
 import type { ReportServiceOverrides } from "../../src/routes/reports.routes.js"
@@ -35,6 +38,7 @@ import {
 import { makeTicketTokenSigner } from "../../src/services/host/ticket-token.js"
 import { NO_HOST_STANDING } from "@civfix/contract/host"
 import { fakeCleanupReader } from "../helpers/host-team.js"
+import { PENDING_IN_EPIC } from "../helpers/pending-in-epic.js"
 
 const SIGNING_KEY = "test-anon-signing-key"
 
@@ -177,7 +181,10 @@ async function buildFullFakeServer(): Promise<FastifyInstance> {
     },
     socialOverrides: { repo: socialRepo },
     volunteerOverrides: { repo: new InMemoryVolunteerHoursRepository() },
-    notificationOverrides: { repo: notificationRepo },
+    notificationOverrides: {
+      repo: notificationRepo,
+      settingsRepo: new InMemoryNotificationSettingsRepository(),
+    },
     mediaRepo,
     chatOverrides,
   })
@@ -216,6 +223,15 @@ describe("route-coverage: every shared endpoint is registered (offline boot smok
   })
 
   for (const [name, ep] of Object.entries(endpoints)) {
+    if (PENDING_IN_EPIC.has(name)) {
+      it(`T4: ${name} is pending in the epic and not registered yet: ${ep.method} ${ep.path}`, async () => {
+        const res = await app.inject(injectArgs(ep))
+        expect(res.statusCode).toBe(404)
+        const body = res.json<{ message?: string }>()
+        expect(body.message?.startsWith(`Route ${ep.method} `)).toBe(true)
+      })
+      continue
+    }
     it(`registers ${name}: ${ep.method} ${ep.path}`, async () => {
       const res = await app.inject(injectArgs(ep))
 
@@ -231,8 +247,24 @@ describe("route-coverage: every shared endpoint is registered (offline boot smok
     })
   }
 
-  it("T42: covers ALL 341 endpoints in the registry (no endpoint skipped)", () => {
-    expect(Object.keys(endpoints).length).toBe(341)
+  it("T2: covers ALL 349 endpoints in the registry (no endpoint skipped)", () => {
+    expect(Object.keys(endpoints).length).toBe(349)
+  })
+
+  it("T3: PENDING_IN_EPIC names exactly the eight notification-center endpoints, each in the registry", () => {
+    expect([...PENDING_IN_EPIC].sort()).toEqual(
+      [
+        "getNotificationSettings",
+        "updateNotificationSettings",
+        "getNotificationUnread",
+        "markAllNotificationsRead",
+        "dismissNotification",
+        "getPushWebConfig",
+        "unsubscribeNotificationEmail",
+        "openUnsubscribeNotificationEmail",
+      ].sort(),
+    )
+    for (const name of PENDING_IN_EPIC) expect(Object.keys(endpoints)).toContain(name)
   })
 
   it("the discriminator is not vacuous: a bogus path IS detected as route-missing", async () => {
