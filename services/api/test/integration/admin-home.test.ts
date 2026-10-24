@@ -185,7 +185,7 @@ describe.skipIf(!pg)("admin home repository (integration: real schema)", () => {
   it("recentPins: report + event pins with the event status mapped to the EventStatus enum", async () => {
     await insertReport(h, { status: "submitted" })
     const org = await insertUser(h, "Org")
-    await seedCleanup(h.sql, { organizerUserId: org, title: "Done event", status: "done" })
+    await seedCleanup(h.sql, { organizerUserId: org, title: "Live event", status: "active" })
     const pins = await repo.recentPins(50)
     const report = pins.find((p) => p.refType === "report")
     const event = pins.find((p) => p.refType === "event")
@@ -193,9 +193,127 @@ describe.skipIf(!pg)("admin home repository (integration: real schema)", () => {
     expect(report?.lat).toBeCloseTo(34.1, 3)
     expect(report?.eventKind).toBeNull()
     expect(event).toBeDefined()
-    expect(event?.status).toBe("completed")
+    expect(event?.status).toBe("in_progress")
     expect(event?.attendees).toBe(0)
     expect(event?.eventKind).toBe("cleanup")
+  })
+
+  describe("recentPins: only open reports and upcoming or live events", () => {
+    const HOUR = 3_600_000
+    const DAY = 24 * HOUR
+
+    async function dbNow(): Promise<number> {
+      const rows = await h.sql<{ now: Date }[]>`SELECT now() AS now`
+      return rows[0]!.now.getTime()
+    }
+
+    async function seedEvent(
+      status: "upcoming" | "active" | "done" | "cancelled",
+      scheduledAt: number,
+      endsAt: number,
+    ): Promise<string> {
+      const org = await insertUser(h, "Org")
+      return seedCleanup(h.sql, {
+        organizerUserId: org,
+        status,
+        scheduledAt: new Date(scheduledAt),
+        endsAt: new Date(endsAt),
+      })
+    }
+
+    const ids = (pins: { id: string }[]): string[] => pins.map((p) => p.id)
+    const reportPins = <T extends { refType: string }>(pins: T[]): T[] =>
+      pins.filter((p) => p.refType === "report")
+    const eventPins = <T extends { refType: string }>(pins: T[]): T[] =>
+      pins.filter((p) => p.refType === "event")
+
+    it("T1: an upcoming and a live event are on the map with their admin status", async () => {
+      const now = await dbNow()
+      const a = await seedEvent("upcoming", now + DAY, now + DAY + 2 * HOUR)
+      const b = await seedEvent("active", now - HOUR, now + HOUR)
+
+      const events = eventPins(await repo.recentPins(50))
+      expect(ids(events).sort()).toEqual([a, b].sort())
+      expect(events.find((p) => p.id === a)?.status).toBe("upcoming")
+      expect(events.find((p) => p.id === b)?.status).toBe("in_progress")
+    })
+
+    it("T2: an event marked done is not on the map", async () => {
+      const now = await dbNow()
+      const c = await seedEvent("done", now - 3 * HOUR, now - HOUR)
+
+      expect(ids(await repo.recentPins(50))).not.toContain(c)
+    })
+
+    it("T3: an event still stored upcoming whose end has passed is not on the map", async () => {
+      const now = await dbNow()
+      const d = await seedEvent("upcoming", now - 3 * HOUR, now - 60_000)
+
+      expect(ids(await repo.recentPins(50))).not.toContain(d)
+    })
+
+    it("T4: a cancelled future event is not on the map", async () => {
+      const now = await dbNow()
+      const e = await seedEvent("cancelled", now + DAY, now + DAY + 2 * HOUR)
+
+      expect(ids(await repo.recentPins(50))).not.toContain(e)
+    })
+
+    it("T5: reports in the Submitted and In progress buckets are on the map", async () => {
+      const open = [
+        await insertReport(h, { status: "submitted" }),
+        await insertReport(h, { status: "held" }),
+        await insertReport(h, { status: "published" }),
+        await insertReport(h, { status: "acknowledged" }),
+        await insertReport(h, { status: "in_progress" }),
+      ]
+
+      expect(ids(reportPins(await repo.recentPins(50))).sort()).toEqual([...open].sort())
+    })
+
+    it("T6: a resolved report is not on the map", async () => {
+      const r1 = await insertReport(h, { status: "resolved" })
+
+      expect(ids(await repo.recentPins(50))).not.toContain(r1)
+    })
+
+    it("T7: a rejected report that is not soft-deleted is not on the map", async () => {
+      const r2 = await insertReport(h, { status: "rejected" })
+
+      expect(ids(await repo.recentPins(50))).not.toContain(r2)
+    })
+
+    it("T8: a flagged resolved report is not on the map", async () => {
+      const r3 = await insertReport(h, { status: "resolved" })
+      await h.sql`
+        INSERT INTO abuse_flags (subject_type, subject_id, reason, source)
+        VALUES ('report', ${r3}, 'manual', 'api')
+      `
+
+      expect(ids(await repo.recentPins(50))).not.toContain(r3)
+    })
+
+    it("T9: newer resolved reports do not use up the report half", async () => {
+      const at = (m: number): Date => new Date(Date.UTC(2026, 5, 1, 12, m))
+      const o1 = await insertReport(h, { status: "submitted", createdAt: at(1) })
+      const o2 = await insertReport(h, { status: "submitted", createdAt: at(2) })
+      await insertReport(h, { status: "resolved", createdAt: at(3) })
+      await insertReport(h, { status: "resolved", createdAt: at(4) })
+      await insertReport(h, { status: "resolved", createdAt: at(5) })
+
+      expect(ids(reportPins(await repo.recentPins(4)))).toEqual([o2, o1])
+    })
+
+    it("T10: later cancelled events do not use up the event half", async () => {
+      const now = await dbNow()
+      const u1 = await seedEvent("upcoming", now + DAY, now + DAY + 2 * HOUR)
+      const u2 = await seedEvent("upcoming", now + 2 * DAY, now + 2 * DAY + 2 * HOUR)
+      for (const d of [5, 6, 7]) {
+        await seedEvent("cancelled", now + d * DAY, now + d * DAY + 2 * HOUR)
+      }
+
+      expect(ids(eventPins(await repo.recentPins(4))).sort()).toEqual([u1, u2].sort())
+    })
   })
 
   it("F122: a per-category-only contact leaves a different-category report waiting", async () => {

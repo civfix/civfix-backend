@@ -6,6 +6,7 @@ import { makeDrizzleCleanupRepository } from "./cleanup-repository.drizzle.js"
 import { enrichCleanupDTOs } from "./cleanup-enrichment.js"
 import { makeEventMediaPresigner } from "./host/event-media.js"
 import { MEDIA_GET_URL_TTL_SEC } from "./media-intake-service.js"
+import { avatarPresigner } from "./user-avatar.js"
 
 export type CleanupReader = (cleanupId: string, viewerUserId: string) => Promise<CleanupDTO>
 
@@ -15,7 +16,7 @@ export function makeRouteCleanupReader(
 ): CleanupReader {
   return (cleanupId, viewerUserId) =>
     makeCleanupService({
-      repo: makeDrizzleCleanupRepository(container.getDb().sql),
+      repo: makeDrizzleCleanupRepository(container.getDb().sql, avatarPresigner(container.storage)),
       tickets: container.getTicketTokenSigner(),
       presignThumb: (thumbKey: string) =>
         container.storage.presignGet(thumbKey, MEDIA_GET_URL_TTL_SEC),

@@ -29,6 +29,12 @@ import {
   senderColumns,
   type MessageCoreRow,
 } from "./chat-message-core-sql.js"
+import {
+  userAvatarColumns,
+  resolveAvatarColumns,
+  type AvatarPresigner,
+  type UserAvatarColumns,
+} from "./user-avatar.js"
 import type {
   DmMessageMeta,
   DmPersistInput,
@@ -105,10 +111,15 @@ function selectDmRowFrom(tag: Queryable, cte: string) {
       ${senderColumns(tag)}
     FROM ${tag(cte)}
     JOIN users u ON u.id = ${tag(cte)}.sender_id
+    LEFT JOIN media_assets am ON am.id = u.avatar_media_id
   `
 }
 
-export function makeDrizzleDmRepository(sql: Sql, presign?: PresignMedia): DmRepository {
+export function makeDrizzleDmRepository(
+  sql: Sql,
+  presign?: PresignMedia,
+  presignAvatar?: AvatarPresigner,
+): DmRepository {
   const dmColumns = sql`
     dm.id,
     dm.thread_id,
@@ -124,10 +135,15 @@ export function makeDrizzleDmRepository(sql: Sql, presign?: PresignMedia): DmRep
     ${senderColumns(sql)}
   `
 
+  function withSenderAvatars(rows: readonly DmRowSelect[]): Promise<void> {
+    return resolveAvatarColumns(presignAvatar, rows, ["sender_"])
+  }
+
   async function hydrateDmRows(
     page: DmRowSelect[],
     viewerUserId: string | null,
   ): Promise<ChatMessageDTO[]> {
+    await withSenderAvatars(page)
     const partsFor = await loadMessageExtras(sql, "dm_messages", page, viewerUserId, presign)
     return page.map((r) => toMessageDTO(r, { ...partsFor(r), viewerUserId }))
   }
@@ -136,6 +152,7 @@ export function makeDrizzleDmRepository(sql: Sql, presign?: PresignMedia): DmRep
     row: DmRowSelect,
     viewerUserId: string | null,
   ): Promise<ChatMessageDTO> {
+    await withSenderAvatars([row])
     const liveIds = liveMessageIds([row])
     const [reactions, mentions, attachmentsByMessage, replyByTarget] = await Promise.all([
       liveIds.length > 0 ? loadChatReactions(sql, row.id, viewerUserId) : Promise.resolve([]),
@@ -163,7 +180,11 @@ export function makeDrizzleDmRepository(sql: Sql, presign?: PresignMedia): DmRep
           ? sql`thread_id = ${threadId}`
           : sql`${sql(prefix)}.thread_id = ${threadId}`,
       columns: dmColumns,
-      from: sql`FROM dm_messages dm JOIN users u ON u.id = dm.sender_id`,
+      from: sql`
+        FROM dm_messages dm
+        JOIN users u ON u.id = dm.sender_id
+        LEFT JOIN media_assets am ON am.id = u.avatar_media_id
+      `,
       context: () => Promise.resolve(null),
       hydratePage: (rows, viewerUserId) => hydrateDmRows(rows, viewerUserId),
       hydrateOne: hydrateDmRow,
@@ -262,6 +283,7 @@ export function makeDrizzleDmRepository(sql: Sql, presign?: PresignMedia): DmRep
         ? ((await loadChatAttachments(sql, [messageId], presign, input.senderId)).get(messageId) ??
           [])
         : []
+      await withSenderAvatars(rows)
       return toMessageDTO(rows[0]!, {
         viewerUserId: input.senderId,
         clientId: input.clientId,
@@ -338,6 +360,7 @@ export function makeDrizzleDmRepository(sql: Sql, presign?: PresignMedia): DmRep
         )
         ${selectDmRowFrom(sql, "updated")}
       `
+      await withSenderAvatars(rows)
       const row = rows[0]
       if (!row) return null
       const replyByTarget = await replyMapForRows(sql, "dm_messages", [row])
@@ -425,20 +448,21 @@ export function makeDrizzleDmRepository(sql: Sql, presign?: PresignMedia): DmRep
       const activity = sql`date_trunc('milliseconds', ${rawActivity})`
       const cursorFilter = msKeysetFilter(sql, activity, sql`t.id`, cursor)
       const rows = await sql<
-        {
-          thread_id: string
-          thread_created_at: Date
-          peer_id: string
-          peer_display_name: string
-          peer_handle: string | null
-          peer_bio: string | null
-          peer_avatar_url: string | null
-          peer_deleted_at: Date | null
-          last_body: string | null
-          last_created_at: Date | null
-          last_sender_id: string | null
-          unread: number
-        }[]
+        Array<
+          UserAvatarColumns<"peer_"> & {
+            thread_id: string
+            thread_created_at: Date
+            peer_id: string
+            peer_display_name: string
+            peer_handle: string | null
+            peer_bio: string | null
+            peer_deleted_at: Date | null
+            last_body: string | null
+            last_created_at: Date | null
+            last_sender_id: string | null
+            unread: number
+          }
+        >
       >`
         SELECT
           t.id AS thread_id,
@@ -447,7 +471,7 @@ export function makeDrizzleDmRepository(sql: Sql, presign?: PresignMedia): DmRep
           peer.display_name AS peer_display_name,
           peer.handle AS peer_handle,
           peer.bio AS peer_bio,
-          peer.avatar_url AS peer_avatar_url,
+          ${userAvatarColumns(sql, "peer", "am", "peer_")},
           peer.deleted_at AS peer_deleted_at,
           last_msg.body AS last_body,
           last_msg.created_at AS last_created_at,
@@ -463,6 +487,7 @@ export function makeDrizzleDmRepository(sql: Sql, presign?: PresignMedia): DmRep
         FROM dm_threads t
         JOIN users peer
           ON peer.id = CASE WHEN t.user_lo = ${userId} THEN t.user_hi ELSE t.user_lo END
+        LEFT JOIN media_assets am ON am.id = peer.avatar_media_id
         LEFT JOIN dm_read_state rs ON rs.thread_id = t.id AND rs.user_id = ${userId}
         LEFT JOIN LATERAL (
           SELECT dm.body, dm.created_at, dm.sender_id
@@ -484,6 +509,7 @@ export function makeDrizzleDmRepository(sql: Sql, presign?: PresignMedia): DmRep
         ORDER BY ${activity} DESC, t.id DESC
         ${limitClause}
       `
+      await resolveAvatarColumns(presignAvatar, rows, ["peer_"])
       return rows.map((r) => {
         const identity = publicAuthorIdentity({
           id: r.peer_id,

@@ -208,17 +208,6 @@ export function makeDrizzleMediaWorkerRepository(db: Db, tag: Sql): MediaWorkerR
       return row ? toAsset(row) : null
     },
 
-    async refreshAvatarUrls(mediaId: string, avatarUrl: string): Promise<number> {
-      const rows = await tag<{ id: string }[]>`
-        UPDATE users
-        SET avatar_url = ${avatarUrl}
-        WHERE avatar_media_id = ${mediaId}::uuid
-          AND deleted_at IS NULL
-        RETURNING id
-      `
-      return rows.length
-    },
-
     async r2KeyReferencedByOthers(id: string, r2Key: string): Promise<boolean> {
       const rows = await db
         .select({ id: mediaAssets.id })

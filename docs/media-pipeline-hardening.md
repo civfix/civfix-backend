@@ -41,15 +41,16 @@ drops `validating` media unless it is the owner's view
 (`services/report-repository.drizzle.ts:268`), and `toReportDTO` signs it
 through the private presigner (`services/report-service.ts:134`). Most other
 callers of `servedKeyExpr` have no such filter. Event covers and galleries
-(`cleanup-sql.ts:189`, `cleanup-repository.drizzle.ts:738`), organization logos
-(`cleanup-sql.ts:201`, `organization-repository.drizzle.ts:227`) and user
-avatars on profiles, follow suggestions and post authors
-(`social-repository.drizzle.ts:289`, `post-repository.drizzle.ts:554`) accept a
+(`cleanup-sql.ts:189`, `cleanup-repository.drizzle.ts:738`) and organization
+logos (`cleanup-sql.ts:201`, `organization-repository.drizzle.ts:227`) accept a
 `validating` asset when it is bound (`cleanup-repository.drizzle.ts:131`,
-`organization-repository.drizzle.ts:289`, `avatar-media.ts:31`), so any viewer
-is handed the unchecked, uploader-writable `r2_key` until the worker finishes.
-Chat-group avatars are the exception: `chat-group-repository.drizzle.ts:148`
-signs only a `ready` avatar. The moderation fragments fall back to `r2_key` for
+`organization-repository.drizzle.ts:289`), so any viewer is handed the
+unchecked, uploader-writable `r2_key` until the worker finishes. Avatars are the
+exception: `chat-group-repository.drizzle.ts:148` signs only a `ready` group
+avatar, and every read of a user's avatar goes through
+`services/user-avatar.ts`, which signs a `ready` avatar's thumbnail (or its
+served copy) and otherwise returns the stored `users.avatar_url`. The
+moderation fragments fall back to `r2_key` for
 every non-`ready` row with no `served_key`, so an operator can review an asset
 the worker has not published.
 
@@ -87,11 +88,13 @@ sudo -n docker exec $(sudo docker ps --format '{{.Names}}' | grep -m1 -E 'compos
 
 `R2_PUBLIC_BASE` note: the served key is written exactly once, by the worker,
 after the checks, so no CDN edge can hold a pre-strip copy of a served key. The
-upload key is not covered by that. A `validating` cover, logo or avatar is
-signed through the public presigner, which returns `<R2_PUBLIC_BASE>/<r2_key>`
-when the base is set (`adapters/storage.r2.ts:63`), so a public fetch can still
-reach, and a CDN edge can still cache, the unstripped original while the asset
-is `validating` (see the exception above).
+upload key is not covered by that. A `validating` cover or logo is signed
+through the public presigner, which returns `<R2_PUBLIC_BASE>/<r2_key>` when the
+base is set (`adapters/storage.r2.ts:63`), so a public fetch can still reach,
+and a CDN edge can still cache, the unstripped original while the asset is
+`validating` (see the exception above). A user avatar is not: its URL is built
+at read time from the thumbnail or served copy of `ready` media, and neither the
+profile save nor the worker writes it into `users.avatar_url`.
 
 ### Out-of-band index
 

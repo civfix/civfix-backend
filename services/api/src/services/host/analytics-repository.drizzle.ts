@@ -12,6 +12,12 @@ import type {
   LabeledKeyCount,
   PortfolioHoursTotals,
 } from "./analytics-repository.js"
+import {
+  userAvatarColumns,
+  resolveAvatarColumns,
+  type AvatarPresigner,
+  type UserAvatarColumns,
+} from "../user-avatar.js"
 
 export const INSIGHTS_TREND_LIMIT = 400
 
@@ -81,7 +87,10 @@ function labeledKeyCounts(rows: { key: string; label: string; n: string }[]): La
   return rows.map((row) => ({ key: row.key, label: row.label, count: Number(row.n) }))
 }
 
-export function makeDrizzleAnalyticsRepository(sql: Sql): AnalyticsRepository {
+export function makeDrizzleAnalyticsRepository(
+  sql: Sql,
+  presignAvatar?: AvatarPresigner,
+): AnalyticsRepository {
   return {
     async eventKpis(cleanupId: string): Promise<EventKpiRow> {
       const rows = await sql<
@@ -390,28 +399,30 @@ export function makeDrizzleAnalyticsRepository(sql: Sql): AnalyticsRepository {
     async topVolunteers(cleanupIds, limit) {
       if (cleanupIds.length === 0) return []
       const rows = await sql<
-        {
+        (UserAvatarColumns & {
           user_id: string
           name: string
           handle: string | null
-          avatar_url: string | null
           hours: number
-        }[]
+        })[]
       >`
         SELECT vh.user_id,
                u.display_name AS name,
                u.handle,
-               u.avatar_url,
+               ${userAvatarColumns(sql, "u", "am")},
                sum(vh.hours)::float8 AS hours
           FROM volunteer_hours vh
           JOIN users u ON u.id = vh.user_id
+          LEFT JOIN media_assets am ON am.id = u.avatar_media_id
          WHERE vh.cleanup_id = ANY(${[...cleanupIds]}::uuid[])
            AND vh.source = 'event'
            AND vh.voided_at IS NULL
            AND u.deleted_at IS NULL
-         GROUP BY vh.user_id, u.display_name, u.handle, u.avatar_url
+         GROUP BY vh.user_id, u.display_name, u.handle, u.avatar_url,
+                  am.status, am.served_key, am.thumb_key
          ORDER BY sum(vh.hours) DESC, vh.user_id
          LIMIT ${limit}`
+      await resolveAvatarColumns(presignAvatar, rows)
       return rows.map((row) => ({
         userId: row.user_id,
         name: row.name,

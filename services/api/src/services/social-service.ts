@@ -12,6 +12,9 @@ import type {
 import { toCleanupDTO } from "./cleanup-service.js"
 import { attachAffiliations, type AffiliationLoader } from "./affiliation.js"
 import { officialPersonFlag } from "../auth/official-account.js"
+import { mapWithLimit } from "../lib/concurrency.js"
+import { PRESIGN_CONCURRENCY } from "./media-presign.js"
+import { resolveUserAvatarUrl, type AvatarPresigner } from "./user-avatar.js"
 import type {
   ConnectionsArgs,
   PeoplePage,
@@ -75,7 +78,7 @@ export interface SocialServiceDeps {
     viewerId: string,
     targetId: string,
   ) => Promise<{ blockedByViewer: boolean; blockedByTarget: boolean }>
-  presignAvatar?: (avatarKey: string) => Promise<string>
+  presignAvatar?: AvatarPresigner
   affiliations?: AffiliationLoader
   volunteerHoursTotalFor?: (userId: string) => Promise<number>
   logger?: { warn(obj: unknown, msg: string): void }
@@ -113,14 +116,18 @@ export interface SocialService {
   resolveHandleToId(handle: string): Promise<string>
 }
 
-export function toPersonDTO(view: PersonView, isFollowing: boolean): PersonDTO {
+export function toPersonDTO(
+  view: PersonView,
+  isFollowing: boolean,
+  avatarUrl: string | null,
+): PersonDTO {
   return {
     id: view.id,
     name: view.displayName,
     handle: view.handle,
     bio: view.bio,
     avatar: avatarGradient(view.id),
-    ...(view.avatarUrl !== null ? { avatarUrl: view.avatarUrl } : {}),
+    ...(avatarUrl !== null ? { avatarUrl } : {}),
     followers: view.followers,
     following: view.following,
     isFollowing,
@@ -131,6 +138,16 @@ export function toPersonDTO(view: PersonView, isFollowing: boolean): PersonDTO {
 
 export function makeSocialService(deps: SocialServiceDeps): SocialService {
   const presignAvatar = deps.presignAvatar ?? ((avatarKey: string) => Promise.resolve(avatarKey))
+
+  async function toPeople(
+    items: ReadonlyArray<PersonView & { isFollowing: boolean }>,
+    viewerId: string | null,
+  ): Promise<PersonDTO[]> {
+    const people = await mapWithLimit(items, PRESIGN_CONCURRENCY, async (it) =>
+      toPersonDTO(it, it.isFollowing, await resolveUserAvatarUrl(presignAvatar, it)),
+    )
+    return attachAffiliations(deps.affiliations, people, viewerId)
+  }
 
   async function readSuggestionsCache(viewerId: string): Promise<PersonDTO[] | null> {
     const cache = deps.suggestionsCache
@@ -188,12 +205,7 @@ export function makeSocialService(deps: SocialServiceDeps): SocialService {
       cursor: req.cursor ?? null,
       limit: req.limit ?? PEOPLE_DEFAULT_LIMIT,
     })
-    const people = await attachAffiliations(
-      deps.affiliations,
-      items.map((it) => toPersonDTO(it, it.isFollowing)),
-      viewer.userId,
-    )
-    return { items: people, nextCursor }
+    return { items: await toPeople(items, viewer.userId), nextCursor }
   }
 
   async function buildProfile(
@@ -220,10 +232,7 @@ export function makeSocialService(deps: SocialServiceDeps): SocialService {
       ])
     const pastEvents: CleanupDTO[] = pastEventsPage.items.map((r) => toCleanupDTO(r, isSelf))
     const upcomingEvents: CleanupDTO[] = upcomingEventRecords.map((r) => toCleanupDTO(r, isSelf))
-    const avatarUrl =
-      view.avatarR2Key !== null
-        ? await presignAvatar(view.avatarR2Key)
-        : (view.avatarUrl ?? undefined)
+    const avatarUrl = await resolveUserAvatarUrl(presignAvatar, view)
     const affiliations = deps.affiliations
       ? await deps.affiliations([view.id], viewer.userId)
       : undefined
@@ -234,7 +243,7 @@ export function makeSocialService(deps: SocialServiceDeps): SocialService {
       handle: view.handle,
       bio: view.bio,
       avatar: avatarGradient(view.id),
-      ...(avatarUrl !== undefined ? { avatarUrl } : {}),
+      ...(avatarUrl !== null ? { avatarUrl } : {}),
       followers: view.followers,
       following: view.following,
       isFollowing,
@@ -290,14 +299,7 @@ export function makeSocialService(deps: SocialServiceDeps): SocialService {
         cursor: req.cursor ?? null,
         limit: req.limit ?? PEOPLE_DEFAULT_LIMIT,
       })
-      return {
-        items: await attachAffiliations(
-          deps.affiliations,
-          items.map((it) => toPersonDTO(it, it.isFollowing)),
-          viewer.userId,
-        ),
-        nextCursor,
-      }
+      return { items: await toPeople(items, viewer.userId), nextCursor }
     },
 
     async followSuggestions(viewerId: string, limit: number): Promise<{ results: PersonDTO[] }> {
@@ -307,11 +309,7 @@ export function makeSocialService(deps: SocialServiceDeps): SocialService {
         viewerId,
         limit: Math.max(limit, SUGGESTIONS_CACHE_LIMIT),
       })
-      const results = await attachAffiliations(
-        deps.affiliations,
-        items.map((it) => toPersonDTO(it, it.isFollowing)),
-        viewerId,
-      )
+      const results = await toPeople(items, viewerId)
       await writeSuggestionsCache(viewerId, results)
       return { results: results.slice(0, limit) }
     },

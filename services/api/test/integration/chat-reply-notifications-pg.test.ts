@@ -30,6 +30,7 @@ import { makeDrizzleNotificationRepository } from "../../src/services/notificati
 import { makeNotificationService } from "../../src/services/notification-service.js"
 import { makeConversationMutesRepository } from "../../src/services/conversation-mutes-repository.drizzle.js"
 import { makeDrizzleBlocksRepository } from "../../src/services/blocks-repository.drizzle.js"
+import { fakeAvatarPresigner } from "../helpers/avatar-fixtures.js"
 import {
   makeChatMentionNotifier,
   makeChatReplyNotifier,
@@ -109,7 +110,7 @@ describe.skipIf(!pg)("reply notifications + report @mentions (integration)", () 
     const cleanupRepo = makeDrizzleCleanupRepository(h.sql)
     const reportChatRepo = makeReportChatRepository(h.sql)
     const groups = makeChatGroupRepository(h.sql)
-    const blocks = makeDrizzleBlocksRepository(h.sql)
+    const blocks = makeDrizzleBlocksRepository(h.sql, fakeAvatarPresigner)
     return {
       notificationService: makeNotificationService({
         repo: makeDrizzleNotificationRepository(h.sql),
