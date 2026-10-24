@@ -47,6 +47,7 @@ import { effectiveJurisdictionHandle } from "../services/discussion-mentions.js"
 import { route } from "../versioning/route.js"
 import { parse, trimTextFields } from "./_validate.js"
 import { CappedBBoxQueryParam, CategoriesQueryParam, TypesQueryParam } from "./query-encoding.js"
+import { avatarPresigner } from "../services/user-avatar.js"
 
 export const CREATE_REPORT_RATE_LIMIT = perIdentity({
   max: 20,
@@ -125,7 +126,7 @@ const SearchReportsQuerySchema = z
     cursor: z.string().optional(),
     limit: z.coerce.number().int().positive().max(MAX_SEARCH_LIMIT).optional(),
   })
-  .transform((q) => ({
+  .transform((q): z.input<typeof ListReportsSearchRequestSchema> => ({
     ...(q.q !== undefined ? { q: q.q } : {}),
     ...(q.categories !== undefined ? { categories: q.categories } : {}),
     ...(q.types !== undefined ? { types: q.types } : {}),
@@ -374,7 +375,7 @@ function makeContainerReportService(
 ): ReportService {
   const sql = container.getDb().sql
   const repo: ReportRepository = makeDrizzleReportRepository(sql)
-  const cleanupRepo = makeDrizzleCleanupRepository(sql)
+  const cleanupRepo = makeDrizzleCleanupRepository(sql, avatarPresigner(container.storage))
   const reportChatRepo = makeReportChatRepository(sql)
   return makeReportService({
     repo,

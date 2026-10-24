@@ -1,5 +1,6 @@
 import type { SocialLinks } from "@civfix/contract"
 import type { CleanupRecord } from "./cleanup-repository.js"
+import type { AvatarMedia } from "./user-avatar.js"
 
 export interface PersonView {
   id: string
@@ -8,8 +9,8 @@ export interface PersonView {
   bio: string | null
   followers: number
   following: number
-  avatarR2Key: string | null
   avatarUrl: string | null
+  avatarMedia: AvatarMedia | null
   socialLinks: SocialLinks | null
   donationUrl: string | null
   showVolunteerHours: boolean | null

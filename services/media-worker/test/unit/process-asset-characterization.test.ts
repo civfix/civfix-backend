@@ -274,20 +274,6 @@ describe("processAsset: valid JPEG carrying EXIF GPS", () => {
     const persisted = JSON.stringify({ row: h.repo.get(ID), patches: h.patches, logs: h.logs })
     expect(persisted).not.toMatch(/latitude|longitude|37\.76|122\.4/)
   })
-
-  it("refreshes avatar URLs with the public served URL when a public media base is configured", async () => {
-    const h = makeHarness({ publicMediaBase: "https://media.example.test/" })
-    const refreshes: [string, string][] = []
-    h.repo.refreshAvatarUrls = (mediaId, url) => {
-      refreshes.push([mediaId, url])
-      return Promise.resolve(1)
-    }
-    const payload = await seed(h, "image", await fx.makeValidJpegWithGps())
-
-    await expect(runMediaChecksJob(payload, h.deps)).resolves.toBe("ready")
-
-    expect(refreshes).toEqual([[ID, `https://media.example.test/${SERVED}`]])
-  })
 })
 
 describe("processAsset: NSFW hold", () => {

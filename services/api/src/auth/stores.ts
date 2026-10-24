@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto"
 import { AppError, DELETED_USER_LABEL } from "@civfix/contract"
 import type { Role, SocialLinks } from "@civfix/contract"
 import { decideHandleWrite, handleChanged } from "./handle-policy.js"
+import type { AvatarMedia } from "../services/user-avatar.js"
 
 export const HANDLE_RENAME_COOLDOWN_MS = 30 * 24 * 60 * 60 * 1000
 
@@ -132,6 +133,7 @@ export interface UserRecord {
   email: string | null
   emailVerified: boolean
   avatarUrl: string | null
+  avatarMedia: AvatarMedia | null
   profileComplete: boolean
   allowDirectMessages: boolean
   showVolunteerHours: boolean | null
@@ -170,7 +172,6 @@ export interface UpdateProfileInput {
   displayName: string
   bio?: string | null
   avatarUploadId?: string
-  presignAvatar?: (avatarKey: string) => Promise<string>
   socialLinks?: SocialLinks | null
   donationUrl?: string | null
 }
@@ -252,6 +253,7 @@ export class InMemoryUserStore implements UserStore {
       email: email === null ? null : email.toLowerCase(),
       emailVerified: email !== null && (input.emailVerified ?? false),
       avatarUrl: input.avatarUrl ?? null,
+      avatarMedia: null,
       profileComplete: input.profileComplete ?? false,
       allowDirectMessages: true,
       showVolunteerHours: null,
@@ -368,6 +370,7 @@ export class InMemoryUserStore implements UserStore {
       displayName: DELETED_USER_LABEL,
       handle: generateTombstoneHandle(),
       avatarUrl: null,
+      avatarMedia: null,
       primaryOrganizationId: null,
     }
     this.byId.set(id, next)
