@@ -95,5 +95,9 @@ export function makeDrizzleNotificationSettingsRepository(
           updated_at = now()
       `
     },
+
+    disableEmail(_userId: string, _category: NotificationCategory): Promise<boolean> {
+      throw new Error("not implemented")
+    },
   }
 }

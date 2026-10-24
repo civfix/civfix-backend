@@ -52,6 +52,8 @@ const CSRF_EXEMPT: Readonly<Record<string, string>> = {
   recordEventPageView: PUBLIC,
   unsubscribeBroadcasts:
     "public one-click unsubscribe (RFC 8058): the signed token, not a session, is the capability",
+  unsubscribeNotificationEmail:
+    "public one-click unsubscribe (RFC 8058): the signed token, not a session, is the capability",
   createMediaUpload: UNDER_REVIEW,
   finalizeMedia: UNDER_REVIEW,
   claimNudge: UNDER_REVIEW,

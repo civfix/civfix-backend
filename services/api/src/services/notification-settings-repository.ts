@@ -20,4 +20,7 @@ export interface NotificationSettingsRepository {
    * NOTIFICATION_CATEGORY_DEFAULTS; an existing row keeps them.
    */
   upsertSettings(userId: string, patch: NotificationSettingsPatch): Promise<void>
+
+  /** Unchecks Email for one category of a live account; false when the account is erased or missing. */
+  disableEmail(userId: string, category: NotificationCategory): Promise<boolean>
 }

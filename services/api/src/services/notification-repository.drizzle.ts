@@ -7,6 +7,7 @@ import {
 } from "../db/cursor-helpers.js"
 import type {
   CoalescedNotificationArgs,
+  EmailRecipientRecord,
   NewNotificationArgs,
   NotificationPrefsPatch,
   NotificationPrefsRecord,
@@ -380,6 +381,10 @@ export function makeDrizzleNotificationRepository(sql: Sql): NotificationReposit
         SELECT locale FROM users WHERE id = ${userId} LIMIT 1
       `
       return rows[0]?.locale ?? null
+    },
+
+    findEmailRecipients(_userIds: string[]): Promise<EmailRecipientRecord[]> {
+      throw new Error("not implemented")
     },
   }
 }

@@ -19,6 +19,7 @@ import type { PushGateMode } from "./notification-helpers.js"
 import { isWithinQuietHours, toNotificationDTO, toPrefsDTO } from "./notification-helpers.js"
 import { categoryForType, categorySettings } from "./notification-categories.js"
 import type { NotificationSettingsRepository } from "./notification-settings-repository.js"
+import type { NotificationEmailDeps } from "./notification-email.js"
 import { mapWithLimit } from "../lib/concurrency.js"
 import { classifyPushToken, isRegistrablePushEndpoint } from "./push-token-policy.js"
 import { renderMessage, type MessageKey, type MessageVars } from "../i18n/renderMessage.js"
@@ -90,6 +91,7 @@ export interface NotificationServiceDeps {
   logger?: Pick<FastifyBaseLogger, "warn" | "error">
   now?: () => Date
   isSafePushEndpoint?: (endpoint: string) => Promise<boolean>
+  email?: NotificationEmailDeps
 }
 
 export interface PostActivity {

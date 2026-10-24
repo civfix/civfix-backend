@@ -52,6 +52,13 @@ export interface CoalescedNotificationArgs {
   since: Date
 }
 
+/** A recipient a notification email may go to: a live account whose verified address is not suppressed. */
+export interface EmailRecipientRecord {
+  userId: string
+  email: string
+  locale: string
+}
+
 export interface NotificationRepository {
   insertNotification(args: NewNotificationArgs): Promise<NotificationRecord>
 
@@ -99,6 +106,8 @@ export interface NotificationRepository {
   findUserLocale(userId: string): Promise<string | null>
 
   findUserLocaleMany?(userIds: string[]): Promise<Map<string, string>>
+
+  findEmailRecipients(userIds: string[]): Promise<EmailRecipientRecord[]>
 }
 
 export type PushTokenUpsertOutcome = "stored" | "conflict"

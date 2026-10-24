@@ -251,7 +251,7 @@ describe("route-coverage: every shared endpoint is registered (offline boot smok
     expect(Object.keys(endpoints).length).toBe(349)
   })
 
-  it("T3: PENDING_IN_EPIC names exactly the eight notification-center endpoints, each in the registry", () => {
+  it("T44: PENDING_IN_EPIC names exactly the six notification-center endpoints left, each in the registry", () => {
     expect([...PENDING_IN_EPIC].sort()).toEqual(
       [
         "getNotificationSettings",
@@ -260,8 +260,6 @@ describe("route-coverage: every shared endpoint is registered (offline boot smok
         "markAllNotificationsRead",
         "dismissNotification",
         "getPushWebConfig",
-        "unsubscribeNotificationEmail",
-        "openUnsubscribeNotificationEmail",
       ].sort(),
     )
     for (const name of PENDING_IN_EPIC) expect(Object.keys(endpoints)).toContain(name)
