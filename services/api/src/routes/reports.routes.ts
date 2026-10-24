@@ -126,7 +126,7 @@ const SearchReportsQuerySchema = z
     cursor: z.string().optional(),
     limit: z.coerce.number().int().positive().max(MAX_SEARCH_LIMIT).optional(),
   })
-  .transform((q) => ({
+  .transform((q): z.input<typeof ListReportsSearchRequestSchema> => ({
     ...(q.q !== undefined ? { q: q.q } : {}),
     ...(q.categories !== undefined ? { categories: q.categories } : {}),
     ...(q.types !== undefined ? { types: q.types } : {}),
