@@ -710,6 +710,6 @@ interface FilingSettingsRow {
 }
 
 function toSettings(row: FilingSettingsRow | undefined): FilingSettingsRecord {
-  if (row === undefined) throw new Error("filing_settings row is missing (0196 seeds it)")
+  if (row === undefined) throw new Error("filing_settings row is missing (0210 seeds it)")
   return { paused: row.paused, updatedAt: row.updated_at, updatedBy: row.updated_by }
 }
