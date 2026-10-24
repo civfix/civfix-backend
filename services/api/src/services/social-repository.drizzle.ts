@@ -30,7 +30,13 @@ import {
 } from "../db/cursor-helpers.js"
 import { likeContains } from "../db/like.js"
 import { cleanupStatusExpr, goingScalar } from "./cleanup-sql.js"
-import { publicServedKeyExpr } from "./media-served-key.js"
+import {
+  userAvatarColumns,
+  userAvatarSource,
+  resolveAvatarColumns,
+  type AvatarPresigner,
+  type UserAvatarColumns,
+} from "./user-avatar.js"
 import { CIVFIX_OFFICIAL_USER_ID } from "../auth/official-account.js"
 
 const SUGGEST_NEARBY_METERS = 25_000
@@ -42,15 +48,13 @@ export const SUGGEST_CANDIDATE_RADIUS_DEG = 2.5
 export const SUGGEST_KNN_INDEX = "users_last_activity_gist"
 export const SUGGEST_RECENCY_INDEX = "users_last_activity_at_idx"
 
-export interface PersonRowSelect {
+export interface PersonRowSelect extends UserAvatarColumns {
   id: string
   display_name: string
   handle: string | null
   bio: string | null
   followers: number
   following: number
-  avatar_r2_key: string | null
-  avatar_url: string | null
   social_links?: SocialLinks | null
   donation_url?: string | null
   show_volunteer_hours: boolean | null
@@ -68,8 +72,7 @@ export function toPersonView(r: PersonRowSelect): PersonView {
     bio: r.bio,
     followers: Number(r.followers),
     following: Number(r.following),
-    avatarR2Key: r.avatar_r2_key,
-    avatarUrl: r.avatar_url,
+    ...userAvatarSource(r),
     socialLinks: r.social_links ?? null,
     donationUrl: r.donation_url ?? null,
     showVolunteerHours: r.show_volunteer_hours === undefined ? false : r.show_volunteer_hours,
@@ -86,7 +89,7 @@ function pagePeople(rows: PersonRowSelectWithFollow[], limit: number): PeoplePag
   }
 }
 
-interface CleanupRowSelect {
+interface CleanupRowSelect extends UserAvatarColumns<"org_"> {
   id: string
   organizer_user_id: string
   type: CleanupType
@@ -112,7 +115,6 @@ interface CleanupRowSelect {
   org_display_name: string
   org_handle: string | null
   org_bio: string | null
-  org_avatar_url: string | null
   org_donation_url: string | null
 }
 
@@ -209,11 +211,12 @@ function profileEventRows(
       u.display_name AS org_display_name,
       u.handle AS org_handle,
       u.bio AS org_bio,
-      u.avatar_url AS org_avatar_url,
+      ${userAvatarColumns(sql, "u", "am", "org_")},
       u.donation_url AS org_donation_url
     FROM cleanups c
     JOIN ids ON ids.cleanup_id = c.id
     JOIN users u ON u.id = c.organizer_user_id
+    LEFT JOIN media_assets am ON am.id = u.avatar_media_id
     WHERE c.status <> 'cancelled'
       AND c.visibility = 'public'
       ${args.where}
@@ -270,8 +273,7 @@ async function connectionsPage(
       u.bio,
       u.follower_count AS followers,
       u.following_count AS following,
-      ${publicServedKeyExpr(sql, "am")} AS avatar_r2_key,
-      u.avatar_url,
+      ${userAvatarColumns(sql, "u", "am")},
       u.show_volunteer_hours,
       u.cursor_at,
       ${followingExpr} AS is_following
@@ -409,8 +411,7 @@ function suggestFollowsStatement(
           c.bio,
           c.followers,
           c.following,
-          ${publicServedKeyExpr(sql, "am")} AS avatar_r2_key,
-          c.avatar_url,
+          ${userAvatarColumns(sql, "c", "am")},
           c.show_volunteer_hours,
           c.is_organizer
         FROM ranked c
@@ -435,7 +436,15 @@ export async function explainSuggestFollows(
   return rows.map((r) => Object.values(r)[0] ?? "").join("\n")
 }
 
-export function makeDrizzleSocialRepository(sql: Sql): SocialRepository {
+export function makeDrizzleSocialRepository(
+  sql: Sql,
+  presignAvatar?: AvatarPresigner,
+): SocialRepository {
+  async function toCleanupRecords(rows: readonly CleanupRowSelect[]): Promise<CleanupRecord[]> {
+    await resolveAvatarColumns(presignAvatar, rows, ["org_"])
+    return rows.map(toCleanupRecord)
+  }
+
   async function findPerson(keyFilter: SqlFragment): Promise<PersonView | null> {
     const rows = await sql<PersonRowSelect[]>`
       SELECT
@@ -445,8 +454,7 @@ export function makeDrizzleSocialRepository(sql: Sql): SocialRepository {
         u.bio,
         u.follower_count AS followers,
         u.following_count AS following,
-        ${publicServedKeyExpr(sql, "am")} AS avatar_r2_key,
-        u.avatar_url,
+        ${userAvatarColumns(sql, "u", "am")},
         u.social_links,
         u.donation_url,
         u.show_volunteer_hours
@@ -500,8 +508,7 @@ export function makeDrizzleSocialRepository(sql: Sql): SocialRepository {
           u.bio,
           u.follower_count AS followers,
           u.following_count AS following,
-          ${publicServedKeyExpr(sql, "am")} AS avatar_r2_key,
-          u.avatar_url,
+          ${userAvatarColumns(sql, "u", "am")},
           u.show_volunteer_hours,
           ${followingExpr} AS is_following
         FROM (
@@ -631,7 +638,7 @@ export function makeDrizzleSocialRepository(sql: Sql): SocialRepository {
       const { items, nextCursor } = pageWith(rows, args.limit, (last) =>
         encodeTimeCursor({ at: last.scheduled_at, id: last.id }),
       )
-      return { items: items.map(toCleanupRecord), nextCursor }
+      return { items: await toCleanupRecords(items), nextCursor }
     },
 
     async upcomingEventsFor(userId: string, args: UpcomingEventsArgs): Promise<CleanupRecord[]> {
@@ -643,7 +650,7 @@ export function makeDrizzleSocialRepository(sql: Sql): SocialRepository {
         order: sql`ORDER BY c.scheduled_at ASC, c.id ASC`,
         limit: args.limit,
       })
-      return rows.map(toCleanupRecord)
+      return toCleanupRecords(rows)
     },
 
     async statsFor(userId: string): Promise<ProfileStats> {

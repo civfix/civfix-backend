@@ -156,41 +156,38 @@ describe.skipIf(!pg)("auth integration: Postgres stores", () => {
     expect(u2.id).toBe(u1.id)
   })
 
-  it("updateProfile with an avatarUploadId canonicalizes users.avatar_url (presigned served_key) + returns it", async () => {
+  it("updateProfile with an avatarUploadId binds the media and leaves users.avatar_url as it was", async () => {
     const users = new PgUserStore(h.db)
-    const user = await users.create("avatar.canon@example.com", { displayName: "Avatar Canon" })
+    const user = await users.create("avatar.canon@example.com", {
+      displayName: "Avatar Canon",
+      avatarUrl: "https://lh3.googleusercontent.com/a/canon",
+    })
 
     // A published avatar media row (the presign -> PUT -> finalize -> media.checks pipeline's end state).
-    // The worker publishes its processed bytes to served_key, NOT back over the client-writable r2_key,
-    // and every read path (including this one) hands out served_key.
     const media = await seedMediaAsset(h.sql, { r2Key: "avatars/canon/upload.jpg" })
-    const uploadId = media.uploadId
-    const servedKey = media.servedKey
 
-    // Inject the canonical presigner the route wires from the Storage seam (R2_PUBLIC_BASE => stable URL).
-    const presignAvatar = (key: string): Promise<string> =>
-      Promise.resolve(`https://cdn.example.test/${key}`)
-    const expectedUrl = `https://cdn.example.test/${servedKey}`
-
-    // The RETURNED record (the PUT /me/profile response + session/me, via toUserDTO) carries the new URL.
     const updated = await users.updateProfile(user.id, {
       handle: user.handle ?? "avatar_canon",
       displayName: "Avatar Canon",
-      avatarUploadId: uploadId,
-      presignAvatar,
+      avatarUploadId: media.uploadId,
     })
-    expect(updated.avatarUrl).toBe(expectedUrl)
+    expect(updated.avatarUrl).toBe("https://lh3.googleusercontent.com/a/canon")
+    expect(updated.avatarMedia).toEqual({
+      status: "ready",
+      servedKey: media.servedKey,
+      thumbKey: null,
+    })
 
-    // And it is PERSISTED: a fresh read (every avatar_url reader) sees the canonical URL.
     const reread = await users.findById(user.id)
-    expect(reread?.avatarUrl).toBe(expectedUrl)
+    expect(reread?.avatarUrl).toBe("https://lh3.googleusercontent.com/a/canon")
+    expect(reread?.avatarMedia?.servedKey).toBe(media.servedKey)
 
-    // No presigner => avatar_url is left untouched (a name/bio edit must not clear the avatar).
+    // A name edit keeps the bound media.
     const after = await users.updateProfile(user.id, {
       handle: updated.handle ?? "avatar_canon",
       displayName: "Avatar Canon Renamed",
     })
-    expect(after.avatarUrl).toBe(expectedUrl)
+    expect(after.avatarMedia?.servedKey).toBe(media.servedKey)
   })
 
   it("P1-4: concurrent create for the same brand-new email resolves to ONE user (no unique-violation 500)", async () => {

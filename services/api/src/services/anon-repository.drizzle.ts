@@ -24,6 +24,7 @@
 
 import type { Sql, TransactionSql } from "../db/client.js"
 import { generateToken, sha256Hex } from "../auth/crypto.js"
+import type { ReportVote } from "./report-repository.js"
 import type {
   AnonReportStatusRow,
   ClaimRepository,
@@ -408,16 +409,21 @@ export function makeDrizzleClaimRepository(sql: Sql): ClaimRepository {
         `
         const report = updated[0]
         if (!report) return null
-        // A Me too is for someone else's report, so the claimant's own one (made while it was
-        // anonymous) goes in the same transaction, with the count it added.
-        const removed = await tx<{ report_id: string }[]>`
+        // A vote is for someone else's report, so the claimant's own one of either kind (made while it
+        // was anonymous) goes in the same transaction, with the count it added.
+        const removed = await tx<{ kind: ReportVote }[]>`
           DELETE FROM report_confirmations
           WHERE report_id = ${report.id} AND user_id = ${userId}
-          RETURNING report_id
+          RETURNING kind
         `
-        if (removed.length > 0) {
+        const kind = removed[0]?.kind
+        if (kind === "seen") {
           await tx`
             UPDATE reports SET confirm_count = GREATEST(confirm_count - 1, 0) WHERE id = ${report.id}
+          `
+        } else if (kind === "fixed") {
+          await tx`
+            UPDATE reports SET fixed_count = GREATEST(fixed_count - 1, 0) WHERE id = ${report.id}
           `
         }
         return { reportId: report.id }

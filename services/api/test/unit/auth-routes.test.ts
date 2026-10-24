@@ -858,7 +858,7 @@ describe("auth routes: first-run registration (handle availability + PUT /me/pro
     expect(conflict.json().code).toBe("CONFLICT")
   })
 
-  async function updateWithAvatar(h: AuthHarness): Promise<{ presignAvatar: unknown }> {
+  async function updateWithAvatar(h: AuthHarness) {
     const { token } = await signIn(h, "avatar@example.com")
     const spy = vi.spyOn(h.stores.users, "updateProfile")
     const res = await h.app.inject({
@@ -872,17 +872,21 @@ describe("auth routes: first-run registration (handle availability + PUT /me/pro
       },
     })
     expect(res.statusCode).toBe(200)
-    const input = spy.mock.calls.at(-1)![1]
-    return { presignAvatar: input.presignAvatar }
+    return spy.mock.calls.at(-1)![1]
   }
 
-  it("F073: an avatar URL is persisted only when it is a durable CDN url (R2_PUBLIC_BASE set)", async () => {
+  it("F073: the profile save binds the upload and never writes an avatar URL, R2_PUBLIC_BASE set or not", async () => {
+    const saved = {
+      handle: "ana_avatar",
+      displayName: "Ana",
+      avatarUploadId: "9f1d2e3a-4b5c-4d6e-8f90-a1b2c3d4e5f6",
+    }
     harness = await makeAuthHarness()
-    expect((await updateWithAvatar(harness)).presignAvatar).toBeUndefined()
+    expect(await updateWithAvatar(harness)).toEqual(saved)
     await harness.app.close()
 
     harness = await makeAuthHarness({ env: { R2_PUBLIC_BASE: "https://cdn.example.org" } })
-    expect(typeof (await updateWithAvatar(harness)).presignAvatar).toBe("function")
+    expect(await updateWithAvatar(harness)).toEqual(saved)
   })
 
   it("reserves display names that read as CivFix, but only when the name changes", async () => {

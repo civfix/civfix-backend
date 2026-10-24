@@ -39,7 +39,7 @@ function trimTextValue(value: unknown): unknown {
 export function trimTextFields<S extends ZodTypeAny>(
   schema: S,
   ...fields: readonly string[]
-): z.ZodEffects<S, z.infer<S>, unknown> {
+): z.ZodPreprocess<S> {
   return z.preprocess((raw) => {
     if (raw === null || typeof raw !== "object" || Array.isArray(raw)) return raw
     const source = raw as Record<string, unknown>

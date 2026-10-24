@@ -48,14 +48,15 @@ function userRow(fields: Record<string, unknown>): unknown[] {
     createdAt: NOW.toISOString(),
     ...fields,
   }
-  return Object.keys(getTableColumns(schema.users)).map((key) => base[key] ?? null)
+  // The store selects every users column, then the avatar media lookup.
+  return [...Object.keys(getTableColumns(schema.users)).map((key) => base[key] ?? null), null]
 }
 
 describe("PgUserStore.updateProfile under a concurrent rename", () => {
   it("guards the rename on the handle it read, and re-decides when another rename won", async () => {
     let userReads = 0
     const { db, statements } = recordingDb((query) => {
-      if (/^select .* from "users" where "users"\."id" = \$1/i.test(query)) {
+      if (/^select [\s\S]* from "users" where "users"\."id" = \$1/i.test(query)) {
         userReads += 1
         return userReads === 1
           ? [userRow({})]

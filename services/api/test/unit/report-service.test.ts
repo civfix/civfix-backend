@@ -120,6 +120,7 @@ describe("clusterByZoom", () => {
       thumbKey: "thumbs/a",
       r2Key: "uploads/a",
       confirmCount: 0,
+      fixedCount: 0,
     },
     {
       id: "b",
@@ -135,6 +136,7 @@ describe("clusterByZoom", () => {
       thumbKey: null,
       r2Key: null,
       confirmCount: 0,
+      fixedCount: 0,
     },
     {
       id: "c",
@@ -150,6 +152,7 @@ describe("clusterByZoom", () => {
       thumbKey: null,
       r2Key: null,
       confirmCount: 0,
+      fixedCount: 0,
     },
     {
       id: "d",
@@ -165,6 +168,7 @@ describe("clusterByZoom", () => {
       thumbKey: null,
       r2Key: null,
       confirmCount: 0,
+      fixedCount: 0,
     },
   ]
 
@@ -186,6 +190,7 @@ describe("clusterByZoom", () => {
       thumbKey: "thumbs/a",
       r2Key: "uploads/a",
       confirmCount: 0,
+      fixedCount: 0,
     })
   })
 
@@ -228,6 +233,7 @@ describe("countByCategory", () => {
         thumbKey: null,
         r2Key: null,
         confirmCount: 0,
+        fixedCount: 0,
       },
       {
         id: "b",
@@ -243,6 +249,7 @@ describe("countByCategory", () => {
         thumbKey: null,
         r2Key: null,
         confirmCount: 0,
+        fixedCount: 0,
       },
       {
         id: "c",
@@ -258,6 +265,7 @@ describe("countByCategory", () => {
         thumbKey: null,
         r2Key: null,
         confirmCount: 0,
+        fixedCount: 0,
       },
     ]
     expect(countByCategory(pts)).toEqual({ trash: 2, graffiti: 1 })
@@ -448,6 +456,8 @@ describe("createReport: idempotency replay", () => {
       linkedEvents: [],
       confirmCount: 0,
       confirmedByMe: false,
+      fixedCount: 0,
+      fixedByMe: false,
     }
     repo.idempotency.set(`report_create:${VALID_UUID}:u1`, {
       key: VALID_UUID,

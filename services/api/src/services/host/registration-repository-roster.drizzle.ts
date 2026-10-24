@@ -31,6 +31,7 @@ import type {
   RosterQuery,
   TransferRegistrationOutcome,
 } from "./registration-repository.js"
+import type { AvatarPresigner } from "../user-avatar.js"
 
 export type RosterMethods = Pick<
   HostRegistrationRepository,
@@ -173,14 +174,22 @@ function encodeRosterCursor(sort: RegistrationRosterSort, last: RosterRowSelect)
   return encodeKeysetCursor(last.cursor_at, last.id)
 }
 
-async function listWaitlistedRoster(sql: Sql, query: RosterQuery): Promise<RosterPage> {
-  const page = await listWaitlistIn(sql, {
-    cleanupId: query.cleanupId,
-    ticketTypeId: query.ticketTypeId,
-    status: null,
-    cursor: query.cursor,
-    limit: query.limit,
-  })
+async function listWaitlistedRoster(
+  sql: Sql,
+  query: RosterQuery,
+  presignAvatar: AvatarPresigner | undefined,
+): Promise<RosterPage> {
+  const page = await listWaitlistIn(
+    sql,
+    {
+      cleanupId: query.cleanupId,
+      ticketTypeId: query.ticketTypeId,
+      status: null,
+      cursor: query.cursor,
+      limit: query.limit,
+    },
+    presignAvatar,
+  )
   return {
     rows: page.rows
       .filter((entry) => entry.status === "waiting" || entry.status === "offered")
@@ -197,7 +206,11 @@ async function countRegistered(sql: Sql, cleanupId: string): Promise<number> {
   return counted[0]?.n ?? 0
 }
 
-async function listRosterIn(sql: Sql, query: RosterQuery): Promise<RosterPage> {
+async function listRosterIn(
+  sql: Sql,
+  query: RosterQuery,
+  presignAvatar: AvatarPresigner | undefined,
+): Promise<RosterPage> {
   const typeFilter =
     query.ticketTypeId === null ? sql`` : sql`AND r.ticket_type_id = ${query.ticketTypeId}`
   const slotFilter = query.slotId === null ? sql`` : sql`AND sc.slot_id = ${query.slotId}`
@@ -219,7 +232,7 @@ async function listRosterIn(sql: Sql, query: RosterQuery): Promise<RosterPage> {
   const { items, nextCursor } = pageWith(rows, query.limit, (last) =>
     encodeRosterCursor(query.sort, last),
   )
-  const page: RosterPage = { rows: await hydrate(sql, items), nextCursor }
+  const page: RosterPage = { rows: await hydrate(sql, items, presignAvatar), nextCursor }
   if (query.withTotal) page.total = await countRegistered(sql, query.cleanupId)
   return page
 }
@@ -307,6 +320,7 @@ export async function applyBanIn(
 async function cancelRegistrationIn(
   tag: Queryable,
   args: CancelRegistrationArgs,
+  presignAvatar: AvatarPresigner | undefined,
 ): Promise<CancelRegistrationOutcome> {
   const cancelled = await tag<{ id: string; ticket_type_id: string | null }[]>`
     WITH cancelled AS (
@@ -334,10 +348,15 @@ async function cancelRegistrationIn(
   `
   const row = cancelled[0]
   if (row === undefined) {
-    const existing = await loadRegistrationById(tag, args.cleanupId, args.registrationId)
+    const existing = await loadRegistrationById(
+      tag,
+      args.cleanupId,
+      args.registrationId,
+      presignAvatar,
+    )
     return existing === null ? { kind: "not_found" } : { kind: "already_cancelled" }
   }
-  const registration = await loadRegistrationById(tag, args.cleanupId, row.id)
+  const registration = await loadRegistrationById(tag, args.cleanupId, row.id, presignAvatar)
   if (registration === null) return { kind: "not_found" }
   return { kind: "cancelled", registration, ticketTypeId: row.ticket_type_id }
 }
@@ -345,6 +364,7 @@ async function cancelRegistrationIn(
 async function removeRegistrationIn(
   tx: Queryable,
   args: RemoveRegistrationArgs,
+  presignAvatar: AvatarPresigner | undefined,
 ): Promise<RemoveRegistrationOutcome> {
   const target = await tx<{ user_id: string | null }[]>`
     SELECT user_id FROM cleanup_registrations
@@ -354,7 +374,7 @@ async function removeRegistrationIn(
   if (target.length === 0) return { kind: "not_found", releasedWaitlistTicketTypeIds: [] }
   const bannedUserId = args.ban ? (target[0]?.user_id ?? null) : null
   if (bannedUserId === null) {
-    const outcome = await cancelRegistrationIn(tx, args)
+    const outcome = await cancelRegistrationIn(tx, args, presignAvatar)
     return { ...outcome, releasedWaitlistTicketTypeIds: [] }
   }
   const ban = await applyBanIn(tx, {
@@ -366,10 +386,10 @@ async function removeRegistrationIn(
   const releasedWaitlistTicketTypeIds = ban.releasedTicketTypeIds
   const removed = ban.cancelledRegistrations.find((r) => r.id === args.registrationId)
   if (removed === undefined) {
-    const outcome = await cancelRegistrationIn(tx, args)
+    const outcome = await cancelRegistrationIn(tx, args, presignAvatar)
     return { ...outcome, releasedWaitlistTicketTypeIds }
   }
-  const registration = await loadRegistrationById(tx, args.cleanupId, removed.id)
+  const registration = await loadRegistrationById(tx, args.cleanupId, removed.id, presignAvatar)
   if (registration === null) return { kind: "not_found", releasedWaitlistTicketTypeIds }
   return {
     kind: "cancelled",
@@ -382,6 +402,7 @@ async function removeRegistrationIn(
 async function transferRegistrationIn(
   tx: Queryable,
   args: TransferRegistrationArgs,
+  presignAvatar: AvatarPresigner | undefined,
 ): Promise<TransferRegistrationOutcome> {
   // The event row first, as applyBanIn takes it: a ban holds it while it moves ticket-type seats and
   // then cancels registrations, so a transfer that locked its registration before the ticket types
@@ -446,18 +467,26 @@ async function transferRegistrationIn(
      WHERE id = ${args.registrationId} AND cleanup_id = ${args.cleanupId}
   `
 
-  const registration = await loadRegistrationById(tx, args.cleanupId, args.registrationId)
+  const registration = await loadRegistrationById(
+    tx,
+    args.cleanupId,
+    args.registrationId,
+    presignAvatar,
+  )
   if (registration === null) return { kind: "not_found" }
   return { kind: "transferred", registration, previousTicketTypeId: current.ticket_type_id }
 }
 
-export function makeRosterMethods(sql: Sql): RosterMethods {
+export function makeRosterMethods(
+  sql: Sql,
+  presignAvatar: AvatarPresigner | undefined,
+): RosterMethods {
   return {
     async findRegistration(
       cleanupId: string,
       registrationId: string,
     ): Promise<RegistrationRecord | null> {
-      return loadRegistrationById(sql, cleanupId, registrationId)
+      return loadRegistrationById(sql, cleanupId, registrationId, presignAvatar)
     },
 
     async findMyRegistration(
@@ -477,7 +506,7 @@ export function makeRosterMethods(sql: Sql): RosterMethods {
          ORDER BY (r.status = 'registered') DESC, r.registered_at DESC
          LIMIT 1
       `
-      const hydrated = await hydrate(sql, rows)
+      const hydrated = await hydrate(sql, rows, presignAvatar)
       return hydrated[0] ?? null
     },
 
@@ -495,13 +524,15 @@ export function makeRosterMethods(sql: Sql): RosterMethods {
            AND r.user_id = ${userId}
            AND r.status = 'registered'
       `
-      for (const record of await hydrate(sql, rows)) out.set(record.cleanupId, record)
+      for (const record of await hydrate(sql, rows, presignAvatar)) {
+        out.set(record.cleanupId, record)
+      }
       return out
     },
 
     async listRoster(query: RosterQuery): Promise<RosterPage> {
-      if (query.filter === "waitlisted") return listWaitlistedRoster(sql, query)
-      return listRosterIn(sql, query)
+      if (query.filter === "waitlisted") return listWaitlistedRoster(sql, query, presignAvatar)
+      return listRosterIn(sql, query, presignAvatar)
     },
 
     async setHostNote(
@@ -518,17 +549,17 @@ export function makeRosterMethods(sql: Sql): RosterMethods {
     },
 
     async cancelRegistration(args: CancelRegistrationArgs): Promise<CancelRegistrationOutcome> {
-      return cancelRegistrationIn(sql, args)
+      return cancelRegistrationIn(sql, args, presignAvatar)
     },
 
     async removeRegistration(args: RemoveRegistrationArgs): Promise<RemoveRegistrationOutcome> {
-      return sql.begin((tx) => removeRegistrationIn(tx, args))
+      return sql.begin((tx) => removeRegistrationIn(tx, args, presignAvatar))
     },
 
     async transferRegistration(
       args: TransferRegistrationArgs,
     ): Promise<TransferRegistrationOutcome> {
-      return sql.begin((tx) => transferRegistrationIn(tx, args))
+      return sql.begin((tx) => transferRegistrationIn(tx, args, presignAvatar))
     },
   }
 }

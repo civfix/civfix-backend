@@ -71,7 +71,7 @@
   "dependencies": {
     "@aws-sdk/client-s3": "^3.1147.0",
     "@aws-sdk/s3-request-presigner": "^3.1147.0",
-    "@civfix/contract": "^0.62.0",
+    "@civfix/contract": "^0.64.0",
     "@civfix/tokens": "^0.1.0",
     "@fastify/cookie": "^11.1.2",
     "@fastify/cors": "^10.1.0",
@@ -99,7 +99,7 @@
     "qrcode-generator": "^2.0.4",
     "tldts": "^7.4.16",
     "web-push": "^3.6.7",
-    "zod": "^3.25.76"
+    "zod": "^4.6.6"
   },
   "devDependencies": {
     "@civfix/config": "workspace:*",

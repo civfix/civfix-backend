@@ -282,7 +282,9 @@ describe.skipIf(!pg)("waitlist promotion (integration)", () => {
       expect(held).toBe(1)
     } else {
       expect(claim.kind).toBe("expired")
-      expect(expired).toContain(ticketTypeId)
+      // Whichever side locks the row first expires it: when the claim does,
+      // the sweep's SKIP LOCKED pass rightly finds nothing left to expire.
+      expect(expired.filter((id) => id !== ticketTypeId)).toEqual([])
       expect(entry?.status).toBe("expired")
       expect((registrations[0] as { n: number }).n).toBe(0)
       expect(held).toBe(0)

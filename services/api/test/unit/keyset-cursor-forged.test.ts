@@ -17,6 +17,7 @@ import { makeDrizzleReportRepository } from "../../src/services/report-repositor
 import { makeDrizzleNotificationRepository } from "../../src/services/notification-repository.drizzle.js"
 import { makeDrizzlePostRepository } from "../../src/services/post-repository.drizzle.js"
 import { makeDrizzleBlocksRepository } from "../../src/services/blocks-repository.drizzle.js"
+import { fakeAvatarPresigner } from "../helpers/avatar-fixtures.js"
 
 const ID = "0b8f3a52-7a55-4d6e-9d0c-5a8f1b7c9e01"
 const VIEWER = "0b8f3a52-7a55-4d6e-9d0c-5a8f1b7c9e03"
@@ -124,7 +125,7 @@ describe("keyset lists answer a forged cursor with the first page", () => {
 
   it("blocked users", async () => {
     const ctl = makeFakeSql()
-    const repo = makeDrizzleBlocksRepository(ctl.sql as unknown as Sql)
+    const repo = makeDrizzleBlocksRepository(ctl.sql as unknown as Sql, fakeAvatarPresigner)
     await repo.listBlocked(VIEWER, { cursor: forged, limit: 1 })
     expectNoAnchor(ctl, /FROM user_blocks b\s+JOIN users u/)
   })

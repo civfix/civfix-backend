@@ -34,6 +34,7 @@ import type {
   WaitlistOffer,
   WaitlistRecord,
 } from "./registration-repository.js"
+import { resolveAvatarColumns, type AvatarPresigner } from "../user-avatar.js"
 
 const DEFAULT_EVENT_DURATION_SEC = DEFAULT_EVENT_DURATION_MS / 1000
 
@@ -173,6 +174,7 @@ export function waitlistEntryAsRegistration(entry: WaitlistRecord): Registration
 export async function listWaitlistIn(
   tag: Queryable,
   args: ListWaitlistArgs,
+  presignAvatar: AvatarPresigner | undefined,
 ): Promise<{ rows: WaitlistRecord[]; nextCursor: string | null }> {
   const typeFilter =
     args.ticketTypeId === null ? tag`` : tag`AND w.ticket_type_id = ${args.ticketTypeId}`
@@ -207,6 +209,7 @@ export async function listWaitlistIn(
     atText: last.cursor_at,
     id: last.id,
   }))
+  await resolveAvatarColumns(presignAvatar, items, ["person_"])
   return { rows: items.map(toWaitlistRecord), nextCursor }
 }
 
@@ -236,6 +239,7 @@ async function classifyUnclaimable(
   waitlistId: string,
   subject: RegistrationSubject,
   now: Date,
+  presignAvatar: AvatarPresigner | undefined,
 ): Promise<ClaimWaitlistOutcome> {
   const rows = await tx<
     {
@@ -256,7 +260,12 @@ async function classifyUnclaimable(
   const owns =
     subject.kind === "user" ? row.user_id === subject.userId : row.guest_id === subject.guestId
   if (row.status === "claimed" && owns && row.promoted_registration_id !== null) {
-    const registration = await loadRegistrationById(tx, cleanupId, row.promoted_registration_id)
+    const registration = await loadRegistrationById(
+      tx,
+      cleanupId,
+      row.promoted_registration_id,
+      presignAvatar,
+    )
     if (registration !== null) return { kind: "claimed", registration }
   }
   if (row.status === "expired") return { kind: "expired" }
@@ -349,13 +358,14 @@ async function joinWaitlistGateRefusal(
 async function joinWaitlistIn(
   tx: TransactionSql,
   args: JoinWaitlistArgs,
+  presignAvatar: AvatarPresigner | undefined,
 ): Promise<JoinWaitlistOutcome> {
   const refusal = await joinWaitlistGateRefusal(tx, args)
   if (refusal !== null) return refusal
 
   const existingId = await findLiveWaitlistEntryId(tx, args.ticketTypeId, args.subject)
   if (existingId !== undefined) {
-    const entry = await loadWaitlistEntry(tx, args.cleanupId, existingId)
+    const entry = await loadWaitlistEntry(tx, args.cleanupId, existingId, presignAvatar)
     if (entry === null) return { kind: "not_found" }
     return { kind: "already_waiting", entry }
   }
@@ -373,7 +383,7 @@ async function joinWaitlistIn(
   `
   const id = inserted[0]?.id
   if (id === undefined) throw new Error("waitlist insert returned no row")
-  const entry = await loadWaitlistEntry(tx, args.cleanupId, id)
+  const entry = await loadWaitlistEntry(tx, args.cleanupId, id, presignAvatar)
   if (entry === null) throw new Error("waitlist reload returned no row")
   return { kind: "joined", entry }
 }
@@ -429,6 +439,7 @@ async function claimOfferIn(
   args: ClaimWaitlistArgs,
   subject: RegistrationSubject,
   registerArgs: RegisterTxArgs,
+  presignAvatar: AvatarPresigner | undefined,
 ): Promise<ClaimWaitlistOutcome> {
   const event = await lockEventWindow(tx, args.cleanupId)
   const claimed = await tx<
@@ -445,7 +456,14 @@ async function claimOfferIn(
   `
   const row = claimed[0]
   if (row === undefined) {
-    return classifyUnclaimable(tx, args.cleanupId, args.waitlistId, subject, args.now)
+    return classifyUnclaimable(
+      tx,
+      args.cleanupId,
+      args.waitlistId,
+      subject,
+      args.now,
+      presignAvatar,
+    )
   }
 
   const owns =
@@ -459,7 +477,7 @@ async function claimOfferIn(
     return { kind: "not_offered" }
   }
 
-  const outcome = await registerIn(tx, registerArgs)
+  const outcome = await registerIn(tx, registerArgs, presignAvatar)
   if (outcome.kind === "registered") return { kind: "claimed", registration: outcome.registration }
   if (outcome.kind === "replayed" && outcome.registration !== null) {
     return { kind: "claimed", registration: outcome.registration }
@@ -471,16 +489,21 @@ async function claimOfferIn(
   throw new ClaimRefusal({ kind: "not_offered" })
 }
 
-export function makeWaitlistMethods(sql: Sql): WaitlistMethods {
+export function makeWaitlistMethods(
+  sql: Sql,
+  presignAvatar: AvatarPresigner | undefined,
+): WaitlistMethods {
   return {
     async joinWaitlist(args: JoinWaitlistArgs): Promise<JoinWaitlistOutcome> {
       try {
-        return await sql.begin((tx) => joinWaitlistIn(tx, args))
+        return await sql.begin((tx) => joinWaitlistIn(tx, args, presignAvatar))
       } catch (err) {
         if (!isUniqueViolationOn(err, ...WAITLIST_ACTIVE_CONSTRAINTS)) throw err
         const existingId = await findLiveWaitlistEntryId(sql, args.ticketTypeId, args.subject)
         const entry =
-          existingId === undefined ? null : await loadWaitlistEntry(sql, args.cleanupId, existingId)
+          existingId === undefined
+            ? null
+            : await loadWaitlistEntry(sql, args.cleanupId, existingId, presignAvatar)
         if (entry === null) return { kind: "not_found" }
         return { kind: "already_waiting", entry }
       }
@@ -498,11 +521,11 @@ export function makeWaitlistMethods(sql: Sql): WaitlistMethods {
     async listWaitlist(
       args: ListWaitlistArgs,
     ): Promise<{ rows: WaitlistRecord[]; nextCursor: string | null }> {
-      return listWaitlistIn(sql, args)
+      return listWaitlistIn(sql, args, presignAvatar)
     },
 
     async findWaitlistEntry(cleanupId: string, waitlistId: string): Promise<WaitlistRecord | null> {
-      return loadWaitlistEntry(sql, cleanupId, waitlistId)
+      return loadWaitlistEntry(sql, cleanupId, waitlistId, presignAvatar)
     },
 
     async ticketTypeIdsWithWaiting(cleanupId: string): Promise<string[]> {
@@ -631,7 +654,7 @@ export function makeWaitlistMethods(sql: Sql): WaitlistMethods {
     },
 
     async claimWaitlistOffer(args: ClaimWaitlistArgs): Promise<ClaimWaitlistOutcome> {
-      const entry = await loadWaitlistEntry(sql, args.cleanupId, args.waitlistId)
+      const entry = await loadWaitlistEntry(sql, args.cleanupId, args.waitlistId, presignAvatar)
       if (entry === null) return { kind: "not_found" }
       if (args.subject !== null) {
         const matches =
@@ -647,10 +670,10 @@ export function makeWaitlistMethods(sql: Sql): WaitlistMethods {
       const registerArgs = claimRegisterArgs(args, entry, subject)
 
       try {
-        return await sql.begin((tx) => claimOfferIn(tx, args, subject, registerArgs))
+        return await sql.begin((tx) => claimOfferIn(tx, args, subject, registerArgs, presignAvatar))
       } catch (err) {
         if (err instanceof ClaimRefusal) return err.outcome
-        const mapped = await registerErrorOutcome(sql, err, registerArgs)
+        const mapped = await registerErrorOutcome(sql, err, registerArgs, presignAvatar)
         if (mapped === null) throw err
         if (mapped.kind === "replayed" && mapped.registration !== null) {
           return { kind: "claimed", registration: mapped.registration }

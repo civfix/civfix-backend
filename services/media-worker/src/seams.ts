@@ -16,7 +16,6 @@ import type { JobLogFn } from "./jobs/obs.js"
 
 export interface WorkerSeams {
   storage: Storage
-  publicMediaBase: string | undefined
   inboundStorage: Storage | undefined
   abuseChecks: AbuseChecks
   limits: WorkerLimits
@@ -94,11 +93,8 @@ export async function makeSeams(
     usesR2: localStorageDir.length === 0 && !fakeStorage,
   })
 
-  const publicMediaBaseRaw = (source.R2_PUBLIC_BASE ?? "").trim()
-
   return {
     storage,
-    publicMediaBase: publicMediaBaseRaw.length > 0 ? publicMediaBaseRaw : undefined,
     inboundStorage,
     abuseChecks,
     limits,

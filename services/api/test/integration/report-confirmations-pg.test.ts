@@ -110,13 +110,12 @@ describe.skipIf(!pg)("report confirmations (integration)", () => {
       title?: string
       createdAt?: Date
       claimCodeHash?: string
-      confirmCount?: number
     } = {},
   ): Promise<string> {
     const [row] = await h.sql<{ id: string }[]>`
       INSERT INTO reports (
         reporter_user_id, idempotency_key, geom, geom_source, category, type, title, status, visibility,
-        h3_cell, jurisdiction_geoid, deleted_at, created_at, claim_code_hash, confirm_count
+        h3_cell, jurisdiction_geoid, deleted_at, created_at, claim_code_hash
       ) VALUES (
         ${opts.reporter === null ? null : (opts.reporter?.userId ?? null)},
         ${randomUUID()},
@@ -124,7 +123,7 @@ describe.skipIf(!pg)("report confirmations (integration)", () => {
         'device', 'trash', 'dump', ${opts.title ?? "Overflowing bin"},
         ${opts.status ?? "published"}, ${opts.visibility ?? "public"}, 'h0', ${LA_CITY.geoid},
         ${opts.deleted ? new Date() : null}, ${opts.createdAt ?? new Date()},
-        ${opts.claimCodeHash ?? null}, ${opts.confirmCount ?? 0}
+        ${opts.claimCodeHash ?? null}
       )
       RETURNING id
     `
@@ -197,16 +196,31 @@ describe.skipIf(!pg)("report confirmations (integration)", () => {
 
       const first = await confirm(b, r)
       expect(first.statusCode).toBe(200)
-      expect(first.json()).toEqual({ confirmCount: 1, confirmedByMe: true })
+      expect(first.json()).toEqual({
+        confirmCount: 1,
+        confirmedByMe: true,
+        fixedCount: 0,
+        fixedByMe: false,
+      })
       expect(await stored(r)).toEqual({ count: 1, rows: [b.userId] })
 
       const again = await confirm(b, r)
       expect(again.statusCode).toBe(200)
-      expect(again.json()).toEqual({ confirmCount: 1, confirmedByMe: true })
+      expect(again.json()).toEqual({
+        confirmCount: 1,
+        confirmedByMe: true,
+        fixedCount: 0,
+        fixedByMe: false,
+      })
       expect(await stored(r)).toEqual({ count: 1, rows: [b.userId] })
 
       const third = await confirm(c, r)
-      expect(third.json()).toEqual({ confirmCount: 2, confirmedByMe: true })
+      expect(third.json()).toEqual({
+        confirmCount: 2,
+        confirmedByMe: true,
+        fixedCount: 0,
+        fixedByMe: false,
+      })
     })
 
     it("T4: acknowledged and in_progress reports take confirmations", async () => {
@@ -215,7 +229,12 @@ describe.skipIf(!pg)("report confirmations (integration)", () => {
       for (const status of ["acknowledged", "in_progress"]) {
         const res = await confirm(b, await report(at, { reporter: a, status }))
         expect(res.statusCode).toBe(200)
-        expect(res.json()).toEqual({ confirmCount: 1, confirmedByMe: true })
+        expect(res.json()).toEqual({
+          confirmCount: 1,
+          confirmedByMe: true,
+          fixedCount: 0,
+          fixedByMe: false,
+        })
       }
     })
 
@@ -228,17 +247,32 @@ describe.skipIf(!pg)("report confirmations (integration)", () => {
 
       const removed = await unconfirm(b, r)
       expect(removed.statusCode).toBe(200)
-      expect(removed.json()).toEqual({ confirmCount: 1, confirmedByMe: false })
+      expect(removed.json()).toEqual({
+        confirmCount: 1,
+        confirmedByMe: false,
+        fixedCount: 0,
+        fixedByMe: false,
+      })
       expect(await stored(r)).toEqual({ count: 1, rows: [c.userId] })
 
       const again = await unconfirm(b, r)
-      expect(again.json()).toEqual({ confirmCount: 1, confirmedByMe: false })
+      expect(again.json()).toEqual({
+        confirmCount: 1,
+        confirmedByMe: false,
+        fixedCount: 0,
+        fixedByMe: false,
+      })
       expect((await stored(r)).count).toBe(1)
 
       const untouched = await report(at, { reporter: a })
       const none = await unconfirm(b, untouched)
       expect(none.statusCode).toBe(200)
-      expect(none.json()).toEqual({ confirmCount: 0, confirmedByMe: false })
+      expect(none.json()).toEqual({
+        confirmCount: 0,
+        confirmedByMe: false,
+        fixedCount: 0,
+        fixedByMe: false,
+      })
       expect((await stored(untouched)).count).toBe(0)
     })
 
@@ -256,7 +290,12 @@ describe.skipIf(!pg)("report confirmations (integration)", () => {
 
       const removed = await unconfirm(b, r)
       expect(removed.statusCode).toBe(200)
-      expect(removed.json()).toEqual({ confirmCount: 0, confirmedByMe: false })
+      expect(removed.json()).toEqual({
+        confirmCount: 0,
+        confirmedByMe: false,
+        fixedCount: 0,
+        fixedByMe: false,
+      })
       expect(await stored(r)).toEqual({ count: 0, rows: [] })
     })
 
@@ -465,7 +504,7 @@ describe.skipIf(!pg)("report confirmations (integration)", () => {
     it("T26: at most 20 items, the most confirmed", async () => {
       const at = region()
       const a = await resident()
-      for (let n = 1; n <= 25; n += 1) await report(at, { reporter: a, confirmCount: n })
+      for (let n = 1; n <= 25; n += 1) await seedConfirmations(await report(at, { reporter: a }), n)
       const res = await pressing(at)
       expect(res.statusCode).toBe(200)
       expect(res.json().items.map((i: { confirmCount: number }) => i.confirmCount)).toEqual(
@@ -478,9 +517,9 @@ describe.skipIf(!pg)("report confirmations (integration)", () => {
       const a = await resident()
       const older = await report(at, {
         reporter: a,
-        confirmCount: 3,
         createdAt: new Date(Date.now() - 2 * 3_600_000),
       })
+      await seedConfirmations(older, 3)
       await h.sql`
         INSERT INTO reports (
           idempotency_key, geom, geom_source, category, type, title, status, visibility, h3_cell,
@@ -732,7 +771,12 @@ describe.skipIf(!pg)("report confirmations (integration)", () => {
       const responses = await Promise.all(Array.from({ length: 10 }, () => confirm(b, r)))
       for (const res of responses) {
         expect(res.statusCode).toBe(200)
-        expect(res.json()).toEqual({ confirmCount: 1, confirmedByMe: true })
+        expect(res.json()).toEqual({
+          confirmCount: 1,
+          confirmedByMe: true,
+          fixedCount: 0,
+          fixedByMe: false,
+        })
       }
       expect(await stored(r)).toEqual({ count: 1, rows: [b.userId] })
     })
