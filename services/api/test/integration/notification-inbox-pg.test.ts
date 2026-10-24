@@ -1,6 +1,7 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest"
 import { randomUUID } from "node:crypto"
-import type { NotificationType } from "@civfix/contract"
+import { NotificationTypeSchema, type NotificationType } from "@civfix/contract"
+import { FEED_HIDDEN_NOTIFICATION_TYPES } from "../../src/services/notification-service.js"
 import { withPg, type PgHarness, testHandle } from "../helpers/pg.js"
 import {
   explainHasUnread,
@@ -116,6 +117,16 @@ describe.skipIf(!pg)("notification inbox (integration)", () => {
     const c = await newUser()
     await row(c, "dm")
     expect(await repo.hasUnread(c)).toBe(false)
+  })
+
+  it("unread and read-all hide exactly FEED_HIDDEN_NOTIFICATION_TYPES, the page's own list", async () => {
+    for (const type of NotificationTypeSchema.options) {
+      const listed = !FEED_HIDDEN_NOTIFICATION_TYPES.includes(type)
+      const a = await newUser()
+      await row(a, type)
+      expect(await repo.hasUnread(a), type).toBe(listed)
+      expect(await repo.markAllRead(a), type).toBe(listed ? 1 : 0)
+    }
   })
 
   it("T16: read-all marks only the caller's unread page rows and reports how many changed", async () => {

@@ -100,21 +100,19 @@ function refreshUnreadWith(
 
 export const UNREAD_PAGE_INDEX = "notifications_user_unread_page_idx"
 
-// The page's hidden types go in as SQL literals, spelling UNREAD_PAGE_INDEX's predicate (0200) word for
-// word: a bound array is opaque to a generic plan, which then cannot prove the partial predicate and
-// loses the index whenever Postgres switches the prepared statement to one.
-const HIDDEN_TYPE_LITERALS = FEED_HIDDEN_NOTIFICATION_TYPES.map((type) => {
-  if (!/^[a-z_]+$/.test(type)) throw new Error(`unexpected notification type ${type}`)
-  return `'${type}'`
-}).join(",")
-
-const UNREAD_PAGE_PREDICATE = `read_at IS NULL AND type <> ALL (ARRAY[${HIDDEN_TYPE_LITERALS}])`
+// The page's hidden types are written out as literals, word for word UNREAD_PAGE_INDEX's predicate
+// (0200): a bound array is opaque to a generic plan, which then cannot prove the partial predicate and
+// loses the index whenever Postgres switches the prepared statement to one. The list must stay equal to
+// FEED_HIDDEN_NOTIFICATION_TYPES; notification-inbox-pg.test.ts checks every type against it.
+function unreadPagePredicate(sql: Queryable): SqlFragment {
+  return sql`read_at IS NULL AND type <> ALL (ARRAY['dm','cleanup_chat','group_chat','report_chat'])`
+}
 
 function hasUnreadStatement(sql: Queryable, userId: string): SqlFragment {
   return sql`
     SELECT EXISTS (
       SELECT 1 FROM notifications
-      WHERE user_id = ${userId} AND ${sql.unsafe(UNREAD_PAGE_PREDICATE)}
+      WHERE user_id = ${userId} AND ${unreadPagePredicate(sql)}
     ) AS has_unread
   `
 }
@@ -123,7 +121,7 @@ function markAllReadStatement(sql: Queryable, userId: string): SqlFragment {
   return sql`
     UPDATE notifications
     SET read_at = now()
-    WHERE user_id = ${userId} AND ${sql.unsafe(UNREAD_PAGE_PREDICATE)}
+    WHERE user_id = ${userId} AND ${unreadPagePredicate(sql)}
   `
 }
 
