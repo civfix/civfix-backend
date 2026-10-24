@@ -24,13 +24,18 @@ import type {
 } from "./organization-repository.js"
 import type { InviterRevocationReason } from "./organization-rules.js"
 import { canManageOrgMembers, roleChangeWithdrawsInvites } from "./organization-rules.js"
+import {
+  userAvatarColumns,
+  resolveAvatarColumns,
+  type AvatarPresigner,
+  type UserAvatarColumns,
+} from "../user-avatar.js"
 
-interface MemberRowSelect {
+interface MemberRowSelect extends UserAvatarColumns {
   user_id: string
   display_name: string
   handle: string | null
   bio: string | null
-  avatar_url: string | null
   role: OrganizationMemberRole
   joined_at: Date
 }
@@ -163,6 +168,7 @@ async function auditOwnershipTransferInTx(
 
 export function makeOrganizationMemberMethods(
   sql: Sql,
+  presignAvatar: AvatarPresigner | undefined,
 ): Pick<
   OrganizationRepository,
   | "roleOf"
@@ -203,10 +209,11 @@ export function makeOrganizationMemberMethods(
       limit: number
     }): Promise<{ items: OrganizationMemberRecord[]; nextCursor: string | null }> {
       const rows = await sql<(MemberRowSelect & { cursor_at: string })[]>`
-        SELECT m.user_id, u.display_name, u.handle, u.bio, u.avatar_url, m.role, m.joined_at,
-               ${keysetInstant(sql, sql`m.joined_at`)} AS cursor_at
+        SELECT m.user_id, u.display_name, u.handle, u.bio, ${userAvatarColumns(sql, "u", "am")},
+               m.role, m.joined_at, ${keysetInstant(sql, sql`m.joined_at`)} AS cursor_at
         FROM organization_members m
         JOIN users u ON u.id = m.user_id
+        LEFT JOIN media_assets am ON am.id = u.avatar_media_id
         WHERE m.organization_id = ${args.organizationId}
           ${memberCursorFilter(args.cursor)}
         ORDER BY m.joined_at ASC, m.user_id ASC
@@ -216,6 +223,7 @@ export function makeOrganizationMemberMethods(
         atText: last.cursor_at,
         id: last.user_id,
       }))
+      await resolveAvatarColumns(presignAvatar, page.items)
       return { items: page.items.map(toMemberRecord), nextCursor: page.nextCursor }
     },
 
@@ -224,12 +232,15 @@ export function makeOrganizationMemberMethods(
       userId: string,
     ): Promise<OrganizationMemberRecord | null> {
       const rows = await sql<MemberRowSelect[]>`
-        SELECT m.user_id, u.display_name, u.handle, u.bio, u.avatar_url, m.role, m.joined_at
+        SELECT m.user_id, u.display_name, u.handle, u.bio, ${userAvatarColumns(sql, "u", "am")},
+               m.role, m.joined_at
         FROM organization_members m
         JOIN users u ON u.id = m.user_id
+        LEFT JOIN media_assets am ON am.id = u.avatar_media_id
         WHERE m.organization_id = ${organizationId} AND m.user_id = ${userId}
         LIMIT 1
       `
+      await resolveAvatarColumns(presignAvatar, rows)
       const r = rows[0]
       return r === undefined ? null : toMemberRecord(r)
     },

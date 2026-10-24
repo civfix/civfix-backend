@@ -45,6 +45,7 @@ import {
 } from "../../src/services/chat-repository.drizzle.js"
 import { makeDrizzleDmRepository } from "../../src/services/dm-repository.drizzle.js"
 import { makeDrizzleBlocksRepository } from "../../src/services/blocks-repository.drizzle.js"
+import { fakeAvatarPresigner } from "../helpers/avatar-fixtures.js"
 import { makeReportChatRepository } from "../../src/services/report-chat-repository.drizzle.js"
 import { makeDrizzleDiscussionRepository } from "../../src/services/discussion-repository.drizzle.js"
 import { makeCleanupService } from "../../src/services/cleanup-service.js"
@@ -87,7 +88,7 @@ describe.skipIf(!pg)("chat pins + moderator delete (integration)", () => {
       threadsRepo: new InMemoryThreadsRepository(),
       dmRepo: dm,
       chatRepo: makeDrizzleChatRepository(h.sql),
-      blocksRepo: makeDrizzleBlocksRepository(h.sql),
+      blocksRepo: makeDrizzleBlocksRepository(h.sql, fakeAvatarPresigner),
       reportChat,
       // The REAL resolver over the REAL pg-backed lookups (incl. the roleOf queries): the same
       // wiring shape wireChatPowers builds in production, pointed at the harness pool.

@@ -7,6 +7,15 @@ import {
   parseKeysetCursor,
 } from "../db/cursor-helpers.js"
 import { officialPersonFlag } from "../auth/official-account.js"
+import { mapWithLimit } from "../lib/concurrency.js"
+import { PRESIGN_CONCURRENCY } from "./media-presign.js"
+import {
+  resolveUserAvatarUrl,
+  userAvatarColumns,
+  userAvatarSource,
+  type AvatarPresigner,
+  type UserAvatarColumns,
+} from "./user-avatar.js"
 import type {
   BlockState,
   BlocksRepository,
@@ -24,7 +33,10 @@ export function bindBlockedIdsAmong(
   return (actorId, candidateIds) => batch.call(repo, actorId, candidateIds)
 }
 
-export function makeDrizzleBlocksRepository(sql: Sql): BlocksRepository {
+export function makeDrizzleBlocksRepository(
+  sql: Sql,
+  presignAvatar: AvatarPresigner,
+): BlocksRepository {
   return {
     async block(blockerId: string, blockedId: string): Promise<void> {
       await sql`
@@ -81,19 +93,21 @@ export function makeDrizzleBlocksRepository(sql: Sql): BlocksRepository {
           ? sql`AND ${keysetPredicate(sql, sql`b.created_at`, sql`b.blocked_id`, cursor)}`
           : sql``
       const rows = await sql<
-        {
-          id: string
-          display_name: string
-          handle: string | null
-          bio: string | null
-          avatar_url: string | null
-          cursor_at: string
-        }[]
+        Array<
+          UserAvatarColumns & {
+            id: string
+            display_name: string
+            handle: string | null
+            bio: string | null
+            cursor_at: string
+          }
+        >
       >`
-        SELECT u.id, u.display_name, u.handle, u.bio, u.avatar_url,
+        SELECT u.id, u.display_name, u.handle, u.bio, ${userAvatarColumns(sql, "u", "am")},
                ${keysetInstant(sql, sql`b.created_at`)} AS cursor_at
         FROM user_blocks b
         JOIN users u ON u.id = b.blocked_id
+        LEFT JOIN media_assets am ON am.id = u.avatar_media_id
         WHERE b.blocker_id = ${blockerId} AND u.deleted_at IS NULL
           ${cursorFilter}
         ORDER BY b.created_at DESC, b.blocked_id DESC
@@ -103,21 +117,22 @@ export function makeDrizzleBlocksRepository(sql: Sql): BlocksRepository {
         atText: r.cursor_at,
         id: r.id,
       }))
-      return {
-        blocked: items.map((r) => ({
+      const blocked = await mapWithLimit(items, PRESIGN_CONCURRENCY, async (r) => {
+        const avatarUrl = await resolveUserAvatarUrl(presignAvatar, userAvatarSource(r))
+        return {
           id: r.id,
           name: r.display_name,
           handle: r.handle,
           bio: r.bio,
           avatar: avatarGradient(r.id),
-          ...(r.avatar_url !== null ? { avatarUrl: r.avatar_url } : {}),
+          ...(avatarUrl !== null ? { avatarUrl } : {}),
           followers: 0,
           following: 0,
           isFollowing: false,
           ...officialPersonFlag(r.id),
-        })),
-        nextCursor,
-      }
+        }
+      })
+      return { blocked, nextCursor }
     },
   }
 }

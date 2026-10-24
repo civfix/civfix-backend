@@ -11,6 +11,13 @@ import type {
   ReportRecord,
   ReportRepository,
   ReportTimelineView,
+  ReportVote,
+  VoteChange,
+} from "../../src/services/report-repository.js"
+import {
+  PRESSING_CANDIDATES,
+  PRESSING_DROP_FIXED,
+  PRESSING_RECENT_VOTES,
 } from "../../src/services/report-repository.js"
 import { formatReferenceCode, reportScopeKey, typeCodeFor } from "../../src/db/reference-code.js"
 import {
@@ -56,8 +63,8 @@ export class InMemoryReportRepository implements ReportRepository {
   readonly media: StoredMediaAsset[] = []
   readonly timeline: StoredTimeline[] = []
   readonly idempotency = new Map<string, StoredIdempotency>()
-  /** report id -> (user id -> confirmed at): the report_confirmations rows. */
-  readonly confirmations = new Map<string, Map<string, Date>>()
+  /** report id -> (user id -> vote): the report_confirmations rows; `at` is when it took its kind. */
+  readonly confirmations = new Map<string, Map<string, { kind: ReportVote; at: Date }>>()
   private readonly refCounters = new Map<string, number>()
 
   private allocateReferenceCode(type: ReportRecord["type"], jurCode: number): string {
@@ -130,6 +137,7 @@ export class InMemoryReportRepository implements ReportRepository {
       publishedAt: over.publishedAt ?? (over.status === undefined ? now : null),
       deletedAt: over.deletedAt ?? null,
       confirmCount: over.confirmCount ?? 0,
+      fixedCount: over.fixedCount ?? 0,
     }
     this.reports.set(record.id, record)
     return record
@@ -137,15 +145,21 @@ export class InMemoryReportRepository implements ReportRepository {
 
   /** A confirmation row plus the count it moves, as the confirm transaction writes them. */
   seedConfirmation(reportId: string, userId: string = randomUUID()): void {
-    const report = this.reports.get(reportId)
-    if (!report) throw new Error(`seedConfirmation: no report ${reportId}`)
-    const rows = this.confirmationsOf(reportId)
-    if (rows.has(userId)) return
-    rows.set(userId, this.nextDate())
-    report.confirmCount += 1
+    this.seedVote(reportId, "seen", userId)
   }
 
-  private confirmationsOf(reportId: string): Map<string, Date> {
+  /** A vote row plus the count it moves, as the vote transaction writes them. */
+  seedVote(reportId: string, kind: ReportVote, userId: string = randomUUID()): void {
+    const report = this.reports.get(reportId)
+    if (!report) throw new Error(`seedVote: no report ${reportId}`)
+    const rows = this.confirmationsOf(reportId)
+    if (rows.has(userId)) return
+    rows.set(userId, { kind, at: this.nextDate() })
+    if (kind === "seen") report.confirmCount += 1
+    else report.fixedCount += 1
+  }
+
+  private confirmationsOf(reportId: string): Map<string, { kind: ReportVote; at: Date }> {
     let rows = this.confirmations.get(reportId)
     if (!rows) {
       rows = new Map()
@@ -170,6 +184,7 @@ export class InMemoryReportRepository implements ReportRepository {
       thumbKey: firstPhoto?.thumbKey ?? null,
       r2Key: firstPhoto?.r2Key ?? null,
       confirmCount: r.confirmCount,
+      fixedCount: r.fixedCount,
     }
   }
 
@@ -216,6 +231,7 @@ export class InMemoryReportRepository implements ReportRepository {
       publishedAt: args.publishedAt,
       deletedAt: null,
       confirmCount: 0,
+      fixedCount: 0,
     }
     this.reports.set(record.id, record)
 
@@ -422,7 +438,9 @@ export class InMemoryReportRepository implements ReportRepository {
 
   findPressing(bbox: BBox, limit: number): Promise<ReportMapPoint[]> {
     const open = OPEN_REPORT_STATUSES as readonly string[]
-    const rows = [...this.reports.values()]
+    const byCountThenNewest = (a: ReportRecord, b: ReportRecord) =>
+      b.confirmCount - a.confirmCount || b.createdAt.getTime() - a.createdAt.getTime()
+    const ranked = [...this.reports.values()]
       .filter(
         (r) =>
           open.includes(r.status) &&
@@ -434,35 +452,52 @@ export class InMemoryReportRepository implements ReportRepository {
           r.lat >= bbox.south &&
           r.lat <= bbox.north,
       )
-      .sort(
-        (a, b) => b.confirmCount - a.confirmCount || b.createdAt.getTime() - a.createdAt.getTime(),
-      )
+      .sort(byCountThenNewest)
+      .slice(0, PRESSING_CANDIDATES)
+      .map((r) => {
+        const last = [...(this.confirmations.get(r.id)?.values() ?? [])]
+          .sort((a, b) => b.at.getTime() - a.at.getTime())
+          .slice(0, PRESSING_RECENT_VOTES)
+        const seen = last.filter((v) => v.kind === "seen").length
+        return { r, fixed: last.length - seen, score: (r.confirmCount * seen) / last.length }
+      })
+      .filter((x) => x.fixed < PRESSING_DROP_FIXED)
+      .sort((a, b) => b.score - a.score || byCountThenNewest(a.r, b.r))
       .slice(0, limit)
-      .map((r) => this.toMapPoint(r))
-    return Promise.resolve(rows)
+      .map((x) => this.toMapPoint(x.r))
+    return Promise.resolve(ranked)
   }
 
   setConfirmation(
     reportId: string,
     userId: string,
-    action: "confirm" | "unconfirm",
+    vote: ReportVote,
+    change: VoteChange,
   ): Promise<ReportConfirmationOutcome> {
     const report = this.reports.get(reportId)
     if (!report) return Promise.resolve({ kind: "not_found" })
-    const verdict = confirmationVerdict(report, userId, action)
+    const verdict = confirmationVerdict(report, userId, change)
     if (verdict !== "allowed") return Promise.resolve({ kind: verdict })
     const rows = this.confirmationsOf(reportId)
-    if (action === "confirm" && !rows.has(userId)) {
-      rows.set(userId, this.nextDate())
-      report.confirmCount += 1
-    } else if (action === "unconfirm" && rows.delete(userId)) {
-      report.confirmCount = Math.max(report.confirmCount - 1, 0)
+    const before = rows.get(userId)?.kind ?? null
+    const after = change === "add" ? vote : before === vote ? null : before
+    if (after !== before) {
+      if (after === null) rows.delete(userId)
+      else rows.set(userId, { kind: after, at: this.nextDate() })
+      const delta = (kind: ReportVote) => (after === kind ? 1 : 0) - (before === kind ? 1 : 0)
+      report.confirmCount = Math.max(report.confirmCount + delta("seen"), 0)
+      report.fixedCount = Math.max(report.fixedCount + delta("fixed"), 0)
     }
-    return Promise.resolve({ kind: "applied", confirmCount: report.confirmCount })
+    return Promise.resolve({
+      kind: "applied",
+      confirmCount: report.confirmCount,
+      fixedCount: report.fixedCount,
+      vote: after,
+    })
   }
 
-  isConfirmedBy(reportId: string, userId: string): Promise<boolean> {
-    return Promise.resolve(this.confirmations.get(reportId)?.has(userId) ?? false)
+  findVote(reportId: string, userId: string): Promise<ReportVote | null> {
+    return Promise.resolve(this.confirmations.get(reportId)?.get(userId)?.kind ?? null)
   }
 
   resolveByOwner(

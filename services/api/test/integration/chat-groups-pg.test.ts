@@ -43,6 +43,7 @@ import { makeDrizzleCleanupRepository } from "../../src/services/cleanup-reposit
 import { makeDrizzleChatRepository } from "../../src/services/chat-repository.drizzle.js"
 import { makeDrizzleDmRepository } from "../../src/services/dm-repository.drizzle.js"
 import { makeDrizzleBlocksRepository } from "../../src/services/blocks-repository.drizzle.js"
+import { fakeAvatarPresigner } from "../helpers/avatar-fixtures.js"
 import { makeReportChatRepository } from "../../src/services/report-chat-repository.drizzle.js"
 import { makeChatGroupRepository } from "../../src/services/chat-group-repository.drizzle.js"
 import { makeConversationMutesRepository } from "../../src/services/conversation-mutes-repository.drizzle.js"
@@ -86,7 +87,7 @@ describe.skipIf(!pg)("chat groups service + routes (integration)", () => {
       threadsRepo: new InMemoryThreadsRepository(),
       dmRepo: dm,
       chatRepo: makeDrizzleChatRepository(h.sql, fakePresign),
-      blocksRepo: makeDrizzleBlocksRepository(h.sql),
+      blocksRepo: makeDrizzleBlocksRepository(h.sql, fakeAvatarPresigner),
       reportChat,
       groups,
       conversationMutes: makeConversationMutesRepository(h.sql),

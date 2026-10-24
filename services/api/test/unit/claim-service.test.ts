@@ -40,6 +40,8 @@ function stubGetReport(store: InMemoryAnonStore) {
       linkedEvents: [],
       confirmCount: 0,
       confirmedByMe: false,
+      fixedCount: 0,
+      fixedByMe: false,
     })
   }
 }

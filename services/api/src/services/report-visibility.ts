@@ -1,7 +1,7 @@
 import { OPEN_REPORT_STATUSES, PUBLIC_REPORT_STATUSES } from "@civfix/contract"
 import type { ReportVisibility } from "@civfix/contract"
 import type { DiscussionReportView } from "./discussion-repository.js"
-import type { OwnerToggleStatus } from "./report-repository.js"
+import type { OwnerToggleStatus, VoteChange } from "./report-repository.js"
 
 /**
  * The statuses at which a report is PUBLICLY readable come from the contract's PUBLIC_REPORT_STATUSES.
@@ -66,24 +66,22 @@ export interface ConfirmationTarget {
 export type ConfirmationVerdict = "allowed" | "not_found" | "forbidden" | "closed"
 
 /**
- * Whether `userId` may add ("confirm") or remove ("unconfirm") a Me too on this report, in the contract's
- * error order. Visibility is judged as a non-owner sees it, so a report its own reporter can still open
- * (hidden, held, submitted, rejected) is `not_found` for them too, and never reveals that it exists.
- * Removal works on any visible report, so a confirmation made before the report was resolved can still
- * be taken back.
+ * Whether `userId` may add or remove a vote ("I see this too" or "This is fixed") on this report, in the
+ * contract's error order. Visibility is judged as a non-owner sees it, so a report its own reporter can
+ * still open (hidden, held, submitted, rejected) is `not_found` for them too, and never reveals that it
+ * exists. Adding covers moving a vote to the other kind, so a resolved report keeps every vote as it is;
+ * removal works on any visible report, so a vote made before the report was resolved can still be taken
+ * back.
  */
 export function confirmationVerdict(
   report: ConfirmationTarget,
   userId: string,
-  action: "confirm" | "unconfirm",
+  change: VoteChange,
 ): ConfirmationVerdict {
   if (report.deletedAt !== null) return "not_found"
   if (!isPubliclyVisibleStatus(report.status) || report.visibility !== "public") return "not_found"
   if (report.reporterUserId === userId) return "forbidden"
-  if (
-    action === "confirm" &&
-    !(OPEN_REPORT_STATUSES as readonly string[]).includes(report.status)
-  ) {
+  if (change === "add" && !(OPEN_REPORT_STATUSES as readonly string[]).includes(report.status)) {
     return "closed"
   }
   return "allowed"

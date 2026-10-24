@@ -89,6 +89,12 @@ import type {
 import type { HostStanding } from "@civfix/contract/host"
 import { touchUserActivity } from "../db/sql/user-activity.js"
 import { isUniqueViolationOn, PG_UNIQUE_VIOLATION } from "../db/pg-errors.js"
+import {
+  userAvatarColumns,
+  resolveAvatarColumns,
+  type AvatarPresigner,
+  type UserAvatarColumns,
+} from "./user-avatar.js"
 
 export const LINKED_EVENTS_PER_REPORT_CAP = 20
 export const MAX_EVENTS_PER_REPORT = 50
@@ -474,7 +480,24 @@ function slotConflictAsValidation(err: unknown): unknown {
   return isSlotTitleConflict(err) ? AppError.validation({ slots: "duplicate slot title" }) : err
 }
 
-export function makeDrizzleCleanupRepository(sql: Sql): CleanupRepository {
+export function makeDrizzleCleanupRepository(
+  sql: Sql,
+  presignAvatar?: AvatarPresigner,
+): CleanupRepository {
+  async function toRecords(rows: readonly CleanupRowSelect[]): Promise<CleanupRecord[]> {
+    await resolveAvatarColumns(presignAvatar, rows, ["org_"])
+    return rows.map(toRecord)
+  }
+
+  async function paginate(
+    rows: CleanupRowSelect[],
+    limit: number,
+    cursorOf: (last: CleanupRowSelect) => string | null,
+  ): Promise<{ records: CleanupRecord[]; nextCursor: string | null }> {
+    const { items, nextCursor } = pageWith(rows, limit, cursorOf)
+    return { records: await toRecords(items), nextCursor }
+  }
+
   async function readById(
     tag: Queryable,
     id: string,
@@ -489,7 +512,7 @@ export function makeDrizzleCleanupRepository(sql: Sql): CleanupRepository {
       WHERE c.id = ${id}
       LIMIT 1
     `
-    return rows[0] ? toRecord(rows[0]) : null
+    return (await toRecords(rows))[0] ?? null
   }
 
   function idempotencyRowKey(idem: CleanupIdempotency): string {
@@ -771,7 +794,7 @@ export function makeDrizzleCleanupRepository(sql: Sql): CleanupRepository {
       const grouped = new Map<string, LinkedEventView[]>()
       if (reportIds.length === 0) return grouped
       const rows = await sql<
-        {
+        (UserAvatarColumns<"org_"> & {
           report_id: string
           id: string
           title: string
@@ -787,14 +810,14 @@ export function makeDrizzleCleanupRepository(sql: Sql): CleanupRepository {
           org_display_name: string
           org_handle: string | null
           org_bio: string | null
-          org_avatar_url: string | null
           org_donation_url: string | null
           linked_at: Date
-        }[]
+        })[]
       >`
         SELECT
           report_id, id, title, event_kind, status, scheduled_at, ends_at, timezone,
           lng, lat, going, org_id, org_display_name, org_handle, org_bio, org_avatar_url,
+          org_avatar_media_status, org_avatar_served_key, org_avatar_thumb_key,
           org_donation_url, linked_at
         FROM (
           SELECT
@@ -813,7 +836,7 @@ export function makeDrizzleCleanupRepository(sql: Sql): CleanupRepository {
             u.display_name AS org_display_name,
             u.handle AS org_handle,
             u.bio AS org_bio,
-            u.avatar_url AS org_avatar_url,
+            ${userAvatarColumns(sql, "u", "am", "org_")},
             u.donation_url AS org_donation_url,
             cr.linked_at,
             row_number() OVER (
@@ -822,12 +845,14 @@ export function makeDrizzleCleanupRepository(sql: Sql): CleanupRepository {
           FROM cleanup_reports cr
           JOIN cleanups c ON c.id = cr.cleanup_id
           JOIN users u ON u.id = c.organizer_user_id
+          LEFT JOIN media_assets am ON am.id = u.avatar_media_id
           WHERE cr.report_id = ANY(${reportIds}::uuid[])
             AND c.visibility = 'public'
         ) ranked
         WHERE rn <= ${LINKED_EVENTS_PER_REPORT_CAP}
         ORDER BY report_id, linked_at DESC, id
       `
+      await resolveAvatarColumns(presignAvatar, rows, ["org_"])
       for (const r of rows) {
         const view: LinkedEventView = {
           reportId: r.report_id,
@@ -876,7 +901,7 @@ export function makeDrizzleCleanupRepository(sql: Sql): CleanupRepository {
         WHERE c.reference_code = ${code}
         LIMIT 1
       `
-      return rows[0] ? toRecord(rows[0]) : null
+      return (await toRecords(rows))[0] ?? null
     },
 
     async findCleanupByPageSlug(slug: string): Promise<CleanupRecord | null> {
@@ -889,7 +914,7 @@ export function makeDrizzleCleanupRepository(sql: Sql): CleanupRepository {
         WHERE c.page_slug = ${slug}
         LIMIT 1
       `
-      return rows[0] ? toRecord(rows[0]) : null
+      return (await toRecords(rows))[0] ?? null
     },
 
     async galleryKeysFor(cleanupId: string): Promise<string[]> {
@@ -1299,7 +1324,7 @@ export function makeDrizzleCleanupRepository(sql: Sql): CleanupRepository {
           u.display_name,
           u.handle,
           u.bio,
-          u.avatar_url,
+          ${userAvatarColumns(sql, "u", "am")},
           m.role,
           ${followingExpr} AS is_following,
           ${blockedPair} AS blocked_pair,
@@ -1307,6 +1332,7 @@ export function makeDrizzleCleanupRepository(sql: Sql): CleanupRepository {
           cs.title AS slot_title
         FROM cleanup_members m
         JOIN users u ON u.id = m.user_id
+        LEFT JOIN media_assets am ON am.id = u.avatar_media_id
         LEFT JOIN cleanup_slot_claims csc
           ON csc.cleanup_id = m.cleanup_id AND csc.user_id = m.user_id
         LEFT JOIN cleanup_slots cs ON cs.id = csc.slot_id
@@ -1322,6 +1348,7 @@ export function makeDrizzleCleanupRepository(sql: Sql): CleanupRepository {
           u.id ASC
         LIMIT ${limit}
       `
+      await resolveAvatarColumns(presignAvatar, rows)
       return rows.map((r) => {
         const hidden = r.blocked_pair ? hiddenIdentity(r.id) : null
         return {
@@ -1829,13 +1856,4 @@ async function loadSlots(
     else grouped.set(r.cleanup_id, [view])
   }
   return grouped
-}
-
-function paginate(
-  rows: CleanupRowSelect[],
-  limit: number,
-  cursorOf: (last: CleanupRowSelect) => string | null,
-): { records: CleanupRecord[]; nextCursor: string | null } {
-  const { items, nextCursor } = pageWith(rows, limit, cursorOf)
-  return { records: items.map(toRecord), nextCursor }
 }

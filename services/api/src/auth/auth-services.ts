@@ -23,6 +23,7 @@ import { REVIEWER_OTP_CODE_MIN_LENGTH } from "../env.js"
 import { resolveLocale } from "../i18n/locales.js"
 import { insertAuditRow } from "../services/admin/audit-repository.drizzle.js"
 import { dataExportSupportEmail } from "../services/data-export-jobs.js"
+import { resolveUserAvatarUrl, type AvatarPresigner } from "../services/user-avatar.js"
 
 export interface AuthServices {
   sessions: SessionService
@@ -168,14 +169,18 @@ export function oauthConfigFromEnv(env: Container["env"]): OAuthConfig {
   return config
 }
 
-export function toUserDTO(user: UserRecord, now: Date = new Date()): UserDTO {
+export async function toUserDTO(
+  user: UserRecord,
+  presignAvatar: AvatarPresigner,
+  now: Date = new Date(),
+): Promise<UserDTO> {
   return {
     id: user.id,
     displayName: user.displayName,
     handle: user.handle,
     handleChangeableAt: handleChangeableAtFrom(user.handleChangedAt, now),
     email: user.email,
-    avatarUrl: user.avatarUrl,
+    avatarUrl: await resolveUserAvatarUrl(presignAvatar, user),
     profileComplete: user.profileComplete === true,
     allowDirectMessages: user.allowDirectMessages,
     ...(user.showVolunteerHours !== null ? { showVolunteerHours: user.showVolunteerHours } : {}),

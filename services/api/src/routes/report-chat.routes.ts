@@ -37,6 +37,7 @@ import { withAffiliation } from "../services/affiliation.js"
 import { makeChatReactionService } from "../services/chat-reaction-service.js"
 import { nudgeThreads } from "../services/threads-nudge.js"
 import { wireChatPowers } from "./chat-powers-wiring.js"
+import { avatarPresigner } from "../services/user-avatar.js"
 
 export interface DiscussionServiceOverrides {
   repo?: DiscussionRepository
@@ -62,6 +63,7 @@ export async function registerReportChatRoutes(
   container: Container,
 ): Promise<void> {
   const csrfProtect = container.csrf.protect
+  const presignAvatar = avatarPresigner(container.storage)
 
   let chatRepo: ChatRepository | undefined
   const getChatRepo = (): ChatRepository =>
@@ -69,12 +71,13 @@ export async function registerReportChatRoutes(
     (chatRepo ??= makeDrizzleChatRepository(
       container.getDb().sql,
       makePrivateMediaPresigner(container.storage),
+      presignAvatar,
     ))
 
   let reportChatRepo: ReportChatRepository | undefined
   const getReportChatRepo = (): ReportChatRepository =>
     app.chatOverrides?.reportChat ??
-    (reportChatRepo ??= makeReportChatRepository(container.getDb().sql))
+    (reportChatRepo ??= makeReportChatRepository(container.getDb().sql, undefined, presignAvatar))
 
   let discussionRepo: DiscussionRepository | undefined
   const getReportRepo = (): DiscussionRepository =>

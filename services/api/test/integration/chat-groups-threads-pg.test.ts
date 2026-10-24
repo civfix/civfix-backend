@@ -46,6 +46,7 @@ import { InMemoryChatPresence } from "../../src/adapters/chat-presence.js"
 import { makeDrizzleChatRepository } from "../../src/services/chat-repository.drizzle.js"
 import { makeDrizzleDmRepository } from "../../src/services/dm-repository.drizzle.js"
 import { makeDrizzleBlocksRepository } from "../../src/services/blocks-repository.drizzle.js"
+import { fakeAvatarPresigner } from "../helpers/avatar-fixtures.js"
 import {
   canPostToGroup,
   makeChatGroupRepository,
@@ -284,7 +285,7 @@ describe.skipIf(!pg)("chat groups: threads inbox + group_chat bells (integration
       const chatRepo = makeDrizzleChatRepository(h.sql)
       const groupRepo = makeChatGroupRepository(h.sql)
       const mutes = makeConversationMutesRepository(h.sql)
-      const blocks = makeDrizzleBlocksRepository(h.sql)
+      const blocks = makeDrizzleBlocksRepository(h.sql, fakeAvatarPresigner)
       const presence = new InMemoryChatPresence()
       const notificationService = makeNotificationService({
         repo: makeDrizzleNotificationRepository(h.sql),

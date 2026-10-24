@@ -96,6 +96,8 @@ async function makeHarness(): Promise<Harness> {
       linkedEvents: [],
       confirmCount: 0,
       confirmedByMe: false,
+      fixedCount: 0,
+      fixedByMe: false,
     })
   }
   const claimService = makeClaimService({

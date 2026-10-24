@@ -2,13 +2,13 @@ import type { PersonDTO } from "@civfix/contract"
 import { publicAuthorIdentity } from "./public-author.js"
 import { hiddenIdentity } from "./hidden-identity.js"
 import { officialPersonFlag } from "../auth/official-account.js"
+import type { UserAvatarColumns } from "./user-avatar.js"
 
-export interface RoomMemberIdentityRow {
+export interface RoomMemberIdentityRow extends UserAvatarColumns {
   user_id: string
   display_name: string | null
   handle: string | null
   bio: string | null
-  avatar_url: string | null
   user_deleted_at: Date | null
   is_following: boolean
   blocked_pair: boolean
