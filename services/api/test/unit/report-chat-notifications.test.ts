@@ -13,6 +13,7 @@ import { makeDmBellNotifier } from "../../src/services/chat-bells.js"
 import {
   InMemoryNotificationRepository,
   flushNotificationDispatch,
+  InMemoryNotificationSettingsRepository,
 } from "../helpers/notifications.js"
 import type { NotificationPrefsRecord } from "../../src/services/notification-repository.js"
 import {
@@ -127,7 +128,11 @@ function reportNotifs(userId: string): typeof notifRepo.notifications {
 beforeEach(() => {
   notifRepo = new InMemoryNotificationRepository()
   push = new FakePushSender()
-  notifications = makeNotificationService({ repo: notifRepo, pushSender: push })
+  notifications = makeNotificationService({
+    repo: notifRepo,
+    settingsRepo: new InMemoryNotificationSettingsRepository(),
+    pushSender: push,
+  })
 })
 
 describe("makeReportChatNotifier (D-E2)", () => {
@@ -505,7 +510,11 @@ describe("F084: the shared room fan-out batches push delivery", () => {
       (_, i) => `00000000-0000-4000-a000-${String(i).padStart(12, "0")}`,
     )
     const pushSpy = new BatchCountingPushSender()
-    const service = makeNotificationService({ repo: notifRepo, pushSender: pushSpy })
+    const service = makeNotificationService({
+      repo: notifRepo,
+      settingsRepo: new InMemoryNotificationSettingsRepository(),
+      pushSender: pushSpy,
+    })
     const notify = makeRoomFanoutNotifier(
       { kind: "group", titleFallbackKey: "notification.group_chat.title_fallback" },
       {
@@ -539,7 +548,11 @@ describe("F084: the shared room fan-out batches push delivery", () => {
       await notifRepo.upsertPrefs(userId, { cleanupChat: false })
     }
     const pushSpy = new BatchCountingPushSender()
-    const service = makeNotificationService({ repo: notifRepo, pushSender: pushSpy })
+    const service = makeNotificationService({
+      repo: notifRepo,
+      settingsRepo: new InMemoryNotificationSettingsRepository(),
+      pushSender: pushSpy,
+    })
     const notify = makeRoomFanoutNotifier(
       { kind: "group", titleFallbackKey: "notification.group_chat.title_fallback" },
       {
@@ -601,7 +614,11 @@ describe("F084: an unreadable prefs row suppresses push (consent gate fails CLOS
     makeRoomFanoutNotifier(
       { kind: "group", titleFallbackKey: "notification.group_chat.title_fallback" },
       {
-        notificationService: makeNotificationService({ repo, pushSender: pushSpy }),
+        notificationService: makeNotificationService({
+          repo,
+          settingsRepo: new InMemoryNotificationSettingsRepository(),
+          pushSender: pushSpy,
+        }),
         listMemberIds: () => Promise.resolve(roster),
         isMuted: () => Promise.resolve(false),
         roomKey: (id) => `group:${id}`,

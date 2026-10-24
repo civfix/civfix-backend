@@ -10,7 +10,10 @@ import { InMemoryCounterStore } from "../../src/abuse/counter-store.js"
 import { InMemoryChatPresence } from "../../src/adapters/chat-presence.js"
 import { InMemoryChatReadState } from "../../src/services/threads-service.js"
 import { makeNotificationService } from "../../src/services/notification-service.js"
-import { InMemoryNotificationRepository } from "../helpers/notifications.js"
+import {
+  InMemoryNotificationRepository,
+  InMemoryNotificationSettingsRepository,
+} from "../helpers/notifications.js"
 import { InMemoryThreadsRepository } from "../helpers/chat.js"
 import {
   InMemoryBlocksRepository,
@@ -148,6 +151,7 @@ function wireGateway(counters: InMemoryCounterStore, log: ReturnType<typeof spyL
       blocksRepo: blocks,
       notificationService: makeNotificationService({
         repo: new InMemoryNotificationRepository(),
+        settingsRepo: new InMemoryNotificationSettingsRepository(),
         pushSender: new FakePushSender(),
       }),
       reportChat: reportChatStub(),

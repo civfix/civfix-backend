@@ -14,6 +14,7 @@ import {
 import {
   InMemoryNotificationRepository,
   flushNotificationDispatch,
+  InMemoryNotificationSettingsRepository,
 } from "../helpers/notifications.js"
 
 const ACTOR = "dddddddd-dddd-dddd-dddd-dddddddddddd"
@@ -67,6 +68,7 @@ beforeEach(() => {
   push = new FakePushSender()
   notifications = makeNotificationService({
     repo,
+    settingsRepo: new InMemoryNotificationSettingsRepository(),
     pushSender: push,
     now: () => new Date(clockMs),
   })
@@ -206,6 +208,7 @@ describe("room-activity coalescing (H19)", () => {
     }
     const service = makeNotificationService({
       repo,
+      settingsRepo: new InMemoryNotificationSettingsRepository(),
       pushSender: hanging,
       now: () => new Date(clockMs),
     })
