@@ -38,7 +38,7 @@ export const MARK_NOTIFICATIONS_READ_MAX_IDS = 200
 
 export const PUSH_TOKEN_RATE_LIMIT = perIdentity({ max: 10, timeWindow: "1 minute" })
 
-export const NOTIFICATION_SETTINGS_RATE_LIMIT = perIdentity({ max: 30, timeWindow: "1 minute" })
+const NOTIFICATION_SETTINGS_RATE_LIMIT = perIdentity({ max: 30, timeWindow: "1 minute" })
 
 // Same rule as the contract's IdSchema: zod 4's .uuid() also checks the RFC version nibbles, which would
 // silently drop a device id older clients were allowed to send.
