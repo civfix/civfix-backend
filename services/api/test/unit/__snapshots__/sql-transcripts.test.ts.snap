@@ -8894,9 +8894,8 @@ exports[`sql transcripts > makeReportChatRepository.insertSystemMessage 1`] = `
 
 => throws ZodError: [
   {
-    "received": "status-1",
-    "code": "invalid_enum_value",
-    "options": [
+    "code": "invalid_value",
+    "values": [
       "submitted",
       "held",
       "published",
@@ -8906,16 +8905,15 @@ exports[`sql transcripts > makeReportChatRepository.insertSystemMessage 1`] = `
       "rejected"
     ],
     "path": [],
-    "message": "Invalid enum value. Expected 'submitted' | 'held' | 'published' | 'acknowledged' | 'in_progress' | 'resolved' | 'rejected', received 'status-1'"
+    "message": "Invalid option: expected one of \\"submitted\\"|\\"held\\"|\\"published\\"|\\"acknowledged\\"|\\"in_progress\\"|\\"resolved\\"|\\"rejected\\""
   }
 ]
 -- row
 
 => throws ZodError: [
   {
-    "received": "status-1",
-    "code": "invalid_enum_value",
-    "options": [
+    "code": "invalid_value",
+    "values": [
       "submitted",
       "held",
       "published",
@@ -8925,7 +8923,7 @@ exports[`sql transcripts > makeReportChatRepository.insertSystemMessage 1`] = `
       "rejected"
     ],
     "path": [],
-    "message": "Invalid enum value. Expected 'submitted' | 'held' | 'published' | 'acknowledged' | 'in_progress' | 'resolved' | 'rejected', received 'status-1'"
+    "message": "Invalid option: expected one of \\"submitted\\"|\\"held\\"|\\"published\\"|\\"acknowledged\\"|\\"in_progress\\"|\\"resolved\\"|\\"rejected\\""
   }
 ]"
 `;
