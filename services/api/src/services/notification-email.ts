@@ -19,7 +19,7 @@ import {
 import type { EmailRecipientRecord, NotificationRepository } from "./notification-repository.js"
 
 /** D10: emails in these categories name the conversation and never carry anyone's words. */
-export const CHAT_CATEGORIES: ReadonlySet<NotificationCategory> = new Set<NotificationCategory>([
+const CHAT_CATEGORIES: ReadonlySet<NotificationCategory> = new Set<NotificationCategory>([
   "mentions",
   "directMessages",
   "groupChats",
@@ -91,7 +91,7 @@ function openUrl(webBaseUrl: string, link: string | null): string {
     : `${webBaseUrl}/notifications`
 }
 
-export function renderNotificationEmail(args: RenderArgs): RenderedEmail {
+function renderNotificationEmail(args: RenderArgs): RenderedEmail {
   const { locale, category, content, config } = args
   const token = encodeURIComponent(args.token)
   const chat = CHAT_CATEGORIES.has(category)

@@ -9,7 +9,7 @@ const NOTIFICATION_EMAIL_TOKEN_VERSION = "n1"
 const TOKEN_PAYLOAD_VERSION = 1
 const TOKEN_PART_COUNT = 3
 
-export const NOTIFICATION_EMAIL_TOKEN_TTL_DAYS = 400
+const NOTIFICATION_EMAIL_TOKEN_TTL_DAYS = 400
 
 export interface NotificationEmailCapability {
   userId: string
