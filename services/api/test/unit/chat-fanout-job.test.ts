@@ -19,6 +19,7 @@ import { makeNotificationService } from "../../src/services/notification-service
 import {
   InMemoryNotificationRepository,
   flushNotificationDispatch,
+  InMemoryNotificationSettingsRepository,
 } from "../helpers/notifications.js"
 
 const ACTOR = "dddddddd-dddd-dddd-dddd-dddddddddddd"
@@ -58,7 +59,11 @@ function harness(overrides: Partial<RoomFanoutNotifierDeps> = {}) {
   const push = new FakePushSender()
   const listed: string[] = []
   const deps: RoomFanoutNotifierDeps = {
-    notificationService: makeNotificationService({ repo, pushSender: push }),
+    notificationService: makeNotificationService({
+      repo,
+      settingsRepo: new InMemoryNotificationSettingsRepository(),
+      pushSender: push,
+    }),
     listMemberIds: (roomId) => {
       listed.push(roomId)
       return Promise.resolve([ACTOR, A, MUTED, PRESENT])

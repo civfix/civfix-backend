@@ -55,7 +55,8 @@ const { makeContainerReportChatSendDeps } =
 const { makeReportChatNotifier, REPORT_CHAT_FANOUT_MEMBER_CAP } =
   await import("../../src/services/report-chat-notifier.js")
 const { makeNotificationService } = await import("../../src/services/notification-service.js")
-const { InMemoryNotificationRepository } = await import("../helpers/notifications.js")
+const { InMemoryNotificationRepository, InMemoryNotificationSettingsRepository } =
+  await import("../helpers/notifications.js")
 
 const REPORT = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
 const ACTOR = "dddddddd-dddd-dddd-dddd-dddddddddddd"
@@ -153,6 +154,7 @@ describe("report-chat fan-out honours REPORT_CHAT_FANOUT_MEMBER_CAP on every wir
     const notify = makeReportChatNotifier({
       notificationService: makeNotificationService({
         repo: notifRepo,
+        settingsRepo: new InMemoryNotificationSettingsRepository(),
         pushSender: new FakePushSender(),
       }),
       reportChatRepo: { listMemberIds: () => Promise.resolve(rosterOf(OVERSIZED_ROSTER)) },

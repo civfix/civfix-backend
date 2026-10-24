@@ -16,6 +16,7 @@ import { MAX_ACTIVE_PUSH_TOKENS_PER_USER } from "../../src/services/notification
 import {
   InMemoryNotificationRepository,
   flushNotificationDispatch,
+  InMemoryNotificationSettingsRepository,
 } from "../helpers/notifications.js"
 import { normalizeDeviceId } from "../../src/routes/notifications.routes.js"
 
@@ -39,6 +40,7 @@ function makeHarness(nowFn?: () => Date): {
   const push = new FakePushSender()
   const service = makeNotificationService({
     repo,
+    settingsRepo: new InMemoryNotificationSettingsRepository(),
     pushSender: push,
     ...(nowFn !== undefined ? { now: nowFn } : {}),
   })
@@ -239,70 +241,6 @@ describe("feed excludes conversation-message notifications", () => {
   })
 })
 
-describe("getPrefs + updatePrefs", () => {
-  it("creates all-true defaults (no quiet hours) on first read", async () => {
-    const { repo, service } = makeHarness()
-    const prefs = await service.getPrefs(U)
-    expect(prefs).toEqual({
-      push: true,
-      cleanupChat: true,
-      reportUpdates: true,
-      follows: true,
-      mentions: true,
-      postInteractions: true,
-      hostBroadcasts: true,
-    })
-    expect(repo.prefs.has(U)).toBe(true)
-  })
-
-  it("applies a partial update, leaving the untouched toggles intact", async () => {
-    const { service } = makeHarness()
-    await service.getPrefs(U)
-    const updated = await service.updatePrefs(U, { follows: false })
-    expect(updated.follows).toBe(false)
-    expect(updated.push).toBe(true)
-    expect(updated.cleanupChat).toBe(true)
-    expect(updated.reportUpdates).toBe(true)
-    expect(updated.mentions).toBe(true)
-  })
-
-  it("carries the dedicated mentions toggle through a partial update", async () => {
-    const { service } = makeHarness()
-    await service.getPrefs(U)
-    const muted = await service.updatePrefs(U, { mentions: false })
-    expect(muted.mentions).toBe(false)
-    expect(muted.push).toBe(true)
-    expect(muted.cleanupChat).toBe(true)
-    const after = await service.updatePrefs(U, { follows: false })
-    expect(after.mentions).toBe(false)
-  })
-
-  it("sets and clears quiet hours", async () => {
-    const { service } = makeHarness()
-    const withQuiet = await service.updatePrefs(U, {
-      quietHours: { start: "22:00", end: "07:00" },
-    })
-    expect(withQuiet.quietHours).toEqual({ start: "22:00", end: "07:00" })
-
-    const cleared = await service.updatePrefs(U, { quietHours: null })
-    expect(cleared.quietHours).toBeUndefined()
-  })
-
-  it("F086: round-trips the quiet-hours IANA zone and clears it with the window", async () => {
-    const { service } = makeHarness()
-    const withZone = await service.updatePrefs(U, {
-      quietHours: { start: "22:00", end: "07:00", tz: "America/Los_Angeles" },
-    })
-    expect(withZone.quietHours).toEqual({
-      start: "22:00",
-      end: "07:00",
-      tz: "America/Los_Angeles",
-    })
-    const cleared = await service.updatePrefs(U, { quietHours: null })
-    expect(cleared.quietHours).toBeUndefined()
-  })
-})
-
 describe("registerPushToken", () => {
   it("upserts a token and delegates to the PushSender", async () => {
     const { repo, push, service } = makeHarness()
@@ -442,7 +380,7 @@ describe("createNotification (inline-send gating)", () => {
 
   it("does NOT push when the master push switch is off (but still records the row)", async () => {
     const { repo, push, service } = makeHarness(() => at(12, 0))
-    await service.updatePrefs(U, { push: false })
+    await repo.upsertPrefs(U, { push: false })
     await service.createNotification(U, { type: "new_follower", title: "x" })
     expect(repo.notifications).toHaveLength(1)
     await flushNotificationDispatch()
@@ -451,7 +389,7 @@ describe("createNotification (inline-send gating)", () => {
 
   it("does NOT push when the per-type toggle is off (but still records the row)", async () => {
     const { repo, push, service } = makeHarness(() => at(12, 0))
-    await service.updatePrefs(U, { follows: false })
+    await repo.upsertPrefs(U, { follows: false })
     await service.createNotification(U, { type: "new_follower", title: "x" })
     expect(repo.notifications).toHaveLength(1)
     await flushNotificationDispatch()
@@ -496,7 +434,12 @@ describe("createNotification (inline-send gating)", () => {
     const repo = new InMemoryNotificationRepository()
     const failingPush = new FakePushSender()
     failingPush.send = () => Promise.reject(new Error("send boom"))
-    const service = makeNotificationService({ repo, pushSender: failingPush, now: () => at(12, 0) })
+    const service = makeNotificationService({
+      repo,
+      settingsRepo: new InMemoryNotificationSettingsRepository(),
+      pushSender: failingPush,
+      now: () => at(12, 0),
+    })
 
     const dto = await service.createNotification(U, { type: "system", title: "ok" })
     expect(dto.title).toBe("ok")
@@ -544,6 +487,7 @@ describe("createNotification (per-user signal)", () => {
     const channel = new FakeUserChannel()
     const service = makeNotificationService({
       repo,
+      settingsRepo: new InMemoryNotificationSettingsRepository(),
       pushSender: new FakePushSender(),
       userChannel: channel,
       now: () => at(12, 0),
@@ -571,8 +515,8 @@ describe("createNotification (per-user signal)", () => {
   })
 
   it("signals even when the PUSH is suppressed (prefs/quiet hours gate push, not the in-app badge)", async () => {
-    const { channel, service } = makeSignalHarness()
-    await service.updatePrefs(U, { push: false })
+    const { repo, channel, service } = makeSignalHarness()
+    await repo.upsertPrefs(U, { push: false })
     await service.createNotification(U, { type: "new_follower", title: "x" })
     expect(channel.published).toHaveLength(1)
     expect(channel.published[0]!.signal).toEqual({ topic: "notifications" })
@@ -584,6 +528,7 @@ describe("createNotification (per-user signal)", () => {
     channel.publishToUser = () => Promise.reject(new Error("signal boom"))
     const service = makeNotificationService({
       repo,
+      settingsRepo: new InMemoryNotificationSettingsRepository(),
       pushSender: new FakePushSender(),
       userChannel: channel,
       now: () => at(12, 0),

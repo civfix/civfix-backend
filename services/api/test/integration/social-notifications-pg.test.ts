@@ -5,6 +5,7 @@ import { withPg, type PgHarness, testHandle } from "../helpers/pg.js"
 import { flushNotificationDispatch } from "../helpers/notifications.js"
 import { makeDrizzleSocialRepository } from "../../src/services/social-repository.drizzle.js"
 import { makeDrizzleNotificationRepository } from "../../src/services/notification-repository.drizzle.js"
+import { makeDrizzleNotificationSettingsRepository } from "../../src/services/notification-settings-repository.drizzle.js"
 import { makeSocialService } from "../../src/services/social-service.js"
 import { makeNotificationService } from "../../src/services/notification-service.js"
 import { makeDrizzleCleanupRepository } from "../../src/services/cleanup-repository.drizzle.js"
@@ -423,7 +424,11 @@ describe.skipIf(!pg)("social + notifications (integration)", () => {
   it("new_follower hook end to end: a NEW follow records a notification for the followee", async () => {
     const socialRepo = makeDrizzleSocialRepository(h.sql)
     const notifRepo = makeDrizzleNotificationRepository(h.sql)
-    const notifier = makeNotificationService({ repo: notifRepo, pushSender: new FakePushSender() })
+    const notifier = makeNotificationService({
+      repo: notifRepo,
+      settingsRepo: makeDrizzleNotificationSettingsRepository(h.sql),
+      pushSender: new FakePushSender(),
+    })
     const social = makeSocialService({ repo: socialRepo, notifier })
 
     const follower = await newUser("Hook Follower", "hookfol")
@@ -472,15 +477,16 @@ describe.skipIf(!pg)("social + notifications (integration)", () => {
       },
     }
 
-    await makeNotificationService({ repo: observedRepo, pushSender: push }).createNotifications(
-      [optedIn, optedOut, noRow],
-      {
-        type: "group_chat",
-        title: "New message",
-        body: "Someone posted.",
-        link: `/messages/group/${optedIn}`,
-      },
-    )
+    await makeNotificationService({
+      repo: observedRepo,
+      settingsRepo: makeDrizzleNotificationSettingsRepository(h.sql),
+      pushSender: push,
+    }).createNotifications([optedIn, optedOut, noRow], {
+      type: "group_chat",
+      title: "New message",
+      body: "Someone posted.",
+      link: `/messages/group/${optedIn}`,
+    })
 
     await fanoutPrefsRead
     await flushNotificationDispatch()

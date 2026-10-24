@@ -4,11 +4,14 @@ import {
   UpdateNotificationPrefsRequestSchema,
   RegisterPushTokenRequestSchema,
   UnregisterPushTokenRequestSchema,
+  UpdateNotificationSettingsRequestSchema,
   NotificationTypeSchema,
+  AppError,
   type ListNotificationsResponse,
   type MarkReadResponse,
   type GetNotificationPrefsResponse,
   type NotificationPrefsDTO,
+  type NotificationSettingsDTO,
   type RegisterPushTokenResponse,
 } from "@civfix/contract"
 import { z } from "zod"
@@ -21,6 +24,11 @@ import {
 } from "../services/notification-service.js"
 import type { NotificationRepository } from "../services/notification-repository.js"
 import type { NotificationSettingsRepository } from "../services/notification-settings-repository.js"
+import { makeDrizzleNotificationSettingsRepository } from "../services/notification-settings-repository.drizzle.js"
+import {
+  makeNotificationSettingsService,
+  type NotificationSettingsService,
+} from "../services/notification-settings-service.js"
 import { makeRouteNotificationService } from "../services/route-notifier.js"
 import { perIdentity } from "../plugins/rate-limit.js"
 import { route } from "../versioning/route.js"
@@ -29,6 +37,8 @@ import { parse } from "./_validate.js"
 export const MARK_NOTIFICATIONS_READ_MAX_IDS = 200
 
 export const PUSH_TOKEN_RATE_LIMIT = perIdentity({ max: 10, timeWindow: "1 minute" })
+
+export const NOTIFICATION_SETTINGS_RATE_LIMIT = perIdentity({ max: 30, timeWindow: "1 minute" })
 
 // Same rule as the contract's IdSchema: zod 4's .uuid() also checks the RFC version nibbles, which would
 // silently drop a device id older clients were allowed to send.
@@ -87,9 +97,21 @@ export async function registerNotificationRoutes(
     if (!overrides) return makeRouteNotificationService(container, app.log)
     return makeNotificationService({
       repo: overrides.repo,
+      settingsRepo: overrides.settingsRepo,
       pushSender: container.pushSender,
       userChannel: container.userChannel,
       logger: app.log,
+    })
+  }
+
+  function settingsService(): NotificationSettingsService {
+    const users = app.authServices?.users
+    if (!users) throw AppError.unauthorized("Authentication required.")
+    return makeNotificationSettingsService({
+      repo:
+        app.notificationOverrides?.settingsRepo ??
+        makeDrizzleNotificationSettingsRepository(container.getDb().sql),
+      users,
     })
   }
 
@@ -127,6 +149,24 @@ export async function registerNotificationRoutes(
     const payload: NotificationPrefsDTO = await service().updatePrefs(userId, body)
     reply.status(200).send(payload)
   })
+
+  route(app, "getNotificationSettings", async (request, reply) => {
+    const userId = requireAuth(request)
+    const payload: NotificationSettingsDTO = await settingsService().getSettings(userId)
+    reply.status(200).send(payload)
+  })
+
+  route(
+    app,
+    "updateNotificationSettings",
+    { preHandler: csrfProtect, config: { rateLimit: NOTIFICATION_SETTINGS_RATE_LIMIT } },
+    async (request, reply) => {
+      const userId = requireAuth(request)
+      const body = parse(UpdateNotificationSettingsRequestSchema, request.body)
+      const payload: NotificationSettingsDTO = await settingsService().updateSettings(userId, body)
+      reply.status(200).send(payload)
+    },
+  )
 
   route(
     app,

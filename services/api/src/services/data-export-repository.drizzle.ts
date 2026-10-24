@@ -15,6 +15,7 @@ import type {
   FollowerExportRow,
   FollowingExportRow,
   NotificationPrefsExportRow,
+  NotificationSettingExportRow,
   OrganizationExportRow,
   PostExportRow,
   ProfileRow,
@@ -127,6 +128,11 @@ export function makeDrizzleDataExportRepository(sql: Sql): DataExportRepository 
       SELECT user_id, push, cleanup_chat, report_updates, follows, quiet_start, quiet_end, mentions,
         host_broadcasts
       FROM notification_prefs WHERE user_id = ${userId} LIMIT 1
+    `,
+
+    // At most one row per category: the primary key is (user_id, category).
+    notificationSettings: (userId) => sql<NotificationSettingExportRow[]>`
+      SELECT category, enabled, push, email FROM notification_settings WHERE user_id = ${userId}
     `,
 
     pushTokens: (userId, rowCap) => sql<PushTokenRow[]>`
