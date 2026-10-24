@@ -245,20 +245,25 @@ describe("route-coverage: every shared endpoint is registered (offline boot smok
     expect(Object.keys(endpoints).length).toBe(349)
   })
 
-  it("T3: PENDING_IN_EPIC names exactly the eight notification-center endpoints, each in the registry", () => {
+  it("T43: PENDING_IN_EPIC names exactly the four notification-center endpoints still unregistered, each in the registry", () => {
     expect([...PENDING_IN_EPIC].sort()).toEqual(
       [
         "getNotificationSettings",
         "updateNotificationSettings",
-        "getNotificationUnread",
-        "markAllNotificationsRead",
-        "dismissNotification",
-        "getPushWebConfig",
         "unsubscribeNotificationEmail",
         "openUnsubscribeNotificationEmail",
       ].sort(),
     )
     for (const name of PENDING_IN_EPIC) expect(Object.keys(endpoints)).toContain(name)
+    for (const name of [
+      "getNotificationUnread",
+      "markAllNotificationsRead",
+      "dismissNotification",
+      "getPushWebConfig",
+    ]) {
+      expect(Object.keys(endpoints)).toContain(name)
+      expect(PENDING_IN_EPIC.has(name)).toBe(false)
+    }
   })
 
   it("the discriminator is not vacuous: a bogus path IS detected as route-missing", async () => {

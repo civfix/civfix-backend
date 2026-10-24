@@ -65,6 +65,12 @@ export interface NotificationRepository {
 
   clearByTypeAndLink(userId: string, type: NotificationType, link: string): Promise<void>
 
+  hasUnread(userId: string): Promise<boolean>
+
+  markAllRead(userId: string): Promise<number>
+
+  deleteNotification(userId: string, id: string): Promise<boolean>
+
   insertUnlessRecentDuplicate(
     args: NewNotificationArgs & { since: Date },
   ): Promise<{ record: NotificationRecord; deduped: boolean }>

@@ -5,10 +5,6 @@
 export const PENDING_IN_EPIC: ReadonlySet<string> = new Set([
   "getNotificationSettings",
   "updateNotificationSettings",
-  "getNotificationUnread",
-  "markAllNotificationsRead",
-  "dismissNotification",
-  "getPushWebConfig",
   "unsubscribeNotificationEmail",
   "openUnsubscribeNotificationEmail",
 ])

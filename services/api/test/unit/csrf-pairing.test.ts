@@ -97,6 +97,12 @@ describe("CSRF pairing: every mutation runs csrfProtect or is a reviewed excepti
     }
   })
 
+  it("T44: checks the inbox mutations", () => {
+    expect(mutations).toEqual(
+      expect.arrayContaining(["markAllNotificationsRead", "dismissNotification"]),
+    )
+  })
+
   it("lists only real mutations as exemptions", () => {
     const stale = Object.keys(CSRF_EXEMPT).filter((name) => !mutations.includes(name))
     expect(stale).toEqual([])

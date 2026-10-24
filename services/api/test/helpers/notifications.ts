@@ -137,6 +137,18 @@ export class InMemoryNotificationRepository implements NotificationRepository {
     return Promise.resolve()
   }
 
+  hasUnread(_userId: string): Promise<boolean> {
+    throw new Error("not implemented")
+  }
+
+  markAllRead(_userId: string): Promise<number> {
+    throw new Error("not implemented")
+  }
+
+  deleteNotification(_userId: string, _id: string): Promise<boolean> {
+    throw new Error("not implemented")
+  }
+
   findPrefs(userId: string): Promise<NotificationPrefsRecord | null> {
     return Promise.resolve(this.prefs.get(userId) ?? null)
   }

@@ -1,4 +1,4 @@
-import type { Sql, SqlFragment } from "../db/client.js"
+import type { Queryable, Sql, SqlFragment } from "../db/client.js"
 import {
   keysetInstant,
   keysetPredicate,
@@ -98,6 +98,16 @@ function refreshUnreadWith(
   `.then((rows) => (rows[0] ? toRecord(rows[0]) : null))
 }
 
+export const UNREAD_PAGE_INDEX = "notifications_user_unread_page_idx"
+
+export function explainHasUnread(_sql: Queryable, _userId: string): Promise<string> {
+  throw new Error("not implemented")
+}
+
+export function explainMarkAllRead(_sql: Queryable, _userId: string): Promise<string> {
+  throw new Error("not implemented")
+}
+
 export function makeDrizzleNotificationRepository(sql: Sql): NotificationRepository {
   return {
     async insertNotification(args: NewNotificationArgs): Promise<NotificationRecord> {
@@ -154,6 +164,18 @@ export function makeDrizzleNotificationRepository(sql: Sql): NotificationReposit
           AND link = ${link}
           AND read_at IS NULL
       `
+    },
+
+    hasUnread(_userId: string): Promise<boolean> {
+      throw new Error("not implemented")
+    },
+
+    markAllRead(_userId: string): Promise<number> {
+      throw new Error("not implemented")
+    },
+
+    deleteNotification(_userId: string, _id: string): Promise<boolean> {
+      throw new Error("not implemented")
     },
 
     async findPrefs(userId: string): Promise<NotificationPrefsRecord | null> {
