@@ -15,7 +15,7 @@
     "clean": "rimraf .turbo *.tsbuildinfo"
   },
   "dependencies": {
-    "@civfix/contract": "0.64.0-b-feat-notification-center-contract.gc3da707"
+    "@civfix/contract": "0.64.0-b-feat-notification-center-contract.g1a68e0e"
   },
   "devDependencies": {
     "@civfix/config": "workspace:*",
