@@ -3,7 +3,7 @@ import type { Container } from "../di.js"
 import { MultiPushSender, type PushClearJob, type PushLogger } from "../adapters/push-sender.js"
 import { PUSH_CLEAR_JOB } from "../lib/queue-names.js"
 
-export function parsePushClearJob(data: unknown): PushClearJob | null {
+function parsePushClearJob(data: unknown): PushClearJob | null {
   if (typeof data !== "object" || data === null) return null
   const userId = (data as Record<string, unknown>).userId
   if (typeof userId !== "string" || userId.length === 0) return null

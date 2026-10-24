@@ -56,7 +56,7 @@ const ACTIVE_TOKEN_SCAN_CAP_PER_USER = 20
 const TOKEN_QUERY_USER_BATCH = 500
 
 // pg-boss holds the user's flush job this long, so every clear made meanwhile joins one push.
-export const PUSH_CLEAR_DELAY_SECONDS = 10
+const PUSH_CLEAR_DELAY_SECONDS = 10
 
 // Only for callers that construct the sender without a logger; the API container always injects
 // its pino logger so redaction and request context apply.
@@ -119,7 +119,7 @@ interface RateBudget {
 
 export const PUSH_MAX_PER_USER_PER_MINUTE = 60
 
-export const PUSH_CLEAR_MAX_PER_USER_PER_MINUTE = 30
+const PUSH_CLEAR_MAX_PER_USER_PER_MINUTE = 30
 
 const VISIBLE_BUDGET: RateBudget = {
   keyPrefix: "push:rate:",

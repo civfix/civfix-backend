@@ -2,7 +2,7 @@ import type { PushClearTarget } from "@civfix/seams"
 import type { RedisClient } from "./redis.js"
 
 // D8: past this many ids a clear names none and removes every notifications-page push instead.
-export const PUSH_CLEAR_IDS_MAX = 100
+const PUSH_CLEAR_IDS_MAX = 100
 
 // Notification ids are UUIDs, so this member can never collide with one.
 const CLEAR_ALL_MEMBER = "*"
@@ -24,7 +24,7 @@ export interface PendingClears {
   take(userId: string): Promise<PushClearTarget | null>
 }
 
-export function clearTargetOf(members: readonly string[]): PushClearTarget | null {
+function clearTargetOf(members: readonly string[]): PushClearTarget | null {
   if (members.length === 0) return null
   if (members.includes(CLEAR_ALL_MEMBER)) return { all: true }
   if (members.length > PUSH_CLEAR_IDS_MAX) return { all: true }
