@@ -116,37 +116,48 @@ export class InMemoryNotificationRepository implements NotificationRepository {
     return Promise.resolve({ records: items, nextCursor })
   }
 
-  markRead(userId: string, ids: string[]): Promise<void> {
+  markRead(userId: string, ids: string[]): Promise<string[]> {
     const set = new Set(ids)
+    return Promise.resolve(
+      this.readWhere((n) => n.userId === userId && set.has(n.id)).map((n) => n.id),
+    )
+  }
+
+  clearByTypeAndLink(userId: string, type: NotificationType, link: string): Promise<string[]> {
+    return Promise.resolve(
+      this.readWhere(
+        (n) =>
+          n.userId === userId && (n.type === type || n.type === "chat_mention") && n.link === link,
+      ).map((n) => n.id),
+    )
+  }
+
+  hasUnread(userId: string): Promise<boolean> {
+    return Promise.resolve(
+      this.notifications.some(
+        (n) => n.userId === userId && n.readAt === null && isFeedVisibleType(n.type),
+      ),
+    )
+  }
+
+  markAllRead(userId: string): Promise<number> {
+    return Promise.resolve(
+      this.readWhere((n) => n.userId === userId && isFeedVisibleType(n.type)).length,
+    )
+  }
+
+  deleteNotification(userId: string, id: string): Promise<boolean> {
+    const i = this.notifications.findIndex((n) => n.id === id && n.userId === userId)
+    if (i === -1) return Promise.resolve(false)
+    this.notifications.splice(i, 1)
+    return Promise.resolve(true)
+  }
+
+  private readWhere(match: (n: NotificationRecord) => boolean): NotificationRecord[] {
     const at = this.now()
-    for (const n of this.notifications) {
-      if (n.userId === userId && set.has(n.id) && n.readAt === null) {
-        n.readAt = at
-      }
-    }
-    return Promise.resolve()
-  }
-
-  clearByTypeAndLink(userId: string, type: NotificationType, link: string): Promise<void> {
-    const at = this.now()
-    for (const n of this.notifications) {
-      if (n.userId === userId && n.type === type && n.link === link && n.readAt === null) {
-        n.readAt = at
-      }
-    }
-    return Promise.resolve()
-  }
-
-  hasUnread(_userId: string): Promise<boolean> {
-    throw new Error("not implemented")
-  }
-
-  markAllRead(_userId: string): Promise<number> {
-    throw new Error("not implemented")
-  }
-
-  deleteNotification(_userId: string, _id: string): Promise<boolean> {
-    throw new Error("not implemented")
+    const changed = this.notifications.filter((n) => n.readAt === null && match(n))
+    for (const n of changed) n.readAt = at
+    return changed
   }
 
   findPrefs(userId: string): Promise<NotificationPrefsRecord | null> {

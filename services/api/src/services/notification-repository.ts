@@ -61,9 +61,10 @@ export interface NotificationRepository {
     limit: number,
   ): Promise<{ records: NotificationRecord[]; nextCursor: string | null }>
 
-  markRead(userId: string, ids: string[]): Promise<void>
+  markRead(userId: string, ids: string[]): Promise<string[]>
 
-  clearByTypeAndLink(userId: string, type: NotificationType, link: string): Promise<void>
+  // Also reads the room's chat_mention rows: they carry the room's bell link.
+  clearByTypeAndLink(userId: string, type: NotificationType, link: string): Promise<string[]>
 
   hasUnread(userId: string): Promise<boolean>
 

@@ -375,7 +375,10 @@ describe("DELETE /v1/notifications/:id", () => {
     const foreign = await dismiss(h, m.id, withCsrf(h.a))
     expect(foreign.statusCode).toBe(404)
     expect(foreign.json().code).toBe("NOT_FOUND")
-    expect(foreign.body).toBe(unknown.body)
+    // Every error body carries its own requestId; apart from it the two must match byte for byte.
+    const withoutRequestId = (res: LightMyRequestResponse) =>
+      res.body.replace(res.json<{ requestId: string }>().requestId, "")
+    expect(withoutRequestId(foreign)).toBe(withoutRequestId(unknown))
     expect(byId(h, m.id)!.readAt).toBeNull()
     expect(h.push.clears).toHaveLength(0)
     expect(signalsTo(h, h.a.userId)).toHaveLength(0)
@@ -407,9 +410,10 @@ describe("DELETE /v1/notifications/:id", () => {
   it("T25: 120 per minute per account", async () => {
     const h = await makeHarness()
     for (let i = 0; i < 120; i += 1) {
-      expect((await dismiss(h, randomUUID(), withCsrf(h.a))).statusCode, `request ${i + 1}`).not.toBe(
-        429,
-      )
+      expect(
+        (await dismiss(h, randomUUID(), withCsrf(h.a))).statusCode,
+        `request ${i + 1}`,
+      ).not.toBe(429)
     }
     const over = await dismiss(h, randomUUID(), withCsrf(h.a))
     expect(over.statusCode).toBe(429)
@@ -477,27 +481,34 @@ describe("a clear that fails", () => {
   it("T37: read, read-all and dismiss still succeed, persist and warn once each", async () => {
     const h = await makeHarness()
     h.push.clear = () => Promise.reject(new Error("redis down"))
+    // The boot writes its own warnings (CORS, home-turf), so each action is measured from here.
+    let seen = warnings(h).length
+    const newWarnings = () => {
+      const fresh = warnings(h).length - seen
+      seen = warnings(h).length
+      return fresh
+    }
 
     const a = await row(h, h.a.userId, "new_follower")
     const read = await markRead(h, [a.id], withCsrf(h.a))
     expect(read.statusCode).toBe(200)
     expect(read.json()).toEqual({ ok: true })
     expect(byId(h, a.id)!.readAt).not.toBeNull()
-    expect(warnings(h)).toHaveLength(1)
+    expect(newWarnings()).toBe(1)
 
     const like = await row(h, h.a.userId, "post_like")
     const all = await readAll(h, withCsrf(h.a))
     expect(all.statusCode).toBe(200)
     expect(all.json()).toEqual({ ok: true })
     expect(byId(h, like.id)!.readAt).not.toBeNull()
-    expect(warnings(h)).toHaveLength(2)
+    expect(newWarnings()).toBe(1)
 
     const n = await row(h, h.a.userId, "post_like")
     const gone = await dismiss(h, n.id, withCsrf(h.a))
     expect(gone.statusCode).toBe(200)
     expect(gone.json()).toEqual({ ok: true })
     expect(byId(h, n.id)).toBeUndefined()
-    expect(warnings(h)).toHaveLength(3)
+    expect(newWarnings()).toBe(1)
   })
 })
 

@@ -52,9 +52,12 @@ describe.skipIf(!pg)("0200 notifications unread page index guard (integration)",
     expect(statements).toHaveLength(1)
     const only = statements[0]!
     expect(only).toMatch(/^DO \$\$/)
-    expect(only).toContain("IF to_regclass('public.notifications_user_unread_page_idx') IS NULL THEN")
+    expect(only).toContain(
+      "IF to_regclass('public.notifications_user_unread_page_idx') IS NULL THEN",
+    )
     expect(only).toMatch(/RAISE WARNING '/)
-    expect(only).not.toMatch(/CREATE\s+INDEX/i)
+    // The warning text names the CREATE INDEX to run by hand; outside its literals there is none.
+    expect(only.replace(/'[^']*'/g, "''")).not.toMatch(/CREATE/i)
 
     const [after] = await h.sql<{ idx: string | null }[]>`
       SELECT to_regclass('public.notifications_user_unread_page_idx')::text AS idx
@@ -64,7 +67,7 @@ describe.skipIf(!pg)("0200 notifications unread page index guard (integration)",
     const notices: { severity: string; message: string }[] = []
     const conn = postgres(h.uri, {
       max: 1,
-      onnotice: (n) => notices.push({ severity: n.severity, message: n.message }),
+      onnotice: (n) => notices.push({ severity: String(n.severity), message: String(n.message) }),
     })
     try {
       await conn.begin((tx) => tx.unsafe(text))

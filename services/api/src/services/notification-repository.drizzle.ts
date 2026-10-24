@@ -100,12 +100,44 @@ function refreshUnreadWith(
 
 export const UNREAD_PAGE_INDEX = "notifications_user_unread_page_idx"
 
-export function explainHasUnread(_sql: Queryable, _userId: string): Promise<string> {
-  throw new Error("not implemented")
+// The page's hidden types go in as SQL literals, spelling UNREAD_PAGE_INDEX's predicate (0200) word for
+// word: a bound array is opaque to a generic plan, which then cannot prove the partial predicate and
+// loses the index whenever Postgres switches the prepared statement to one.
+const HIDDEN_TYPE_LITERALS = FEED_HIDDEN_NOTIFICATION_TYPES.map((type) => {
+  if (!/^[a-z_]+$/.test(type)) throw new Error(`unexpected notification type ${type}`)
+  return `'${type}'`
+}).join(",")
+
+const UNREAD_PAGE_PREDICATE = `read_at IS NULL AND type <> ALL (ARRAY[${HIDDEN_TYPE_LITERALS}])`
+
+function hasUnreadStatement(sql: Queryable, userId: string): SqlFragment {
+  return sql`
+    SELECT EXISTS (
+      SELECT 1 FROM notifications
+      WHERE user_id = ${userId} AND ${sql.unsafe(UNREAD_PAGE_PREDICATE)}
+    ) AS has_unread
+  `
 }
 
-export function explainMarkAllRead(_sql: Queryable, _userId: string): Promise<string> {
-  throw new Error("not implemented")
+function markAllReadStatement(sql: Queryable, userId: string): SqlFragment {
+  return sql`
+    UPDATE notifications
+    SET read_at = now()
+    WHERE user_id = ${userId} AND ${sql.unsafe(UNREAD_PAGE_PREDICATE)}
+  `
+}
+
+async function explain(sql: Queryable, statement: SqlFragment): Promise<string> {
+  const rows = await sql<Record<string, string>[]>`EXPLAIN (COSTS OFF, VERBOSE) ${statement}`
+  return rows.map((r) => Object.values(r)[0] ?? "").join("\n")
+}
+
+export function explainHasUnread(sql: Queryable, userId: string): Promise<string> {
+  return explain(sql, hasUnreadStatement(sql, userId))
+}
+
+export function explainMarkAllRead(sql: Queryable, userId: string): Promise<string> {
+  return explain(sql, markAllReadStatement(sql, userId))
 }
 
 export function makeDrizzleNotificationRepository(sql: Sql): NotificationRepository {
@@ -144,38 +176,53 @@ export function makeDrizzleNotificationRepository(sql: Sql): NotificationReposit
       return { records: items.map(toRecord), nextCursor }
     },
 
-    async markRead(userId: string, ids: string[]): Promise<void> {
-      if (ids.length === 0) return
-      await sql`
+    async markRead(userId: string, ids: string[]): Promise<string[]> {
+      if (ids.length === 0) return []
+      const rows = await sql<{ id: string }[]>`
         UPDATE notifications
         SET read_at = now()
         WHERE user_id = ${userId}
           AND id = ANY(${ids}::uuid[])
           AND read_at IS NULL
+        RETURNING id
       `
+      return rows.map((r) => r.id)
     },
 
-    async clearByTypeAndLink(userId: string, type: NotificationType, link: string): Promise<void> {
-      await sql`
+    async clearByTypeAndLink(
+      userId: string,
+      type: NotificationType,
+      link: string,
+    ): Promise<string[]> {
+      const rows = await sql<{ id: string }[]>`
         UPDATE notifications
         SET read_at = now()
         WHERE user_id = ${userId}
-          AND type = ${type}
+          AND type IN (${type}, 'chat_mention')
           AND link = ${link}
           AND read_at IS NULL
+        RETURNING id
       `
+      return rows.map((r) => r.id)
     },
 
-    hasUnread(_userId: string): Promise<boolean> {
-      throw new Error("not implemented")
+    async hasUnread(userId: string): Promise<boolean> {
+      const rows = await sql<{ has_unread: boolean }[]>`${hasUnreadStatement(sql, userId)}`
+      return rows[0]?.has_unread === true
     },
 
-    markAllRead(_userId: string): Promise<number> {
-      throw new Error("not implemented")
+    async markAllRead(userId: string): Promise<number> {
+      const result = await sql`${markAllReadStatement(sql, userId)}`
+      return result.count
     },
 
-    deleteNotification(_userId: string, _id: string): Promise<boolean> {
-      throw new Error("not implemented")
+    async deleteNotification(userId: string, id: string): Promise<boolean> {
+      const rows = await sql`
+        DELETE FROM notifications
+        WHERE id = ${id} AND user_id = ${userId}
+        RETURNING id
+      `
+      return rows.length > 0
     },
 
     async findPrefs(userId: string): Promise<NotificationPrefsRecord | null> {

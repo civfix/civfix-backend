@@ -77,6 +77,7 @@ import { MEDIA_GET_URL_TTL_SEC } from "./services/media-intake-service.js"
 import { makeAffiliationLoader, type AffiliationLoader } from "./services/affiliation.js"
 import { RedisByteMeter, type ByteMeter } from "./services/media-byte-quota.js"
 import { makeTicketTokenSigner, type TicketTokenSigner } from "./services/host/ticket-token.js"
+import { webPushKeys } from "./services/web-push-config.js"
 import { RedisCounterStore, type CounterStore } from "./abuse/counter-store.js"
 import { InMemoryBlocksRepository, InMemoryDmRepository } from "./services/dm-repository.memory.js"
 import { MultiPushSender, type PushSenderConfig } from "./adapters/push-sender.js"
@@ -626,12 +627,7 @@ function buildPushConfig(env: Env): PushSenderConfig {
       ...(env.FCM_PROJECT_ID !== undefined ? { projectId: env.FCM_PROJECT_ID } : {}),
     }
   }
-  if (env.VAPID_PUBLIC_KEY && env.VAPID_PRIVATE_KEY && env.VAPID_SUBJECT) {
-    config.webPush = {
-      publicKey: env.VAPID_PUBLIC_KEY,
-      privateKey: env.VAPID_PRIVATE_KEY,
-      subject: env.VAPID_SUBJECT,
-    }
-  }
+  const webPush = webPushKeys(env)
+  if (webPush !== null) config.webPush = webPush
   return config
 }
