@@ -22,6 +22,7 @@ import type {
   WalkupCheckIn,
   WalkupRegisterArgs,
 } from "./registration-repository.js"
+import type { AvatarPresigner } from "../user-avatar.js"
 
 export const REGISTER_IDEMPOTENCY_SCOPE = "event.register"
 
@@ -165,29 +166,44 @@ async function replayOf(
   tag: Queryable,
   args: RegisterTxArgs,
   snapshot: RegisterSnapshot,
+  presignAvatar: AvatarPresigner | undefined,
 ): Promise<RegisterTxOutcome> {
   return {
     kind: "replayed",
-    registration: await loadRegistrationById(tag, args.cleanupId, snapshot.registrationId),
+    registration: await loadRegistrationById(
+      tag,
+      args.cleanupId,
+      snapshot.registrationId,
+      presignAvatar,
+    ),
   }
 }
 
-async function replaySnapshot(tag: Queryable, args: RegisterTxArgs): Promise<RegisterTxOutcome> {
+async function replaySnapshot(
+  tag: Queryable,
+  args: RegisterTxArgs,
+  presignAvatar: AvatarPresigner | undefined,
+): Promise<RegisterTxOutcome> {
   const snapshot = await findRegisterSnapshot(tag, args)
   if (snapshot === undefined) return { kind: "already_registered" }
-  return replayOf(tag, args, snapshot)
+  return replayOf(tag, args, snapshot, presignAvatar)
 }
 
 export async function registerErrorOutcome(
   tag: Queryable,
   err: unknown,
   args: RegisterTxArgs,
+  presignAvatar: AvatarPresigner | undefined,
 ): Promise<RegisterTxOutcome | null> {
   if (err instanceof RegistrationRefusal) return err.outcome
-  if (isUniqueViolationOn(err, REGISTER_IDEMPOTENCY_CONSTRAINT)) return replaySnapshot(tag, args)
+  if (isUniqueViolationOn(err, REGISTER_IDEMPOTENCY_CONSTRAINT)) {
+    return replaySnapshot(tag, args, presignAvatar)
+  }
   // A concurrent twin carrying the same key blocks on the active-registration index and fails
   // there before its idempotency insert can; once the winner commits its snapshot is readable.
-  if (isUniqueViolationOn(err, ...ACTIVE_REGISTRATION_CONSTRAINTS)) return replaySnapshot(tag, args)
+  if (isUniqueViolationOn(err, ...ACTIVE_REGISTRATION_CONSTRAINTS)) {
+    return replaySnapshot(tag, args, presignAvatar)
+  }
   if (isReservedSeatsBackstopViolation(err)) {
     throw AppError.internal(
       "Registration could not be completed. The capacity guard rejected the write.",
@@ -488,6 +504,7 @@ async function recordRegisterIdempotency(
 export async function registerIn(
   tx: TransactionSql,
   args: RegisterTxArgs,
+  presignAvatar: AvatarPresigner | undefined,
 ): Promise<RegisterTxOutcome> {
   await lockRegisterIdempotency(tx, args)
   const event = await lockRegistrationEvent(tx, args.cleanupId)
@@ -497,7 +514,7 @@ export async function registerIn(
 
   // A retry of a committed registration replays it even when a gate below has closed since.
   const replay = await findRegisterSnapshot(tx, args)
-  if (replay !== undefined) return replayOf(tx, args, replay)
+  if (replay !== undefined) return replayOf(tx, args, replay, presignAvatar)
 
   const eventRefusal = await eventGateRefusal(tx, event, args)
   if (eventRefusal !== null) return eventRefusal
@@ -527,7 +544,7 @@ export async function registerIn(
   await linkWaitlistEntry(tx, args, registrationId)
   await recordRegisterIdempotency(tx, args, registrationId)
 
-  const registration = await loadRegistrationById(tx, args.cleanupId, registrationId)
+  const registration = await loadRegistrationById(tx, args.cleanupId, registrationId, presignAvatar)
   if (registration === null) throw new Error("registration reload returned no row")
   return { kind: "registered", registration }
 }
@@ -584,13 +601,16 @@ async function checkInWalkupSeats(
   `
 }
 
-export function makeRegisterMethods(sql: Sql): RegisterMethods {
+export function makeRegisterMethods(
+  sql: Sql,
+  presignAvatar: AvatarPresigner | undefined,
+): RegisterMethods {
   return {
     async registerTx(args: RegisterTxArgs): Promise<RegisterTxOutcome> {
       try {
-        return await sql.begin((tx) => registerIn(tx, args))
+        return await sql.begin((tx) => registerIn(tx, args, presignAvatar))
       } catch (err) {
-        const mapped = await registerErrorOutcome(sql, err, args)
+        const mapped = await registerErrorOutcome(sql, err, args, presignAvatar)
         if (mapped !== null) return mapped
         throw err
       }
@@ -601,17 +621,22 @@ export function makeRegisterMethods(sql: Sql): RegisterMethods {
       try {
         return await sql.begin(async (tx) => {
           registerArgs = walkupRegisterArgs(args, await insertWalkupGuest(tx, args))
-          const outcome = await registerIn(tx, registerArgs)
+          const outcome = await registerIn(tx, registerArgs, presignAvatar)
           if (outcome.kind !== "registered") throw new RegistrationRefusal(outcome)
           if (args.checkIn === undefined || args.checkIn === null) return outcome
           await checkInWalkupSeats(tx, args, outcome.registration.id, args.checkIn)
-          const checkedIn = await loadRegistrationById(tx, args.cleanupId, outcome.registration.id)
+          const checkedIn = await loadRegistrationById(
+            tx,
+            args.cleanupId,
+            outcome.registration.id,
+            presignAvatar,
+          )
           if (checkedIn === null) throw new Error("walk-up reload returned no row")
           return { kind: "registered" as const, registration: checkedIn }
         })
       } catch (err) {
         if (registerArgs === null) throw err
-        const mapped = await registerErrorOutcome(sql, err, registerArgs)
+        const mapped = await registerErrorOutcome(sql, err, registerArgs, presignAvatar)
         if (mapped !== null) return mapped
         throw err
       }

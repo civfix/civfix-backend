@@ -30,8 +30,10 @@ import type {
 import {
   applyCutoff,
   bucketSeed,
+  NO_AUTHOR_BOOSTS,
   quantizeClock,
   rankCandidates,
+  type FeedAuthorBoosts,
   type FeedCandidate,
   type RankedCandidate,
 } from "./feed-ranking.js"
@@ -128,6 +130,7 @@ export interface PostServiceDeps {
   blockedIdsAmong?: (actorId: string, candidateIds: string[]) => Promise<Set<string>>
   logger?: { warn(obj: unknown, msg: string): void }
   feedRanking?: FeedRankingConfig
+  feedAuthorBoosts?: FeedAuthorBoosts
   feedPresence?: FeedPresence
   userChannel?: UserChannel
   now?: () => number
@@ -173,6 +176,7 @@ export function makePostService(deps: PostServiceDeps): PostService {
   const isBlocked = (a: string, b: string): Promise<boolean> =>
     a === NIL_VIEWER_ID || b === NIL_VIEWER_ID ? Promise.resolve(false) : isBlockedEitherWay(a, b)
   const feedConfig = deps.feedRanking ?? DEFAULT_FEED_RANKING
+  const feedAuthorBoosts = deps.feedAuthorBoosts ?? NO_AUTHOR_BOOSTS
   const nowMs = deps.now ?? (() => Date.now())
   const mintSeed = deps.feedSeed ?? (() => randomInt(0, FEED_SEED_SPAN))
 
@@ -330,6 +334,7 @@ export function makePostService(deps: PostServiceDeps): PostService {
           feedConfig,
           nowBucketMs,
           seed,
+          feedAuthorBoosts,
         ),
         feedConfig,
       )

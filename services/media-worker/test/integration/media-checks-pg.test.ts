@@ -80,6 +80,49 @@ describe.skipIf(!pg)("worker media.checks (integration)", () => {
     expect(row!.thumb_key).toBe(`thumbs/${r2Key}.jpg`)
   })
 
+  it("T19: V's validating avatar becomes ready with its keys and leaves users.avatar_url as it was", async () => {
+    const r2Key = `uploads/2026/10/${randomUUID()}`
+    const id = await insertRow("image", r2Key)
+    const [v] = await h.sql<{ id: string }[]>`
+      INSERT INTO users (display_name, handle, avatar_url, avatar_media_id)
+      VALUES (
+        'Avatar V', ${`v${randomUUID().replace(/-/g, "").slice(0, 12)}`},
+        'https://lh3.googleusercontent.com/a/v-old', ${id}
+      )
+      RETURNING id
+    `
+    await storage.put(r2Key, await fx.makeValidJpegWithGps(), { contentType: "image/jpeg" })
+    // What the deployed worker ran with: R2_PUBLIC_BASE is the bare host, as prod and staging set it.
+    const deployed = { publicMediaBase: "cdn.civfix.org" }
+
+    const status = await runMediaChecksJob(
+      { mediaId: id, uploadId: id, r2Key, kind: "image" },
+      {
+        repo,
+        storage,
+        abuseChecks: new FakeAbuseChecks(),
+        limits,
+        download: makeDownloader(storage),
+        log: () => {},
+        ...deployed,
+      },
+    )
+
+    expect(status).toBe("ready")
+    const [media] = await h.sql<
+      { status: string; served_key: string | null; thumb_key: string | null }[]
+    >`SELECT status, served_key, thumb_key FROM media_assets WHERE id = ${id}`
+    expect(media).toEqual({
+      status: "ready",
+      served_key: expect.any(String),
+      thumb_key: `thumbs/${r2Key}.jpg`,
+    })
+    const [user] = await h.sql<{ avatar_url: string | null }[]>`
+      SELECT avatar_url FROM users WHERE id = ${v!.id}
+    `
+    expect(user!.avatar_url).toBe("https://lh3.googleusercontent.com/a/v-old")
+  })
+
   it("crafted bad image -> rejected (safe failure through Postgres)", async () => {
     const r2Key = `uploads/2026/06/${randomUUID()}`
     const id = await insertRow("image", r2Key)

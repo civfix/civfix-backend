@@ -11,21 +11,25 @@ import type {
   EventRegistrationContext,
   HostRegistrationRepository,
 } from "./registration-repository.js"
+import type { AvatarPresigner } from "../user-avatar.js"
 
 export { REGISTER_IDEMPOTENCY_SCOPE } from "./registration-repository-register.drizzle.js"
 export { applyBanIn } from "./registration-repository-roster.drizzle.js"
 
-export function makeDrizzleHostRegistrationRepository(sql: Sql): HostRegistrationRepository {
+export function makeDrizzleHostRegistrationRepository(
+  sql: Sql,
+  presignAvatar?: AvatarPresigner,
+): HostRegistrationRepository {
   return {
     async eventContext(cleanupId: string): Promise<EventRegistrationContext | null> {
       return eventContextIn(sql, cleanupId)
     },
     ...makeTicketTypeMethods(sql),
     ...makeQuestionMethods(sql),
-    ...makeRegisterMethods(sql),
-    ...makeRosterMethods(sql),
-    ...makeWaitlistMethods(sql),
-    ...makeCheckinMethods(sql),
+    ...makeRegisterMethods(sql, presignAvatar),
+    ...makeRosterMethods(sql, presignAvatar),
+    ...makeWaitlistMethods(sql, presignAvatar),
+    ...makeCheckinMethods(sql, presignAvatar),
     ...makePageMethods(sql),
   }
 }

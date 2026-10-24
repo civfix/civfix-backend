@@ -46,6 +46,7 @@ import { ADMIN_OUTBOUND_MAIL_RATE_LIMIT } from "./mail.routes.js"
 import { makeContainerReportChatEmitter } from "../../services/report-chat-emitter.js"
 import { makeRouteNotificationService } from "../../services/route-notifier.js"
 import type { ReportChatSystemEmitter } from "../../services/report-timeline-event.js"
+import { avatarPresigner } from "../../services/user-avatar.js"
 
 export const ROUTE_REPORT_RATE_LIMIT = perIdentity({
   max: 10,
@@ -113,7 +114,7 @@ export async function registerAdminReportsRoutes(
         logger: app.log,
       })
       const outboundMail = makeContainerOutboundMailService(container, { logger: app.log })
-      const cleanupRepo = makeDrizzleCleanupRepository(sql)
+      const cleanupRepo = makeDrizzleCleanupRepository(sql, avatarPresigner(container.storage))
       return makeAdminReportService({
         repo,
         outboundMail,

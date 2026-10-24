@@ -89,6 +89,7 @@ import {
 import { InMemoryChatReadState, type ChatReadState } from "../services/threads-service.js"
 import { makeMarkRoomRead, type MarkRoomRead } from "../services/room-read-service.js"
 import type { ChatGatewayOverrides } from "./chat.routes.js"
+import { avatarPresigner } from "../services/user-avatar.js"
 
 const WS_UPGRADE_RATE_LIMIT = { max: 60, timeWindow: "1 minute" } as const
 
@@ -306,7 +307,11 @@ function makeChatRepos({ container, overrides, useFakeChat }: WiringContext): Ch
     blockedIdsFor,
     getChatRepo: () =>
       overrides?.chatRepo ??
-      (chatRepo ??= makeDrizzleChatRepository(container.getDb().sql, presignMedia)),
+      (chatRepo ??= makeDrizzleChatRepository(
+        container.getDb().sql,
+        presignMedia,
+        avatarPresigner(container.storage),
+      )),
     getReportChatRepo: () =>
       overrides?.reportChat ?? (reportChatRepo ??= makeReportChatRepository(container.getDb().sql)),
     getGroupsRepo: () =>

@@ -11,6 +11,7 @@ import type {
   RegistrationRecord,
   SeatRecord,
 } from "./registration-repository.js"
+import type { AvatarPresigner } from "../user-avatar.js"
 
 export const ARRIVAL_BUCKET_MINUTES = 15
 
@@ -81,12 +82,13 @@ async function checkedInResult(
   sql: Sql,
   cleanupId: string,
   row: CheckedInSeatRow,
+  presignAvatar: AvatarPresigner | undefined,
 ): Promise<CheckinResultRecord> {
   return buildCheckinResult(
     row.first_time ? "checked_in" : "already",
     row.first_time,
     toSeatRecord(row),
-    await loadRegistrationById(sql, cleanupId, row.registration_id),
+    await loadRegistrationById(sql, cleanupId, row.registration_id, presignAvatar),
   )
 }
 
@@ -183,7 +185,10 @@ async function arrivalBuckets(sql: Sql, cleanupId: string): Promise<{ at: Date; 
   `
 }
 
-export function makeCheckinMethods(sql: Sql): CheckinMethods {
+export function makeCheckinMethods(
+  sql: Sql,
+  presignAvatar: AvatarPresigner | undefined,
+): CheckinMethods {
   return {
     async checkInByToken(args: {
       cleanupId: string
@@ -213,7 +218,7 @@ export function makeCheckinMethods(sql: Sql): CheckinMethods {
                   s.no_show_at, t.first_time
       `
       const row = updated[0]
-      if (row !== undefined) return checkedInResult(sql, args.cleanupId, row)
+      if (row !== undefined) return checkedInResult(sql, args.cleanupId, row, presignAvatar)
       return unscannableTokenResult(sql, args.cleanupId, args.tokenHash)
     },
 
@@ -245,7 +250,7 @@ export function makeCheckinMethods(sql: Sql): CheckinMethods {
                   s.no_show_at, t.first_time
       `
       const row = updated[0]
-      if (row !== undefined) return checkedInResult(sql, args.cleanupId, row)
+      if (row !== undefined) return checkedInResult(sql, args.cleanupId, row, presignAvatar)
       const probe = await sql<{ status: SeatRecord["status"] }[]>`
         SELECT status FROM cleanup_registration_seats
          WHERE id = ${args.seatId} AND cleanup_id = ${args.cleanupId}

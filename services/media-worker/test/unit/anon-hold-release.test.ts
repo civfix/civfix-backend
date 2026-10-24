@@ -63,7 +63,6 @@ function makeSeams(opts: {
   const limits = loadLimits({})
   return {
     storage: opts.storage,
-    publicMediaBase: undefined,
     inboundStorage: opts.storage,
     abuseChecks: opts.abuse,
     limits,

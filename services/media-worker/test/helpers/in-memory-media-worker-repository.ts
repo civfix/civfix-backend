@@ -43,7 +43,6 @@ export class InMemoryMediaWorkerRepository implements MediaWorkerRepository {
   failRecordLeaked: Error | null = null
   readonly avatarMediaIds = new Set<string>()
   now: () => Date = () => new Date()
-  refreshAvatarUrls?: (mediaId: string, avatarUrl: string) => Promise<number>
 
   seed(
     row: Partial<StoredWorkerMedia> & Pick<MediaWorkerAsset, "id" | "uploadId" | "kind" | "r2Key">,

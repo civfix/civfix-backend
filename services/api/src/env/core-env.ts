@@ -9,6 +9,8 @@ import {
 import { CENSUS_DEFAULT_TIMEOUT_MS } from "../adapters/jurisdiction-lookup.census.js"
 import { OCI_MAILER_DEFAULT_TIMEOUT_MS } from "../adapters/mailer-defaults.js"
 import { DEFAULT_API_PORT } from "../lib/base-url.js"
+import { isUuid } from "../db/cursor-helpers.js"
+import { NO_AUTHOR_BOOSTS, type FeedAuthorBoosts } from "../services/feed-ranking.js"
 import {
   parseBool,
   parseCsv,
@@ -24,6 +26,9 @@ const DEV_SESSION_SIGNING_KEY = "dev-insecure-session-signing-key-do-not-use-in-
 const DEV_ANON_TOKEN_SIGNING_KEY = "dev-insecure-anon-token-signing-key-do-not-use-in-prod"
 
 const SIGNING_KEY_MIN_LENGTH = 32
+
+const FEED_AUTHOR_BOOST_MIN = 1
+const FEED_AUTHOR_BOOST_MAX = 5
 
 const SMTP_PORT_DEFAULT = 587
 const SMS_DAILY_CAP_DEFAULT = 50
@@ -225,6 +230,46 @@ export function loadFeedRanking(r: EnvReader, key: string): FeedRankingConfig {
     r.errors.push(`${key}${path}: ${issue.message}`)
   }
   return DEFAULT_FEED_RANKING
+}
+
+// Errors never quote a key or a multiplier: the boosted accounts stay out of the boot log.
+export function loadFeedAuthorBoosts(r: EnvReader, key: string): FeedAuthorBoosts {
+  const raw = r.trimmed(key)
+  if (raw.length === 0) return NO_AUTHOR_BOOSTS
+  let decoded: unknown
+  try {
+    decoded = JSON.parse(raw)
+  } catch {
+    decoded = undefined
+  }
+  if (typeof decoded !== "object" || decoded === null || Array.isArray(decoded)) {
+    r.errors.push(`${key}: must be a JSON object mapping user IDs to feed multipliers`)
+    return NO_AUTHOR_BOOSTS
+  }
+  const boosts = new Map<string, number>()
+  const problems = new Set<string>()
+  for (const [userId, multiplier] of Object.entries(decoded)) {
+    if (!isUuid(userId)) {
+      problems.add("every key must be a user ID (UUID)")
+      continue
+    }
+    if (
+      typeof multiplier !== "number" ||
+      multiplier < FEED_AUTHOR_BOOST_MIN ||
+      multiplier > FEED_AUTHOR_BOOST_MAX
+    ) {
+      problems.add(
+        `every multiplier must be a number from ${FEED_AUTHOR_BOOST_MIN} to ${FEED_AUTHOR_BOOST_MAX}`,
+      )
+      continue
+    }
+    // Postgres renders uuid columns in lower case, so a key in any other case would never match.
+    const normalized = userId.toLowerCase()
+    if (boosts.has(normalized)) problems.add("lists the same user ID twice")
+    boosts.set(normalized, multiplier)
+  }
+  for (const problem of problems) r.errors.push(`${key}: ${problem}`)
+  return problems.size === 0 ? boosts : NO_AUTHOR_BOOSTS
 }
 
 export interface LocalStorageSection {

@@ -35,6 +35,7 @@ import { makeEventMediaPresigner } from "../../services/host/event-media.js"
 import { makeRouteNotificationService } from "../../services/route-notifier.js"
 import { makeRouteCleanupReader } from "../../services/route-cleanup-reader.js"
 import { webBaseUrlOf } from "../../lib/base-url.js"
+import { avatarPresigner } from "../../services/user-avatar.js"
 
 const ONE_MINUTE = "1 minute"
 const ONE_HOUR = "1 hour"
@@ -103,7 +104,7 @@ export async function registerHostTeamRoutes(
       })
     }
     const sql = container.getDb().sql
-    const repo = makeDrizzleHostTeamRepository(sql)
+    const repo = makeDrizzleHostTeamRepository(sql, avatarPresigner(container.storage))
     return makeHostTeamService({
       repo,
       standing: makeSqlTeamStanding(sql),
