@@ -8,10 +8,21 @@ import type {
   NotificationRepository,
   PushTokenUpsertOutcome,
 } from "../../src/services/notification-repository.js"
+import type {
+  NotificationSettingRecord,
+  NotificationSettingsPatch,
+  NotificationSettingsRepository,
+} from "../../src/services/notification-settings-repository.js"
 import { DEFAULT_PREFS, isFeedVisibleType } from "../../src/services/notification-service.js"
 import { MAX_ACTIVE_PUSH_TOKENS_PER_USER } from "../../src/services/notification-repository.drizzle.js"
 import { paginate, parseTimeCursor } from "../../src/db/cursor-helpers.js"
-import type { NotificationDTO, NotificationType, PushPlatform } from "@civfix/contract"
+import { NOTIFICATION_CATEGORY_DEFAULTS } from "@civfix/contract"
+import type {
+  NotificationCategory,
+  NotificationDTO,
+  NotificationType,
+  PushPlatform,
+} from "@civfix/contract"
 import type { ReporterNotifier } from "../../src/services/admin/admin-report-service.js"
 
 export interface RecordedNotification extends CreateNotificationInput {
@@ -105,25 +116,48 @@ export class InMemoryNotificationRepository implements NotificationRepository {
     return Promise.resolve({ records: items, nextCursor })
   }
 
-  markRead(userId: string, ids: string[]): Promise<void> {
+  markRead(userId: string, ids: string[]): Promise<string[]> {
     const set = new Set(ids)
-    const at = this.now()
-    for (const n of this.notifications) {
-      if (n.userId === userId && set.has(n.id) && n.readAt === null) {
-        n.readAt = at
-      }
-    }
-    return Promise.resolve()
+    return Promise.resolve(
+      this.readWhere((n) => n.userId === userId && set.has(n.id)).map((n) => n.id),
+    )
   }
 
-  clearByTypeAndLink(userId: string, type: NotificationType, link: string): Promise<void> {
+  clearByTypeAndLink(userId: string, type: NotificationType, link: string): Promise<string[]> {
+    return Promise.resolve(
+      this.readWhere(
+        (n) =>
+          n.userId === userId && (n.type === type || n.type === "chat_mention") && n.link === link,
+      ).map((n) => n.id),
+    )
+  }
+
+  hasUnread(userId: string): Promise<boolean> {
+    return Promise.resolve(
+      this.notifications.some(
+        (n) => n.userId === userId && n.readAt === null && isFeedVisibleType(n.type),
+      ),
+    )
+  }
+
+  markAllRead(userId: string): Promise<number> {
+    return Promise.resolve(
+      this.readWhere((n) => n.userId === userId && isFeedVisibleType(n.type)).length,
+    )
+  }
+
+  deleteNotification(userId: string, id: string): Promise<boolean> {
+    const i = this.notifications.findIndex((n) => n.id === id && n.userId === userId)
+    if (i === -1) return Promise.resolve(false)
+    this.notifications.splice(i, 1)
+    return Promise.resolve(true)
+  }
+
+  private readWhere(match: (n: NotificationRecord) => boolean): NotificationRecord[] {
     const at = this.now()
-    for (const n of this.notifications) {
-      if (n.userId === userId && n.type === type && n.link === link && n.readAt === null) {
-        n.readAt = at
-      }
-    }
-    return Promise.resolve()
+    const changed = this.notifications.filter((n) => n.readAt === null && match(n))
+    for (const n of changed) n.readAt = at
+    return changed
   }
 
   findPrefs(userId: string): Promise<NotificationPrefsRecord | null> {
@@ -326,5 +360,56 @@ export class InMemoryNotificationRepository implements NotificationRepository {
       if (locale !== undefined) out.set(userId, locale)
     }
     return Promise.resolve(out)
+  }
+}
+
+export interface StoredNotificationSetting extends NotificationSettingRecord {
+  updatedAt: Date
+}
+
+export class InMemoryNotificationSettingsRepository implements NotificationSettingsRepository {
+  /** Keyed `${userId}:${category}`, the table's primary key. */
+  readonly rows = new Map<string, StoredNotificationSetting>()
+
+  now: () => Date = () => new Date()
+
+  getSettings(userId: string): Promise<NotificationSettingRecord[]> {
+    return this.getSettingsMany([userId])
+  }
+
+  getSettingsMany(userIds: string[]): Promise<NotificationSettingRecord[]> {
+    const wanted = new Set(userIds)
+    return Promise.resolve(
+      [...this.rows.values()]
+        .filter((row) => wanted.has(row.userId))
+        .map(({ userId, category, enabled, push, email }) => ({
+          userId,
+          category,
+          enabled,
+          push,
+          email,
+        })),
+    )
+  }
+
+  upsertSettings(userId: string, patch: NotificationSettingsPatch): Promise<void> {
+    const at = this.now()
+    for (const [category, fields] of Object.entries(patch) as [
+      NotificationCategory,
+      NotificationSettingsPatch[NotificationCategory],
+    ][]) {
+      if (!fields) continue
+      const key = `${userId}:${category}`
+      const base = this.rows.get(key) ?? NOTIFICATION_CATEGORY_DEFAULTS[category]
+      this.rows.set(key, {
+        userId,
+        category,
+        enabled: fields.enabled ?? base.enabled,
+        push: fields.push ?? base.push,
+        email: fields.email ?? base.email,
+        updatedAt: at,
+      })
+    }
+    return Promise.resolve()
   }
 }

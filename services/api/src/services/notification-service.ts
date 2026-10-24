@@ -4,12 +4,13 @@ import type {
   NotificationDTO,
   NotificationPrefsDTO,
   NotificationType,
+  NotificationUnreadResponse,
   PaginationQuery,
   RegisterPushTokenRequest,
   UnregisterPushTokenRequest,
   UpdateNotificationPrefsRequest,
 } from "@civfix/contract"
-import type { PushItem, PushPayload, PushSender, UserChannel } from "@civfix/seams"
+import type { PushClearTarget, PushItem, PushPayload, PushSender, UserChannel } from "@civfix/seams"
 import type { FastifyBaseLogger } from "fastify"
 import type { SocialNotifier } from "./social-service.js"
 import type { PersonView } from "./social-repository.js"
@@ -55,6 +56,9 @@ export const PUSH_FANOUT_BATCH_SIZE = 100
 const NOTIFICATIONS_TOPIC = "notifications"
 
 const INVALID_PUSH_TOKEN_MESSAGE = "Invalid push token"
+
+// One message for an unknown id and for another person's, so a dismiss never reveals which ids exist.
+const NOTIFICATION_NOT_FOUND_MESSAGE = "Notification not found"
 
 function postLink(postId: string): string {
   return `/post/${postId}`
@@ -112,7 +116,10 @@ export interface FanOutNotificationResult {
 
 export interface NotificationService extends SocialNotifier, PostNotifier {
   listNotifications(userId: string, pagination: PaginationQuery): Promise<ListNotificationsResponse>
+  hasUnread(userId: string): Promise<NotificationUnreadResponse>
   markRead(userId: string, ids: string[]): Promise<{ ok: true }>
+  markAllRead(userId: string): Promise<{ ok: true }>
+  dismiss(userId: string, id: string): Promise<{ ok: true }>
   getPrefs(userId: string): Promise<NotificationPrefsDTO>
   updatePrefs(userId: string, patch: UpdateNotificationPrefsRequest): Promise<NotificationPrefsDTO>
   registerPushToken(userId: string, req: RegisterPushTokenRequest): Promise<{ ok: true }>
@@ -123,7 +130,7 @@ export interface NotificationService extends SocialNotifier, PostNotifier {
     userIds: string[],
     input: CreateNotificationInput,
   ): Promise<FanOutNotificationResult>
-  clearByTypeAndLink(userId: string, type: NotificationType, link: string): Promise<void>
+  clearByTypeAndLink(userId: string, type: NotificationType, link: string): Promise<string[]>
 }
 
 type FallbackLane = "coalesce" | "dedupe"
@@ -242,6 +249,17 @@ export function makeNotificationService(deps: NotificationServiceDeps): Notifica
     } catch (err) {
       deps.logger?.warn({ err, userId }, "notification signal publish failed (suppressed)")
     }
+  }
+
+  // Runs once the change is stored. A clear that fails leaves a delivered push on another device, never
+  // a failed read, so it is logged and the change stands.
+  async function syncReadChange(userId: string, target: PushClearTarget): Promise<void> {
+    try {
+      await deps.pushSender.clear(userId, target)
+    } catch (err) {
+      deps.logger?.warn({ err, userId }, "push clear failed (suppressed)")
+    }
+    await maybeSignalNotification(userId)
   }
 
   function needsLocale(input: CreateNotificationInput): boolean {
@@ -526,8 +544,26 @@ export function makeNotificationService(deps: NotificationServiceDeps): Notifica
       return { items: records.map(toNotificationDTO), nextCursor }
     },
 
+    async hasUnread(userId: string): Promise<NotificationUnreadResponse> {
+      return { hasUnread: await deps.repo.hasUnread(userId) }
+    },
+
     async markRead(userId: string, ids: string[]): Promise<{ ok: true }> {
-      if (ids.length > 0) await deps.repo.markRead(userId, ids)
+      const changed = await deps.repo.markRead(userId, ids)
+      if (changed.length > 0) await syncReadChange(userId, { ids: changed })
+      return { ok: true }
+    },
+
+    async markAllRead(userId: string): Promise<{ ok: true }> {
+      if ((await deps.repo.markAllRead(userId)) > 0) await syncReadChange(userId, { all: true })
+      return { ok: true }
+    },
+
+    async dismiss(userId: string, id: string): Promise<{ ok: true }> {
+      if (!(await deps.repo.deleteNotification(userId, id))) {
+        throw AppError.notFound(NOTIFICATION_NOT_FOUND_MESSAGE)
+      }
+      await syncReadChange(userId, { ids: [id] })
       return { ok: true }
     },
 
@@ -615,9 +651,14 @@ export function makeNotificationService(deps: NotificationServiceDeps): Notifica
       return doCreateNotifications(userIds, input)
     },
 
-    async clearByTypeAndLink(userId: string, type: NotificationType, link: string): Promise<void> {
-      await deps.repo.clearByTypeAndLink(userId, type, link)
-      await maybeSignalNotification(userId)
+    async clearByTypeAndLink(
+      userId: string,
+      type: NotificationType,
+      link: string,
+    ): Promise<string[]> {
+      const changed = await deps.repo.clearByTypeAndLink(userId, type, link)
+      if (changed.length > 0) await syncReadChange(userId, { ids: changed })
+      return changed
     },
 
     async onNewFollower(args: { followeeId: string; follower: PersonView }): Promise<void> {

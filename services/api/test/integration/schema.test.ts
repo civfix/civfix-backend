@@ -31,6 +31,7 @@ const EXPECTED_TABLES = [
   "follows_people",
   "notifications",
   "notification_prefs",
+  "notification_settings",
   "push_tokens",
   "anon_tokens",
   "abuse_flags",
