@@ -90,7 +90,6 @@
     "ioredis": "^5.11.1",
     "jose": "^5.10.0",
     "mailparser": "^3.9.36",
-    "node-apn": "^3.0.0",
     "nodemailer": "^10.0.15",
     "oslo": "^1.2.1",
     "pdfkit": "^0.19.1",
