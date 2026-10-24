@@ -49,6 +49,7 @@ export * from "./service_hours_certificates.js"
 
 export * from "./notifications.js"
 export * from "./notification_prefs.js"
+export * from "./notification_settings.js"
 export * from "./push_tokens.js"
 
 export * from "./anon.js"
