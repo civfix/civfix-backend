@@ -2,25 +2,37 @@ import { describe, it, expect } from "vitest"
 import type { Db } from "../../src/db/client.js"
 import {
   MultiPushSender,
-  groupByPlatform,
   isSafePushEndpoint,
   resolveSafePushTarget,
-  type ActiveToken,
   type PlatformDispatcher,
+  type PushDelivery,
   type PushDispatchers,
 } from "../../src/adapters/push-sender.js"
 import { PUSH_MAX_PER_USER_PER_MINUTE, allowedByPushRate } from "../../src/adapters/push-sender.js"
 import { InMemoryCounterStore } from "../../src/abuse/counter-store.js"
 import type { PushPayload } from "@civfix/seams"
 import type { PushPlatform } from "@civfix/contract"
+import { fakePushDb } from "../helpers/push-db.js"
+import { N, N1, N2, P } from "../helpers/push-fixtures.js"
+
+interface DispatchCall {
+  tokens: string[]
+  payload: PushPayload | undefined
+  deliveries: PushDelivery[]
+}
 
 function recordingDispatcher(invalid: string[] = []): {
-  calls: Array<{ tokens: string[]; payload: PushPayload }>
+  calls: DispatchCall[]
   fn: PlatformDispatcher
 } {
-  const calls: Array<{ tokens: string[]; payload: PushPayload }> = []
-  const fn: PlatformDispatcher = (tokens, payload) => {
-    calls.push({ tokens, payload })
+  const calls: DispatchCall[] = []
+  const fn: PlatformDispatcher = (deliveries) => {
+    const first = deliveries[0]?.message
+    calls.push({
+      tokens: deliveries.map((d) => d.token),
+      payload: first?.kind === "notification" ? first.payload : undefined,
+      deliveries,
+    })
     return Promise.resolve({ invalidTokens: invalid })
   }
   return { calls, fn }
@@ -72,22 +84,6 @@ function fakeDb(rows: TokenRow[], prune: PruneCapture): Db {
 }
 
 const PAYLOAD: PushPayload = { title: "Hi", body: "there", link: "/x", data: { k: "v" } }
-
-describe("groupByPlatform", () => {
-  it("groups tokens by platform and de-duplicates within a platform", () => {
-    const tokens: ActiveToken[] = [
-      { userId: "u", platform: "ios", token: "a" },
-      { userId: "u", platform: "ios", token: "a" },
-      { userId: "u", platform: "android", token: "b" },
-      { userId: "u", platform: "web", token: "c" },
-    ]
-    expect(groupByPlatform(tokens)).toEqual({ ios: ["a"], android: ["b"], web: ["c"] })
-  })
-
-  it("returns empty arrays for platforms with no tokens", () => {
-    expect(groupByPlatform([])).toEqual({ ios: [], android: [], web: [] })
-  })
-})
 
 describe("MultiPushSender.send routing", () => {
   it("routes each platform's tokens to the matching dispatcher (ios->ios, android->fcm, web->webpush)", async () => {
@@ -168,8 +164,8 @@ describe("MultiPushSender.send routing", () => {
   })
 })
 
-describe("MultiPushSender.sendMany", () => {
-  it("delivers to multiple users' tokens and is a no-op for an empty user list", async () => {
+describe("MultiPushSender.sendEach", () => {
+  it("delivers to multiple users' tokens and is a no-op for an empty item list", async () => {
     const rows: TokenRow[] = [
       { userId: "u1", platform: "ios", token: "t1" },
       { userId: "u2", platform: "ios", token: "t2" },
@@ -179,13 +175,78 @@ describe("MultiPushSender.sendMany", () => {
     const prune: PruneCapture = {}
     const sender = new MultiPushSender({ db: fakeDb(rows, prune), config: {}, dispatchers })
 
-    await sender.sendMany(["u1", "u2"], PAYLOAD)
+    await sender.sendEach([
+      { userId: "u1", payload: PAYLOAD },
+      { userId: "u2", payload: PAYLOAD },
+    ])
     expect(ios.calls).toHaveLength(1)
     expect(ios.calls[0]!.tokens.sort()).toEqual(["t1", "t2"])
 
     ios.calls.length = 0
-    await sender.sendMany([], PAYLOAD)
+    await sender.sendEach([])
     expect(ios.calls).toHaveLength(0)
+  })
+
+  it("T6: 1200 recipients load their tokens in selects of 500, 500 and 200 user ids", async () => {
+    const fake = fakePushDb([])
+    const sender = new MultiPushSender({ db: fake.db, config: {}, dispatchers: {} })
+    const items = Array.from({ length: 1200 }, (_, i) => ({
+      userId: `user-${i}`,
+      payload: P(N(i + 1), null),
+    }))
+
+    await sender.sendEach(items)
+
+    expect(fake.selects.map((params) => params.length)).toEqual([500, 500, 200])
+    expect(fake.selects.flat()).toEqual(items.map((item) => item.userId))
+  })
+
+  it("T7: a recipient at the 60-a-minute cap is skipped while the others in the call still get theirs", async () => {
+    const counters = new InMemoryCounterStore(() => 1_000)
+    for (let i = 0; i < 60; i++) await counters.incr("push:rate:u1", 60)
+    const fake = fakePushDb([
+      { userId: "u1", platform: "android", token: "a-u1" },
+      { userId: "u2", platform: "android", token: "a-u2" },
+    ])
+    const android = recordingDispatcher()
+    const sender = new MultiPushSender({
+      db: fake.db,
+      config: {},
+      dispatchers: { android: android.fn },
+      counters,
+      logger: { warn: () => {}, error: () => {} },
+    })
+
+    await sender.sendEach([
+      { userId: "u1", payload: P(N1, null) },
+      { userId: "u2", payload: P(N2, null) },
+    ])
+
+    expect(android.calls.flatMap((c) => c.tokens)).toEqual(["a-u2"])
+  })
+
+  it("T26: a stored Expo token is revoked and reaches no dispatcher, the APNs token is delivered", async () => {
+    const expo = "ExponentPushToken[x]"
+    const i1 = "ab".repeat(32)
+    const fake = fakePushDb([
+      { userId: "u1", platform: "ios", token: expo },
+      { userId: "u1", platform: "ios", token: i1 },
+    ])
+    const ios = recordingDispatcher()
+    const android = recordingDispatcher()
+    const web = recordingDispatcher()
+    const sender = new MultiPushSender({
+      db: fake.db,
+      config: {},
+      dispatchers: { ios: ios.fn, android: android.fn, web: web.fn },
+    })
+
+    await sender.sendEach([{ userId: "u1", payload: P(N1, null) }])
+
+    expect(fake.rows.find((r) => r.token === expo)!.revokedAt).toBeInstanceOf(Date)
+    expect(fake.rows.find((r) => r.token === i1)!.revokedAt).toBeUndefined()
+    const dispatched = [...ios.calls, ...android.calls, ...web.calls].flatMap((c) => c.tokens)
+    expect(dispatched).toEqual([i1])
   })
 })
 
@@ -194,61 +255,6 @@ describe("MultiPushSender.registerToken", () => {
     const prune: PruneCapture = {}
     const sender = new MultiPushSender({ db: fakeDb([], prune), config: {}, dispatchers: {} })
     await expect(sender.registerToken("u", "tok", "ios", "dev")).resolves.toBeUndefined()
-  })
-})
-
-describe("MultiPushSender.send Expo routing", () => {
-  const expoTok = "ExponentPushToken[aaa]"
-  const expoTok2 = "ExponentPushToken[bbb]"
-
-  it("routes Expo-format tokens to the expo dispatcher (not APNs/FCM), across ios + android in one call", async () => {
-    const rows: TokenRow[] = [
-      { userId: "u", platform: "ios", token: expoTok },
-      { userId: "u", platform: "android", token: expoTok2 },
-    ]
-    const ios = recordingDispatcher()
-    const android = recordingDispatcher()
-    const expo = recordingDispatcher()
-    const dispatchers: PushDispatchers = { ios: ios.fn, android: android.fn, expo: expo.fn }
-    const prune: PruneCapture = {}
-
-    const sender = new MultiPushSender({ db: fakeDb(rows, prune), config: {}, dispatchers })
-    await sender.send("u", PAYLOAD)
-
-    expect(expo.calls).toHaveLength(1)
-    expect(expo.calls[0]!.tokens.slice().sort()).toEqual([expoTok, expoTok2].slice().sort())
-    expect(ios.calls).toHaveLength(0)
-    expect(android.calls).toHaveLength(0)
-  })
-
-  it("splits Expo tokens (-> expo) from raw device tokens (-> per-platform) in one send", async () => {
-    const rows: TokenRow[] = [
-      { userId: "u", platform: "ios", token: expoTok },
-      { userId: "u", platform: "web", token: "web-tok" },
-    ]
-    const expo = recordingDispatcher()
-    const web = recordingDispatcher()
-    const dispatchers: PushDispatchers = { expo: expo.fn, web: web.fn }
-    const prune: PruneCapture = {}
-
-    const sender = new MultiPushSender({ db: fakeDb(rows, prune), config: {}, dispatchers })
-    await sender.send("u", PAYLOAD)
-
-    expect(expo.calls[0]!.tokens).toEqual([expoTok])
-    expect(web.calls[0]!.tokens).toEqual(["web-tok"])
-  })
-
-  it("prunes Expo tokens the expo dispatcher reports invalid", async () => {
-    const rows: TokenRow[] = [{ userId: "u", platform: "ios", token: expoTok }]
-    const expo = recordingDispatcher([expoTok])
-    const dispatchers: PushDispatchers = { expo: expo.fn }
-    const prune: PruneCapture = {}
-
-    const sender = new MultiPushSender({ db: fakeDb(rows, prune), config: {}, dispatchers })
-    await sender.send("u", PAYLOAD)
-
-    expect(prune.set).toBeDefined()
-    expect(prune.set!.revokedAt).toBeInstanceOf(Date)
   })
 })
 
@@ -351,7 +357,7 @@ describe("per-user push rate cap (H15)", () => {
       counters,
       logger: { warn: () => {}, error: () => {} },
     })
-    await sender.sendMany(["hot"], PAYLOAD)
+    await sender.sendEach([{ userId: "hot", payload: PAYLOAD }])
     expect(ios.calls).toHaveLength(0)
   })
 

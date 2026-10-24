@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from "vitest"
 import type { PushLogger } from "../../src/adapters/push-sender.js"
+import { visibleTo } from "../helpers/push-fixtures.js"
 
 type FcmResponse = { success: boolean; error?: { code?: string; message?: string } }
 
@@ -14,8 +15,8 @@ vi.mock("firebase-admin/app", () => ({
 
 vi.mock("firebase-admin/messaging", () => ({
   getMessaging: () => ({
-    sendEachForMulticast: (message: { tokens: string[] }) =>
-      Promise.resolve({ responses: message.tokens.map((_, i) => nextResponses[i]) }),
+    sendEach: (messages: unknown[]) =>
+      Promise.resolve({ responses: messages.map((_, i) => nextResponses[i]) }),
   }),
 }))
 
@@ -45,7 +46,7 @@ describe("FCM dispatcher invalid-argument handling", () => {
     nextResponses = [invalidArgument, invalidArgument, invalidArgument]
     const { logger, warns } = recordingLogger()
 
-    const result = await makeFcmDispatcher(fcmConfig, logger)(["a", "b", "c"], payload)
+    const result = await makeFcmDispatcher(fcmConfig, logger)(visibleTo(["a", "b", "c"], payload))
 
     expect(result.invalidTokens).toEqual([])
     const payloadWarns = warns.filter(([, msg]) => String(msg).includes("payload"))
@@ -56,7 +57,7 @@ describe("FCM dispatcher invalid-argument handling", () => {
     nextResponses = [invalidArgument]
     const { logger } = recordingLogger()
 
-    const result = await makeFcmDispatcher(fcmConfig, logger)(["only"], payload)
+    const result = await makeFcmDispatcher(fcmConfig, logger)(visibleTo(["only"], payload))
 
     expect(result.invalidTokens).toEqual([])
   })
@@ -65,7 +66,10 @@ describe("FCM dispatcher invalid-argument handling", () => {
     nextResponses = [{ success: true }, invalidArgument]
     const { logger } = recordingLogger()
 
-    const result = await makeFcmDispatcher(fcmConfig, logger)(["good", "malformed"], payload)
+    const result = await makeFcmDispatcher(
+      fcmConfig,
+      logger,
+    )(visibleTo(["good", "malformed"], payload))
 
     expect(result.invalidTokens).toEqual(["malformed"])
   })
@@ -77,7 +81,7 @@ describe("FCM dispatcher invalid-argument handling", () => {
     ]
     const { logger } = recordingLogger()
 
-    const result = await makeFcmDispatcher(fcmConfig, logger)(["gone", "other"], payload)
+    const result = await makeFcmDispatcher(fcmConfig, logger)(visibleTo(["gone", "other"], payload))
 
     expect(result.invalidTokens).toEqual(["gone"])
   })

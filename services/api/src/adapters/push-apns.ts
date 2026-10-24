@@ -1,14 +1,21 @@
 import { connect, constants, type ClientHttp2Session } from "node:http2"
 import { createPrivateKey, sign, type KeyObject } from "node:crypto"
-import type { PushPayload } from "@civfix/seams"
 import type { PushSenderConfig, PushLogger, PlatformDispatcher } from "./push-sender.js"
 import { hashForLog } from "./push-sender.js"
+import { encodeMessageData, type PushMessage } from "./push-message.js"
 
 const APNS_GONE_STATUS = "410"
 
 const APNS_PRUNE_REASONS: ReadonlySet<string> = new Set(["Unregistered", "BadDeviceToken"])
 
 const APNS_SOUND = "default"
+
+const ALERT_PRIORITY = "10"
+// Apple requires background pushes at priority 5 and throttles them, which the app's foreground
+// reconcile makes up for (D8).
+const BACKGROUND_PRIORITY = "5"
+
+const ALERT_EXPIRATION_SECONDS = 24 * 60 * 60
 
 const APNS_PRODUCTION_ORIGIN = "https://api.push.apple.com:443"
 const APNS_SANDBOX_ORIGIN = "https://api.sandbox.push.apple.com:443"
@@ -49,18 +56,43 @@ function base64urlJson(value: unknown): string {
   return Buffer.from(JSON.stringify(value)).toString("base64url")
 }
 
-function alertBody(payload: PushPayload): string {
-  return JSON.stringify({
-    ...(payload.data ?? {}),
-    ...(payload.link !== undefined ? { link: payload.link } : {}),
-    aps: {
-      alert: {
-        title: payload.title,
-        ...(payload.body !== undefined ? { body: payload.body } : {}),
-      },
-      sound: APNS_SOUND,
+interface ApnsRequest {
+  headers: Record<string, string>
+  body: string
+}
+
+// expo-notifications reads a push's data from the top-level `body` key.
+function apnsRequest(message: PushMessage, nowMs: number): ApnsRequest {
+  const data = encodeMessageData(message)
+  if (message.kind === "clear") {
+    return {
+      headers: { "apns-push-type": "background", "apns-priority": BACKGROUND_PRIORITY },
+      body: JSON.stringify({ aps: { "content-available": 1 }, body: data }),
+    }
+  }
+  const { payload } = message
+  const category = payload.category ?? undefined
+  return {
+    headers: {
+      "apns-push-type": "alert",
+      "apns-priority": ALERT_PRIORITY,
+      "apns-expiration": String(Math.floor(nowMs / 1000) + ALERT_EXPIRATION_SECONDS),
+      ...(payload.notificationId !== undefined
+        ? { "apns-collapse-id": payload.notificationId }
+        : {}),
     },
-  })
+    body: JSON.stringify({
+      aps: {
+        alert: {
+          title: payload.title,
+          ...(payload.body !== undefined ? { body: payload.body } : {}),
+        },
+        sound: APNS_SOUND,
+        ...(category !== undefined ? { "thread-id": category } : {}),
+      },
+      body: data,
+    }),
+  }
 }
 
 function reasonOf(body: string): string {
@@ -150,13 +182,14 @@ export function makeApnsDispatcher(
     }
   }
 
-  function post(token: string, body: string, jwt: string): Promise<Outcome> {
+  function post(token: string, request: ApnsRequest, jwt: string): Promise<Outcome> {
     return new Promise((resolve) => {
       const conn = openConnection()
       const stream = conn.session.request({
         ":method": "POST",
         ":path": `/3/device/${encodeURIComponent(token)}`,
         "apns-topic": apns.bundleId,
+        ...request.headers,
         authorization: `bearer ${jwt}`,
       })
       conn.inFlight++
@@ -187,16 +220,16 @@ export function makeApnsDispatcher(
         else if (failure !== undefined || status === "") resolve({ kind: "failed", err: failure })
         else resolve({ kind: "answered", status, reason: reasonOf(response) })
       })
-      stream.end(body)
+      stream.end(request.body)
     })
   }
 
-  async function deliver(token: string, body: string): Promise<Outcome> {
+  async function deliver(token: string, request: ApnsRequest): Promise<Outcome> {
     let jwt = currentJwt()
-    let outcome = await post(token, body, jwt)
+    let outcome = await post(token, request, jwt)
     if (outcome.kind === "unprocessed") {
       jwt = currentJwt()
-      outcome = await post(token, body, jwt)
+      outcome = await post(token, request, jwt)
     }
     if (
       outcome.kind === "answered" &&
@@ -204,22 +237,22 @@ export function makeApnsDispatcher(
       outcome.reason === EXPIRED_PROVIDER_TOKEN &&
       refreshAfterExpired(jwt)
     ) {
-      outcome = await post(token, body, currentJwt())
+      outcome = await post(token, request, currentJwt())
     }
     return outcome
   }
 
-  const dispatch: PlatformDispatcher = async (tokens, payload) => {
+  const dispatch: PlatformDispatcher = async (deliveries) => {
     // Signing first makes an unusable key fail the batch once, not once per device.
     currentJwt()
-    const body = alertBody(payload)
+    const nowMs = Date.now()
     const invalidTokens: string[] = []
     await Promise.all(
-      tokens.map((token) =>
+      deliveries.map(({ token, message }) =>
         withSlot(async () => {
           let outcome: Outcome
           try {
-            outcome = await deliver(token, body)
+            outcome = await deliver(token, apnsRequest(message, nowMs))
           } catch (err) {
             outcome = { kind: "failed", err }
           }

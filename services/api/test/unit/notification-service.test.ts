@@ -372,10 +372,8 @@ describe("createNotification (inline-send gating)", () => {
     await flushNotificationDispatch()
     expect(push.sent[0]!.payload.link).toBe("/people/x")
     await flushNotificationDispatch()
-    expect(push.sent[0]!.payload.data).toMatchObject({
-      type: "new_follower",
-      notificationId: dto.id,
-    })
+    expect(push.sent[0]!.payload.data).toMatchObject({ type: "new_follower" })
+    expect(push.sent[0]!.payload.notificationId).toBe(dto.id)
   })
 
   it("does NOT push when the master push switch is off (but still records the row)", async () => {

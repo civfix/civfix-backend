@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach } from "vitest"
 import { FakePushSender } from "@civfix/seams"
 import type { ChatMessageDTO, PersonDTO, UserMentionDTO } from "@civfix/contract"
-import type { PushPayload, PushSender } from "@civfix/seams"
+import type { PushItem, PushSender } from "@civfix/seams"
 import {
   makeRoomFanoutNotifier,
   ROOM_ACTIVITY_COALESCE_WINDOW_MS,
@@ -204,7 +204,8 @@ describe("room-activity coalescing (H19)", () => {
     const hanging: PushSender = {
       registerToken: () => Promise.resolve(),
       send: (): Promise<void> => new Promise(() => {}),
-      sendMany: (_userIds: string[], _payload: PushPayload): Promise<void> => new Promise(() => {}),
+      sendEach: (_items: PushItem[]): Promise<void> => new Promise(() => {}),
+      clear: (): Promise<void> => new Promise(() => {}),
     }
     const service = makeNotificationService({
       repo,

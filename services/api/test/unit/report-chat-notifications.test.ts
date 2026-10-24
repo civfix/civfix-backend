@@ -21,7 +21,7 @@ import {
   PUSH_FANOUT_BATCH_SIZE,
   type NotificationService,
 } from "../../src/services/notification-service.js"
-import type { PushSender } from "@civfix/seams"
+import type { PushItem, PushSender } from "@civfix/seams"
 import type { ConversationMutesRepository } from "../../src/services/conversation-mutes-repository.js"
 import type { ConversationMuteRoomKind } from "../../src/db/schema/conversation_mutes.js"
 
@@ -497,14 +497,18 @@ class BatchCountingPushSender implements PushSender {
     return Promise.resolve()
   }
 
-  sendMany(userIds: string[]): Promise<void> {
-    this.batches.push(userIds.length)
+  sendEach(items: PushItem[]): Promise<void> {
+    this.batches.push(items.length)
+    return Promise.resolve()
+  }
+
+  clear(): Promise<void> {
     return Promise.resolve()
   }
 }
 
 describe("F084: the shared room fan-out batches push delivery", () => {
-  it("delivers an over-100-recipient roster in sendMany batches, never one send per recipient", async () => {
+  it("delivers an over-100-recipient roster in sendEach batches, never one send per recipient", async () => {
     const roster = Array.from(
       { length: 250 },
       (_, i) => `00000000-0000-4000-a000-${String(i).padStart(12, "0")}`,

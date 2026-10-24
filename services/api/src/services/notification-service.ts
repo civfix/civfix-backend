@@ -9,7 +9,7 @@ import type {
   UnregisterPushTokenRequest,
   UpdateNotificationPrefsRequest,
 } from "@civfix/contract"
-import type { PushPayload, PushSender, UserChannel } from "@civfix/seams"
+import type { PushItem, PushPayload, PushSender, UserChannel } from "@civfix/seams"
 import type { FastifyBaseLogger } from "fastify"
 import type { SocialNotifier } from "./social-service.js"
 import type { PersonView } from "./social-repository.js"
@@ -181,40 +181,30 @@ interface CreatedNotification {
   record: NotificationRecord
 }
 
-interface PushGroup {
-  payload: PushPayload
-  userIds: string[]
-}
-
-function groupPushesByPayload(
+function pushItemsFor(
   created: readonly CreatedNotification[],
   { byUser, unreadable }: ResolvedPrefs,
   mode: PushGateMode,
   at: Date,
-): Map<string, PushGroup> {
-  const groups = new Map<string, PushGroup>()
+): PushItem[] {
+  const items: PushItem[] = []
   for (const { userId, record } of created) {
     if (unreadable.has(userId)) continue
     const prefs = byUser.get(userId) ?? DEFAULT_PREFS
     if (!pushGateAllows(record.type, prefs, mode)) continue
     if (isWithinQuietHours(at, prefs.quietStart, prefs.quietEnd, prefs.tz)) continue
-    const key = JSON.stringify([record.title, record.body, record.link])
-    const group = groups.get(key)
-    if (group) {
-      group.userIds.push(userId)
-      continue
-    }
-    groups.set(key, { payload: pushPayloadOf(record, { type: record.type }), userIds: [userId] })
+    items.push({ userId, payload: pushPayloadOf(record) })
   }
-  return groups
+  return items
 }
 
-function pushPayloadOf(record: NotificationRecord, data: Record<string, unknown>): PushPayload {
+function pushPayloadOf(record: NotificationRecord): PushPayload {
   return {
     title: record.title,
     ...(record.body !== null ? { body: record.body } : {}),
     ...(record.link !== null ? { link: record.link } : {}),
-    data,
+    notificationId: record.id,
+    data: { type: record.type },
   }
 }
 
@@ -247,8 +237,7 @@ export function makeNotificationService(deps: NotificationServiceDeps): Notifica
       if (!pushGateAllows(record.type, prefs, mode)) return
       if (isWithinQuietHours(now(), prefs.quietStart, prefs.quietEnd, prefs.tz)) return
 
-      const payload = pushPayloadOf(record, { type: record.type, notificationId: record.id })
-      await deps.pushSender.send(userId, payload)
+      await deps.pushSender.send(userId, pushPayloadOf(record))
     } catch (err) {
       deps.logger?.warn(
         { err, userId, notificationId: record.id, type: record.type },
@@ -451,15 +440,13 @@ export function makeNotificationService(deps: NotificationServiceDeps): Notifica
   ): Promise<void> {
     if (mode === "never") return
     const prefs = await prefsForMany(created.map((c) => c.userId))
-    const groups = groupPushesByPayload(created, prefs, mode, now())
-    for (const group of groups.values()) {
-      for (let i = 0; i < group.userIds.length; i += PUSH_FANOUT_BATCH_SIZE) {
-        const batch = group.userIds.slice(i, i + PUSH_FANOUT_BATCH_SIZE)
-        try {
-          await deps.pushSender.sendMany(batch, group.payload)
-        } catch (err) {
-          deps.logger?.warn({ err, count: batch.length }, "batched push send failed (suppressed)")
-        }
+    const items = pushItemsFor(created, prefs, mode, now())
+    for (let i = 0; i < items.length; i += PUSH_FANOUT_BATCH_SIZE) {
+      const batch = items.slice(i, i + PUSH_FANOUT_BATCH_SIZE)
+      try {
+        await deps.pushSender.sendEach(batch)
+      } catch (err) {
+        deps.logger?.warn({ err, count: batch.length }, "batched push send failed (suppressed)")
       }
     }
   }

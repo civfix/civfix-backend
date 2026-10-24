@@ -1,4 +1,4 @@
-import { describe, it, expect } from "vitest"
+import { describe, it, expect, expectTypeOf } from "vitest"
 import {
   FakeStorage,
   FakeMailer,
@@ -22,6 +22,7 @@ import type {
   AbuseChecks,
   Jobs,
   ChatConnection,
+  PushPayload,
 } from "../src/interfaces/index.js"
 
 const enc = new TextEncoder()
@@ -221,13 +222,53 @@ describe("FakeUserChannel", () => {
 })
 
 describe("FakePushSender", () => {
+  const N1 = "00000000-0000-4000-8000-000000000001"
+  const N2 = "00000000-0000-4000-8000-000000000002"
+  const P = (notificationId: string, category: string | null): PushPayload => ({
+    title: "Status changed",
+    body: "Your report is in progress",
+    link: "/reports/r1",
+    notificationId,
+    category,
+    data: { type: "report_update" },
+  })
+
   it("captures registrations and sends", async () => {
     const p = new FakePushSender()
     await p.registerToken("u1", "tok", "ios", "dev-1")
     await p.send("u1", { title: "Hi" })
-    await p.sendMany(["u2", "u3"], { title: "Bulk" })
+    await p.sendEach([
+      { userId: "u2", payload: { title: "Bulk" } },
+      { userId: "u3", payload: { title: "Bulk" } },
+    ])
     expect(p.tokens).toHaveLength(1)
     expect(p.sent).toHaveLength(3)
+  })
+
+  it("T1: sendEach records each item in order, and there is no sendMany", async () => {
+    const p = new FakePushSender()
+    await p.sendEach([
+      { userId: "u1", payload: P(N1, null) },
+      { userId: "u2", payload: P(N2, null) },
+    ])
+    expect(p.sent).toEqual([
+      { userId: "u1", payload: P(N1, null) },
+      { userId: "u2", payload: P(N2, null) },
+    ])
+    expect("sendMany" in p).toBe(false)
+    expectTypeOf<PushSender>().not.toHaveProperty("sendMany")
+    expectTypeOf<FakePushSender>().not.toHaveProperty("sendMany")
+  })
+
+  it("T2: clear records each call as made and sends nothing", async () => {
+    const p = new FakePushSender()
+    await p.clear("u1", { ids: [N1] })
+    await p.clear("u1", { all: true })
+    expect(p.clears).toEqual([
+      { userId: "u1", target: { ids: [N1] } },
+      { userId: "u1", target: { all: true } },
+    ])
+    expect(p.sent).toEqual([])
   })
 })
 

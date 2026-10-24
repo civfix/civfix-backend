@@ -12,7 +12,9 @@ import type {
 } from "node:http2"
 import { generateKeyPairSync, verify, type KeyObject } from "node:crypto"
 import type { AddressInfo } from "node:net"
+import type { PushPayload } from "@civfix/seams"
 import { makeApnsDispatcher } from "../../src/adapters/push-apns.js"
+import { visibleTo } from "../helpers/push-fixtures.js"
 import {
   hashForLog,
   type PushLogger,
@@ -182,7 +184,9 @@ const dispatchers: { close?(): Promise<void> }[] = []
 function dispatcherFor(logger: PushLogger, production = false) {
   const d = makeApnsDispatcher(apnsConfig(keys, production), logger)
   dispatchers.push(d)
-  return d
+  return Object.assign((tokens: string[], payload: PushPayload) => d(visibleTo(tokens, payload)), {
+    close: d.close,
+  })
 }
 
 beforeEach(async () => {
@@ -217,23 +221,23 @@ describe("makeApnsDispatcher: the request", () => {
     expect(logged).toEqual([])
   })
 
-  it("T2: the body is today's alert payload, payload.link winning over data.link", async () => {
+  it("T2: the body is the alert plus D7's data map under body, payload.link winning over data.link", async () => {
     const dispatch = dispatcherFor(recordingLogger().logger)
     await dispatch([D1], P)
 
     expect(JSON.parse((server.requests[0] as Received).body)).toEqual({
-      type: "report_update",
-      link: "/reports/r1",
       aps: { alert: { title: "Hi", body: "There" }, sound: "default" },
+      body: { kind: "notification", type: "report_update", link: "/reports/r1" },
     })
   })
 
-  it("T3: a title-only payload carries only the alert title and the sound", async () => {
+  it("T3: a title-only payload carries only the alert title, the sound and the kind", async () => {
     const dispatch = dispatcherFor(recordingLogger().logger)
     await dispatch([D1], { title: "Hi" })
 
     expect(JSON.parse((server.requests[0] as Received).body)).toEqual({
       aps: { alert: { title: "Hi" }, sound: "default" },
+      body: { kind: "notification" },
     })
   })
 
