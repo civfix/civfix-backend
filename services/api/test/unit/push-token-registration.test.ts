@@ -40,14 +40,14 @@ function harness(safeEndpoints: (endpoint: string) => boolean = () => true) {
 }
 
 describe("classifyPushToken", () => {
-  it("accepts an Expo token under ANY platform (the mobile client registers one as ios/android)", () => {
+  it("refuses an Expo token under ANY platform (D7: no more delivery through Expo)", () => {
     const token = "ExponentPushToken[xxxxxxxxxxxxxxxxxxxxxx]"
-    expect(classifyPushToken("ios", token)).toEqual({ ok: true, kind: "expo" })
-    expect(classifyPushToken("android", token)).toEqual({ ok: true, kind: "expo" })
-    expect(classifyPushToken("web", token)).toEqual({ ok: true, kind: "expo" })
-    expect(classifyPushToken("android", "ExpoPushToken[yyyyyyyyyyyyyyyyyyyyyy]")).toEqual({
-      ok: true,
-      kind: "expo",
+    for (const platform of ["ios", "android", "web"] as const) {
+      expect(classifyPushToken(platform, token)).toMatchObject({ ok: false, field: "token" })
+    }
+    expect(classifyPushToken("android", "ExpoPushToken[yyyyyyyyyyyyyyyyyyyyyy]")).toMatchObject({
+      ok: false,
+      field: "token",
     })
   })
 
@@ -138,11 +138,11 @@ describe("registerPushToken validation (H15)", () => {
     expect(repo.pushTokens).toHaveLength(0)
   })
 
-  it("keeps accepting exactly what the shipped mobile client sends", async () => {
+  it("accepts the raw APNs device token the mobile client registers", async () => {
     const { repo, service } = harness()
     await service.registerPushToken(U, {
       platform: "ios",
-      token: "ExponentPushToken[abcdefghijklmnopqrst]",
+      token: "ab".repeat(32),
       deviceId: "22222222-2222-4222-8222-222222222222",
     })
     expect(repo.pushTokens[0]).toMatchObject({ platform: "ios", revokedAt: null })

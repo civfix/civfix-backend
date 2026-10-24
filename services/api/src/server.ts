@@ -59,6 +59,7 @@ import { registerDiscoveryJobs } from "./services/admin/discovery-jobs.js"
 import { registerAutoForwardJobs } from "./services/admin/autoforward-jobs.js"
 import { registerDataExportJobs } from "./services/data-export-jobs.js"
 import { registerChatRoomFanoutJob } from "./services/chat-fanout-jobs.js"
+import { registerPushClearJob } from "./services/push-clear-jobs.js"
 import { registerCleanupCancelFanoutJob } from "./services/cleanup-jobs.js"
 import { registerGuestJobs } from "./services/guest-jobs.js"
 import { registerRegistrationJobs } from "./services/host/registration-jobs.js"
@@ -337,6 +338,7 @@ export async function startBackgroundJobs(app: FastifyInstance, env: Env): Promi
   await registerCleanupCancelFanoutJob(app.container, app.log)
   await registerGuestJobs(app.container, app.log)
   await registerChatRoomFanoutJob(app.container, app.log)
+  await registerPushClearJob(app.container, app.log)
   await registerRegistrationJobs(app.container, app.log)
   await registerCommsJobs(app.container, app.log)
 }

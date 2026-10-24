@@ -1,4 +1,10 @@
-import type { PushSender, PushPayload, PushPlatform } from "../interfaces/push-sender.js"
+import type {
+  PushSender,
+  PushPayload,
+  PushPlatform,
+  PushItem,
+  PushClearTarget,
+} from "../interfaces/push-sender.js"
 
 export interface CapturedToken {
   userId: string
@@ -12,12 +18,18 @@ export interface CapturedPush {
   payload: PushPayload
 }
 
+export interface CapturedClear {
+  userId: string
+  target: PushClearTarget
+}
+
 /**
- * In-memory PushSender that captures registered tokens and every push for assertions.
+ * In-memory PushSender that captures registered tokens, every push and every clear for assertions.
  */
 export class FakePushSender implements PushSender {
   readonly tokens: CapturedToken[] = []
   readonly sent: CapturedPush[] = []
+  readonly clears: CapturedClear[] = []
 
   registerToken(
     userId: string,
@@ -39,13 +51,19 @@ export class FakePushSender implements PushSender {
     return Promise.resolve()
   }
 
-  sendMany(userIds: string[], payload: PushPayload): Promise<void> {
-    for (const userId of userIds) this.sent.push({ userId, payload })
+  sendEach(items: PushItem[]): Promise<void> {
+    for (const { userId, payload } of items) this.sent.push({ userId, payload })
+    return Promise.resolve()
+  }
+
+  clear(userId: string, target: PushClearTarget): Promise<void> {
+    this.clears.push({ userId, target })
     return Promise.resolve()
   }
 
   reset(): void {
     this.tokens.length = 0
     this.sent.length = 0
+    this.clears.length = 0
   }
 }

@@ -1,5 +1,6 @@
 import type { PushSenderConfig, PushLogger, PlatformDispatcher } from "./push-sender.js"
 import { hashForLog } from "./push-sender.js"
+import { encodeMessageData, type NotificationMessage } from "./push-message.js"
 import {
   boundedAddressResolver,
   parseSubscription,
@@ -142,6 +143,9 @@ const WEB_PUSH_DEADLINE_SLACK_MS = 2_000
 
 const WEB_PUSH_BATCH_BUDGET_MS = 32_000
 
+const WEB_PUSH_TTL_SECONDS = 24 * 60 * 60
+const WEB_PUSH_URGENCY = "normal"
+
 export class WebPushDeadlineError extends Error {
   constructor(ms: number) {
     super(`web push request exceeded the ${ms}ms hard deadline`)
@@ -162,7 +166,7 @@ export function makeWebPushDispatcher(
   webPush: NonNullable<PushSenderConfig["webPush"]>,
   logger: PushLogger,
   pool: PinnedAgentPool = agentPool,
-): PlatformDispatcher {
+): PlatformDispatcher<NotificationMessage> {
   let webpushPromise: Promise<any> | null = null
   const requestTimeoutMs = webPush.timeoutMs ?? WEB_PUSH_REQUEST_TIMEOUT_MS
   const deadlineMs = requestTimeoutMs + WEB_PUSH_DEADLINE_SLACK_MS
@@ -208,6 +212,8 @@ export function makeWebPushDispatcher(
         wp.sendNotification(subscription, body, {
           agent: pool.get(target.address, target.family),
           timeout: requestTimeoutMs,
+          TTL: WEB_PUSH_TTL_SECONDS,
+          urgency: WEB_PUSH_URGENCY,
         }) as Promise<unknown>,
         deadlineMs,
         () => pool.drop(target.address, target.family),
@@ -232,24 +238,17 @@ export function makeWebPushDispatcher(
     }
   }
 
-  const dispatch: PlatformDispatcher = async (tokens, payload) => {
+  const dispatch: PlatformDispatcher<NotificationMessage> = async (deliveries) => {
     const wp = await getWebPush()
-    const body = JSON.stringify({
-      title: payload.title,
-      ...(payload.body !== undefined ? { body: payload.body } : {}),
-      ...(payload.link !== undefined ? { link: payload.link } : {}),
-      data: payload.data ?? {},
-    })
-
     const invalidTokens: string[] = []
     const budgetEndsAt = Date.now() + batchBudgetMs
     let overBudget = 0
-    await mapWithLimit(tokens, WEB_PUSH_CONCURRENCY, async (token) => {
+    await mapWithLimit(deliveries, WEB_PUSH_CONCURRENCY, async ({ token, message }) => {
       if (Date.now() >= budgetEndsAt) {
         overBudget += 1
         return
       }
-      await deliverToToken(wp, token, body, invalidTokens)
+      await deliverToToken(wp, token, webPushBody(message), invalidTokens)
     })
     if (overBudget > 0) {
       logger.warn(
@@ -265,6 +264,19 @@ export function makeWebPushDispatcher(
   }
 
   return dispatch
+}
+
+// `tag` makes a browser replace rather than stack a re-sent notification, and lets a focused tab close
+// it once it is read (D8).
+function webPushBody(message: NotificationMessage): string {
+  const { payload } = message
+  return JSON.stringify({
+    title: payload.title,
+    ...(payload.body !== undefined ? { body: payload.body } : {}),
+    ...(payload.link !== undefined ? { link: payload.link } : {}),
+    ...(payload.notificationId !== undefined ? { tag: payload.notificationId } : {}),
+    data: encodeMessageData(message),
+  })
 }
 
 export function classifyWebPushError(err: unknown): {
