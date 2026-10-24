@@ -84,7 +84,9 @@ describe.skipIf(!pg)("notification email recipients (Postgres)", () => {
   it("disableEmail unchecks Email from the default for a new row and keeps a stored row's other fields", async () => {
     const repo = makeDrizzleNotificationSettingsRepository(h.sql)
     const user = await newUser({ email: "settings@example.test", verified: true })
-    await repo.upsertSettings(user, { hostAnnouncements: { enabled: true, push: false, email: true } })
+    await repo.upsertSettings(user, {
+      hostAnnouncements: { enabled: true, push: false, email: true },
+    })
 
     expect(await repo.disableEmail(user, "events")).toBe(true)
     expect(await repo.disableEmail(user, "hostAnnouncements")).toBe(true)

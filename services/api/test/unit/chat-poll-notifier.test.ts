@@ -23,6 +23,7 @@ import { describe, it, expect, beforeEach, vi } from "vitest"
 import { FakePushSender } from "@civfix/seams"
 import type { ChatMessageDTO, PersonDTO } from "@civfix/contract"
 import type { Container } from "../../src/di.js"
+import { fakeNotificationEmail } from "../helpers/notification-email.js"
 
 /**
  * Mock state. Held in a hoisted record because the vi.mock factories below are lifted above the imports;
@@ -184,6 +185,7 @@ function containerFor(useFakeChat = false): Container {
       return { sql: {} }
     },
     pushSender: new FakePushSender(),
+    getNotificationEmail: fakeNotificationEmail,
     userChannel: undefined,
     getBlocksRepo: () => blocksRepoForContainer(),
   } as unknown as Container

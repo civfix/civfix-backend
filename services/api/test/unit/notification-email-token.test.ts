@@ -77,7 +77,10 @@ describe("notification email tokens", () => {
     const refused = {
       tamperedBody: `${prefix}.${otherBody}.${sig}`,
       tamperedSignature: `${prefix}.${body}.${flipped}`,
-      differentKey: handToken({ v: 1, i: U, c: "events", x }, "a-completely-different-key-0123456789"),
+      differentKey: handToken(
+        { v: 1, i: U, c: "events", x },
+        "a-completely-different-key-0123456789",
+      ),
       prefixN2: handToken({ v: 1, i: U, c: "events", x }, K, "n2"),
       unknownCategory: handToken({ v: 1, i: U, c: "newsletter", x }),
       version2: handToken({ v: 2, i: U, c: "events", x }),

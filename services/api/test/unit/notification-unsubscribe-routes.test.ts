@@ -4,7 +4,11 @@
 
 import { afterEach, describe, expect, it, vi } from "vitest"
 import { FakeMailer } from "@civfix/seams"
-import { NOTIFICATION_CATEGORY_DEFAULTS, UNSUBSCRIBE_TOKEN_MAX, UNSUBSCRIBE_TOKEN_MIN } from "@civfix/contract"
+import {
+  NOTIFICATION_CATEGORY_DEFAULTS,
+  UNSUBSCRIBE_TOKEN_MAX,
+  UNSUBSCRIBE_TOKEN_MIN,
+} from "@civfix/contract"
 import type { NotificationCategory } from "@civfix/contract"
 import { makeAuthHarness, type AuthHarness } from "../helpers/auth.js"
 import {
@@ -111,7 +115,11 @@ describe("POST /v1/notifications/email-unsubscribe", () => {
     const h = await build()
     await h.settings.upsertSettings(U, { followers: { enabled: true, push: false, email: true } })
 
-    const res = await h.app.inject({ method: "POST", url: URL, payload: { token: h.token(U, "events") } })
+    const res = await h.app.inject({
+      method: "POST",
+      url: URL,
+      payload: { token: h.token(U, "events") },
+    })
 
     expect(res.statusCode).toBe(200)
     expect(res.json()).toEqual({ ok: true, category: "events" })
@@ -119,7 +127,11 @@ describe("POST /v1/notifications/email-unsubscribe", () => {
       { category: "events", enabled: true, push: true, email: false },
       { category: "followers", enabled: true, push: false, email: true },
     ])
-    expect(NOTIFICATION_CATEGORY_DEFAULTS.events).toEqual({ enabled: true, push: true, email: true })
+    expect(NOTIFICATION_CATEGORY_DEFAULTS.events).toEqual({
+      enabled: true,
+      push: true,
+      email: true,
+    })
   })
 
   it("T35: an RFC 8058 one-click form post reads the token from the query", async () => {
@@ -197,7 +209,11 @@ describe("POST /v1/notifications/email-unsubscribe", () => {
     const h = await build()
     h.settings.disableEmail = () => Promise.reject(new Error("connection terminated"))
 
-    const res = await h.app.inject({ method: "POST", url: URL, payload: { token: h.token(U, "events") } })
+    const res = await h.app.inject({
+      method: "POST",
+      url: URL,
+      payload: { token: h.token(U, "events") },
+    })
 
     expect(res.statusCode).toBe(503)
     expect(res.json()).toMatchObject({
@@ -232,7 +248,10 @@ describe("GET /v1/notifications/email-unsubscribe", () => {
     const forged = `${prefix}.${body}.${"x".repeat(43)}`
 
     for (const token of [forged, valid]) {
-      const res = await h.app.inject({ method: "GET", url: `${URL}?t=${encodeURIComponent(token)}` })
+      const res = await h.app.inject({
+        method: "GET",
+        url: `${URL}?t=${encodeURIComponent(token)}`,
+      })
       expect(res.statusCode).toBe(302)
       expect(res.headers.location).toBe(
         `${h.web}/unsubscribe/notifications/?t=${encodeURIComponent(token)}`,

@@ -167,7 +167,10 @@ function hrefsOf(html: string): string[] {
   return [...html.matchAll(/href="([^"]*)"/g)].map((m) => m[1]!.replace(/&amp;/g, "&"))
 }
 
-function report(i: number, overrides: Partial<CreateNotificationInput> = {}): CreateNotificationInput {
+function report(
+  i: number,
+  overrides: Partial<CreateNotificationInput> = {},
+): CreateNotificationInput {
   return {
     type: "report_update",
     title: `Report ${i} updated`,
@@ -229,7 +232,9 @@ describe("notification emails: when one goes out", () => {
     expect(email.text).toContain(`Stop these emails: ${stop}`)
     expect(email.text).toContain(`Manage notification settings: ${manage}`)
     expect(email.html).toContain(escapeHtml(reason))
-    expect(email.html).toMatch(new RegExp(`<a [^>]*href="${escapeRe(stop)}"[^>]*>Stop these emails</a>`))
+    expect(email.html).toMatch(
+      new RegExp(`<a [^>]*href="${escapeRe(stop)}"[^>]*>Stop these emails</a>`),
+    )
     expect(email.html).toMatch(
       new RegExp(`<a [^>]*href="${escapeRe(manage)}"[^>]*>Manage notification settings</a>`),
     )
@@ -253,7 +258,10 @@ describe("notification emails: when one goes out", () => {
     const h = harness()
     await h.set(U, "followers", [false, false, true])
 
-    const result = await h.service.createNotification(U, { type: "new_follower", title: "New follower" })
+    const result = await h.service.createNotification(U, {
+      type: "new_follower",
+      title: "New follower",
+    })
     await settle()
 
     expect(result).toBeNull()
@@ -273,7 +281,7 @@ describe("notification emails: when one goes out", () => {
     expect(h.emails()).toHaveLength(0)
   })
 
-  it("T5: email: \"never\" keeps a path's own email the only one", async () => {
+  it('T5: email: "never" keeps a path\'s own email the only one', async () => {
     const h = harness()
     await h.set(U, "followers", [true, false, true])
 
@@ -533,7 +541,12 @@ describe("notification emails: throttle and cap", () => {
     await h.service.createNotifications([U, V], input)
     await settle()
 
-    expect(h.emails().map((e) => e.to).sort()).toEqual([ADDRESS, "v@example.test"])
+    expect(
+      h
+        .emails()
+        .map((e) => e.to)
+        .sort(),
+    ).toEqual([ADDRESS, "v@example.test"])
   })
 
   it("T20: at most 20 notification emails an hour, then the next hour emails again", async () => {

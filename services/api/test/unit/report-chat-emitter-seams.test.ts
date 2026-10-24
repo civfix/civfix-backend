@@ -23,6 +23,7 @@ import { describe, it, expect, beforeEach, vi } from "vitest"
 import { FakePushSender } from "@civfix/seams"
 import type { ChatMessageDTO } from "@civfix/contract"
 import type { Container } from "../../src/di.js"
+import { fakeNotificationEmail } from "../helpers/notification-email.js"
 
 const stub = vi.hoisted(() => ({
   // eslint-disable-next-line @typescript-eslint/no-unnecessary-type-assertion -- the assertion is the field's declared type: vi.hoisted infers the record from this literal
@@ -128,6 +129,7 @@ function containerFor(opts: { batchBlocks?: string[] } = {}): Container {
     env: { USE_FAKE_CHAT: false },
     getDb: () => ({ sql: {} }),
     pushSender: new FakePushSender(),
+    getNotificationEmail: fakeNotificationEmail,
     userChannel: undefined,
     chatService: { broadcast: () => Promise.resolve() },
     getBlocksRepo: () => ({
@@ -201,6 +203,7 @@ describe("makeContainerReportChatEmitter: the block seam stays LAZY", () => {
       env: { USE_FAKE_CHAT: false },
       getDb: () => ({ sql: {} }),
       pushSender: new FakePushSender(),
+      getNotificationEmail: fakeNotificationEmail,
       userChannel: undefined,
       chatService: { broadcast: () => Promise.resolve() },
     } as unknown as Container
