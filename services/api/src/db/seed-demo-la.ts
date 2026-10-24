@@ -1841,6 +1841,23 @@ export async function purgeDemo(tx: TransactionSql): Promise<Record<string, numb
     "cleanups",
     tx`DELETE FROM cleanups WHERE organizer_user_id IN (${demo}) RETURNING 1 AS one`,
   )
+  const demoFilings = tx`
+    SELECT f.id FROM report_filings f
+    JOIN reports r ON r.id = f.report_id
+    WHERE r.reporter_user_id IN (${demo})
+  `
+  await del(
+    "filing_messages",
+    tx`DELETE FROM filing_messages WHERE filing_id IN (${demoFilings}) RETURNING 1 AS one`,
+  )
+  await del(
+    "filing_evidence",
+    tx`DELETE FROM filing_evidence WHERE filing_id IN (${demoFilings}) RETURNING 1 AS one`,
+  )
+  await del(
+    "report_filings",
+    tx`DELETE FROM report_filings WHERE id IN (${demoFilings}) RETURNING 1 AS one`,
+  )
   await del(
     "reports",
     tx`DELETE FROM reports WHERE reporter_user_id IN (${demo}) RETURNING 1 AS one`,
