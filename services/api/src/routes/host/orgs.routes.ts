@@ -51,6 +51,7 @@ import { CLEANUPS_DEFAULT_LIMIT } from "../../services/cleanup-service.js"
 import { makeDrizzleOrganizationRepository } from "../../services/host/organization-repository.drizzle.js"
 import type { OrganizationRepository } from "../../services/host/organization-repository.js"
 import { webBaseUrlOf } from "../../lib/base-url.js"
+import { avatarPresigner } from "../../services/user-avatar.js"
 
 const ONE_MINUTE = "1 minute"
 const ONE_HOUR = "1 hour"
@@ -139,7 +140,7 @@ export function makeContainerOrganizationService(
   }
   const sql = container.getDb().sql
   return makeOrganizationService({
-    repo: makeDrizzleOrganizationRepository(sql),
+    repo: makeDrizzleOrganizationRepository(sql, avatarPresigner(container.storage)),
     counters: container.getCounterStore(),
     presignLogo: (key: string) => container.storage.presignGet(key, MEDIA_GET_URL_TTL_SEC),
     affiliations: container.getAffiliationLoader(),

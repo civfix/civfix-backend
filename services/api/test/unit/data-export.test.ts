@@ -24,6 +24,7 @@ function userRecord(over: Partial<UserRecord> = {}): UserRecord {
     emailVerified: true,
     primaryOrganizationId: null,
     avatarUrl: null,
+    avatarMedia: null,
     profileComplete: true,
     allowDirectMessages: true,
     showVolunteerHours: null,

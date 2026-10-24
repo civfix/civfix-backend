@@ -15,6 +15,7 @@ import type {
 } from "@civfix/contract"
 import type { Queryable } from "../../db/client.js"
 import { publicServedKeyExpr } from "../media-served-key.js"
+import { userAvatarColumns, type UserAvatarColumns } from "../user-avatar.js"
 import type {
   AnswerRecord,
   PageRecord,
@@ -186,7 +187,7 @@ export function seatColumns(tag: Queryable) {
   `
 }
 
-export interface RegistrationRowSelect {
+export interface RegistrationRowSelect extends UserAvatarColumns<"person_"> {
   id: string
   cleanup_id: string
   ticket_type_id: string | null
@@ -207,7 +208,6 @@ export interface RegistrationRowSelect {
   person_display_name: string | null
   person_handle: string | null
   person_bio: string | null
-  person_avatar_url: string | null
   person_deleted_at: Date | null
 }
 
@@ -282,7 +282,7 @@ export function registrationColumns(tag: Queryable) {
     u.display_name AS person_display_name,
     u.handle AS person_handle,
     u.bio AS person_bio,
-    u.avatar_url AS person_avatar_url,
+    ${userAvatarColumns(tag, "u", "am", "person_")},
     u.deleted_at AS person_deleted_at
   `
 }
@@ -292,6 +292,7 @@ export function registrationJoins(tag: Queryable) {
     LEFT JOIN cleanup_ticket_types tt ON tt.id = r.ticket_type_id
     LEFT JOIN cleanup_guests g ON g.id = r.guest_id
     LEFT JOIN users u ON u.id = r.user_id
+    LEFT JOIN media_assets am ON am.id = u.avatar_media_id
     LEFT JOIN cleanup_slot_claims sc
       ON sc.cleanup_id = r.cleanup_id AND sc.user_id = r.user_id
     LEFT JOIN cleanup_slots sl ON sl.id = sc.slot_id
@@ -326,7 +327,7 @@ export function toAnswerRecord(r: AnswerRowSelect): AnswerRecord {
   }
 }
 
-export interface WaitlistRowSelect {
+export interface WaitlistRowSelect extends UserAvatarColumns<"person_"> {
   id: string
   cleanup_id: string
   ticket_type_id: string
@@ -343,7 +344,6 @@ export interface WaitlistRowSelect {
   person_display_name: string | null
   person_handle: string | null
   person_bio: string | null
-  person_avatar_url: string | null
   person_deleted_at: Date | null
 }
 
@@ -384,7 +384,7 @@ export function waitlistColumns(tag: Queryable) {
     u.display_name AS person_display_name,
     u.handle AS person_handle,
     u.bio AS person_bio,
-    u.avatar_url AS person_avatar_url,
+    ${userAvatarColumns(tag, "u", "am", "person_")},
     u.deleted_at AS person_deleted_at
   `
 }
@@ -402,6 +402,7 @@ export function waitlistJoins(tag: Queryable) {
     LEFT JOIN cleanup_ticket_types tt ON tt.id = w.ticket_type_id
     LEFT JOIN cleanup_guests g ON g.id = w.guest_id
     LEFT JOIN users u ON u.id = w.user_id
+    LEFT JOIN media_assets am ON am.id = u.avatar_media_id
     LEFT JOIN LATERAL (
       SELECT count(*)::int + 1 AS n
         FROM cleanup_waitlist w2

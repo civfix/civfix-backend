@@ -47,7 +47,15 @@ export function makeDrizzleDataExportRepository(sql: Sql): DataExportRepository 
     reportConfirmations: (userId, rowCap) => sql<ReportConfirmationExportRow[]>`
       SELECT report_id, created_at
       FROM report_confirmations
-      WHERE user_id = ${userId}
+      WHERE user_id = ${userId} AND kind = 'seen'
+      ORDER BY created_at DESC
+      LIMIT ${rowCap + 1}
+    `,
+
+    reportFixedVotes: (userId, rowCap) => sql<ReportConfirmationExportRow[]>`
+      SELECT report_id, created_at
+      FROM report_confirmations
+      WHERE user_id = ${userId} AND kind = 'fixed'
       ORDER BY created_at DESC
       LIMIT ${rowCap + 1}
     `,

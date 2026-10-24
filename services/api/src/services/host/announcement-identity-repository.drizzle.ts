@@ -6,17 +6,21 @@ import { presentIds } from "../present-ids.js"
 import { publicAuthorIdentity } from "../public-author.js"
 import { officialPersonFlag } from "../../auth/official-account.js"
 import { publicServedKeyExpr } from "../media-served-key.js"
+import {
+  resolveUserAvatarUrl,
+  userAvatarColumns,
+  userAvatarSource,
+  type UserAvatarColumns,
+} from "../user-avatar.js"
 import type { AnnouncementIdentityRepository } from "./announcement-identity-repository.js"
 
 export type AnnouncementImagePresigner = (r2Key: string) => Promise<string>
 
-interface AuthorRowSelect {
+interface AuthorRowSelect extends UserAvatarColumns {
   id: string
   display_name: string | null
   handle: string | null
   bio: string | null
-  avatar_r2_key: string | null
-  avatar_url: string | null
   deleted_at: Date | null
 }
 
@@ -40,17 +44,16 @@ export function makeDrizzleAnnouncementIdentityRepository(
       if (ids.length === 0) return out
       const rows = await sql<AuthorRowSelect[]>`
         SELECT u.id, u.display_name, u.handle, u.bio,
-               ${publicServedKeyExpr(sql, "am")} AS avatar_r2_key,
-               u.avatar_url, u.deleted_at
+               ${userAvatarColumns(sql, "u", "am")}, u.deleted_at
           FROM users u
           LEFT JOIN media_assets am ON am.id = u.avatar_media_id
          WHERE u.id = ANY(${ids}::uuid[])
       `
       const resolved = await mapWithLimit(rows, PRESIGN_CONCURRENCY, async (row) => {
         const avatarUrl =
-          row.deleted_at === null && row.avatar_r2_key !== null
-            ? await presign(row.avatar_r2_key)
-            : row.avatar_url
+          row.deleted_at === null
+            ? await resolveUserAvatarUrl(presign, userAvatarSource(row))
+            : null
         const identity = publicAuthorIdentity({
           id: row.id,
           displayName: row.display_name,

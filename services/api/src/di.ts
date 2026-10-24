@@ -383,13 +383,19 @@ export function makeContainer(env: Env): Container {
 
   const seams = makeStatelessSeams(env, adapterLogger, getDb)
 
-  const volunteerHoursRepo = lazy(() => makeDrizzleVolunteerHoursRepository(getDb().sql))
+  const volunteerHoursRepo = lazy(() =>
+    makeDrizzleVolunteerHoursRepository(getDb().sql, presignAvatar),
+  )
   const certificateRepo = lazy(() => makeDrizzleCertificateRepository(getDb().sql))
   const blocksRepo = lazy<BlocksRepository>(() =>
-    hasDatabase ? makeDrizzleBlocksRepository(getDb().sql) : new InMemoryBlocksRepository(),
+    hasDatabase
+      ? makeDrizzleBlocksRepository(getDb().sql, presignAvatar)
+      : new InMemoryBlocksRepository(),
   )
   const dmRepo = lazy<DmRepository>(() => {
-    if (hasDatabase) return makeDrizzleDmRepository(getDb().sql, presignPrivateMedia)
+    if (hasDatabase) {
+      return makeDrizzleDmRepository(getDb().sql, presignPrivateMedia, presignAvatar)
+    }
     const blocks = blocksRepo.get()
     return new InMemoryDmRepository((a, b) => blocks.isBlockedEitherWay(a, b))
   })
@@ -478,6 +484,7 @@ export function makeContainer(env: Env): Container {
       blockedIdsAmong: (actorId: string, candidateIds: string[]) =>
         blocksRepo.get().blockedIdsAmong(actorId, candidateIds),
       feedRanking: env.FEED_RANKING,
+      feedAuthorBoosts: env.FEED_AUTHOR_BOOSTS,
       feedPresence: feedPresence.get(),
       ...(env.USE_FAKE_USER_CHANNEL ? {} : { userChannel: userChannel.get() }),
     }),
@@ -486,7 +493,7 @@ export function makeContainer(env: Env): Container {
   const chatService: ChatService = env.USE_FAKE_CHAT
     ? new FakeChatService()
     : new WsChatService({
-        repo: makeDrizzleChatRepository(getDb().sql, presignPrivateMedia),
+        repo: makeDrizzleChatRepository(getDb().sql, presignPrivateMedia, presignAvatar),
         pubsub: sharedPubSub.get(),
         logger: adapterLogger,
       })

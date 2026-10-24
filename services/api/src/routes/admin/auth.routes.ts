@@ -30,6 +30,11 @@ import {
   clearSessionCookie,
 } from "../../auth/transport.js"
 import { route } from "../../versioning/route.js"
+import {
+  avatarPresigner,
+  resolveUserAvatarUrl,
+  type AvatarPresigner,
+} from "../../services/user-avatar.js"
 
 const ADMIN_AUTH_RATE_LIMIT = { max: 10, timeWindow: "1 minute" } as const
 const UNNAMED_OPERATOR_DISPLAY_NAME = "Operator"
@@ -56,6 +61,7 @@ export async function registerAdminAuthRoutes(
   const env = container.env
   const csrf = container.csrf
   const csrfProtect = csrf.protect
+  const presignAvatar = avatarPresigner(container.storage)
 
   const teamDomain = env.CF_ACCESS_TEAM_DOMAIN
   const aud = env.CF_ACCESS_AUD
@@ -134,7 +140,14 @@ export async function registerAdminAuthRoutes(
         throw AppError.forbidden(UNAUTHORIZED_OPERATOR_MESSAGE)
       }
       const operator = await provisionOperator(email, request)
-      const payload = await establishOperatorSession(services, csrf, request, reply, operator)
+      const payload = await establishOperatorSession(
+        services,
+        csrf,
+        presignAvatar,
+        request,
+        reply,
+        operator,
+      )
       reply.status(200).send(payload)
     },
   )
@@ -208,6 +221,7 @@ function restrictedAccountRefusal(accountStatus: AccountStatus): AppError | null
 async function establishOperatorSession(
   services: AuthServices,
   csrf: Csrf,
+  presignAvatar: AvatarPresigner,
   request: FastifyRequest,
   reply: FastifyReply,
   user: UserRecord,
@@ -224,7 +238,7 @@ async function establishOperatorSession(
   setSessionCookie(reply, token, ttl)
   const csrfToken = await csrf.tokenForSession(token)
   setCsrfCookie(reply, csrfToken, ttl)
-  return { user: toUserPayload(user), csrfToken }
+  return { user: await toUserPayload(user, presignAvatar), csrfToken }
 }
 
 async function buildAdminSession(
@@ -256,13 +270,16 @@ async function buildAdminSession(
   return { authenticated: true, operator, csrfToken: token }
 }
 
-function toUserPayload(user: UserRecord): AdminLoginResponse["user"] {
+async function toUserPayload(
+  user: UserRecord,
+  presignAvatar: AvatarPresigner,
+): Promise<AdminLoginResponse["user"]> {
   return {
     id: user.id,
     displayName: user.displayName,
     handle: user.handle,
     email: user.email,
-    avatarUrl: user.avatarUrl,
+    avatarUrl: await resolveUserAvatarUrl(presignAvatar, user),
     profileComplete: user.profileComplete,
     role: user.role,
     createdAt: user.createdAt.toISOString(),

@@ -19,8 +19,9 @@ import { replyMapForRows } from "./chat-reply-hydration.js"
 import type { ReplyTable } from "./reply-targets-repository.drizzle.js"
 import type { PresignMedia } from "./media-presign.js"
 import { liveMessageIds } from "./chat-tombstone.js"
+import { userAvatarColumns, type UserAvatarColumns } from "./user-avatar.js"
 
-export interface MessageCoreRow {
+export interface MessageCoreRow extends UserAvatarColumns<"sender_"> {
   id: string
   body: string | null
   kind: ChatMessageKind
@@ -32,7 +33,6 @@ export interface MessageCoreRow {
   sender_display_name: string | null
   sender_handle: string | null
   sender_bio: string | null
-  sender_avatar_url: string | null
   sender_deleted_at: Date | null
 }
 
@@ -43,12 +43,13 @@ export interface MessageParts {
   replyTo: ReplyToDTO | null | undefined
 }
 
+// The query must LEFT JOIN media_assets am on u.avatar_media_id.
 export function senderColumns(tag: Queryable) {
   return tag`
     u.display_name AS sender_display_name,
     u.handle AS sender_handle,
     u.bio AS sender_bio,
-    u.avatar_url AS sender_avatar_url,
+    ${userAvatarColumns(tag, "u", "am", "sender_")},
     u.deleted_at AS sender_deleted_at
   `
 }

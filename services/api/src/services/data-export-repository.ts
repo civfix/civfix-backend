@@ -185,6 +185,7 @@ export interface DataExportRepository {
   profile(userId: string): Promise<ProfileRow | null>
   reports(userId: string, rowCap: number): Promise<ReportExportRow[]>
   reportConfirmations(userId: string, rowCap: number): Promise<ReportConfirmationExportRow[]>
+  reportFixedVotes(userId: string, rowCap: number): Promise<ReportConfirmationExportRow[]>
   posts(userId: string, rowCap: number): Promise<PostExportRow[]>
   chatMessages(userId: string, rowCap: number): Promise<ChatMessageExportRow[]>
   dmMessages(userId: string, rowCap: number): Promise<DmMessageExportRow[]>

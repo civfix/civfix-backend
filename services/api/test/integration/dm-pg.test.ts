@@ -4,6 +4,7 @@ import { DELETED_USER_LABEL } from "@civfix/contract"
 import { withPg, type PgHarness, testHandle } from "../helpers/pg.js"
 import { makeDrizzleDmRepository } from "../../src/services/dm-repository.drizzle.js"
 import { makeDrizzleBlocksRepository } from "../../src/services/blocks-repository.drizzle.js"
+import { fakeAvatarPresigner } from "../helpers/avatar-fixtures.js"
 import { makeDrizzleUserSearchRepository } from "../../src/services/user-search-repository.drizzle.js"
 
 const pg = await withPg()
@@ -139,7 +140,7 @@ describe.skipIf(!pg)("direct messages (integration)", () => {
   it("user_blocks: block idempotent, isBlockedEitherWay bidirectional, listBlocked projects PersonDTOs", async () => {
     const a = await newUser("Blk A")
     const b = await newUser("Blk B", { handle: `blkb_${randomUUID().slice(0, 8)}` })
-    const repo = makeDrizzleBlocksRepository(h.sql)
+    const repo = makeDrizzleBlocksRepository(h.sql, fakeAvatarPresigner)
 
     expect(await repo.isBlockedEitherWay(a, b)).toBe(false)
     await repo.block(a, b)
@@ -162,13 +163,12 @@ describe.skipIf(!pg)("direct messages (integration)", () => {
     const deleted = await newUser("Gone", { handle: `zz${tag}_gone`, deleted: true })
     const noHandle = await newUser("No Handle")
     const blocked = await newUser("Blocked", { handle: `zz${tag}_blocked` })
-    await makeDrizzleBlocksRepository(h.sql).block(blocked, viewer)
+    await makeDrizzleBlocksRepository(h.sql, fakeAvatarPresigner).block(blocked, viewer)
 
-    const results = await makeDrizzleUserSearchRepository(h.sql).searchByHandlePrefix(
-      `zz${tag}_`,
-      viewer,
-      20,
-    )
+    const results = await makeDrizzleUserSearchRepository(
+      h.sql,
+      fakeAvatarPresigner,
+    ).searchByHandlePrefix(`zz${tag}_`, viewer, 20)
     const ids = new Set(results.map((r) => r.id))
     expect(ids.has(match)).toBe(true)
     expect(ids.has(dmOff)).toBe(false)
@@ -187,7 +187,7 @@ describe.skipIf(!pg)("direct messages (integration)", () => {
     const b = await newUser("Union B", { handle: `unib_${randomUUID().slice(0, 8)}` })
     const c = await newUser("Union C", { handle: `unic_${randomUUID().slice(0, 8)}` })
     const dmRepo = makeDrizzleDmRepository(h.sql)
-    const blocksRepo = makeDrizzleBlocksRepository(h.sql)
+    const blocksRepo = makeDrizzleBlocksRepository(h.sql, fakeAvatarPresigner)
 
     const tAB = await dmRepo.openOrCreateThread(a, b)
     await dmRepo.persist({ threadId: tAB.id, senderId: b, body: "hi from b" })
