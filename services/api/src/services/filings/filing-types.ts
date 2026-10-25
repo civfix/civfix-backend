@@ -150,6 +150,8 @@ export interface FilingEvidenceRecord {
 export interface TransitionInput {
   from: readonly FilingStatus[]
   attempts?: number
+  /** The filer run the write belongs to; a result from an earlier run of the same attempt matches nothing. */
+  runId?: string
   set: Partial<FilingMutableFields>
   audit?: WriteAuditInput
   evidence?: readonly FilingEvidenceInput[]
@@ -158,6 +160,7 @@ export interface TransitionInput {
 export interface SuccessGuard {
   status: readonly FilingStatus[]
   attempts?: number
+  runId?: string
   reason?: FilingReason
 }
 

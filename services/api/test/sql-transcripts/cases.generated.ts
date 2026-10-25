@@ -3673,6 +3673,7 @@ export const cases: TranscriptCase[] = [
       (m49 as any).makeDrizzleFilingRepository(sql).transition("id-1", {
         from: ["submitted"],
         attempts: 3,
+        runId: "runId-1",
         set: {
           method: "operator",
           status: "submitted",
