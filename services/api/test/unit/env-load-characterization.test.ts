@@ -69,6 +69,8 @@ const ENVIRONMENT_INDEPENDENT_DEFAULTS = {
   OUTREACH_DIGEST_CRON: "0 14 * * *",
   OUTREACH_DIGEST_ENABLED: false,
   REPORT_AUTOFORWARD_ENABLED: false,
+  FILING_AUTOMATIC_ENABLED: false,
+  FILING_INBOX_ADDRESS: "",
   INBOUND_SWEEP_CRON: "*/5 * * * *",
   GUEST_RETENTION_CRON: "15 4 * * *",
   SMS_GUEST_ENABLED: false,
@@ -236,6 +238,25 @@ describe("loadEnv characterization: resolved Env", () => {
       LOCAL_STORAGE_DIR: "/var/tmp/civfix",
       LOCAL_STORAGE_SIGNING_KEY: "local-key",
     })
+  })
+
+  it("C30: a production env with no FILING_* vars loads with automatic filing off and no inbox", () => {
+    const env = loadEnv(validProdEnv())
+    expect(env.FILING_AUTOMATIC_ENABLED).toBe(false)
+    expect(env.FILING_INBOX_ADDRESS).toBe("")
+  })
+
+  it("C36: reads both FILING_* vars, and refuses an inbox address that is not an email", () => {
+    const env = loadEnv({
+      ...validProdEnv(),
+      FILING_AUTOMATIC_ENABLED: "true",
+      FILING_INBOX_ADDRESS: "filings@civfix.org",
+    })
+    expect(env.FILING_AUTOMATIC_ENABLED).toBe(true)
+    expect(env.FILING_INBOX_ADDRESS).toBe("filings@civfix.org")
+    expect(() => loadEnv({ ...validProdEnv(), FILING_INBOX_ADDRESS: "not-an-email" })).toThrow(
+      /FILING_INBOX_ADDRESS/,
+    )
   })
 
   it("drops LOCAL_STORAGE_SIGNING_KEY when LOCAL_STORAGE_DIR is unset", () => {
