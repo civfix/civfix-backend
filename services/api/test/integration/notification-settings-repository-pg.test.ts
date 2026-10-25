@@ -237,11 +237,61 @@ contract(
       },
     })
   },
-  async () => {
-    await h.teardown()
-  },
+  () => Promise.resolve(),
   !pg,
 )
+
+// Closed here, not in the Drizzle contract's teardown, because the erasure race below runs after it.
+afterAll(async () => {
+  await pg?.teardown()
+})
+
+// runErasure tombstones the user and deletes its notification_settings early in one long transaction, so a
+// disableEmail running meanwhile must not land a row once that transaction commits. The in-memory repository
+// has no concurrency to test.
+describe.skipIf(!pg)("notification settings repository (Drizzle, Postgres): erasure race", () => {
+  async function waitingOnLock(): Promise<number> {
+    const [r] = await h.sql<{ n: number }[]>`
+      SELECT count(*)::int AS n FROM pg_stat_activity
+      WHERE datname = current_database() AND wait_event_type = 'Lock' AND state = 'active'
+    `
+    return r!.n
+  }
+
+  it("disableEmail during an open erasure writes nothing and answers false", async () => {
+    const [row] = await h.sql<{ id: string }[]>`
+      INSERT INTO users (display_name, handle) VALUES ('Settings', ${testHandle()}) RETURNING id
+    `
+    const user = row!.id
+    const repo = makeDrizzleNotificationSettingsRepository(h.sql)
+    await repo.upsertSettings(user, { events: { push: false } })
+
+    let erased!: () => void
+    const erasedAt = new Promise<void>((resolve) => (erased = resolve))
+    let release!: () => void
+    const released = new Promise<void>((resolve) => (release = resolve))
+    const erasure = h.sql.begin(async (tx) => {
+      await tx`UPDATE users SET deleted_at = now(), handle = ${testHandle()} WHERE id = ${user}`
+      await tx`DELETE FROM notification_settings WHERE user_id = ${user}`
+      erased()
+      await released
+    })
+    await erasedAt
+
+    const disabled = repo.disableEmail(user, "events")
+    let blocked = false
+    for (let attempt = 0; attempt < 100 && !blocked; attempt++) {
+      blocked = (await waitingOnLock()) > 0
+      if (!blocked) await new Promise((resolve) => setTimeout(resolve, 25))
+    }
+    expect(blocked).toBe(true)
+
+    release()
+    await erasure
+    expect(await disabled).toBe(false)
+    expect(await h.sql`SELECT 1 FROM notification_settings WHERE user_id = ${user}`).toHaveLength(0)
+  })
+})
 
 contract(
   "in memory",
