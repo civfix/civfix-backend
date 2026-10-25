@@ -56,13 +56,13 @@ import { registerOutreachJobs } from "./services/admin/outreach-jobs.js"
 import { registerInboundJobs } from "./services/admin/inbound-jobs.js"
 import { INBOUND_SWEEP_JOB } from "./lib/queue-names.js"
 import { registerDiscoveryJobs } from "./services/admin/discovery-jobs.js"
-import { registerAutoForwardJobs } from "./services/admin/autoforward-jobs.js"
 import { registerDataExportJobs } from "./services/data-export-jobs.js"
 import { registerChatRoomFanoutJob } from "./services/chat-fanout-jobs.js"
 import { registerCleanupCancelFanoutJob } from "./services/cleanup-jobs.js"
 import { registerGuestJobs } from "./services/guest-jobs.js"
 import { registerRegistrationJobs } from "./services/host/registration-jobs.js"
 import { registerCommsJobs } from "./services/host/comms-jobs.js"
+import { registerFilingJobs } from "./services/filings/filing-jobs.js"
 import { SERVICE_VERSION } from "./version.js"
 import { makeLifecycle, makeShutdown, REQUEST_TIMEOUT_MS } from "./lifecycle.js"
 
@@ -332,13 +332,13 @@ export async function startBackgroundJobs(app: FastifyInstance, env: Env): Promi
   await registerInboundJobs(app.container)
   await app.container.jobs.enqueue(INBOUND_SWEEP_JOB, {})
   await registerDiscoveryJobs(app.container)
-  if (env.REPORT_AUTOFORWARD_ENABLED) await registerAutoForwardJobs(app.container, app.log)
   await registerDataExportJobs(app.container, { logger: app.log })
   await registerCleanupCancelFanoutJob(app.container, app.log)
   await registerGuestJobs(app.container, app.log)
   await registerChatRoomFanoutJob(app.container, app.log)
   await registerRegistrationJobs(app.container, app.log)
   await registerCommsJobs(app.container, app.log)
+  await registerFilingJobs(app.container, app.log)
 }
 
 export async function start(env: Env = loadEnv()): Promise<FastifyInstance> {

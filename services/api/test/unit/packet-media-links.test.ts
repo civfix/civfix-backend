@@ -10,6 +10,7 @@ import {
   makePacketMediaPresigner,
   PACKET_MEDIA_URL_TTL_SEC,
 } from "../../src/services/media-presign.js"
+import { memoryFilingService } from "../helpers/filings/filing-harness.js"
 
 class RecordingStorage {
   readonly calls: { key: string; ttlSec: number; forceSigned: boolean }[] = []
@@ -36,6 +37,7 @@ async function routeWith(
   const mailer = new FakeMailer()
   const svc = makeAdminReportService({
     repo,
+    filings: memoryFilingService(repo),
     outboundMail: makeOutboundMailService({
       repo: new InMemoryMailRepository(),
       mailer,
@@ -108,9 +110,10 @@ describe("packet photo links", () => {
     ])
     expect(text).toContain(
       [
-        "- Photo 1: https://cdn.test/processed/uploads/a",
-        "- Video 1: https://cdn.test/processed/uploads/v",
-        "- Photo 2: https://cdn.test/processed/uploads/b",
+        "Photos and videos (3):",
+        "  Photo 1: https://cdn.test/processed/uploads/a",
+        "  Video 1: https://cdn.test/processed/uploads/v",
+        "  Photo 2: https://cdn.test/processed/uploads/b",
       ].join("\n"),
     )
   })

@@ -241,11 +241,21 @@ function bounceEventMatch(sql: Queryable, input: BounceEventKey): SqlFragment {
   `
 }
 
-function latestOutboundAttempt(sql: Queryable, threadRef: SqlFragment): SqlFragment {
+/** Limits the expressions below to outbound messages created at or after `since`. */
+function createdSince(sql: Queryable, column: SqlFragment, since: Date | undefined): SqlFragment {
+  return since === undefined ? sql`` : sql`AND ${column} >= ${since}`
+}
+
+function latestOutboundAttempt(
+  sql: Queryable,
+  threadRef: SqlFragment,
+  since: Date | undefined,
+): SqlFragment {
   return sql`
     SELECT m.id, m.created_at
     FROM mail_messages m
     WHERE m.thread_id = ${threadRef} AND m.direction = 'out'
+      ${createdSince(sql, sql`m.created_at`, since)}
     ORDER BY m.created_at DESC, m.id DESC
     LIMIT 1
   `
@@ -271,7 +281,11 @@ function attemptEventExists(
 // The outbound row is inserted before transmission starts, so a young attempt with no outcome yet is
 // still on the wire; it is in flight until the same stale window after which sendFailedExpr calls it
 // crashed.
-export function sendInFlightExpr(sql: Queryable, threadRef: SqlFragment): SqlFragment {
+export function sendInFlightExpr(
+  sql: Queryable,
+  threadRef: SqlFragment,
+  since?: Date,
+): SqlFragment {
   return sql`
     COALESCE(
       (
@@ -290,17 +304,28 @@ export function sendInFlightExpr(sql: Queryable, threadRef: SqlFragment): SqlFra
               AND latest.created_at > now() - make_interval(secs => ${ROUTE_CLAIM_STALE_SECONDS})
             )
           )
-        FROM (${latestOutboundAttempt(sql, threadRef)}) latest
+        FROM (${latestOutboundAttempt(sql, threadRef, since)}) latest
       ),
       false
     )
   `
 }
 
-export function sendFailedExpr(sql: Queryable, threadRef: SqlFragment): SqlFragment {
+export function sendFailedExpr(sql: Queryable, threadRef: SqlFragment, since?: Date): SqlFragment {
+  const sentSince =
+    since === undefined
+      ? sql``
+      : // The thread bound lets mail_messages_thread_created_idx serve this; a sent event's message is
+        // always on its own thread (recordSent).
+        sql`AND EXISTS (
+          SELECT 1 FROM mail_messages sm
+          WHERE sm.thread_id = ${threadRef}
+            AND sm.id::text = e.message_id
+            ${createdSince(sql, sql`sm.created_at`, since)}
+        )`
   return sql`
     NOT EXISTS (
-      SELECT 1 FROM mail_events e WHERE e.thread_id = ${threadRef} AND e.type = 'sent'
+      SELECT 1 FROM mail_events e WHERE e.thread_id = ${threadRef} AND e.type = 'sent' ${sentSince}
     )
     AND COALESCE(
       (
@@ -322,7 +347,7 @@ export function sendFailedExpr(sql: Queryable, threadRef: SqlFragment): SqlFragm
             WHEN ${attemptEventExists(sql, threadRef, "failed", sql``)} THEN true
             ELSE latest.created_at < now() - make_interval(secs => ${ROUTE_CLAIM_STALE_SECONDS})
           END
-        FROM (${latestOutboundAttempt(sql, threadRef)}) latest
+        FROM (${latestOutboundAttempt(sql, threadRef, since)}) latest
       ),
       false
     )

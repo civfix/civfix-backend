@@ -160,7 +160,7 @@ export function makeDrizzleAnonReportRepository(
         const snapshot = await sql.begin(async (tx) => {
           // The reference_counters upsert must be the first write in every create transaction, so each
           // path takes the counter-row lock before any report or token row lock; that consistent order rules
-          // out an ABBA deadlock. Anon reports still get a code; they simply never auto-forward.
+          // out an ABBA deadlock. Anon reports still get a code.
           const referenceCode = await allocateReportReferenceCode(tx, args.type, args.jurCode)
           await consumeTokenQuota(tx, args)
           await insertHeldReport(tx, args, referenceCode)

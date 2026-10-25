@@ -16,6 +16,7 @@ import {
   loadMailEnv,
   loadR2Env,
   loadScheduleEnv,
+  loadFilingEnv,
   loadSigningKeys,
   loadSmsEnv,
   loadTrustProxy,
@@ -78,8 +79,8 @@ export const FAKE_SEAM_FLAGS: ReadonlyArray<{ flag: keyof FakeFlags; consequence
   {
     flag: "USE_FAKE_JOBS",
     consequence:
-      "background jobs run in-process and die with the request: media stays 'validating', data exports " +
-      "and report autoforwards never complete",
+      "background jobs run in-process and die with the request: media stays 'validating' and data " +
+      "exports never complete",
   },
   {
     flag: "USE_FAKE_USER_CHANNEL",
@@ -139,6 +140,7 @@ export function loadEnv(source: NodeJS.ProcessEnv = process.env): Env {
   const mail = loadMailEnv(r, fakeFlags.USE_FAKE_MAILER)
   const sms = loadSmsEnv(r, fakeFlags.USE_FAKE_SMS)
   const schedules = loadScheduleEnv(r)
+  const filing = loadFilingEnv(r)
   const authFlags = loadAuthFlags(r)
   const tuning = loadTuningEnv(r)
   const apns = loadApnsProduction(r)
@@ -166,6 +168,7 @@ export function loadEnv(source: NodeJS.ProcessEnv = process.env): Env {
     ...mail,
     ...sms,
     ...schedules,
+    ...filing,
     ...authFlags,
     ...tuning,
     ...loadAccessLists(r),

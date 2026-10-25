@@ -69,6 +69,8 @@ const ENVIRONMENT_INDEPENDENT_DEFAULTS = {
   OUTREACH_DIGEST_CRON: "0 14 * * *",
   OUTREACH_DIGEST_ENABLED: false,
   REPORT_AUTOFORWARD_ENABLED: false,
+  FILING_AUTOMATIC_ENABLED: false,
+  FILING_INBOX_ADDRESS: "",
   INBOUND_SWEEP_CRON: "*/5 * * * *",
   GUEST_RETENTION_CRON: "15 4 * * *",
   SMS_GUEST_ENABLED: false,
@@ -238,6 +240,25 @@ describe("loadEnv characterization: resolved Env", () => {
     })
   })
 
+  it("C30: a production env with no FILING_* vars loads with automatic filing off and no inbox", () => {
+    const env = loadEnv(validProdEnv())
+    expect(env.FILING_AUTOMATIC_ENABLED).toBe(false)
+    expect(env.FILING_INBOX_ADDRESS).toBe("")
+  })
+
+  it("C36: reads both FILING_* vars, and refuses an inbox address that is not an email", () => {
+    const env = loadEnv({
+      ...validProdEnv(),
+      FILING_AUTOMATIC_ENABLED: "true",
+      FILING_INBOX_ADDRESS: "filings@civfix.org",
+    })
+    expect(env.FILING_AUTOMATIC_ENABLED).toBe(true)
+    expect(env.FILING_INBOX_ADDRESS).toBe("filings@civfix.org")
+    expect(() => loadEnv({ ...validProdEnv(), FILING_INBOX_ADDRESS: "not-an-email" })).toThrow(
+      /FILING_INBOX_ADDRESS/,
+    )
+  })
+
   it("drops LOCAL_STORAGE_SIGNING_KEY when LOCAL_STORAGE_DIR is unset", () => {
     const env = loadEnv({ NODE_ENV: "test", LOCAL_STORAGE_SIGNING_KEY: "local-key" })
     expect("LOCAL_STORAGE_SIGNING_KEY" in env).toBe(false)
@@ -351,7 +372,7 @@ describe("loadEnv characterization: aggregated errors (text and order)", () => {
     ).toBe(
       aggregated("production", [
         `USE_FAKE_JOBS: must not be true in production; background jobs run in-process and die ` +
-          "with the request: media stays 'validating', data exports and report autoforwards never complete",
+          "with the request: media stays 'validating' and data exports never complete",
         BAD_PORT("PORT"),
         "DATABASE_URL: required [BOOT] variable is missing",
         "SESSION_SIGNING_KEY: must be at least 32 characters in production " +
@@ -387,8 +408,8 @@ describe("loadEnv characterization: FAKE_SEAM_FLAGS", () => {
       {
         flag: "USE_FAKE_JOBS",
         consequence:
-          "background jobs run in-process and die with the request: media stays 'validating', data " +
-          "exports and report autoforwards never complete",
+          "background jobs run in-process and die with the request: media stays 'validating' and data " +
+          "exports never complete",
       },
       {
         flag: "USE_FAKE_USER_CHANNEL",
