@@ -304,6 +304,8 @@ async function updateToSuccess(
     caseId: input.caseId,
     caseUrl: input.caseUrl,
     mailThreadId: input.mailThreadId,
+    scriptVersion: input.scriptVersion,
+    dryRun: input.dryRun,
   }
   const attempts =
     input.from.attempts === undefined ? tx`` : tx`AND attempts = ${input.from.attempts}`
@@ -368,6 +370,13 @@ export function makeDrizzleFilingRepository(sql: Sql): FilingRepository {
       return oneFiling(
         sql`WHERE f.report_id = ${reportId} AND f.status IN ('queued', 'running', 'needs_human')`,
       )
+    },
+
+    getLatestForReport(reportId) {
+      return oneFiling(sql`
+        WHERE f.report_id = ${reportId}
+        ORDER BY f.created_at DESC, f.id DESC
+      `)
     },
 
     getLatestSuccessfulForReport(reportId) {

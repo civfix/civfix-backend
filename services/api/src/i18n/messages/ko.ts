@@ -20,6 +20,9 @@ export const ko: Partial<Record<MessageKey, string>> = {
   "notification.report_mention.title": "회원님이 언급되었어요",
   "notification.report_mention.body": "누군가 제보 토론에서 회원님을 언급했어요.",
 
+  "notification.report_filed.title": "내 제보가 {{jurisdiction}}에 전달됐어요",
+  "notification.report_filed.title_city": "내 제보가 시에 전달됐어요",
+
   "notification.post.like.title": "새 좋아요",
   "notification.post.like.body": "{{name}}님이 회원님의 게시물을 좋아합니다.",
   "notification.post.repost.title": "새 리포스트",

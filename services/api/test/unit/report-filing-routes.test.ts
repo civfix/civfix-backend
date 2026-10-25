@@ -147,7 +147,12 @@ describe("ReportDTO.filing", () => {
     expect(res.statusCode).toBe(200)
     expect(spy).toHaveBeenCalledTimes(1)
     const items = res.json().items as { id: string; gov: boolean }[]
-    expect(items.filter((i) => i.gov).map((i) => i.id).sort()).toEqual([a!.id, b!.id].sort())
+    expect(
+      items
+        .filter((i) => i.gov)
+        .map((i) => i.id)
+        .sort(),
+    ).toEqual([a!.id, b!.id].sort())
     expect(items.find((i) => i.id === c!.id)?.gov).toBe(false)
   })
 

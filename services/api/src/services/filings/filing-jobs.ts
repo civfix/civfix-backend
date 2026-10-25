@@ -1,9 +1,20 @@
 import type { FastifyBaseLogger } from "fastify"
 import type { Container } from "../../di.js"
+import { FILING_SWEEP_JOB } from "../../lib/queue-names.js"
+import { makeContainerFilingService } from "./filing-wiring.js"
 
+const FILING_SWEEP_CRON = "*/10 * * * *"
+
+/**
+ * The API's filing queues that have a worker here. The other four filing queues are created at start
+ * (PgBossJobs) and their jobs wait in pg-boss until the worker that owns each one starts (D17).
+ */
 export async function registerFilingJobs(
-  _container: Container,
-  _logger?: FastifyBaseLogger,
+  container: Container,
+  logger?: FastifyBaseLogger,
 ): Promise<void> {
-  throw new Error("not implemented")
+  await container.jobs.schedule(FILING_SWEEP_JOB, FILING_SWEEP_CRON)
+  await container.jobs.work(FILING_SWEEP_JOB, async () => {
+    await makeContainerFilingService(container, logger).runSweepPass()
+  })
 }

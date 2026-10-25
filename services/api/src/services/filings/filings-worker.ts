@@ -8,7 +8,8 @@
 import { FilingEvidenceKindSchema, FilingReasonSchema } from "@civfix/contract"
 import { z } from "zod"
 import type { Sql } from "../../db/client.js"
-import type { FilingSettingsRecord, RunningFiling } from "./filing-types.js"
+import { makeDrizzleFilingRepository } from "./filing-repository.drizzle.js"
+import type { FilingRecord, FilingSettingsRecord, RunningFiling } from "./filing-types.js"
 
 export {
   FILING_CITY_UPDATE_JOB,
@@ -48,7 +49,11 @@ export const IMMEDIATE_NEEDS_HUMAN_REASONS = [
   "dry_run",
 ] as const
 
-export const FAILED_RUN_REASONS = ["portal_error", "ai_unavailable", "uncertain_submission"] as const
+export const FAILED_RUN_REASONS = [
+  "portal_error",
+  "ai_unavailable",
+  "uncertain_submission",
+] as const
 
 const FilingResultEvidenceSchema = z
   .object({
@@ -119,6 +124,56 @@ export interface FilingsWorker {
   listRunningFilings(): Promise<RunningFiling[]>
 }
 
-export function makeFilingsWorker(_sql: Sql): FilingsWorker {
-  throw new Error("not implemented")
+const RUN_PHOTOS_MAX = 5
+
+export function makeFilingsWorker(sql: Sql): FilingsWorker {
+  const filings = makeDrizzleFilingRepository(sql)
+
+  async function requestTypeHint(filing: FilingRecord): Promise<string | null> {
+    if (filing.geoid === null) return null
+    const routes = await filings.findRoutes(filing.geoid, filing.category)
+    return routes.find((r) => r.category === filing.routeCategory)?.requestTypeHint ?? null
+  }
+
+  return {
+    async loadRunPacket(filingId) {
+      const filing = await filings.getById(filingId)
+      if (filing === null) return null
+      const [[report], photos, hint] = await Promise.all([
+        sql<{ addr: string | null; lat: number; lng: number; category: string }[]>`
+          SELECT r.addr, ST_Y(r.geom) AS lat, ST_X(r.geom) AS lng, r.category
+          FROM reports r
+          WHERE r.id = ${filing.reportId}
+        `,
+        // The admin's listMedia order (oldest first), images only: a portal never gets a video (D3).
+        // byte_size is int8, which postgres-js returns as a string.
+        sql<{ served_key: string; byte_size: number | null }[]>`
+          SELECT served_key, byte_size::float8 AS byte_size
+          FROM media_assets
+          WHERE report_id = ${filing.reportId}
+            AND kind = 'image' AND status = 'ready' AND served_key IS NOT NULL
+          ORDER BY created_at ASC, id ASC
+          LIMIT ${RUN_PHOTOS_MAX}
+        `,
+        requestTypeHint(filing),
+      ])
+      if (report === undefined) throw new Error(`filing ${filingId}: its report row is missing`)
+      return {
+        filingId: filing.id,
+        ticketText: filing.ticketText,
+        addr: report.addr,
+        lat: report.lat,
+        lng: report.lng,
+        category: report.category,
+        formUrl: filing.formUrl,
+        portalHost: filing.portalHost,
+        requestTypeHint: hint,
+        photos: photos.map((p) => ({ servedKey: p.served_key, byteSize: p.byte_size })),
+      }
+    },
+
+    getFilingSettings: () => filings.getSettings(),
+    claimFiling: (filingId, attempt) => filings.claim(filingId, attempt),
+    listRunningFilings: () => filings.listRunningFilings(),
+  }
 }

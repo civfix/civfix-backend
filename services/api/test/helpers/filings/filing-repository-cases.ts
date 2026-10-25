@@ -299,6 +299,21 @@ export function defineFilingRepositoryCases(setup: () => Promise<FilingWorld>): 
       expect(await w.repo.getLatestSuccessfulForReport(r2.id)).toBeNull()
     })
 
+    it("getLatestForReport returns the newest filing in any status", async () => {
+      const r = await w.report()
+      await seed({ reportId: r.id, geoid: w.G, status: "submitted", createdAt: ago(2 * DAY) })
+      const cancelled = await seed({
+        reportId: r.id,
+        geoid: w.G,
+        status: "cancelled",
+        createdAt: ago(DAY),
+      })
+      const latest = await w.repo.getLatestForReport(r.id)
+      expect(latest?.id).toBe(cancelled)
+      expect(latest?.jurisdictionName).toBe("City of Los Angeles")
+      expect(await w.repo.getLatestForReport((await w.report()).id)).toBeNull()
+    })
+
     it("T20: getLatestSuccessfulForReports returns one row per filed report", async () => {
       const [r, r2, r3] = [await w.report(), await w.report(), await w.report()]
       await seed({ reportId: r.id, geoid: w.G, status: "submitted", submittedAt: ago(2 * DAY) })

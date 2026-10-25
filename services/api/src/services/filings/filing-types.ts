@@ -169,6 +169,9 @@ interface RecordSuccessCommon {
   caseId?: string | null
   caseUrl?: string | null
   mailThreadId?: string | null
+  /** Omitted keeps the filing's value; a filer result sets both in the success's own transaction. */
+  scriptVersion?: string | null
+  dryRun?: boolean
   /** The fixed public timeline note (D5). */
   note: string
   actorId?: string | null

@@ -185,6 +185,13 @@ export class InMemoryFilingRepository implements FilingRepository {
     return Promise.resolve(f === undefined ? null : this.withName(f))
   }
 
+  getLatestForReport(reportId: string): Promise<FilingRecord | null> {
+    const f = this.all()
+      .filter((x) => x.reportId === reportId)
+      .sort((a, b) => byNewest({ at: a.createdAt, id: a.id }, { at: b.createdAt, id: b.id }))[0]
+    return Promise.resolve(f === undefined ? null : this.withName(f))
+  }
+
   private latestSuccessful(reportId: string): StoredFiling | undefined {
     return this.all()
       .filter((f) => f.reportId === reportId && SUCCESSFUL_FILING_STATUSES.includes(f.status))
@@ -247,6 +254,8 @@ export class InMemoryFilingRepository implements FilingRepository {
           caseId: input.caseId,
           caseUrl: input.caseUrl,
           mailThreadId: input.mailThreadId,
+          scriptVersion: input.scriptVersion,
+          dryRun: input.dryRun,
         }),
         status: input.outcome,
         method: input.method,

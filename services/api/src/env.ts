@@ -16,6 +16,7 @@ import {
   loadMailEnv,
   loadR2Env,
   loadScheduleEnv,
+  loadFilingEnv,
   loadSigningKeys,
   loadSmsEnv,
   loadTrustProxy,
@@ -139,6 +140,7 @@ export function loadEnv(source: NodeJS.ProcessEnv = process.env): Env {
   const mail = loadMailEnv(r, fakeFlags.USE_FAKE_MAILER)
   const sms = loadSmsEnv(r, fakeFlags.USE_FAKE_SMS)
   const schedules = loadScheduleEnv(r)
+  const filing = loadFilingEnv(r)
   const authFlags = loadAuthFlags(r)
   const tuning = loadTuningEnv(r)
   const apns = loadApnsProduction(r)
@@ -166,6 +168,7 @@ export function loadEnv(source: NodeJS.ProcessEnv = process.env): Env {
     ...mail,
     ...sms,
     ...schedules,
+    ...filing,
     ...authFlags,
     ...tuning,
     ...loadAccessLists(r),

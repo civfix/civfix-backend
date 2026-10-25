@@ -1,17 +1,30 @@
 import { FakeJobs } from "@civfix/seams"
-import type { AdminReportStatus, ReportCategory, ReportVisibility } from "@civfix/contract"
+import type {
+  AdminReportStatus,
+  ReportCategory,
+  ReportTimelineItem,
+  ReportVisibility,
+} from "@civfix/contract"
 import {
   InMemoryAdminReportRepository,
   type SeededReport,
 } from "../admin/admin-report-repository.memory.js"
 import { RecordingNotifier } from "../notifications.js"
-import { InMemoryFilingRepository, type MemoryReport } from "./filing-repository.memory.js"
+import {
+  InMemoryFilingRepository,
+  type MemoryReport,
+  type MemoryTimelineRow,
+} from "./filing-repository.memory.js"
+import type { ReporterNotifier } from "../../../src/services/admin/admin-report-types.js"
 import {
   makeFilingService,
   type FilingService,
 } from "../../../src/services/filings/filing-service.js"
 import type { CreateFilingInput, FilingRecord } from "../../../src/services/filings/filing-types.js"
-import type { ReportTimelineEvent } from "../../../src/services/report-timeline-event.js"
+import type {
+  ReportChatSystemEmitter,
+  ReportTimelineEvent,
+} from "../../../src/services/report-timeline-event.js"
 
 export const J_GEOID = "0644000"
 export const J_NAME = "Los Angeles"
@@ -26,6 +39,89 @@ export class RecordingChatEmitter {
     this.events.push(event)
     return Promise.resolve()
   }
+}
+
+function reportView(seeded: SeededReport): MemoryReport {
+  return {
+    id: seeded.record.id,
+    get geoid() {
+      return seeded.routing?.geoid ?? null
+    },
+    get status() {
+      return seeded.record.status
+    },
+    set status(next: string) {
+      seeded.record.status = next as AdminReportStatus
+    },
+    get title() {
+      return seeded.record.title
+    },
+    get referenceCode() {
+      return seeded.record.referenceCode
+    },
+    get deletedAt() {
+      return seeded.deletedAt
+    },
+    get verificationVerdict() {
+      return seeded.record.verificationVerdict
+    },
+  }
+}
+
+/**
+ * A filing twin over the admin report twin's rows, as both repositories share one database: the
+ * reports it reads are the admin twin's, and the `route` rows it writes land on the admin twin's
+ * timeline too.
+ */
+export function linkedFilingRepository(
+  reports: InMemoryAdminReportRepository,
+): InMemoryFilingRepository {
+  const filings = new InMemoryFilingRepository()
+  filings.jurisdictions.set(J_GEOID, J_NAME)
+  const get = (id: string): MemoryReport | undefined => {
+    const seeded = reports.reports.get(id)
+    return seeded === undefined ? undefined : reportView(seeded)
+  }
+  const ownPush = filings.timeline.push.bind(filings.timeline)
+  const push = (...rows: MemoryTimelineRow[]): number => {
+    for (const row of rows) {
+      const list = reports.timeline.get(row.reportId) ?? []
+      list.push({
+        status: row.status as AdminReportStatus,
+        note: row.note,
+        kind: row.kind as ReportTimelineItem["kind"],
+        who: row.actorId ?? "system",
+        createdAt: row.createdAt,
+      })
+      reports.timeline.set(row.reportId, list)
+    }
+    return ownPush(...rows)
+  }
+  // Not enumerable, so both still compare equal to a plain Map and array.
+  Object.defineProperty(filings.reports, "get", { value: get, enumerable: false })
+  Object.defineProperty(filings.timeline, "push", { value: push, enumerable: false })
+  return filings
+}
+
+/** A filing service over the admin twin, for tests of services that depend on one. */
+export function memoryFilingService(
+  reports: InMemoryAdminReportRepository,
+  opts: {
+    filings?: InMemoryFilingRepository
+    jobs?: FakeJobs
+    reportChatEmitter?: ReportChatSystemEmitter
+    notifications?: ReporterNotifier
+  } = {},
+): FilingService {
+  return makeFilingService({
+    filings: opts.filings ?? linkedFilingRepository(reports),
+    reports,
+    jobs: opts.jobs ?? new FakeJobs(),
+    automaticFiling: false,
+    webBaseUrl: WEB_BASE,
+    ...(opts.reportChatEmitter !== undefined ? { reportChatEmitter: opts.reportChatEmitter } : {}),
+    ...(opts.notifications !== undefined ? { notifications: opts.notifications } : {}),
+  })
 }
 
 export interface SeedInput {
@@ -61,15 +157,10 @@ export interface FilingHarness {
   ): Promise<FilingRecord>
 }
 
-/**
- * The filing service over the two memory twins it reads: the admin report repository (reports, routing)
- * and the filing repository, whose report rows here are live views of the admin ones, so a success the
- * filing twin records moves the same report the admin twin serves.
- */
+/** The filing service over the admin report twin and a filing twin linked to it. */
 export function filingHarness(opts: { automatic?: boolean; now?: Date } = {}): FilingHarness {
   const reports = new InMemoryAdminReportRepository()
-  const filings = new InMemoryFilingRepository()
-  filings.jurisdictions.set(J_GEOID, J_NAME)
+  const filings = linkedFilingRepository(reports)
   const jobs = new FakeJobs()
   const notifier = new RecordingNotifier()
   const emitter = new RecordingChatEmitter()
@@ -90,7 +181,7 @@ export function filingHarness(opts: { automatic?: boolean; now?: Date } = {}): F
   function seed(input: SeedInput = {}): SeededReport {
     const geoid = input.geoid === undefined ? J_GEOID : input.geoid
     const contact = input.contact ?? null
-    const seeded = reports.seedReport({
+    return reports.seedReport({
       ...(input.id !== undefined ? { id: input.id } : {}),
       category: input.category ?? "graffiti",
       status: input.status ?? "published",
@@ -118,32 +209,6 @@ export function filingHarness(opts: { automatic?: boolean; now?: Date } = {}): F
         routed: contact !== null,
       },
     })
-    const view: MemoryReport = {
-      id: seeded.record.id,
-      get geoid() {
-        return geoid
-      },
-      get status() {
-        return seeded.record.status
-      },
-      set status(next: string) {
-        seeded.record.status = next as AdminReportStatus
-      },
-      get title() {
-        return seeded.record.title
-      },
-      get referenceCode() {
-        return seeded.record.referenceCode
-      },
-      get deletedAt() {
-        return seeded.deletedAt
-      },
-      get verificationVerdict() {
-        return seeded.record.verificationVerdict
-      },
-    }
-    filings.reports.set(seeded.record.id, view)
-    return seeded
   }
 
   async function addFiling(

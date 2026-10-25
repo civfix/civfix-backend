@@ -13,6 +13,13 @@ import {
   DATA_EXPORT_JOB,
   EVENT_METRICS_ROLLUP_JOB,
   EVENT_REMINDERS_SWEEP_JOB,
+  FILING_CITY_UPDATE_JOB,
+  FILING_CLASSIFY_JOB,
+  FILING_EMAIL_JOB,
+  FILING_QUEUE_OPTIONS,
+  FILING_RESULT_JOB,
+  FILING_RUN_JOB,
+  FILING_SWEEP_JOB,
   GUEST_RETENTION_SWEEP_JOB,
   HOST_EXPORT_JOB,
   HOST_EXPORT_REAP_JOB,
@@ -65,11 +72,20 @@ export const API_QUEUE_NAMES = [
   HOST_EXPORT_JOB,
   HOST_EXPORT_REAP_JOB,
   HOST_RETENTION_SWEEP_JOB,
+  FILING_EMAIL_JOB,
+  FILING_RUN_JOB,
+  FILING_RESULT_JOB,
+  FILING_CLASSIFY_JOB,
+  FILING_CITY_UPDATE_JOB,
+  FILING_SWEEP_JOB,
 ] as const
 
 type ApiQueueName = (typeof API_QUEUE_NAMES)[number]
 
-type QueueRetryPolicy = Required<Pick<PgBoss.Queue, "retryLimit" | "retryDelay" | "retryBackoff">>
+type QueueOptions = Pick<
+  PgBoss.Queue,
+  "retryLimit" | "retryDelay" | "retryBackoff" | "expireInSeconds"
+>
 
 const DATA_EXPORT_RETRY_LIMIT = 10
 
@@ -77,16 +93,17 @@ const DATA_EXPORT_RETRY_LIMIT = 10
 // fix the config. pg-boss's default (2 immediate retries) would rebuild and resend the whole export three
 // times within seconds and then drop the request, so it backs off from a minute to hours instead; the
 // handler records the request for an operator on the last attempt.
-const QUEUE_RETRY_POLICIES: Partial<Record<ApiQueueName, QueueRetryPolicy>> = {
+const QUEUE_OPTIONS: Partial<Record<ApiQueueName, QueueOptions>> = {
   [DATA_EXPORT_JOB]: {
     retryLimit: DATA_EXPORT_RETRY_LIMIT,
     retryDelay: SECONDS_PER_MINUTE,
     retryBackoff: true,
   },
+  ...FILING_QUEUE_OPTIONS,
 }
 
 function queueOptions(name: ApiQueueName): PgBoss.Queue {
-  return { name, policy: SHARED_QUEUE_POLICY, ...QUEUE_RETRY_POLICIES[name] }
+  return { name, policy: SHARED_QUEUE_POLICY, ...QUEUE_OPTIONS[name] }
 }
 
 function toSendOptions(opts?: EnqueueOptions): PgBoss.SendOptions {

@@ -98,12 +98,12 @@ describe("applyFilingResult", () => {
       scriptVersion: "abcdef012345",
       dryRun: false,
     })
-    expect(run.h.filings.timeline.map((t) => t.note)).toEqual([`Filed with ${J_NAME} · Request 1-234`])
+    expect(run.h.filings.timeline.map((t) => t.note)).toEqual([
+      `Filed with ${J_NAME} · Request 1-234`,
+    ])
     expect(run.h.filings.evidence.map((e) => e.r2Key)).toEqual(evidence.map((e) => e.r2Key))
     expect(run.h.reports.reports.get(run.reportId)?.record.status).toBe("acknowledged")
-    expect(run.h.notifier.sent.map(notificationText)).toEqual([
-      `Your report was sent to ${J_NAME}`,
-    ])
+    expect(run.h.notifier.sent.map(notificationText)).toEqual([`Your report was sent to ${J_NAME}`])
   })
 
   it("C16: a case URL off the portal host or not https is stored null", async () => {
@@ -139,9 +139,7 @@ describe("applyFilingResult", () => {
       payload(run, 1, { outcome: "linked_existing", caseId: "1-77" }),
     )
     expect(filing(run)).toMatchObject({ status: "linked_existing", caseId: "1-77" })
-    expect(run.h.filings.timeline.map((t) => t.note)).toEqual([
-      `Linked to ${J_NAME} request 1-77`,
-    ])
+    expect(run.h.filings.timeline.map((t) => t.note)).toEqual([`Linked to ${J_NAME} request 1-77`])
     expect(run.h.reports.reports.get(run.reportId)?.record.status).toBe("acknowledged")
   })
 
