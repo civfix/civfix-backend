@@ -39,13 +39,20 @@ class RecordingPushSender implements PushSender {
 
 function harness() {
   const repo = new InMemoryNotificationRepository()
+  const settings = new InMemoryNotificationSettingsRepository()
   const push = new RecordingPushSender()
-  const service = makeNotificationService({
-    repo,
-    settingsRepo: new InMemoryNotificationSettingsRepository(),
-    pushSender: push,
-  })
-  return { repo, push, service }
+  const service = makeNotificationService({ repo, settingsRepo: settings, pushSender: push })
+  return { repo, settings, push, service }
+}
+
+// Report discussions default to in-app only (D1), so these recipients check Push.
+async function pushReportDiscussions(
+  settings: InMemoryNotificationSettingsRepository,
+  userIds: string[],
+): Promise<void> {
+  for (const userId of userIds) {
+    await settings.upsertSettings(userId, { reportDiscussions: { push: true } })
+  }
 }
 
 function rowIdOf(repo: InMemoryNotificationRepository, userId: string): string {
@@ -60,9 +67,10 @@ function user(i: number): string {
 
 describe("NotificationService push payloads per recipient", () => {
   it("T3: a two-recipient fan-out sends one sendEach with each recipient's own row id", async () => {
-    const { repo, push, service } = harness()
+    const { repo, settings, push, service } = harness()
     const u1 = user(1)
     const u2 = user(2)
+    await pushReportDiscussions(settings, [u1, u2])
 
     await service.createNotifications([u1, u2], {
       type: "report_chat",
@@ -82,8 +90,9 @@ describe("NotificationService push payloads per recipient", () => {
   })
 
   it("T4: 250 recipients go out as sendEach batches of 100, 100 and 50, each with its own row id", async () => {
-    const { repo, push, service } = harness()
+    const { repo, settings, push, service } = harness()
     const recipients = Array.from({ length: 250 }, (_, i) => user(i))
+    await pushReportDiscussions(settings, recipients)
 
     await service.createNotifications(recipients, {
       type: "report_chat",
@@ -115,8 +124,8 @@ describe("NotificationService push payloads per recipient", () => {
     const pushes = [...push.singles, ...push.batches.flat()]
     expect(pushes).toHaveLength(1)
     expect(pushes[0]!.userId).toBe(u1)
-    expect(pushes[0]!.payload.notificationId).toBe(dto.id)
-    expect(pushes[0]!.payload.data?.type).toBe("report_update")
+    expect(pushes[0]!.payload.notificationId).toBe(dto!.id)
+    expect(pushes[0]!.payload.type).toBe("report_update")
   })
 })
 

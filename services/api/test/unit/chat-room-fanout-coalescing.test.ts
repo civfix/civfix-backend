@@ -61,14 +61,17 @@ let push: FakePushSender
 let notifications: NotificationService
 let clockMs: number
 
-beforeEach(() => {
+beforeEach(async () => {
   clockMs = 1_700_000_000_000
   repo = new InMemoryNotificationRepository()
   repo.now = () => new Date(clockMs)
   push = new FakePushSender()
+  const settings = new InMemoryNotificationSettingsRepository()
+  // Group chats default to in-app only (D1); these members check Push.
+  for (const userId of [A, B]) await settings.upsertSettings(userId, { groupChats: { push: true } })
   notifications = makeNotificationService({
     repo,
-    settingsRepo: new InMemoryNotificationSettingsRepository(),
+    settingsRepo: settings,
     pushSender: push,
     now: () => new Date(clockMs),
   })

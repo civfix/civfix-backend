@@ -15,8 +15,8 @@ import type { NotificationPrefsRecord } from "../../src/services/notification-re
 import { MAX_ACTIVE_PUSH_TOKENS_PER_USER } from "../../src/services/notification-repository.drizzle.js"
 import {
   InMemoryNotificationRepository,
-  flushNotificationDispatch,
   InMemoryNotificationSettingsRepository,
+  flushNotificationDispatch,
 } from "../helpers/notifications.js"
 import { normalizeDeviceId } from "../../src/routes/notifications.routes.js"
 
@@ -32,19 +32,21 @@ const V = "22222222-2222-2222-2222-222222222222"
 
 function makeHarness(nowFn?: () => Date): {
   repo: InMemoryNotificationRepository
+  settings: InMemoryNotificationSettingsRepository
   push: FakePushSender
   service: NotificationService
 } {
   const repo = new InMemoryNotificationRepository()
   if (nowFn !== undefined) repo.now = nowFn
+  const settings = new InMemoryNotificationSettingsRepository()
   const push = new FakePushSender()
   const service = makeNotificationService({
     repo,
-    settingsRepo: new InMemoryNotificationSettingsRepository(),
+    settingsRepo: settings,
     pushSender: push,
     ...(nowFn !== undefined ? { now: nowFn } : {}),
   })
-  return { repo, push, service }
+  return { repo, settings, push, service }
 }
 
 describe("parseTimeOfDayMinutes", () => {
@@ -155,7 +157,7 @@ describe("listNotifications + markRead", () => {
 
   it("markRead sets read=true for the given ids", async () => {
     const { service } = makeHarness()
-    const a = await service.createNotification(U, { type: "system", title: "a" })
+    const a = (await service.createNotification(U, { type: "system", title: "a" }))!
     await service.createNotification(U, { type: "system", title: "b" })
 
     const res = await service.markRead(U, [a.id])
@@ -169,8 +171,8 @@ describe("listNotifications + markRead", () => {
 
   it("markRead only affects the caller's OWN notifications", async () => {
     const { service } = makeHarness()
-    const mine = await service.createNotification(U, { type: "system", title: "mine" })
-    const theirs = await service.createNotification(V, { type: "system", title: "theirs" })
+    const mine = (await service.createNotification(U, { type: "system", title: "mine" }))!
+    const theirs = (await service.createNotification(V, { type: "system", title: "theirs" }))!
 
     await service.markRead(U, [theirs.id, mine.id])
 
@@ -201,7 +203,8 @@ describe("listNotifications + markRead", () => {
 
 describe("feed excludes conversation-message notifications", () => {
   it("hides dm + cleanup_chat + report_chat from the feed read while still recording the row and pushing", async () => {
-    const { repo, push, service } = makeHarness()
+    const { repo, settings, push, service } = makeHarness()
+    await settings.upsertSettings(U, { reportDiscussions: { push: true } })
     await service.createNotification(U, {
       type: "report_update",
       title: "status changed",
@@ -351,7 +354,8 @@ describe("registerPushToken", () => {
 
 describe("createNotification (inline-send gating)", () => {
   it("records the row and sends a push when prefs allow + not in quiet hours", async () => {
-    const { repo, push, service } = makeHarness(() => at(12, 0))
+    const { repo, settings, push, service } = makeHarness(() => at(12, 0))
+    await settings.upsertSettings(U, { followers: { push: true } })
     const dto = await service.createNotification(U, {
       type: "new_follower",
       title: "New follower",
@@ -359,8 +363,8 @@ describe("createNotification (inline-send gating)", () => {
       link: "/people/x",
     })
     expect(repo.notifications).toHaveLength(1)
-    expect(dto.title).toBe("New follower")
-    expect(dto.read).toBe(false)
+    expect(dto!.title).toBe("New follower")
+    expect(dto!.read).toBe(false)
     await flushNotificationDispatch()
     expect(push.sent).toHaveLength(1)
     await flushNotificationDispatch()
@@ -372,29 +376,8 @@ describe("createNotification (inline-send gating)", () => {
     await flushNotificationDispatch()
     expect(push.sent[0]!.payload.link).toBe("/people/x")
     await flushNotificationDispatch()
-    expect(push.sent[0]!.payload.data).toMatchObject({ type: "new_follower" })
-    expect(push.sent[0]!.payload.notificationId).toBe(dto.id)
-  })
-
-  it("does NOT push when the master push switch is off (but still records the row)", async () => {
-    const { repo, push, service } = makeHarness(() => at(12, 0))
-    await repo.upsertPrefs(U, { push: false })
-    await service.createNotification(U, { type: "new_follower", title: "x" })
-    expect(repo.notifications).toHaveLength(1)
-    await flushNotificationDispatch()
-    expect(push.sent).toHaveLength(0)
-  })
-
-  it("does NOT push when the per-type toggle is off (but still records the row)", async () => {
-    const { repo, push, service } = makeHarness(() => at(12, 0))
-    await repo.upsertPrefs(U, { follows: false })
-    await service.createNotification(U, { type: "new_follower", title: "x" })
-    expect(repo.notifications).toHaveLength(1)
-    await flushNotificationDispatch()
-    expect(push.sent).toHaveLength(0)
-    await service.createNotification(U, { type: "report_update", title: "y" })
-    await flushNotificationDispatch()
-    expect(push.sent).toHaveLength(1)
+    expect(push.sent[0]!.payload.type).toBe("new_follower")
+    expect(push.sent[0]!.payload.notificationId).toBe(dto!.id)
   })
 
   it("does NOT push within quiet hours (but still records the row)", async () => {
@@ -440,14 +423,15 @@ describe("createNotification (inline-send gating)", () => {
     })
 
     const dto = await service.createNotification(U, { type: "system", title: "ok" })
-    expect(dto.title).toBe("ok")
+    expect(dto!.title).toBe("ok")
     expect(repo.notifications).toHaveLength(1)
   })
 })
 
 describe("onNewFollower", () => {
   it("records a new_follower notification for the followee with a friendly body + link", async () => {
-    const { repo, push, service } = makeHarness(() => at(12, 0))
+    const { repo, settings, push, service } = makeHarness(() => at(12, 0))
+    await settings.upsertSettings(U, { followers: { push: true } })
     await service.onNewFollower({
       followeeId: U,
       follower: {
@@ -533,7 +517,7 @@ describe("createNotification (per-user signal)", () => {
     })
 
     const dto = await service.createNotification(U, { type: "system", title: "ok" })
-    expect(dto.title).toBe("ok")
+    expect(dto!.title).toBe("ok")
     expect(repo.notifications).toHaveLength(1)
   })
 
@@ -638,7 +622,8 @@ describe("push token cap per user (F087)", () => {
 describe("toggle-bell de-duplication (F015)", () => {
   it("collapses a like/unlike/like loop from the SAME actor into ONE bell + ONE push", async () => {
     let nowMs = at(12, 0).getTime()
-    const { repo, push, service } = makeHarness(() => new Date(nowMs))
+    const { repo, settings, push, service } = makeHarness(() => new Date(nowMs))
+    await settings.upsertSettings(U, { likesAndReposts: { push: true } })
     for (let i = 0; i < 4; i++) {
       await service.onPostLike({ recipientId: U, actorName: "Mallory", postId: "p1" })
       nowMs += 1000

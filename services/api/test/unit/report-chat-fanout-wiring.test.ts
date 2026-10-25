@@ -6,6 +6,8 @@ import type { Container } from "../../src/di.js"
 const stub = vi.hoisted(() => ({
   // eslint-disable-next-line @typescript-eslint/no-unnecessary-type-assertion -- the assertion is the field's declared type: vi.hoisted infers the record from this literal
   notifRepo: undefined as unknown,
+  // eslint-disable-next-line @typescript-eslint/no-unnecessary-type-assertion -- the assertion is the field's declared type: vi.hoisted infers the record from this literal
+  settingsRepo: undefined as unknown,
   roster: [] as string[],
   limits: [] as (number | undefined)[],
   mutesFail: false,
@@ -13,6 +15,10 @@ const stub = vi.hoisted(() => ({
 
 vi.mock("../../src/services/notification-repository.drizzle.js", () => ({
   makeDrizzleNotificationRepository: () => stub.notifRepo,
+}))
+
+vi.mock("../../src/services/notification-settings-repository.drizzle.js", () => ({
+  makeDrizzleNotificationSettingsRepository: () => stub.settingsRepo,
 }))
 
 vi.mock("../../src/services/report-chat-repository.drizzle.js", async (importOriginal) => {
@@ -121,6 +127,7 @@ function warnLogger(): { warn: ReturnType<typeof vi.fn>; error: ReturnType<typeo
 beforeEach(() => {
   notifRepo = new InMemoryNotificationRepository()
   stub.notifRepo = notifRepo
+  stub.settingsRepo = new InMemoryNotificationSettingsRepository()
   stub.roster = rosterOf(OVERSIZED_ROSTER)
   stub.limits = []
   stub.mutesFail = false

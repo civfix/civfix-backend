@@ -1,3 +1,4 @@
+import type { NotificationCategory } from "@civfix/contract"
 import type { PushPayload } from "@civfix/seams"
 
 export function N(i: number): string {
@@ -7,14 +8,14 @@ export function N(i: number): string {
 export const N1 = N(1)
 export const N2 = N(2)
 
-export function P(notificationId: string, category: string | null): PushPayload {
+export function P(notificationId: string, category: NotificationCategory | null): PushPayload {
   return {
     title: "Status changed",
     body: "Your report is in progress",
     link: "/reports/r1",
     notificationId,
+    type: "report_update",
     category,
-    data: { type: "report_update" },
   }
 }
 

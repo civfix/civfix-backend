@@ -1,3 +1,4 @@
+import { encodePushMessageData } from "@civfix/contract"
 import type {
   PushSenderConfig,
   PushLogger,
@@ -5,7 +6,7 @@ import type {
   PushDelivery,
 } from "./push-sender.js"
 import { hashForLog } from "./push-sender.js"
-import { androidChannelFor, encodeMessageData } from "./push-message.js"
+import { androidChannelFor, pushMessageData } from "./push-message.js"
 
 const FCM_SEND_EACH_MAX = 500
 
@@ -149,7 +150,7 @@ export function makeFcmDispatcher(
 
 // `channelId` is the Admin SDK's name for the v1 API's android.notification.channel_id.
 function fcmMessage({ token, message }: PushDelivery): Record<string, unknown> {
-  const data = encodeMessageData(message)
+  const data = encodePushMessageData(pushMessageData(message))
   if (message.kind === "clear") {
     return { token, data, android: { priority: FCM_SILENT_PRIORITY } }
   }
@@ -163,7 +164,7 @@ function fcmMessage({ token, message }: PushDelivery): Record<string, unknown> {
     data,
     android: {
       notification: {
-        ...(payload.notificationId !== undefined ? { tag: payload.notificationId } : {}),
+        tag: payload.notificationId,
         channelId: androidChannelFor(payload.category),
       },
     },

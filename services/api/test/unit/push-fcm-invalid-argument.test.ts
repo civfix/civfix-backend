@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from "vitest"
 import type { PushLogger } from "../../src/adapters/push-sender.js"
-import { visibleTo } from "../helpers/push-fixtures.js"
+import { N1, P, visibleTo } from "../helpers/push-fixtures.js"
 
 type FcmResponse = { success: boolean; error?: { code?: string; message?: string } }
 
@@ -31,7 +31,7 @@ function recordingLogger(): { logger: PushLogger; warns: unknown[][] } {
 }
 
 const fcmConfig = { serviceAccountJson: "{}" }
-const payload = { title: "New reply" }
+const payload = P(N1, null)
 const invalidArgument: FcmResponse = {
   success: false,
   error: { code: "messaging/invalid-argument", message: "Message is too big" },

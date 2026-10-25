@@ -1,8 +1,9 @@
 import { connect, constants, type ClientHttp2Session } from "node:http2"
 import { createPrivateKey, sign, type KeyObject } from "node:crypto"
+import { encodePushMessageData } from "@civfix/contract"
 import type { PushSenderConfig, PushLogger, PlatformDispatcher } from "./push-sender.js"
 import { hashForLog } from "./push-sender.js"
-import { encodeMessageData, type PushMessage } from "./push-message.js"
+import { pushMessageData, type PushMessage } from "./push-message.js"
 
 const APNS_GONE_STATUS = "410"
 
@@ -63,7 +64,7 @@ interface ApnsRequest {
 
 // expo-notifications reads a push's data from the top-level `body` key.
 function apnsRequest(message: PushMessage, nowMs: number): ApnsRequest {
-  const data = encodeMessageData(message)
+  const data = encodePushMessageData(pushMessageData(message))
   if (message.kind === "clear") {
     return {
       headers: { "apns-push-type": "background", "apns-priority": BACKGROUND_PRIORITY },
@@ -71,15 +72,12 @@ function apnsRequest(message: PushMessage, nowMs: number): ApnsRequest {
     }
   }
   const { payload } = message
-  const category = payload.category ?? undefined
   return {
     headers: {
       "apns-push-type": "alert",
       "apns-priority": ALERT_PRIORITY,
       "apns-expiration": String(Math.floor(nowMs / 1000) + ALERT_EXPIRATION_SECONDS),
-      ...(payload.notificationId !== undefined
-        ? { "apns-collapse-id": payload.notificationId }
-        : {}),
+      "apns-collapse-id": payload.notificationId,
     },
     body: JSON.stringify({
       aps: {
@@ -88,7 +86,7 @@ function apnsRequest(message: PushMessage, nowMs: number): ApnsRequest {
           ...(payload.body !== undefined ? { body: payload.body } : {}),
         },
         sound: APNS_SOUND,
-        ...(category !== undefined ? { "thread-id": category } : {}),
+        ...(payload.category !== null ? { "thread-id": payload.category } : {}),
       },
       body: data,
     }),

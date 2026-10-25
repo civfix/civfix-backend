@@ -14,7 +14,7 @@ import { generateKeyPairSync, verify, type KeyObject } from "node:crypto"
 import type { AddressInfo } from "node:net"
 import type { PushPayload } from "@civfix/seams"
 import { makeApnsDispatcher } from "../../src/adapters/push-apns.js"
-import { visibleTo } from "../helpers/push-fixtures.js"
+import { N1, visibleTo } from "../helpers/push-fixtures.js"
 import {
   hashForLog,
   type PushLogger,
@@ -45,11 +45,13 @@ const MINUTE = 60_000
 const T0 = new Date("2026-10-23T10:00:00.000Z").getTime()
 
 const D1 = "a".repeat(64)
-const P = {
+const P: PushPayload = {
   title: "Hi",
   body: "There",
   link: "/reports/r1",
-  data: { type: "report_update", link: "/ignored" },
+  notificationId: N1,
+  type: "report_update",
+  category: null,
 }
 
 function deviceToken(n: number): string {
@@ -221,23 +223,28 @@ describe("makeApnsDispatcher: the request", () => {
     expect(logged).toEqual([])
   })
 
-  it("T2: the body is the alert plus D7's data map under body, payload.link winning over data.link", async () => {
+  it("T2: the body is the alert plus D7's data map under body", async () => {
     const dispatch = dispatcherFor(recordingLogger().logger)
     await dispatch([D1], P)
 
     expect(JSON.parse((server.requests[0] as Received).body)).toEqual({
       aps: { alert: { title: "Hi", body: "There" }, sound: "default" },
-      body: { kind: "notification", type: "report_update", link: "/reports/r1" },
+      body: {
+        kind: "notification",
+        notificationId: N1,
+        type: "report_update",
+        link: "/reports/r1",
+      },
     })
   })
 
-  it("T3: a title-only payload carries only the alert title, the sound and the kind", async () => {
+  it("T3: a payload with no body, link or category carries only the alert title, the sound, and kind, id and type", async () => {
     const dispatch = dispatcherFor(recordingLogger().logger)
-    await dispatch([D1], { title: "Hi" })
+    await dispatch([D1], { title: "Hi", notificationId: N1, type: "system", category: null })
 
     expect(JSON.parse((server.requests[0] as Received).body)).toEqual({
       aps: { alert: { title: "Hi" }, sound: "default" },
-      body: { kind: "notification" },
+      body: { kind: "notification", notificationId: N1, type: "system" },
     })
   })
 
