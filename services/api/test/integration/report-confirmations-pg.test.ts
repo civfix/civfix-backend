@@ -12,6 +12,7 @@ import { randomUUID } from "node:crypto"
 import type { FastifyInstance, LightMyRequestResponse } from "fastify"
 import { FakeMailer, type FakeJobs } from "@civfix/seams"
 import { withPg, testHandle, type PgHarness } from "../helpers/pg.js"
+import { createPressingIndex, explainPressingAlone } from "../helpers/pressing-index.js"
 import { clientQuery } from "../helpers/query.js"
 import { makeServer } from "../../src/server.js"
 import { makeContainer, type Container } from "../../src/di.js"
@@ -24,7 +25,7 @@ import { makeDataExportService } from "../../src/services/data-export-service.js
 import { DATA_EXPORT_JOB } from "../../src/lib/queue-names.js"
 import { LA_CITY } from "../../src/db/seed-fixtures.js"
 import { MAP_REPORTS_CANDIDATE_CAP } from "../../src/services/report-clustering.js"
-import { explainPressing, PRESSING_INDEX } from "../../src/services/report-repository.drizzle.js"
+import { PRESSING_INDEX } from "../../src/services/report-repository.drizzle.js"
 
 const pg = await withPg()
 
@@ -52,6 +53,7 @@ describe.skipIf(!pg)("report confirmations (integration)", () => {
 
   beforeAll(async () => {
     h = pg as PgHarness
+    await createPressingIndex(h.sql)
     const env = loadEnv({ NODE_ENV: "test", DATABASE_URL: h.uri, ADMIN_EMAILS: OPERATOR_EMAIL })
     container = makeContainer(env)
     authServices = makeAuthServices({
@@ -535,18 +537,7 @@ describe.skipIf(!pg)("report confirmations (integration)", () => {
     })
 
     it("T26b: a wide bbox plans the real statement as a walk of the pressing index", async () => {
-      await h.sql`
-        CREATE INDEX IF NOT EXISTS reports_pressing_idx
-          ON reports (confirm_count DESC, created_at DESC)
-          WHERE confirm_count >= 1 AND visibility = 'public' AND deleted_at IS NULL
-      `
-      await h.sql`ANALYZE reports`
-      const wide = { west: -179, south: -50, east: 21, north: 50 }
-      const plan = await h.sql.begin(async (tx) => {
-        await tx`SET LOCAL enable_seqscan = off`
-        await tx`SET LOCAL enable_bitmapscan = off`
-        return explainPressing(tx, wide, 20)
-      })
+      const plan = await explainPressingAlone(h.sql, { west: -179, south: -50, east: 21, north: 50 })
       expect(plan, plan).toContain(`Index Scan using ${PRESSING_INDEX}`)
     })
   })
