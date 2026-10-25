@@ -4,6 +4,7 @@ import type { FastifyBaseLogger } from "fastify"
 import { isWithinQuietHours, pushGateAllows, type PushGateMode } from "../notification-helpers.js"
 import type { NotificationService } from "../notification-service.js"
 import type { NotificationPrefsRecord } from "../notification-repository.js"
+import type { NotificationSettingsRepository } from "../notification-settings-repository.js"
 import type { BroadcastRepository } from "./broadcast-repository.js"
 import type {
   BroadcastRecord,
@@ -41,6 +42,7 @@ export interface BroadcastInAppSenderDeps {
   repo: BroadcastRepository
   config: Pick<BroadcastConfig, "linkAllowedHosts" | "webBaseUrl">
   notifications: NotificationService
+  settingsRepo?: Pick<NotificationSettingsRepository, "getSettingsMany">
   logger?: Pick<FastifyBaseLogger, "error">
   now: () => Date
 }

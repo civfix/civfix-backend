@@ -7,6 +7,7 @@ import { mailFailure } from "../../adapters/mail-failure.js"
 import { mapWithLimit } from "../../lib/concurrency.js"
 import { sleep as timerSleep } from "../../lib/sleep.js"
 import { MS_PER_SECOND } from "../../lib/time.js"
+import type { NotificationSettingsRepository } from "../notification-settings-repository.js"
 import type { BroadcastRepository } from "./broadcast-repository.js"
 import type {
   BroadcastRecord,
@@ -51,6 +52,7 @@ export interface BroadcastEmailSenderDeps {
     | "webBaseUrl"
   >
   mailer: Mailer
+  settingsRepo?: Pick<NotificationSettingsRepository, "getSettingsMany">
   cache: CacheClient
   mailDomain: string
   logger?: Pick<FastifyBaseLogger, "warn">
