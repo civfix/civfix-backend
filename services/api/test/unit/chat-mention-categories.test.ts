@@ -34,7 +34,7 @@ const T = "99999999-0000-4000-8000-000000000004"
 
 const NAMES: ConversationNameLookups = {
   groupName: (id) => Promise.resolve(id === G ? "Eastside crew" : null),
-  reportCategory: (id) => Promise.resolve(id === R ? ("pothole" satisfies ReportCategory) : null),
+  reportCategory: (id) => Promise.resolve(id === R ? ("graffiti" satisfies ReportCategory) : null),
   eventTitle: (id) => Promise.resolve(id === E ? "Lake Balboa cleanup" : null),
 }
 
@@ -127,7 +127,7 @@ describe("makeChatMentionNotifier", () => {
     expect(n.inputs[0]?.input).toMatchObject({
       type: "chat_mention",
       link: `/messages/report/${R}`,
-      conversationName: "Pothole",
+      conversationName: "Graffiti",
     })
   })
 
@@ -245,7 +245,7 @@ describe("runRoomFanout", () => {
 
   it("T14: a report fan-out is named after the report's category label", async () => {
     await runRoomFanout(ROOM_FANOUT_SPEC.report, fanoutDeps([A, B]), R, message())
-    expect(n.inputs[0]?.input).toMatchObject({ type: "report_chat", conversationName: "Pothole" })
+    expect(n.inputs[0]?.input).toMatchObject({ type: "report_chat", conversationName: "Graffiti" })
   })
 })
 
