@@ -316,6 +316,24 @@ EXPLAIN (COSTS OFF, VERBOSE) WITH viewer_point AS ( SELECT p.geom FROM ( SELECT 
 => """
 `;
 
+exports[`sql transcripts > explainHasUnread 1`] = `
+"-- empty
+EXPLAIN (COSTS OFF, VERBOSE) SELECT EXISTS ( SELECT 1 FROM notifications WHERE user_id = $1 AND read_at IS NULL AND type <> ALL (ARRAY['dm','cleanup_chat','group_chat','report_chat']) ) AS has_unread -- ["userId-1"]
+=> ""
+-- row
+EXPLAIN (COSTS OFF, VERBOSE) SELECT EXISTS ( SELECT 1 FROM notifications WHERE user_id = $1 AND read_at IS NULL AND type <> ALL (ARRAY['dm','cleanup_chat','group_chat','report_chat']) ) AS has_unread -- ["userId-1"]
+=> """
+`;
+
+exports[`sql transcripts > explainMarkAllRead 1`] = `
+"-- empty
+EXPLAIN (COSTS OFF, VERBOSE) UPDATE notifications SET read_at = now() WHERE user_id = $1 AND read_at IS NULL AND type <> ALL (ARRAY['dm','cleanup_chat','group_chat','report_chat']) -- ["userId-1"]
+=> ""
+-- row
+EXPLAIN (COSTS OFF, VERBOSE) UPDATE notifications SET read_at = now() WHERE user_id = $1 AND read_at IS NULL AND type <> ALL (ARRAY['dm','cleanup_chat','group_chat','report_chat']) -- ["userId-1"]
+=> """
+`;
+
 exports[`sql transcripts > explainPressing 1`] = `
 "-- empty
 EXPLAIN (COSTS OFF, VERBOSE) WITH candidates AS ( SELECT r.id, r.geom, r.category, r.type, r.status, r.title, r.description, r.addr, r.reference_code, r.confirm_count, r.fixed_count, r.created_at FROM reports r WHERE r.status = ANY($1::text[]) AND r.visibility = 'public' AND r.deleted_at IS NULL AND r.status = ANY($2::text[]) AND r.confirm_count >= 1 AND ST_Intersects( r.geom, ST_MakeEnvelope($3, $4, $5, $6, 4326) ) ORDER BY r.confirm_count DESC, r.created_at DESC LIMIT $7 ), ranked AS ( SELECT c.*, c.confirm_count * recent.seen::numeric / recent.votes AS score FROM candidates c CROSS JOIN LATERAL ( SELECT count(*) FILTER (WHERE last.kind = 'seen') AS seen, count(*) AS votes FROM ( SELECT rc.kind FROM report_confirmations rc WHERE rc.report_id = c.id ORDER BY rc.created_at DESC LIMIT $8 ) last ) recent WHERE recent.votes - recent.seen < $9 ORDER BY score DESC, c.confirm_count DESC, c.created_at DESC LIMIT $10 ) SELECT r.id, ST_X(r.geom) AS lng, ST_Y(r.geom) AS lat, r.category, r.type, r.status, r.title, r.description, r.addr, r.reference_code, m.thumb_key, m.r2_key, r.confirm_count, r.fixed_count, r.created_at FROM ranked r LEFT JOIN LATERAL ( SELECT thumb_key, served_key AS r2_key FROM media_assets WHERE report_id = r.id AND status = 'ready' AND served_key IS NOT NULL AND (kind = 'image' OR thumb_key IS NOT NULL) ORDER BY created_at ASC, id ASC LIMIT 1 ) m ON true ORDER BY r.score DESC, r.confirm_count DESC, r.created_at DESC -- [["published","acknowledged","in_progress","resolved"],["published","acknowledged","in_progress"],3,3,3,3,200,5,3,3]
@@ -1192,6 +1210,7 @@ SELECT followee_id FROM follows_people WHERE follower_id = $1 LIMIT $2 -- ["user
 SELECT follower_id FROM follows_people WHERE followee_id = $1 LIMIT $2 -- ["userId-1",50001]
 SELECT blocked_id FROM user_blocks WHERE blocker_id = $1 LIMIT $2 -- ["userId-1",50001]
 SELECT user_id, push, cleanup_chat, report_updates, follows, quiet_start, quiet_end, mentions, host_broadcasts FROM notification_prefs WHERE user_id = $1 LIMIT 1 -- ["userId-1"]
+SELECT category, enabled, push, email FROM notification_settings WHERE user_id = $1 -- ["userId-1"]
 SELECT id, platform, created_at, revoked_at FROM push_tokens WHERE user_id = $1 LIMIT $2 -- ["userId-1",50001]
 SELECT code, locale, holder_name, holder_handle, total_hours::float8 AS total_hours, entry_count, period_start, period_end, document_sha256, byte_size, issued_at, revoked_at, revoked_reason FROM service_hours_certificates WHERE user_id = $1 ORDER BY issued_at DESC LIMIT $2 -- ["userId-1",50001]
 SELECT om.organization_id, o.slug, o.name, om.role, om.joined_at FROM organization_members om JOIN organizations o ON o.id = om.organization_id WHERE om.user_id = $1 ORDER BY om.joined_at DESC LIMIT $2 -- ["userId-1",50001]
@@ -1216,6 +1235,7 @@ SELECT followee_id FROM follows_people WHERE follower_id = $1 LIMIT $2 -- ["user
 SELECT follower_id FROM follows_people WHERE followee_id = $1 LIMIT $2 -- ["userId-1",50001]
 SELECT blocked_id FROM user_blocks WHERE blocker_id = $1 LIMIT $2 -- ["userId-1",50001]
 SELECT user_id, push, cleanup_chat, report_updates, follows, quiet_start, quiet_end, mentions, host_broadcasts FROM notification_prefs WHERE user_id = $1 LIMIT 1 -- ["userId-1"]
+SELECT category, enabled, push, email FROM notification_settings WHERE user_id = $1 -- ["userId-1"]
 SELECT id, platform, created_at, revoked_at FROM push_tokens WHERE user_id = $1 LIMIT $2 -- ["userId-1",50001]
 SELECT code, locale, holder_name, holder_handle, total_hours::float8 AS total_hours, entry_count, period_start, period_end, document_sha256, byte_size, issued_at, revoked_at, revoked_reason FROM service_hours_certificates WHERE user_id = $1 ORDER BY issued_at DESC LIMIT $2 -- ["userId-1",50001]
 SELECT om.organization_id, o.slug, o.name, om.role, om.joined_at FROM organization_members om JOIN organizations o ON o.id = om.organization_id WHERE om.user_id = $1 ORDER BY om.joined_at DESC LIMIT $2 -- ["userId-1",50001]
@@ -3758,6 +3778,15 @@ SELECT user_id, push, cleanup_chat, report_updates, follows, quiet_start, quiet_
 => []
 -- row
 SELECT user_id, push, cleanup_chat, report_updates, follows, quiet_start, quiet_end, mentions, host_broadcasts FROM notification_prefs WHERE user_id = $1 LIMIT 1 -- ["userId-1"]
+=> [{}]"
+`;
+
+exports[`sql transcripts > makeDrizzleDataExportRepository.notificationSettings 1`] = `
+"-- empty
+SELECT category, enabled, push, email FROM notification_settings WHERE user_id = $1 -- ["userId-1"]
+=> []
+-- row
+SELECT category, enabled, push, email FROM notification_settings WHERE user_id = $1 -- ["userId-1"]
 => [{}]"
 `;
 
@@ -6452,11 +6481,11 @@ COMMIT tx1
 
 exports[`sql transcripts > makeDrizzleNotificationRepository.clearByTypeAndLink 1`] = `
 "-- empty
-UPDATE notifications SET read_at = now() WHERE user_id = $1 AND type = $2 AND link = $3 AND read_at IS NULL -- ["userId-1","system","link-1"]
-=> undefined
+UPDATE notifications SET read_at = now() WHERE user_id = $1 AND type IN ($2, 'chat_mention') AND link = $3 AND read_at IS NULL RETURNING id -- ["userId-1","system","link-1"]
+=> []
 -- row
-UPDATE notifications SET read_at = now() WHERE user_id = $1 AND type = $2 AND link = $3 AND read_at IS NULL -- ["userId-1","system","link-1"]
-=> undefined"
+UPDATE notifications SET read_at = now() WHERE user_id = $1 AND type IN ($2, 'chat_mention') AND link = $3 AND read_at IS NULL RETURNING id -- ["userId-1","system","link-1"]
+=> ["id-row"]"
 `;
 
 exports[`sql transcripts > makeDrizzleNotificationRepository.createDefaultPrefs 1`] = `
@@ -6476,6 +6505,15 @@ DELETE FROM notifications WHERE user_id = $1 -- ["userId-1"]
 -- row
 DELETE FROM notifications WHERE user_id = $1 -- ["userId-1"]
 => undefined"
+`;
+
+exports[`sql transcripts > makeDrizzleNotificationRepository.deleteNotification 1`] = `
+"-- empty
+DELETE FROM notifications WHERE id = $1 AND user_id = $2 RETURNING id -- ["id-1","userId-1"]
+=> false
+-- row
+DELETE FROM notifications WHERE id = $1 AND user_id = $2 RETURNING id -- ["id-1","userId-1"]
+=> true"
 `;
 
 exports[`sql transcripts > makeDrizzleNotificationRepository.deletePushTokensForUser 1`] = `
@@ -6532,6 +6570,15 @@ SELECT id, locale FROM users WHERE id = ANY($1::uuid[]) -- [["userId-1"]]
 => {"<map>":[["id-row","locale-row"]]}"
 `;
 
+exports[`sql transcripts > makeDrizzleNotificationRepository.hasUnread 1`] = `
+"-- empty
+SELECT EXISTS ( SELECT 1 FROM notifications WHERE user_id = $1 AND read_at IS NULL AND type <> ALL (ARRAY['dm','cleanup_chat','group_chat','report_chat']) ) AS has_unread -- ["userId-1"]
+=> false
+-- row
+SELECT EXISTS ( SELECT 1 FROM notifications WHERE user_id = $1 AND read_at IS NULL AND type <> ALL (ARRAY['dm','cleanup_chat','group_chat','report_chat']) ) AS has_unread -- ["userId-1"]
+=> true"
+`;
+
 exports[`sql transcripts > makeDrizzleNotificationRepository.insertNotification 1`] = `
 "-- empty
 INSERT INTO notifications (user_id, type, title, body, link) VALUES ($1, $2, $3, $4, $5) RETURNING id, user_id, type, title, body, link, read_at, created_at -- ["userId-1","system","title-1","body-1","link-1"]
@@ -6566,13 +6613,22 @@ SELECT id, user_id, type, title, body, link, read_at, created_at, to_char(create
 => {"records":[{"id":"id-row","userId":"user_id-row","type":"type-row","title":"title-row","body":"body-row","link":"link-row","readAt":"2026-03-04T05:06:07.000Z","createdAt":"2026-03-04T05:06:07.000Z"}],"nextCursor":null}"
 `;
 
+exports[`sql transcripts > makeDrizzleNotificationRepository.markAllRead 1`] = `
+"-- empty
+UPDATE notifications SET read_at = now() WHERE user_id = $1 AND read_at IS NULL AND type <> ALL (ARRAY['dm','cleanup_chat','group_chat','report_chat']) -- ["userId-1"]
+=> 0
+-- row
+UPDATE notifications SET read_at = now() WHERE user_id = $1 AND read_at IS NULL AND type <> ALL (ARRAY['dm','cleanup_chat','group_chat','report_chat']) -- ["userId-1"]
+=> 1"
+`;
+
 exports[`sql transcripts > makeDrizzleNotificationRepository.markRead 1`] = `
 "-- empty
-UPDATE notifications SET read_at = now() WHERE user_id = $1 AND id = ANY($2::uuid[]) AND read_at IS NULL -- ["userId-1",["id-1"]]
-=> undefined
+UPDATE notifications SET read_at = now() WHERE user_id = $1 AND id = ANY($2::uuid[]) AND read_at IS NULL RETURNING id -- ["userId-1",["id-1"]]
+=> []
 -- row
-UPDATE notifications SET read_at = now() WHERE user_id = $1 AND id = ANY($2::uuid[]) AND read_at IS NULL -- ["userId-1",["id-1"]]
-=> undefined"
+UPDATE notifications SET read_at = now() WHERE user_id = $1 AND id = ANY($2::uuid[]) AND read_at IS NULL RETURNING id -- ["userId-1",["id-1"]]
+=> ["id-row"]"
 `;
 
 exports[`sql transcripts > makeDrizzleNotificationRepository.refreshUnreadNotification 1`] = `

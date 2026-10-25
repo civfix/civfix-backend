@@ -1,15 +1,21 @@
 import {
+  IdSchema,
   PaginationQuerySchema,
   MarkReadRequestSchema,
   UpdateNotificationPrefsRequestSchema,
   RegisterPushTokenRequestSchema,
   UnregisterPushTokenRequestSchema,
+  UpdateNotificationSettingsRequestSchema,
   NotificationTypeSchema,
+  AppError,
   type ListNotificationsResponse,
   type MarkReadResponse,
   type GetNotificationPrefsResponse,
   type NotificationPrefsDTO,
+  type NotificationSettingsDTO,
   type RegisterPushTokenResponse,
+  type NotificationUnreadResponse,
+  type PushWebConfigResponse,
 } from "@civfix/contract"
 import { z } from "zod"
 import type { FastifyInstance } from "fastify"
@@ -21,7 +27,13 @@ import {
 } from "../services/notification-service.js"
 import type { NotificationRepository } from "../services/notification-repository.js"
 import type { NotificationSettingsRepository } from "../services/notification-settings-repository.js"
+import { makeDrizzleNotificationSettingsRepository } from "../services/notification-settings-repository.drizzle.js"
+import {
+  makeNotificationSettingsService,
+  type NotificationSettingsService,
+} from "../services/notification-settings-service.js"
 import { makeRouteNotificationService } from "../services/route-notifier.js"
+import { webPushPublicKey } from "../services/web-push-config.js"
 import { perIdentity } from "../plugins/rate-limit.js"
 import { route } from "../versioning/route.js"
 import { parse } from "./_validate.js"
@@ -30,9 +42,22 @@ export const MARK_NOTIFICATIONS_READ_MAX_IDS = 200
 
 export const PUSH_TOKEN_RATE_LIMIT = perIdentity({ max: 10, timeWindow: "1 minute" })
 
+export const MARK_NOTIFICATIONS_READ_RATE_LIMIT = perIdentity({ max: 60, timeWindow: "1 minute" })
+
+export const MARK_ALL_NOTIFICATIONS_READ_RATE_LIMIT = perIdentity({
+  max: 10,
+  timeWindow: "1 minute",
+})
+
+export const DISMISS_NOTIFICATION_RATE_LIMIT = perIdentity({ max: 120, timeWindow: "1 minute" })
+
+export const NOTIFICATION_SETTINGS_RATE_LIMIT = perIdentity({ max: 30, timeWindow: "1 minute" })
+
 // Same rule as the contract's IdSchema: zod 4's .uuid() also checks the RFC version nibbles, which would
 // silently drop a device id older clients were allowed to send.
 const DeviceIdSchema = z.guid()
+
+const NotificationIdParamsSchema = z.object({ id: IdSchema }).strict()
 
 export const MarkNotificationsReadBodySchema = MarkReadRequestSchema.extend({
   ids: MarkReadRequestSchema.shape.ids.max(MARK_NOTIFICATIONS_READ_MAX_IDS),
@@ -94,6 +119,17 @@ export async function registerNotificationRoutes(
     })
   }
 
+  function settingsService(): NotificationSettingsService {
+    const users = app.authServices?.users
+    if (!users) throw AppError.unauthorized("Authentication required.")
+    return makeNotificationSettingsService({
+      repo:
+        app.notificationOverrides?.settingsRepo ??
+        makeDrizzleNotificationSettingsRepository(container.getDb().sql),
+      users,
+    })
+  }
+
   route(
     app,
     "listNotifications",
@@ -109,12 +145,44 @@ export async function registerNotificationRoutes(
     },
   )
 
-  route(app, "markNotificationsRead", { preHandler: csrfProtect }, async (request, reply) => {
+  route(app, "getNotificationUnread", async (request, reply) => {
     const userId = requireAuth(request)
-    const body = parse(MarkNotificationsReadBodySchema, request.body)
-    const payload: MarkReadResponse = await service().markRead(userId, body.ids)
+    const payload: NotificationUnreadResponse = await service().hasUnread(userId)
     reply.status(200).send(payload)
   })
+
+  route(
+    app,
+    "markNotificationsRead",
+    { preHandler: csrfProtect, config: { rateLimit: MARK_NOTIFICATIONS_READ_RATE_LIMIT } },
+    async (request, reply) => {
+      const userId = requireAuth(request)
+      const body = parse(MarkNotificationsReadBodySchema, request.body)
+      const payload: MarkReadResponse = await service().markRead(userId, body.ids)
+      reply.status(200).send(payload)
+    },
+  )
+
+  route(
+    app,
+    "markAllNotificationsRead",
+    { preHandler: csrfProtect, config: { rateLimit: MARK_ALL_NOTIFICATIONS_READ_RATE_LIMIT } },
+    async (request, reply) => {
+      const userId = requireAuth(request)
+      reply.status(200).send(await service().markAllRead(userId))
+    },
+  )
+
+  route(
+    app,
+    "dismissNotification",
+    { preHandler: csrfProtect, config: { rateLimit: DISMISS_NOTIFICATION_RATE_LIMIT } },
+    async (request, reply) => {
+      const userId = requireAuth(request)
+      const { id } = parse(NotificationIdParamsSchema, request.params)
+      reply.status(200).send(await service().dismiss(userId, id))
+    },
+  )
 
   route(app, "getNotificationPrefs", async (request, reply) => {
     const userId = requireAuth(request)
@@ -128,6 +196,30 @@ export async function registerNotificationRoutes(
     const payload: NotificationPrefsDTO = await service().updatePrefs(userId, body)
     reply.status(200).send(payload)
   })
+
+  route(app, "getPushWebConfig", async (request, reply) => {
+    requireAuth(request)
+    const payload: PushWebConfigResponse = { vapidPublicKey: webPushPublicKey(container.env) }
+    reply.status(200).send(payload)
+  })
+
+  route(app, "getNotificationSettings", async (request, reply) => {
+    const userId = requireAuth(request)
+    const payload: NotificationSettingsDTO = await settingsService().getSettings(userId)
+    reply.status(200).send(payload)
+  })
+
+  route(
+    app,
+    "updateNotificationSettings",
+    { preHandler: csrfProtect, config: { rateLimit: NOTIFICATION_SETTINGS_RATE_LIMIT } },
+    async (request, reply) => {
+      const userId = requireAuth(request)
+      const body = parse(UpdateNotificationSettingsRequestSchema, request.body)
+      const payload: NotificationSettingsDTO = await settingsService().updateSettings(userId, body)
+      reply.status(200).send(payload)
+    },
+  )
 
   route(
     app,

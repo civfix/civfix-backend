@@ -6,19 +6,24 @@ import type {
   NotificationDTO,
   NotificationPrefsDTO,
   NotificationType,
+  NotificationUnreadResponse,
   PaginationQuery,
   RegisterPushTokenRequest,
   UnregisterPushTokenRequest,
   UpdateNotificationPrefsRequest,
 } from "@civfix/contract"
-import type { PushItem, PushPayload, PushSender, UserChannel } from "@civfix/seams"
+import type { PushClearTarget, PushItem, PushPayload, PushSender, UserChannel } from "@civfix/seams"
 import type { FastifyBaseLogger } from "fastify"
 import type { SocialNotifier } from "./social-service.js"
 import type { PersonView } from "./social-repository.js"
 import type { PushGateMode } from "./notification-helpers.js"
-import { isWithinQuietHours, toNotificationDTO, toPrefsDTO } from "./notification-helpers.js"
+import {
+  isWithinQuietHours,
+  prefsFromSettings,
+  settingsPatchFromPrefs,
+  toNotificationDTO,
+} from "./notification-helpers.js"
 import { categoryForType, categorySettings } from "./notification-categories.js"
-import type { NotificationSettingsRepository } from "./notification-settings-repository.js"
 import {
   makeNotificationEmailer,
   type NotificationContent,
@@ -29,8 +34,9 @@ import { classifyPushToken, isRegistrablePushEndpoint } from "./push-token-polic
 import { renderMessage, type MessageKey, type MessageVars } from "../i18n/renderMessage.js"
 import { DEFAULT_LOCALE } from "../i18n/locales.js"
 import { actorDisplayName } from "./public-author.js"
+import type { NotificationSettingsRepository } from "./notification-settings-repository.js"
+import { effectiveNotificationSettings } from "./notification-settings-service.js"
 import type {
-  NotificationPrefsPatch,
   NotificationPrefsRecord,
   NotificationRecord,
   NotificationRepository,
@@ -60,6 +66,9 @@ export const PUSH_FANOUT_BATCH_SIZE = 100
 const NOTIFICATIONS_TOPIC = "notifications"
 
 const INVALID_PUSH_TOKEN_MESSAGE = "Invalid push token"
+
+// One message for an unknown id and for another person's, so a dismiss never reveals which ids exist.
+const NOTIFICATION_NOT_FOUND_MESSAGE = "Notification not found"
 
 function postLink(postId: string): string {
   return `/post/${postId}`
@@ -123,7 +132,10 @@ export interface FanOutNotificationResult {
 
 export interface NotificationService extends SocialNotifier, PostNotifier {
   listNotifications(userId: string, pagination: PaginationQuery): Promise<ListNotificationsResponse>
+  hasUnread(userId: string): Promise<NotificationUnreadResponse>
   markRead(userId: string, ids: string[]): Promise<{ ok: true }>
+  markAllRead(userId: string): Promise<{ ok: true }>
+  dismiss(userId: string, id: string): Promise<{ ok: true }>
   getPrefs(userId: string): Promise<NotificationPrefsDTO>
   updatePrefs(userId: string, patch: UpdateNotificationPrefsRequest): Promise<NotificationPrefsDTO>
   registerPushToken(userId: string, req: RegisterPushTokenRequest): Promise<{ ok: true }>
@@ -138,7 +150,7 @@ export interface NotificationService extends SocialNotifier, PostNotifier {
     userIds: string[],
     input: CreateNotificationInput,
   ): Promise<FanOutNotificationResult>
-  clearByTypeAndLink(userId: string, type: NotificationType, link: string): Promise<void>
+  clearByTypeAndLink(userId: string, type: NotificationType, link: string): Promise<string[]>
 }
 
 type FallbackLane = "coalesce" | "dedupe"
@@ -255,10 +267,12 @@ export function makeNotificationService(deps: NotificationServiceDeps): Notifica
         })
       : undefined
 
-  async function resolvePrefs(userId: string): Promise<NotificationPrefsRecord> {
-    const existing = await deps.repo.findPrefs(userId)
-    if (existing) return existing
-    return deps.repo.createDefaultPrefs(userId)
+  async function getPrefs(userId: string): Promise<NotificationPrefsDTO> {
+    const [settings, quiet] = await Promise.all([
+      deps.settingsRepo.getSettings(userId),
+      deps.repo.findPrefs(userId),
+    ])
+    return prefsFromSettings(effectiveNotificationSettings(settings), quiet)
   }
 
   async function maybeSendPush(
@@ -286,6 +300,17 @@ export function makeNotificationService(deps: NotificationServiceDeps): Notifica
     } catch (err) {
       deps.logger?.warn({ err, userId }, "notification signal publish failed (suppressed)")
     }
+  }
+
+  // Runs once the change is stored. A clear that fails leaves a delivered push on another device, never
+  // a failed read, so it is logged and the change stands.
+  async function syncReadChange(userId: string, target: PushClearTarget): Promise<void> {
+    try {
+      await deps.pushSender.clear(userId, target)
+    } catch (err) {
+      deps.logger?.warn({ err, userId }, "push clear failed (suppressed)")
+    }
+    await maybeSignalNotification(userId)
   }
 
   function needsLocale(input: CreateNotificationInput): boolean {
@@ -663,33 +688,40 @@ export function makeNotificationService(deps: NotificationServiceDeps): Notifica
       return { items: records.map(toNotificationDTO), nextCursor }
     },
 
+    async hasUnread(userId: string): Promise<NotificationUnreadResponse> {
+      return { hasUnread: await deps.repo.hasUnread(userId) }
+    },
+
     async markRead(userId: string, ids: string[]): Promise<{ ok: true }> {
-      if (ids.length > 0) await deps.repo.markRead(userId, ids)
+      const changed = await deps.repo.markRead(userId, ids)
+      if (changed.length > 0) await syncReadChange(userId, { ids: changed })
       return { ok: true }
     },
 
-    async getPrefs(userId: string): Promise<NotificationPrefsDTO> {
-      return toPrefsDTO(await resolvePrefs(userId))
+    async markAllRead(userId: string): Promise<{ ok: true }> {
+      if ((await deps.repo.markAllRead(userId)) > 0) await syncReadChange(userId, { all: true })
+      return { ok: true }
     },
+
+    async dismiss(userId: string, id: string): Promise<{ ok: true }> {
+      if (!(await deps.repo.deleteNotification(userId, id))) {
+        throw AppError.notFound(NOTIFICATION_NOT_FOUND_MESSAGE)
+      }
+      await syncReadChange(userId, { ids: [id] })
+      return { ok: true }
+    },
+
+    getPrefs,
 
     async updatePrefs(
       userId: string,
       patch: UpdateNotificationPrefsRequest,
     ): Promise<NotificationPrefsDTO> {
-      await resolvePrefs(userId)
-      const repoPatch: NotificationPrefsPatch = {
-        ...(patch.push !== undefined ? { push: patch.push } : {}),
-        ...(patch.cleanupChat !== undefined ? { cleanupChat: patch.cleanupChat } : {}),
-        ...(patch.reportUpdates !== undefined ? { reportUpdates: patch.reportUpdates } : {}),
-        ...(patch.follows !== undefined ? { follows: patch.follows } : {}),
-        ...(patch.mentions !== undefined ? { mentions: patch.mentions } : {}),
-        ...(patch.postInteractions !== undefined
-          ? { postInteractions: patch.postInteractions }
-          : {}),
-        ...(patch.hostBroadcasts !== undefined ? { hostBroadcasts: patch.hostBroadcasts } : {}),
-        ...("quietHours" in patch ? { quietHours: patch.quietHours ?? null } : {}),
+      await deps.settingsRepo.upsertSettings(userId, settingsPatchFromPrefs(patch))
+      if ("quietHours" in patch) {
+        await deps.repo.upsertPrefs(userId, { quietHours: patch.quietHours ?? null })
       }
-      return toPrefsDTO(await deps.repo.upsertPrefs(userId, repoPatch))
+      return getPrefs(userId)
     },
 
     async registerPushToken(userId: string, req: RegisterPushTokenRequest): Promise<{ ok: true }> {
@@ -755,9 +787,14 @@ export function makeNotificationService(deps: NotificationServiceDeps): Notifica
       return doCreateNotifications(userIds, input)
     },
 
-    async clearByTypeAndLink(userId: string, type: NotificationType, link: string): Promise<void> {
-      await deps.repo.clearByTypeAndLink(userId, type, link)
-      await maybeSignalNotification(userId)
+    async clearByTypeAndLink(
+      userId: string,
+      type: NotificationType,
+      link: string,
+    ): Promise<string[]> {
+      const changed = await deps.repo.clearByTypeAndLink(userId, type, link)
+      if (changed.length > 0) await syncReadChange(userId, { ids: changed })
+      return changed
     },
 
     async onNewFollower(args: { followeeId: string; follower: PersonView }): Promise<void> {
