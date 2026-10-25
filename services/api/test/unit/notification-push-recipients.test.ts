@@ -10,6 +10,7 @@ import {
 } from "../../src/services/notification-service.js"
 import {
   InMemoryNotificationRepository,
+  InMemoryNotificationSettingsRepository,
   flushNotificationDispatch,
 } from "../helpers/notifications.js"
 
@@ -39,7 +40,11 @@ class RecordingPushSender implements PushSender {
 function harness() {
   const repo = new InMemoryNotificationRepository()
   const push = new RecordingPushSender()
-  const service = makeNotificationService({ repo, pushSender: push })
+  const service = makeNotificationService({
+    repo,
+    settingsRepo: new InMemoryNotificationSettingsRepository(),
+    pushSender: push,
+  })
   return { repo, push, service }
 }
 

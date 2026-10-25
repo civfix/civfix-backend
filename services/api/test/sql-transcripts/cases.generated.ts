@@ -2885,6 +2885,11 @@ export const cases: TranscriptCase[] = [
       (m45 as any).makeDrizzleDataExportRepository(sql).notificationPrefs("userId-1"),
   },
   {
+    key: "makeDrizzleDataExportRepository.notificationSettings",
+    run: async (sql: any) =>
+      (m45 as any).makeDrizzleDataExportRepository(sql).notificationSettings("userId-1"),
+  },
+  {
     key: "makeDrizzleDataExportRepository.organizations",
     run: async (sql: any) =>
       (m45 as any).makeDrizzleDataExportRepository(sql).organizations("userId-1", 3),
