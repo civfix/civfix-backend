@@ -6,6 +6,7 @@ import { makeContainer, type Container } from "../../src/di.js"
 import { loadEnv } from "../../src/env.js"
 import { makeErrorHandler, makeNotFoundHandler } from "../../src/errors/http-mapper.js"
 import { registerUnsubscribeRoutes } from "../../src/routes/host/unsubscribe.routes.js"
+import { registerNotificationUnsubscribeRoutes } from "../../src/routes/notification-unsubscribe.routes.js"
 import { makeServer } from "../../src/server.js"
 import {
   mintUnsubscribeToken,
@@ -17,6 +18,14 @@ import {
   type BroadcastConfig,
 } from "../../src/services/host/broadcast-service.js"
 import type { CommsRuntime } from "../../src/services/host/comms-wiring.js"
+import {
+  mintNotificationEmailToken,
+  notificationEmailExpiryFrom,
+} from "../../src/services/notification-email-token.js"
+import {
+  InMemoryNotificationRepository,
+  InMemoryNotificationSettingsRepository,
+} from "../helpers/notifications.js"
 
 vi.mock("../../src/env.js", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../../src/env.js")>()
@@ -97,6 +106,46 @@ describe("5xx copy written for the people who see it survives production masking
     const res = await instance.inject({
       method: "POST",
       url: "/v1/broadcasts/unsubscribe",
+      payload: { token },
+    })
+
+    expect(res.statusCode).toBe(503)
+    expect(res.json()).toMatchObject({
+      message: "We couldn't save your unsubscribe. Please try again.",
+    })
+  })
+
+  it("tells a notification email's one-click unsubscriber to try again", async () => {
+    const settingsRepo = new InMemoryNotificationSettingsRepository()
+    settingsRepo.disableEmail = () => Promise.reject(new Error("connection terminated"))
+    const instance = Fastify({ logger: false })
+    instance.setErrorHandler(makeErrorHandler())
+    instance.setNotFoundHandler(makeNotFoundHandler())
+    instance.decorate("notificationOverrides", {
+      repo: new InMemoryNotificationRepository(),
+      settingsRepo,
+    })
+    await registerNotificationUnsubscribeRoutes(instance, {
+      env: {
+        NODE_ENV: "test",
+        WEB_ORIGINS: ["http://localhost:3000"],
+        UNSUBSCRIBE_SIGNING_KEY: SIGNING_KEY,
+      },
+    } as unknown as Container)
+    await instance.ready()
+    app = instance
+    const token = mintNotificationEmailToken(
+      {
+        userId: "00000000-0000-0000-0000-0000000000aa",
+        category: "events",
+        expiresAtMs: notificationEmailExpiryFrom(Date.now()),
+      },
+      SIGNING_KEY,
+    )
+
+    const res = await instance.inject({
+      method: "POST",
+      url: "/v1/notifications/email-unsubscribe",
       payload: { token },
     })
 

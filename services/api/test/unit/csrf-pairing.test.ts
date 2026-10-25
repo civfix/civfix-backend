@@ -51,6 +51,8 @@ const CSRF_EXEMPT: Readonly<Record<string, string>> = {
   recordEventPageView: PUBLIC,
   unsubscribeBroadcasts:
     "public one-click unsubscribe (RFC 8058): the signed token, not a session, is the capability",
+  unsubscribeNotificationEmail:
+    "public one-click unsubscribe (RFC 8058): the signed token, not a session, is the capability",
   createMediaUpload: UNDER_REVIEW,
   finalizeMedia: UNDER_REVIEW,
   claimNudge: UNDER_REVIEW,
@@ -94,6 +96,17 @@ describe("CSRF pairing: every mutation runs csrfProtect or is a reviewed excepti
         `${name} mutates without csrfProtect; pair it or add a reviewed exemption`,
       ).toBe(true)
     }
+  })
+
+  it("T44: checks the inbox mutations", () => {
+    expect(mutations).toEqual(
+      expect.arrayContaining(["markAllNotificationsRead", "dismissNotification"]),
+    )
+  })
+
+  it("T13: checks updateNotificationSettings and finds csrfProtect", () => {
+    expect(mutations).toContain("updateNotificationSettings")
+    expect(preHandlersOf("updateNotificationSettings")).toContain(harness.container.csrf.protect)
   })
 
   it("lists only real mutations as exemptions", () => {

@@ -71,7 +71,7 @@
   "dependencies": {
     "@aws-sdk/client-s3": "^3.1147.0",
     "@aws-sdk/s3-request-presigner": "^3.1147.0",
-    "@civfix/contract": "^0.64.0",
+    "@civfix/contract": "0.65.0-b-feat-notification-center-contract.g58d238e",
     "@civfix/tokens": "^0.1.0",
     "@fastify/cookie": "^11.1.2",
     "@fastify/cors": "^10.1.0",
@@ -90,7 +90,6 @@
     "ioredis": "^5.11.1",
     "jose": "^5.10.0",
     "mailparser": "^3.9.36",
-    "node-apn": "^3.0.0",
     "nodemailer": "^10.0.15",
     "oslo": "^1.2.1",
     "pdfkit": "^0.19.1",

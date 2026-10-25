@@ -284,22 +284,15 @@ describe("OciMailer.sendOtp", () => {
 })
 
 describe("OciMailer.sendTransactional", () => {
-  it("renders the report_update template with the interpolated status", async () => {
-    await new OciMailer(CONFIG).sendTransactional("user@example.com", "report_update", {
-      status: "resolved",
-    })
-    const args = sendMail.mock.calls[0]![0]
-    expect(args.subject).toBe("Your civfix report was resolved")
-    expect(args.text).toContain("Your report has a new status: resolved.")
-    expect(args.html).toContain("resolved")
-  })
-
   it("localizes from a `locale` var", async () => {
-    await new OciMailer(CONFIG).sendTransactional("user@example.com", "report_update", {
-      status: "resuelto",
+    await new OciMailer(CONFIG).sendTransactional("user@example.com", "guest_otp", {
+      title: "Limpieza",
+      code: "123456",
       locale: "es",
     })
-    expect(sendMail.mock.calls[0]![0].subject).toBe("Tu reporte en civfix fue resuelto")
+    expect(sendMail.mock.calls[0]![0].subject).toBe(
+      "Tu código para confirmar tu asistencia a Limpieza",
+    )
   })
 
   it("falls back to the generic template for an unknown name, honoring caller subject/message", async () => {
