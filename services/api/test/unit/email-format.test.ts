@@ -52,7 +52,8 @@ function reportRecord(overrides: Partial<AdminReportRecord> = {}): AdminReportRe
 
 const NO_TEMPLATES = { subject: null, body: null }
 
-const photos = (...urls: string[]) => urls.map((url) => ({ kind: "image" as const, url }))
+const photos = (...urls: string[]) =>
+  urls.map((url, i) => ({ id: `m-${i + 1}`, kind: "image" as const, url }))
 
 const defaultSubjectUses = (token: string): boolean =>
   templateUsesToken(DEFAULT_FORWARD_SUBJECT_TEMPLATE, token)
@@ -389,10 +390,19 @@ describe("buildReportPacket", () => {
     expect(packet.html).toContain(
       "Location: 100 Main St<br>Coordinates: 39.5, -98.35<br>View the exact location",
     )
-    expect(packet.html).toContain(
+    expect(packet.text).toContain("Location: 100 Main St\nCoordinates: 39.5, -98.35\n")
+
+    // The default template no longer lists media (it is appended), so a custom one carries the link.
+    const linked = buildReportPacket(
+      reportRecord(),
+      null,
+      photos("https://cdn.example.org/a.jpg", "https://cdn.example.org/b.jpg"),
+      null,
+      { subject: null, body: "Photos ({photoCount}):\n{photoLinks}" },
+    )
+    expect(linked.html).toContain(
       'a.jpg</a><br>- Photo 2: <a class="cv-link" href="https://cdn.example.org/b.jpg"',
     )
-    expect(packet.text).toContain("Location: 100 Main St\nCoordinates: 39.5, -98.35\n")
   })
 
   it("renders the operator-facing status LABEL, not the raw enum value", () => {
@@ -407,9 +417,9 @@ describe("buildReportPacket", () => {
 
 describe("{photoLinks} and the appended media list", () => {
   const mixed = [
-    { kind: "image" as const, url: "https://cdn.test/a.jpg" },
-    { kind: "video" as const, url: "https://cdn.test/v.mp4" },
-    { kind: "image" as const, url: "https://cdn.test/b.jpg?X-Amz-Signature=s&x=1" },
+    { id: "m-1", kind: "image" as const, url: "https://cdn.test/a.jpg" },
+    { id: "m-2", kind: "video" as const, url: "https://cdn.test/v.mp4" },
+    { id: "m-3", kind: "image" as const, url: "https://cdn.test/b.jpg?X-Amz-Signature=s&x=1" },
   ]
 
   it("renders one '- <Kind> <n>: <link>' line per item, numbered per kind in media order", () => {

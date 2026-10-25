@@ -1,7 +1,7 @@
 import { afterAll, describe, expect, it } from "vitest"
 import { randomUUID } from "node:crypto"
 import { getTableName, is } from "drizzle-orm"
-import { PgTable, getTableConfig } from "drizzle-orm/pg-core"
+import { IndexedColumn, PgDialect, PgTable, getTableConfig } from "drizzle-orm/pg-core"
 import {
   AddressPrecisionSchema,
   EventAddressSourceSchema,
@@ -119,6 +119,11 @@ const EXPECTED_TABLES = [
   "legal_documents",
   "consent_records",
   "geocode_cache",
+  "report_filings",
+  "filing_evidence",
+  "filing_routes",
+  "filing_settings",
+  "filing_messages",
 ] as const
 
 const FOREIGN_TABLES = new Set(["_civfix_migrations", "spatial_ref_sys"])
@@ -781,6 +786,12 @@ const MIRRORED_CHECKS: readonly MirroredCheck[] = [
   { table: "volunteer_hours", column: "source", mirror: ["report", "event", "manual"] },
   { table: "reports", column: "verification_verdict", mirror: ["approved", "rejected"] },
   { table: "broadcast_unsubscribes", column: "subject_kind", mirror: ["user", "guest"] },
+  { table: "report_filings", column: "status", mirror: schema.FILING_STATUS_VALUES },
+  { table: "report_filings", column: "method", mirror: schema.FILING_METHOD_VALUES },
+  { table: "report_filings", column: "reason", mirror: schema.FILING_REASON_VALUES },
+  { table: "report_filings", column: "channel", mirror: schema.FILING_CHANNEL_VALUES },
+  { table: "filing_evidence", column: "kind", mirror: schema.FILING_EVIDENCE_KIND_VALUES },
+  { table: "filing_routes", column: "channel", mirror: schema.FILING_CHANNEL_VALUES },
   { table: "cleanups", column: "address_source", mirror: EventAddressSourceSchema.options },
   { table: "reports", column: "addr_source", mirror: ReportAddressSourceSchema.options },
   { table: "reports", column: "addr_precision", mirror: AddressPrecisionSchema.options },
@@ -910,6 +921,57 @@ describe.skipIf(!pg)("schema: enum mirrors match the DDL CHECK constraints", () 
       expect(mirrorIndexNames.has(name), `mirror missing ${name}`).toBe(true)
       expect(liveIndexNames.has(name), `db missing ${name}`).toBe(true)
     }
+  })
+
+  it("T11: every filing index matches its mirror declaration, columns and WHERE included", async () => {
+    const filingTables = [
+      "report_filings",
+      "filing_evidence",
+      "filing_routes",
+      "filing_settings",
+      "filing_messages",
+    ]
+    const mirrors = Object.values(schema as Record<string, unknown>)
+      .filter((v): v is PgTable => is(v, PgTable))
+      .filter((t) => filingTables.includes(getTableName(t)))
+    expect(mirrors.map((t) => getTableName(t)).sort()).toEqual([...filingTables].sort())
+
+    // Postgres renders both sides: the mirror's indexes are rebuilt on a temp copy of each table, so
+    // the comparison is between two pg_get_indexdef outputs rather than hand-normalized SQL text.
+    const shape = (def: string) =>
+      def.replace(/^CREATE (UNIQUE )?INDEX \S+ ON \S+ /, "CREATE $1INDEX ON ")
+    const dialect = new PgDialect()
+    await h.sql.begin(async (tx) => {
+      for (const table of mirrors) {
+        const name = getTableName(table)
+        const live = await tx<{ name: string; def: string }[]>`
+          SELECT c.relname AS name, pg_get_indexdef(i.indexrelid) AS def
+          FROM pg_index i JOIN pg_class c ON c.oid = i.indexrelid
+          WHERE i.indrelid = ${name}::regclass AND NOT i.indisprimary
+        `
+        const copy = `mirror_${name}`
+        await tx.unsafe(`CREATE TEMP TABLE ${copy} (LIKE ${name}) ON COMMIT DROP`)
+        const mirrored = new Map<string, string>()
+        for (const idx of getTableConfig(table).indexes) {
+          const cols = idx.config.columns.map((c) => {
+            if (!is(c, IndexedColumn)) throw new Error(`${idx.config.name}: expression column`)
+            return `"${c.name}"${c.indexConfig.order === "desc" ? " DESC" : ""}`
+          })
+          const where = idx.config.where ? dialect.sqlToQuery(idx.config.where) : null
+          expect(where?.params ?? []).toEqual([])
+          const tmp = `${idx.config.name}_m`
+          await tx.unsafe(
+            `CREATE ${idx.config.unique ? "UNIQUE " : ""}INDEX ${tmp} ON ${copy} (${cols.join(", ")})` +
+              (where ? ` WHERE ${where.sql}` : ""),
+          )
+          const [d] = await tx<{ def: string }[]>`SELECT pg_get_indexdef(${tmp}::regclass) AS def`
+          mirrored.set(idx.config.name!, shape(d!.def))
+        }
+        expect(new Map(live.map((l) => [l.name, shape(l.def)])), `index drift on ${name}`).toEqual(
+          mirrored,
+        )
+      }
+    })
   })
 
   it("notifications_feed_idx predicate equals FEED_HIDDEN_NOTIFICATION_TYPES (F089)", async () => {

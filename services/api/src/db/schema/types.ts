@@ -192,3 +192,36 @@ export const MAIL_EVENT_TYPE_VALUES = [
 ] as const
 
 export const INBOUND_EMAIL_STATUS_VALUES = ["unread", "read", "archived"] as const
+
+export const FILING_CHANNEL_VALUES = ["email", "portal", "manual"] as const
+
+export const FILING_STATUS_VALUES = [
+  "queued",
+  "running",
+  "submitted",
+  "linked_existing",
+  "needs_human",
+  "cancelled",
+] as const
+
+export const FILING_METHOD_VALUES = ["email", "script", "operator"] as const
+
+export const FILING_EVIDENCE_KIND_VALUES = ["screenshot", "script"] as const
+
+export const FILING_REASON_VALUES = [
+  "no_route",
+  "route_disabled",
+  "manual_route",
+  "filing_off",
+  "dry_run",
+  "captcha",
+  "login_required",
+  "missing_info",
+  "portal_error",
+  "attempts_exhausted",
+  "uncertain_submission",
+  "ai_unavailable",
+  "city_needs_info",
+  "reopened_after_city_closed",
+  "other",
+] as const

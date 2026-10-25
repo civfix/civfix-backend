@@ -45,6 +45,14 @@ export interface ReportOutreachState {
   sendInFlight?: boolean
 }
 
+export interface OutreachOptions {
+  /**
+   * Counts only outbound packets created at or after this time in packetSent, sendFailed and
+   * sendInFlight, so a filing sees its own send and not one from before it.
+   */
+  packetsSince?: Date
+}
+
 export interface AdminReportRecord {
   id: string
   category: ReportCategory
@@ -85,7 +93,7 @@ export interface AdminReportRepository {
   getReport(id: string): Promise<AdminReportRecord | null>
   listTimeline(id: string): Promise<AdminReportTimelineRecord[]>
   getRouting(id: string): Promise<AdminReportRoutingRecord | null>
-  getOutreach(id: string): Promise<ReportOutreachState>
+  getOutreach(id: string, opts?: OutreachOptions): Promise<ReportOutreachState>
   advanceStatusIfIn(
     id: string,
     input: {
