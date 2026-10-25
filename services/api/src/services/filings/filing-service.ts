@@ -108,7 +108,7 @@ const THE_CITY = "the city"
 const ROUTE_KIND: ReportTimelineItem["kind"] = "route"
 
 /** The fixed public note of a successful filing (D5): no text from a city or a script ever reaches it. */
-export function filingNote(
+function filingNote(
   outcome: "submitted" | "linked_existing",
   jurisdictionName: string | null,
   caseId: string | null,
@@ -139,7 +139,7 @@ function iso(date: Date | null): string | null {
   return date === null ? null : date.toISOString()
 }
 
-export function toAdminFilingDTO(
+function toAdminFilingDTO(
   filing: FilingRecord,
   report: Pick<AdminReportRecord, "title" | "referenceCode">,
 ): AdminReportFilingDTO {

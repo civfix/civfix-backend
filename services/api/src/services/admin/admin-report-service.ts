@@ -427,6 +427,7 @@ function assertNoSendInFlight(existing: ReportOutreachState): void {
   }
 }
 
+/** @public The email filing worker (#184) runs this same check under the route lock. */
 export function assertRoutable(existing: ReportOutreachState, toAddr: string): void {
   assertNoSendInFlight(existing)
   const retargeted = existing.routedTo !== null && !sameAddress(existing.routedTo, toAddr)

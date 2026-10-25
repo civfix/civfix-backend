@@ -34,7 +34,7 @@ const NO_ROUTE: ResolvedFilingRoute = {
 }
 
 /** The portal key: the lowercase hostname of the route's start URL (D4). */
-export function portalHostOf(formUrl: string): string {
+function portalHostOf(formUrl: string): string {
   return new URL(formUrl).hostname.toLowerCase()
 }
 

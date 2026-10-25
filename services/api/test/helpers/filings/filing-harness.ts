@@ -73,9 +73,7 @@ function reportView(seeded: SeededReport): MemoryReport {
  * reports it reads are the admin twin's, and the `route` rows it writes land on the admin twin's
  * timeline too.
  */
-export function linkedFilingRepository(
-  reports: InMemoryAdminReportRepository,
-): InMemoryFilingRepository {
+function linkedFilingRepository(reports: InMemoryAdminReportRepository): InMemoryFilingRepository {
   const filings = new InMemoryFilingRepository()
   filings.jurisdictions.set(J_GEOID, J_NAME)
   const get = (id: string): MemoryReport | undefined => {
