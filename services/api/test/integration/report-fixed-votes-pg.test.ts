@@ -692,11 +692,22 @@ describe.skipIf(!pg)("report fixed votes (integration)", () => {
       `
       await h.sql`ANALYZE reports`
       const wide = { west: -179, south: -50, east: 21, north: 50 }
-      const plan = await h.sql.begin(async (tx) => {
-        await tx`SET LOCAL enable_seqscan = off`
-        await tx`SET LOCAL enable_bitmapscan = off`
-        return explainPressing(tx, wide, 20)
-      })
+      // On a table this small reports_public_recent_idx is an equally cheap ordered path, so the planner
+      // flips between the two from run to run. Dropping it inside a rolled-back transaction leaves the
+      // assertion about the one thing it guards: the query's WHERE still implies the pressing predicate.
+      const rollback = new Error("rollback")
+      let plan = ""
+      await h.sql
+        .begin(async (tx) => {
+          await tx`DROP INDEX reports_public_recent_idx`
+          await tx`SET LOCAL enable_seqscan = off`
+          await tx`SET LOCAL enable_bitmapscan = off`
+          plan = await explainPressing(tx, wide, 20)
+          throw rollback
+        })
+        .catch((err: unknown) => {
+          if (err !== rollback) throw err
+        })
       expect(plan, plan).toContain(`Index Scan using ${PRESSING_INDEX}`)
     })
   })
