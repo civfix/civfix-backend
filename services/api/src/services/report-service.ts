@@ -484,6 +484,12 @@ export function makeReportService(deps: ReportServiceDeps): ReportService {
         throw AppError.conflict("This report cannot be resolved or reopened from its current state")
       }
       if (outcome === "unchanged") return service.getReport(reportId, { userId })
+      if (outcome === "updated_reopen_skipped") {
+        deps.logger?.warn(
+          { reportId },
+          "report: reopened after its city closed the request, but a filing is already open; no new filing",
+        )
+      }
       await maybeEmitTimeline(deps, { reportId, status, kind: resolved ? "done" : "status", note })
       return service.getReport(reportId, { userId })
     },

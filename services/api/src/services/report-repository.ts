@@ -172,7 +172,7 @@ export interface ReportRepository {
     reportId: string,
     userId: string,
     input: { status: OwnerToggleStatus; note: string },
-  ): Promise<"updated" | "unchanged" | "not_found" | "forbidden" | "invalid_state">
+  ): Promise<ResolveByOwnerOutcome>
   setVisibilityByOwner(
     reportId: string,
     userId: string,
@@ -181,6 +181,10 @@ export interface ReportRepository {
 }
 
 export type OwnerToggleStatus = Extract<ReportStatus, "resolved" | "published">
+
+/** `updated_reopen_skipped`: reopened after the city closed it, but a filing was already open (D12). */
+export type ResolveByOwnerOutcome =
+  "updated" | "updated_reopen_skipped" | "unchanged" | "not_found" | "forbidden" | "invalid_state"
 
 export type VoteChange = "add" | "remove"
 
