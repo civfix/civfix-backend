@@ -34,6 +34,8 @@ export const FILING_EVIDENCE_MAX = 50
 export const FILING_ROUTES_MAX = 16
 export const FILING_REPORT_IDS_MAX = 100
 export const FILING_CASE_TOKENS_MAX = 500
+/** `reason_detail` is admin-only plain text (D6). */
+export const FILING_REASON_DETAIL_MAX = 500
 export const FILING_CASE_MATCH_MAX = 50
 export const FILING_CASE_WINDOW_DAYS = 180
 
@@ -217,6 +219,12 @@ export interface ListDueQueuedArgs {
   /** Null skips the age test (Resume runs a pass without it). */
   updatedBefore: Date | null
   channels: readonly FilingChannel[]
+  limit: number
+}
+
+export interface ListStaleRunningArgs {
+  /** Only filings whose last write is older than this. */
+  updatedBefore: Date
   limit: number
 }
 

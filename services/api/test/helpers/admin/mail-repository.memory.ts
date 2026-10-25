@@ -606,6 +606,19 @@ export class InMemoryMailRepository implements MailRepository {
     return Promise.resolve(best?.id ?? null)
   }
 
+  latestUnsentPacketId(threadId: string, since: Date): Promise<string | null> {
+    const latest = this.latestMessage(
+      (m) =>
+        m.threadId === threadId &&
+        m.direction === "out" &&
+        (m.kind ?? "packet") === "packet" &&
+        m.createdAt.getTime() >= since.getTime(),
+    )
+    if (latest === null) return Promise.resolve(null)
+    const sent = this.events.some((e) => e.messageId === latest.id && e.type === "sent")
+    return Promise.resolve(sent ? null : latest.id)
+  }
+
   getOutboundMessageForResend(messageId: string): Promise<OutboundMessageSnapshot | null> {
     const m = this.messages.find((x) => x.id === messageId && x.direction === "out")
     if (!m) return Promise.resolve(null)

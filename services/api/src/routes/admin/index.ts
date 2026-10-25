@@ -6,6 +6,7 @@ import { registerAdminHomeRoutes } from "./home.routes.js"
 import { registerAdminDiscoveryRoutes } from "./discovery.routes.js"
 import { registerAdminJurisdictionsRoutes } from "./jurisdictions.routes.js"
 import { registerAdminReportsRoutes } from "./reports.routes.js"
+import { registerAdminFilingRoutes } from "./filings.routes.js"
 import { registerAdminReportChatRoutes } from "./report-chat.routes.js"
 import { registerAdminEventsRoutes } from "./events.routes.js"
 import { registerAdminUsersRoutes } from "./users.routes.js"
@@ -37,6 +38,7 @@ export async function registerAdminRoutes(
     await registerAdminDiscoveryRoutes(operator, container)
     await registerAdminJurisdictionsRoutes(operator, container)
     await registerAdminReportsRoutes(operator, container)
+    await registerAdminFilingRoutes(operator, container)
     await registerAdminReportChatRoutes(operator, container)
     await registerAdminEventsRoutes(operator, container)
     await registerAdminUsersRoutes(operator, container)

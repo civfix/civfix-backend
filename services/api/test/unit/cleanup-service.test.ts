@@ -821,6 +821,7 @@ describe("requestResources (D19 event resource request)", () => {
         findReportThread: () => Promise.reject(new Error("unused")),
         prepareReportToJurisdiction: () => Promise.reject(new Error("unused")),
         sendReportToJurisdiction: () => Promise.reject(new Error("unused")),
+        redeliverReportPacket: () => Promise.reject(new Error("unused")),
         compose: () => Promise.reject(new Error("unused")),
         appendOutbound: () => Promise.reject(new Error("unused")),
       },

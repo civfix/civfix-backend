@@ -3,10 +3,14 @@ import type { FastifyBaseLogger } from "fastify"
 import { MS_PER_HOUR, MS_PER_MINUTE } from "../../lib/time.js"
 import type { FilingRepository } from "./filing-repository.js"
 import type { ApplyFilingSuccessInput } from "./filing-service.js"
-import type { FilingMutableFields, FilingReason, FilingRecord } from "./filing-types.js"
+import {
+  FILING_REASON_DETAIL_MAX,
+  type FilingMutableFields,
+  type FilingReason,
+  type FilingRecord,
+} from "./filing-types.js"
 import { FilingResultPayloadSchema, type FilingResultPayload } from "./filings-worker.js"
 
-const REASON_DETAIL_MAX = 500
 const MAX_ATTEMPTS = 3
 const RETRY_DELAY_MS: Readonly<Record<number, number>> = {
   1: 10 * MS_PER_MINUTE,
@@ -55,7 +59,7 @@ function portalCaseUrl(caseUrl: string, portalHost: string | null): string | nul
 function detail(payload: FilingResultPayload): Partial<FilingMutableFields> {
   return payload.reasonDetail === undefined
     ? {}
-    : { reasonDetail: payload.reasonDetail.slice(0, REASON_DETAIL_MAX) }
+    : { reasonDetail: payload.reasonDetail.slice(0, FILING_REASON_DETAIL_MAX) }
 }
 
 /**

@@ -32,6 +32,7 @@ import {
   type InsertFilingMessageInput,
   type LatestSuccessfulFiling,
   type ListDueQueuedArgs,
+  type ListStaleRunningArgs,
   type ListFilingsArgs,
   type ListFilingsResult,
   type RecordSuccessInput,
@@ -172,7 +173,8 @@ export class InMemoryFilingRepository implements FilingRepository {
       throw err
     }
     this.filings.set(filing.id, filing)
-    if (audit !== undefined) this.audits.push(audit)
+    if (audit !== undefined)
+      this.audits.push({ ...audit, target: audit.target ?? `filing:${filing.id}` })
     return Promise.resolve({ kind: "created", filing: this.withName(filing) })
   }
 
@@ -384,10 +386,20 @@ export class InMemoryFilingRepository implements FilingRepository {
     return Promise.resolve(due.slice(0, limit).map((f) => this.withName(f)))
   }
 
+  listStaleRunningEmail(args: ListStaleRunningArgs): Promise<FilingRecord[]> {
+    const limit = clampPageLimit(args.limit, FILING_DUE_MAX_LIMIT, FILING_DUE_MAX_LIMIT)
+    const stale = this.all()
+      .filter(
+        (f) => f.status === "running" && f.channel === "email" && f.updatedAt < args.updatedBefore,
+      )
+      .sort((a, b) => byOldest({ at: a.updatedAt, id: a.id }, { at: b.updatedAt, id: b.id }))
+    return Promise.resolve(stale.slice(0, limit).map((f) => this.withName(f)))
+  }
+
   listRunningFilings(): Promise<RunningFiling[]> {
     return Promise.resolve(
       this.all()
-        .filter((f) => f.status === "running")
+        .filter((f) => f.status === "running" && f.channel === "portal")
         .sort((a, b) => byOldest({ at: a.updatedAt, id: a.id }, { at: b.updatedAt, id: b.id }))
         .slice(0, FILING_RUNNING_MAX)
         .map((f) => ({ id: f.id, attempts: f.attempts, runId: f.runId })),

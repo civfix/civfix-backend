@@ -59,18 +59,7 @@ const CSRF_EXEMPT: Readonly<Record<string, string>> = {
 const MUTATING = new Set(["POST", "PUT", "PATCH", "DELETE"])
 
 // Contract endpoints the server does not serve yet, skipped by name with the reason.
-const NOT_YET_ROUTED: Readonly<Record<string, string>> = {
-  fileReport: "#171",
-  listFilings: "#171",
-  getFiling: "#171",
-  retryFiling: "#171",
-  cancelFiling: "#171",
-  recordManualFiling: "#171",
-  getFilingSettings: "#171",
-  setFilingSettings: "#171",
-  listFilingRoutes: "#171",
-  saveFilingRoutes: "#171",
-}
+const NOT_YET_ROUTED: Readonly<Record<string, string>> = {}
 
 let harness: AuthHarness
 
