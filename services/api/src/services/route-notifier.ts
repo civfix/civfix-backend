@@ -17,6 +17,7 @@ export function makeRouteNotificationService(
     settingsRepo: makeDrizzleNotificationSettingsRepository(container.getDb().sql),
     pushSender: container.pushSender,
     userChannel: container.userChannel,
+    email: container.getNotificationEmail(),
     ...(logger !== undefined ? { logger } : {}),
   })
 }

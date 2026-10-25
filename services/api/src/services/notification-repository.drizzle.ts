@@ -7,6 +7,7 @@ import {
 } from "../db/cursor-helpers.js"
 import type {
   CoalescedNotificationArgs,
+  EmailRecipientRecord,
   NewNotificationArgs,
   NotificationPrefsPatch,
   NotificationPrefsRecord,
@@ -447,6 +448,25 @@ export function makeDrizzleNotificationRepository(sql: Sql): NotificationReposit
         SELECT locale FROM users WHERE id = ${userId} LIMIT 1
       `
       return rows[0]?.locale ?? null
+    },
+
+    // The suppression key is emailHashOf's sha256(lower(trim(email))), computed here so that one
+    // statement answers the whole batch.
+    async findEmailRecipients(userIds: string[]): Promise<EmailRecipientRecord[]> {
+      if (userIds.length === 0) return []
+      const rows = await sql<{ id: string; email: string; locale: string }[]>`
+        SELECT u.id, u.email::text AS email, u.locale
+        FROM users u
+        WHERE u.id = ANY(${userIds}::uuid[])
+          AND u.email IS NOT NULL
+          AND u.email_verified
+          AND u.deleted_at IS NULL
+          AND NOT EXISTS (
+            SELECT 1 FROM email_suppressions s
+            WHERE s.email_hash = encode(sha256(convert_to(lower(btrim(u.email::text)), 'UTF8')), 'hex')
+          )
+      `
+      return rows.map((r) => ({ userId: r.id, email: r.email, locale: r.locale }))
     },
   }
 }

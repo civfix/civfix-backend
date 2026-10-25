@@ -7300,6 +7300,11 @@ export const cases: TranscriptCase[] = [
       (m102 as any).makeDrizzleNotificationRepository(sql).deletePushTokensForUser("userId-1"),
   },
   {
+    key: "makeDrizzleNotificationRepository.findEmailRecipients",
+    run: async (sql: any) =>
+      (m102 as any).makeDrizzleNotificationRepository(sql).findEmailRecipients(["userId-1"]),
+  },
+  {
     key: "makeDrizzleNotificationRepository.findPrefs",
     run: async (sql: any) =>
       (m102 as any).makeDrizzleNotificationRepository(sql).findPrefs("userId-1"),

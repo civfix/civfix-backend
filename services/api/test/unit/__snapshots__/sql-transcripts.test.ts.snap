@@ -6525,6 +6525,15 @@ DELETE FROM push_tokens WHERE user_id = $1 -- ["userId-1"]
 => undefined"
 `;
 
+exports[`sql transcripts > makeDrizzleNotificationRepository.findEmailRecipients 1`] = `
+"-- empty
+SELECT u.id, u.email::text AS email, u.locale FROM users u WHERE u.id = ANY($1::uuid[]) AND u.email IS NOT NULL AND u.email_verified AND u.deleted_at IS NULL AND NOT EXISTS ( SELECT 1 FROM email_suppressions s WHERE s.email_hash = encode(sha256(convert_to(lower(btrim(u.email::text)), 'UTF8')), 'hex') ) -- [["userId-1"]]
+=> []
+-- row
+SELECT u.id, u.email::text AS email, u.locale FROM users u WHERE u.id = ANY($1::uuid[]) AND u.email IS NOT NULL AND u.email_verified AND u.deleted_at IS NULL AND NOT EXISTS ( SELECT 1 FROM email_suppressions s WHERE s.email_hash = encode(sha256(convert_to(lower(btrim(u.email::text)), 'UTF8')), 'hex') ) -- [["userId-1"]]
+=> [{"userId":"id-row","email":"email-row","locale":"locale-row"}]"
+`;
+
 exports[`sql transcripts > makeDrizzleNotificationRepository.findPrefs 1`] = `
 "-- empty
 SELECT push, cleanup_chat, report_updates, follows, mentions, post_interactions, host_broadcasts, quiet_start, quiet_end, tz FROM notification_prefs WHERE user_id = $1 LIMIT 1 -- ["userId-1"]
