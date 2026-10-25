@@ -12,7 +12,10 @@ import { describe, expect, it, afterEach, vi } from "vitest"
 import type { FastifyInstance } from "fastify"
 import type { FakeChatService } from "@civfix/seams"
 import { bearer, makeAuthHarness, signIn, type AuthHarness } from "./auth.js"
-import { InMemoryNotificationRepository } from "./notifications.js"
+import {
+  InMemoryNotificationRepository,
+  InMemoryNotificationSettingsRepository,
+} from "./notifications.js"
 import { makeContainer } from "../../src/di.js"
 import { loadEnv } from "../../src/env.js"
 
@@ -103,7 +106,11 @@ describe("signIn (shared OTP sign-in)", () => {
 describe("makeAuthHarness (makeServer override pass-through)", () => {
   it("passes route-service overrides to the app (the injected repo serves the request)", async () => {
     const repo = new InMemoryNotificationRepository()
-    const h = await harness({ server: { notificationOverrides: { repo } } })
+    const h = await harness({
+      server: {
+        notificationOverrides: { repo, settingsRepo: new InMemoryNotificationSettingsRepository() },
+      },
+    })
     const { token, userId } = await h.signIn("notif-harness@example.com")
 
     // Seeded straight into the injected repo: if the override had not reached makeServer, the route

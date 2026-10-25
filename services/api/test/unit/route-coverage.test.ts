@@ -19,7 +19,10 @@ import { InMemoryCleanupRepository } from "../helpers/cleanups.js"
 import { InMemoryGuestRsvpRepository } from "../helpers/guest-rsvp.js"
 import { InMemorySocialRepository } from "../helpers/social.js"
 import { InMemoryVolunteerHoursRepository } from "../helpers/volunteer-hours-repository.memory.js"
-import { InMemoryNotificationRepository } from "../helpers/notifications.js"
+import {
+  InMemoryNotificationRepository,
+  InMemoryNotificationSettingsRepository,
+} from "../helpers/notifications.js"
 import { InMemoryMediaRepository } from "../helpers/media.js"
 import { InMemoryThreadsRepository } from "../helpers/chat.js"
 import type { ReportServiceOverrides } from "../../src/routes/reports.routes.js"
@@ -178,7 +181,10 @@ async function buildFullFakeServer(): Promise<FastifyInstance> {
     },
     socialOverrides: { repo: socialRepo },
     volunteerOverrides: { repo: new InMemoryVolunteerHoursRepository() },
-    notificationOverrides: { repo: notificationRepo },
+    notificationOverrides: {
+      repo: notificationRepo,
+      settingsRepo: new InMemoryNotificationSettingsRepository(),
+    },
     mediaRepo,
     chatOverrides,
   })
@@ -245,14 +251,21 @@ describe("route-coverage: every shared endpoint is registered (offline boot smok
     expect(Object.keys(endpoints).length).toBe(349)
   })
 
-  it("T43: PENDING_IN_EPIC names exactly the four notification-center endpoints still unregistered, each in the registry", () => {
+  it("T13: getNotificationSettings and updateNotificationSettings are registered", async () => {
+    for (const name of ["getNotificationSettings", "updateNotificationSettings"] as const) {
+      expect(PENDING_IN_EPIC.has(name), name).toBe(false)
+      const res = await app.inject(injectArgs(endpoints[name]))
+      const body = res.json<{ message?: string }>()
+      expect(
+        res.statusCode === 404 && body.message?.startsWith("Route ") === true,
+        `${name} is not registered`,
+      ).toBe(false)
+    }
+  })
+
+  it("T43: PENDING_IN_EPIC names exactly the two notification-center endpoints still unregistered, each in the registry", () => {
     expect([...PENDING_IN_EPIC].sort()).toEqual(
-      [
-        "getNotificationSettings",
-        "updateNotificationSettings",
-        "unsubscribeNotificationEmail",
-        "openUnsubscribeNotificationEmail",
-      ].sort(),
+      ["unsubscribeNotificationEmail", "openUnsubscribeNotificationEmail"].sort(),
     )
     for (const name of PENDING_IN_EPIC) expect(Object.keys(endpoints)).toContain(name)
     for (const name of [

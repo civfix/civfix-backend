@@ -14,6 +14,7 @@ import {
   makeBroadcastPipeline,
 } from "../../src/services/host/broadcast-pipeline.js"
 import { makeDrizzleNotificationRepository } from "../../src/services/notification-repository.drizzle.js"
+import { makeDrizzleNotificationSettingsRepository } from "../../src/services/notification-settings-repository.drizzle.js"
 import { makeNotificationService } from "../../src/services/notification-service.js"
 
 const pg = await withPg()
@@ -99,6 +100,7 @@ describe.skipIf(!pg)("broadcast delivery on Postgres (integration)", () => {
       service,
       notifications: makeNotificationService({
         repo: makeDrizzleNotificationRepository(h.sql),
+        settingsRepo: makeDrizzleNotificationSettingsRepository(h.sql),
         pushSender: push,
         now,
       }),

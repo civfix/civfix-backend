@@ -15,6 +15,7 @@ import {
 import { makeDrizzlePostRepository } from "../../src/services/post-repository.drizzle.js"
 import { makePostService, type PostService } from "../../src/services/post-service.js"
 import { makeDrizzleNotificationRepository } from "../../src/services/notification-repository.drizzle.js"
+import { makeDrizzleNotificationSettingsRepository } from "../../src/services/notification-settings-repository.drizzle.js"
 import { makeNotificationService } from "../../src/services/notification-service.js"
 import { makeDrizzleBlocksRepository } from "../../src/services/blocks-repository.drizzle.js"
 import { fakeAvatarPresigner } from "../helpers/avatar-fixtures.js"
@@ -40,7 +41,11 @@ describe.skipIf(!pg)("posts (integration: real transaction path)", () => {
       presignMedia: echoPresign,
       presignAvatar: echoAvatar,
     })
-    const notifier = makeNotificationService({ repo: notifRepo, pushSender: new FakePushSender() })
+    const notifier = makeNotificationService({
+      repo: notifRepo,
+      settingsRepo: makeDrizzleNotificationSettingsRepository(h.sql),
+      pushSender: new FakePushSender(),
+    })
     const blocks = makeDrizzleBlocksRepository(h.sql, fakeAvatarPresigner)
     return makePostService({
       repo,

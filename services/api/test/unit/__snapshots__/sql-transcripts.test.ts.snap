@@ -1210,6 +1210,7 @@ SELECT followee_id FROM follows_people WHERE follower_id = $1 LIMIT $2 -- ["user
 SELECT follower_id FROM follows_people WHERE followee_id = $1 LIMIT $2 -- ["userId-1",50001]
 SELECT blocked_id FROM user_blocks WHERE blocker_id = $1 LIMIT $2 -- ["userId-1",50001]
 SELECT user_id, push, cleanup_chat, report_updates, follows, quiet_start, quiet_end, mentions, host_broadcasts FROM notification_prefs WHERE user_id = $1 LIMIT 1 -- ["userId-1"]
+SELECT category, enabled, push, email FROM notification_settings WHERE user_id = $1 -- ["userId-1"]
 SELECT id, platform, created_at, revoked_at FROM push_tokens WHERE user_id = $1 LIMIT $2 -- ["userId-1",50001]
 SELECT code, locale, holder_name, holder_handle, total_hours::float8 AS total_hours, entry_count, period_start, period_end, document_sha256, byte_size, issued_at, revoked_at, revoked_reason FROM service_hours_certificates WHERE user_id = $1 ORDER BY issued_at DESC LIMIT $2 -- ["userId-1",50001]
 SELECT om.organization_id, o.slug, o.name, om.role, om.joined_at FROM organization_members om JOIN organizations o ON o.id = om.organization_id WHERE om.user_id = $1 ORDER BY om.joined_at DESC LIMIT $2 -- ["userId-1",50001]
@@ -1234,6 +1235,7 @@ SELECT followee_id FROM follows_people WHERE follower_id = $1 LIMIT $2 -- ["user
 SELECT follower_id FROM follows_people WHERE followee_id = $1 LIMIT $2 -- ["userId-1",50001]
 SELECT blocked_id FROM user_blocks WHERE blocker_id = $1 LIMIT $2 -- ["userId-1",50001]
 SELECT user_id, push, cleanup_chat, report_updates, follows, quiet_start, quiet_end, mentions, host_broadcasts FROM notification_prefs WHERE user_id = $1 LIMIT 1 -- ["userId-1"]
+SELECT category, enabled, push, email FROM notification_settings WHERE user_id = $1 -- ["userId-1"]
 SELECT id, platform, created_at, revoked_at FROM push_tokens WHERE user_id = $1 LIMIT $2 -- ["userId-1",50001]
 SELECT code, locale, holder_name, holder_handle, total_hours::float8 AS total_hours, entry_count, period_start, period_end, document_sha256, byte_size, issued_at, revoked_at, revoked_reason FROM service_hours_certificates WHERE user_id = $1 ORDER BY issued_at DESC LIMIT $2 -- ["userId-1",50001]
 SELECT om.organization_id, o.slug, o.name, om.role, om.joined_at FROM organization_members om JOIN organizations o ON o.id = om.organization_id WHERE om.user_id = $1 ORDER BY om.joined_at DESC LIMIT $2 -- ["userId-1",50001]
@@ -3776,6 +3778,15 @@ SELECT user_id, push, cleanup_chat, report_updates, follows, quiet_start, quiet_
 => []
 -- row
 SELECT user_id, push, cleanup_chat, report_updates, follows, quiet_start, quiet_end, mentions, host_broadcasts FROM notification_prefs WHERE user_id = $1 LIMIT 1 -- ["userId-1"]
+=> [{}]"
+`;
+
+exports[`sql transcripts > makeDrizzleDataExportRepository.notificationSettings 1`] = `
+"-- empty
+SELECT category, enabled, push, email FROM notification_settings WHERE user_id = $1 -- ["userId-1"]
+=> []
+-- row
+SELECT category, enabled, push, email FROM notification_settings WHERE user_id = $1 -- ["userId-1"]
 => [{}]"
 `;
 

@@ -5,7 +5,10 @@ import type { NotificationType } from "@civfix/contract"
 import { makeNotificationService } from "../../src/services/notification-service.js"
 import { clearConversationBellFor } from "../../src/services/conversation-bell.js"
 import type { NotificationRecord } from "../../src/services/notification-repository.js"
-import { InMemoryNotificationRepository } from "../helpers/notifications.js"
+import {
+  InMemoryNotificationRepository,
+  InMemoryNotificationSettingsRepository,
+} from "../helpers/notifications.js"
 
 /**
  * Clear-on-open: opening a room marks its bell rows and its chat_mention rows read, then sends one push
@@ -21,7 +24,13 @@ function setup() {
   const pushSender = new FakePushSender()
   const userChannel = new FakeUserChannel()
   const logger = { warn: vi.fn(), error: vi.fn() }
-  const service = makeNotificationService({ repo, pushSender, userChannel, logger })
+  const service = makeNotificationService({
+    repo,
+    settingsRepo: new InMemoryNotificationSettingsRepository(),
+    pushSender,
+    userChannel,
+    logger,
+  })
 
   async function row(
     type: NotificationType,

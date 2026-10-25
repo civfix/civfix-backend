@@ -5,7 +5,10 @@ import type { NotificationType } from "@civfix/contract"
 import type { FakePushSender, FakeUserChannel } from "@civfix/seams"
 import type { NotificationRecord } from "../../src/services/notification-repository.js"
 import { makeAuthHarness, type AuthHarness } from "../helpers/auth.js"
-import { InMemoryNotificationRepository } from "../helpers/notifications.js"
+import {
+  InMemoryNotificationRepository,
+  InMemoryNotificationSettingsRepository,
+} from "../helpers/notifications.js"
 
 /**
  * The inbox endpoints (unread, read, read-all, dismiss) and the web push config, through the real Fastify
@@ -82,7 +85,7 @@ async function makeHarness(env: Record<string, string> = {}): Promise<Harness> {
   const auth = await makeAuthHarness({
     env,
     server: {
-      notificationOverrides: { repo },
+      notificationOverrides: { repo, settingsRepo: new InMemoryNotificationSettingsRepository() },
       logCapture: {
         level: "warn",
         stream: { write: (line: string) => logs.push(JSON.parse(line) as LogLine) },
