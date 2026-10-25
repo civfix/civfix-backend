@@ -17,7 +17,12 @@ import type {
   GuestContact,
   MemberContact,
 } from "./broadcast-types.js"
-import { CRITICAL_BROADCAST_KINDS, MAX_DELIVERY_ATTEMPTS } from "./broadcast-types.js"
+import {
+  BROADCAST_KIND_CATEGORY,
+  CRITICAL_BROADCAST_KINDS,
+  MAX_DELIVERY_ATTEMPTS,
+} from "./broadcast-types.js"
+import { categorySettingsOfMany, emailAllowed } from "../notification-categories.js"
 import {
   broadcastContentOf,
   eventTemplateVars,
@@ -52,7 +57,7 @@ export interface BroadcastEmailSenderDeps {
     | "webBaseUrl"
   >
   mailer: Mailer
-  settingsRepo?: Pick<NotificationSettingsRepository, "getSettingsMany">
+  settingsRepo: Pick<NotificationSettingsRepository, "getSettingsMany">
   cache: CacheClient
   mailDomain: string
   logger?: Pick<FastifyBaseLogger, "warn">
@@ -114,6 +119,7 @@ interface EmailChunk {
   suppressedHashes: Set<string>
   bucket: TokenBucket
   critical: boolean
+  emailAllowedFor: (userId: string) => boolean
   replyTo: string | null
   sentAtMs: number
   shared: BroadcastVarValues
@@ -225,7 +231,13 @@ export function makeBroadcastEmailSender(deps: BroadcastEmailSenderDeps) {
       },
       unsubscribeUrl,
       replyTo: chunk.replyTo,
-      critical: chunk.critical,
+      // A guest has no settings, so only a guest's change or cancellation notice says it reaches them
+      // past an opt-out; an account holder's says it is a service message and keeps the stop link (D3).
+      ...(chunk.critical
+        ? claim.userId === null
+          ? { critical: true }
+          : { serviceNotice: true }
+        : {}),
       allowedLinkHosts: config.linkAllowedHosts,
     })
   }
@@ -247,6 +259,10 @@ export function makeBroadcastEmailSender(deps: BroadcastEmailSenderDeps) {
         status: "suppressed",
         suppressionReason: claim.userId !== null ? "deleted_user" : "contact_scrubbed",
       })
+      return null
+    }
+    if (claim.userId !== null && !chunk.emailAllowedFor(claim.userId)) {
+      chunk.outcomes.push({ id: claim.id, status: "suppressed", suppressionReason: "prefs_off" })
       return null
     }
     const email = contact.email
@@ -359,9 +375,10 @@ export function makeBroadcastEmailSender(deps: BroadcastEmailSenderDeps) {
     if (relevant.length === 0) return
     const memberIds = relevant.filter((c) => c.userId !== null).map((c) => c.userId as string)
     const guestIds = relevant.filter((c) => c.guestId !== null).map((c) => c.guestId as string)
-    const [members, guests, ticketTypes] = await Promise.all([
+    const [members, guests, settingOf, ticketTypes] = await Promise.all([
       repo.memberContacts(memberIds),
       repo.guestContacts(guestIds),
+      categorySettingsOfMany(deps.settingsRepo, memberIds, BROADCAST_KIND_CATEGORY[record.kind]),
       usesVar(templateTextOf(record), "ticket_type")
         ? repo.ticketTypeNames({ cleanupId: record.cleanupId, userIds: memberIds, guestIds })
         : Promise.resolve(new Map<string, string>()),
@@ -386,6 +403,10 @@ export function makeBroadcastEmailSender(deps: BroadcastEmailSenderDeps) {
       suppressedHashes,
       bucket: new TokenBucket(config.emailRatePerSec),
       critical: CRITICAL_BROADCAST_KINDS.has(record.kind),
+      emailAllowedFor: (userId) => {
+        const setting = settingOf(userId)
+        return setting === null || emailAllowed(setting)
+      },
       replyTo: event.replyToVerified && event.replyTo ? event.replyTo : null,
       sentAtMs: deps.now().getTime(),
       shared: eventTemplateVars(event, config.webBaseUrl),

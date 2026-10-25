@@ -17,6 +17,7 @@ import {
 } from "../../src/services/host/broadcast-pipeline.js"
 import type { NotificationService } from "../../src/services/notification-service.js"
 import type { EventBroadcastContext } from "../../src/services/host/broadcast-types.js"
+import { AllOnSettingsRepository } from "../helpers/notification-capture.js"
 
 const EVENT = "00000000-0000-0000-0000-0000000000ee"
 const HOST = "00000000-0000-0000-0000-0000000000aa"
@@ -81,6 +82,7 @@ function notificationsStub(
 
 interface Harness {
   repo: InMemoryBroadcastRepository
+  settings: AllOnSettingsRepository
   mailer: FakeMailer
   cache: InMemoryCacheClient
   counters: InMemoryCounterStore
@@ -132,10 +134,12 @@ function harness(
     },
     ...(overrides.clock !== undefined ? { now: () => new Date(clock()) } : {}),
   })
+  const settings = new AllOnSettingsRepository(["hostAnnouncements"])
   const pipeline = makeBroadcastPipeline({
     repo,
     service,
     notifications,
+    settingsRepo: settings,
     mailer,
     cache,
     config,
@@ -154,7 +158,18 @@ function harness(
     },
     ...(overrides.clock !== undefined ? { now: () => new Date(clock()) } : {}),
   })
-  return { repo, mailer, cache, counters, notifications, chunks, audits, service, pipeline }
+  return {
+    repo,
+    settings,
+    mailer,
+    cache,
+    counters,
+    notifications,
+    chunks,
+    audits,
+    service,
+    pipeline,
+  }
 }
 
 async function draftSending(h: Harness, channels: Array<"inapp" | "push" | "email"> = ["email"]) {
@@ -327,7 +342,8 @@ describe("broadcast chunk", () => {
 
   it("counts a person once in sentCount however many channels reached them", async () => {
     const h = harness({ members: 0 })
-    h.repo.seedMembers(EVENT, [{ userId: u(1) }, { userId: u(2), pushPref: false }])
+    h.repo.seedMembers(EVENT, [{ userId: u(1) }, { userId: u(2) }])
+    await h.settings.upsertSettings(u(2), { hostAnnouncements: { push: false, email: true } })
     const id = await draftSending(h, ["inapp", "push", "email"])
     await h.pipeline.plan(id)
     for (const chunk of [...h.chunks]) await h.pipeline.runChunk(id, chunk.chunkNo)
@@ -495,35 +511,14 @@ describe("broadcast chunk", () => {
 
   it("suppresses a push when the recipient turned push off", async () => {
     const h = harness({ members: 0 })
-    h.repo.seedMembers(EVENT, [{ userId: u(1), pushPref: false }])
+    h.repo.seedMembers(EVENT, [{ userId: u(1) }])
+    await h.settings.upsertSettings(u(1), { hostAnnouncements: { push: false } })
     const id = await draftSending(h, ["inapp", "push"])
     await h.pipeline.plan(id)
     await h.pipeline.runChunk(id, 0)
     const rows = h.repo.allDeliveries()
     expect(rows.find((d) => d.channel === "push")?.suppressionReason).toBe("prefs_off")
     expect(rows.find((d) => d.channel === "inapp")?.status).toBe("sent")
-  })
-
-  it("pushes a CRITICAL kind past the host-broadcasts preference", async () => {
-    const h = harness({ members: 0 })
-    h.repo.seedMembers(EVENT, [{ userId: u(1), hostBroadcastsPref: false }])
-    const record = await h.repo.create({
-      cleanupId: EVENT,
-      createdBy: null,
-      kind: "event_cancelled",
-      subject: "Cancelled",
-      bodyMd: "Sorry.",
-      segment: { kind: "all_registered" },
-      channels: ["inapp", "push"],
-      status: "sending",
-    })
-    await h.pipeline.plan(record.id)
-    await h.pipeline.runChunk(record.id, 0)
-    const rows = h.repo.allDeliveries()
-    expect(rows.find((d) => d.channel === "push")?.status).toBe("sent")
-    const call = h.notifications.calls[0] as { input: { type: string; push: string } }
-    expect(call.input.type).toBe("cleanup_cancelled")
-    expect(call.input.push).toBe("always")
   })
 
   it("never pushes when the host chose in-app only", async () => {

@@ -4189,9 +4189,9 @@ export const cases: TranscriptCase[] = [
       (m56 as any).makeDrizzleBroadcastRepository(sql).memberContacts(["userId-1"]),
   },
   {
-    key: "makeDrizzleBroadcastRepository.pushPrefs",
+    key: "makeDrizzleBroadcastRepository.quietHours",
     run: async (sql: any) =>
-      (m56 as any).makeDrizzleBroadcastRepository(sql).pushPrefs(["userId-1"]),
+      (m56 as any).makeDrizzleBroadcastRepository(sql).quietHours(["userId-1"]),
   },
   {
     key: "makeDrizzleBroadcastRepository.recordUnsubscribe",
@@ -7440,10 +7440,9 @@ export const cases: TranscriptCase[] = [
     key: "makeDrizzleNotificationSettingsRepository.upsertSettings",
     run: async (sql: any) =>
       (m103 as any).makeDrizzleNotificationSettingsRepository(sql).upsertSettings("userId-1", {
-        events: "events-any",
-        mentions: "mentions-any",
         followers: "followers-any",
-        organizations: "organizations-any",
+        mentions: "mentions-any",
+        events: "events-any",
         reportUpdates: "reportUpdates-any",
         reportDiscussions: "reportDiscussions-any",
         directMessages: "directMessages-any",
@@ -7451,6 +7450,7 @@ export const cases: TranscriptCase[] = [
         hostAnnouncements: "hostAnnouncements-any",
         eventTeam: "eventTeam-any",
         likesAndReposts: "likesAndReposts-any",
+        organizations: "organizations-any",
       }),
   },
   {

@@ -90,55 +90,7 @@ export function isWithinQuietHours(
   return t >= s || t < e
 }
 
-export function typeAllowedByPrefs(
-  type: NotificationType,
-  prefs: NotificationPrefsRecord,
-): boolean {
-  if (!prefs.push) return false
-  switch (type) {
-    case "report_update":
-    case "claim_available":
-    case "report_chat":
-      return prefs.reportUpdates
-    case "cleanup_chat":
-    case "cleanup_reminder":
-    case "cleanup_cancelled":
-    case "cleanup_role":
-    case "cleanup_slot":
-    case "hours_logged":
-    case "group_chat":
-    case "event_team_invite":
-      return prefs.cleanupChat
-    case "new_follower":
-      return prefs.follows
-    case "post_mention":
-      return prefs.mentions
-    case "post_like":
-    case "post_repost":
-    case "post_reply":
-    case "post_quote":
-      return prefs.postInteractions
-    case "event_broadcast":
-      return prefs.hostBroadcasts
-    case "system":
-      return true
-    default:
-      return true
-  }
-}
-
-export type PushGateMode = "auto" | "never" | "always"
-
-export function pushGateAllows(
-  type: NotificationType,
-  prefs: NotificationPrefsRecord,
-  mode: PushGateMode = "auto",
-): boolean {
-  if (mode === "never") return false
-  if (!prefs.push) return false
-  if (mode === "always") return true
-  return typeAllowedByPrefs(type, prefs)
-}
+export type PushGateMode = "auto" | "never"
 
 export function toPrefsDTO(row: NotificationPrefsRecord): NotificationPrefsDTO {
   const quietHours = quietHoursOf(row)

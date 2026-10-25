@@ -23,7 +23,7 @@ import {
   settingsPatchFromPrefs,
   toNotificationDTO,
 } from "./notification-helpers.js"
-import { categoryForType, categorySettings } from "./notification-categories.js"
+import { categoryForType, categorySettingOf, categorySettings } from "./notification-categories.js"
 import {
   makeNotificationEmailer,
   type NotificationContent,
@@ -49,7 +49,6 @@ export {
   isWithinQuietHours,
   parseTimeOfDayMinutes,
   toPrefsDTO,
-  typeAllowedByPrefs,
 } from "./notification-helpers.js"
 export type { PushGateMode } from "./notification-helpers.js"
 
@@ -137,6 +136,11 @@ export interface NotificationService extends SocialNotifier, PostNotifier {
   markAllRead(userId: string): Promise<{ ok: true }>
   dismiss(userId: string, id: string): Promise<{ ok: true }>
   getPrefs(userId: string): Promise<NotificationPrefsDTO>
+  /** The recipient's setting for one category, at its default when they never changed it. */
+  categorySetting(
+    userId: string,
+    category: NotificationCategory,
+  ): Promise<NotificationCategorySetting>
   updatePrefs(userId: string, patch: UpdateNotificationPrefsRequest): Promise<NotificationPrefsDTO>
   registerPushToken(userId: string, req: RegisterPushTokenRequest): Promise<{ ok: true }>
   unregisterPushToken(userId: string, req: UnregisterPushTokenRequest): Promise<{ ok: true }>
@@ -216,12 +220,10 @@ function categoryOf(input: CreateNotificationInput): NotificationCategory | null
   return input.category ?? categoryForType(input.type)
 }
 
-// "always" is the critical-broadcast bypass of the Push checkbox. No mode overrides Off: that is checked
-// before the row is written.
+// No mode overrides Off: that is checked before the row is written.
 function pushAllowed(gate: Gate, mode: PushGateMode): boolean {
   if (mode === "never") return false
-  if (mode === "always" || gate === null) return true
-  return gate.push
+  return gate === null || gate.push
 }
 
 function pushItemsFor(
@@ -462,7 +464,7 @@ export function makeNotificationService(deps: NotificationServiceDeps): Notifica
 
   async function gateFor(userId: string, category: NotificationCategory | null): Promise<Gate> {
     if (category === null) return null
-    return categorySettings(await deps.settingsRepo.getSettings(userId), category)(userId)
+    return categorySettingOf(deps.settingsRepo, userId, category)
   }
 
   async function doCreateNotification(
@@ -712,6 +714,9 @@ export function makeNotificationService(deps: NotificationServiceDeps): Notifica
     },
 
     getPrefs,
+
+    categorySetting: (userId: string, category: NotificationCategory) =>
+      categorySettingOf(deps.settingsRepo, userId, category),
 
     async updatePrefs(
       userId: string,

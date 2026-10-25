@@ -4,14 +4,12 @@ import {
   makeNotificationService,
   isWithinQuietHours,
   parseTimeOfDayMinutes,
-  typeAllowedByPrefs,
   toPrefsDTO,
   DEFAULT_PREFS,
   FEED_HIDDEN_NOTIFICATION_TYPES,
   NOTIFICATION_DEDUPE_WINDOW_MS,
   type NotificationService,
 } from "../../src/services/notification-service.js"
-import type { NotificationPrefsRecord } from "../../src/services/notification-repository.js"
 import { MAX_ACTIVE_PUSH_TOKENS_PER_USER } from "../../src/services/notification-repository.drizzle.js"
 import {
   InMemoryNotificationRepository,
@@ -108,30 +106,6 @@ describe("isWithinQuietHours", () => {
     expect(isWithinQuietHours(at(6, 0), "22:00", "07:00", "America/Los_Angeles")).toBe(true)
     expect(isWithinQuietHours(at(20, 0), "22:00", "07:00", "America/Los_Angeles")).toBe(false)
     expect(isWithinQuietHours(at(23, 0), "22:00", "07:00", "Not/AZone")).toBe(false)
-  })
-})
-
-describe("typeAllowedByPrefs", () => {
-  const base: NotificationPrefsRecord = { ...DEFAULT_PREFS }
-
-  it("requires the master push switch", () => {
-    const off = { ...base, push: false }
-    expect(typeAllowedByPrefs("new_follower", off)).toBe(false)
-    expect(typeAllowedByPrefs("system", off)).toBe(false)
-  })
-
-  it("maps each type to its per-type toggle", () => {
-    expect(typeAllowedByPrefs("new_follower", { ...base, follows: false })).toBe(false)
-    expect(typeAllowedByPrefs("new_follower", { ...base, follows: true })).toBe(true)
-    expect(typeAllowedByPrefs("report_update", { ...base, reportUpdates: false })).toBe(false)
-    expect(typeAllowedByPrefs("claim_available", { ...base, reportUpdates: false })).toBe(false)
-    expect(typeAllowedByPrefs("cleanup_chat", { ...base, cleanupChat: false })).toBe(false)
-    expect(typeAllowedByPrefs("cleanup_reminder", { ...base, cleanupChat: false })).toBe(false)
-    expect(typeAllowedByPrefs("cleanup_role", { ...base, cleanupChat: false })).toBe(false)
-    expect(typeAllowedByPrefs("cleanup_role", { ...base, cleanupChat: true })).toBe(true)
-    expect(typeAllowedByPrefs("cleanup_cancelled", { ...base, cleanupChat: false })).toBe(false)
-    expect(typeAllowedByPrefs("cleanup_cancelled", { ...base, cleanupChat: true })).toBe(true)
-    expect(typeAllowedByPrefs("system", base)).toBe(true)
   })
 })
 

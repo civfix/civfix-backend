@@ -7,6 +7,7 @@ import { apiBaseUrlOf, webBaseUrlOf } from "../../lib/base-url.js"
 import type { WriteAuditInput } from "../admin/audit.js"
 import { insertAuditRow } from "../admin/audit-repository.drizzle.js"
 import { makeRouteNotificationService } from "../route-notifier.js"
+import { makeDrizzleNotificationSettingsRepository } from "../notification-settings-repository.drizzle.js"
 import { makeDrizzleAnalyticsRepository } from "./analytics-repository.drizzle.js"
 import { makeAnalyticsService, type AnalyticsService } from "./analytics-service.js"
 import { makeDrizzleEventAnalyticsRepository } from "./event-analytics-repository.drizzle.js"
@@ -162,6 +163,7 @@ export function makeCommsRuntime(container: Container, logger?: CommsLogger): Co
     repo,
     service: broadcasts,
     notifications: makeRouteNotificationService(container, logger),
+    settingsRepo: makeDrizzleNotificationSettingsRepository(sql),
     mailer: container.mailer,
     cache: container.getCache(),
     config,
