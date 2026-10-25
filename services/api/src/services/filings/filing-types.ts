@@ -69,6 +69,11 @@ export interface FilingRecord {
   submittedAt: Date | null
 }
 
+export interface LatestSuccessfulFiling extends FilingRecord {
+  /** A `submitted` filing whose mail thread bounced: the city never got it, so it does not count as filed (D1). */
+  mailBounced: boolean
+}
+
 export interface FilingListRecord extends FilingRecord {
   reportTitle: string | null
   referenceCode: string | null

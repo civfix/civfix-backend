@@ -219,7 +219,9 @@ export function makeFilingService(deps: FilingServiceDeps): FilingService {
       deps.filings.getLatestSuccessfulForReport(report.id),
     ])
     if (active !== null) return "already_filed"
-    if (latest !== null && latest.cityClosedAt === null) return "already_filed"
+    if (latest !== null && latest.cityClosedAt === null && !latest.mailBounced) {
+      return "already_filed"
+    }
     return "fileable"
   }
 

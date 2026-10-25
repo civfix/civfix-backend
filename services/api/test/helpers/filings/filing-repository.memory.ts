@@ -30,6 +30,7 @@ import {
   type FilingRouteRecord,
   type FilingSettingsRecord,
   type InsertFilingMessageInput,
+  type LatestSuccessfulFiling,
   type ListDueQueuedArgs,
   type ListFilingsArgs,
   type ListFilingsResult,
@@ -205,9 +206,14 @@ export class InMemoryFilingRepository implements FilingRepository {
       )[0]
   }
 
-  getLatestSuccessfulForReport(reportId: string): Promise<FilingRecord | null> {
+  getLatestSuccessfulForReport(reportId: string): Promise<LatestSuccessfulFiling | null> {
     const f = this.latestSuccessful(reportId)
-    return Promise.resolve(f === undefined ? null : this.withName(f))
+    if (f === undefined) return Promise.resolve(null)
+    const mailBounced =
+      f.status === "submitted" &&
+      f.mailThreadId !== null &&
+      this.mailThreads.get(f.mailThreadId) === "bounced"
+    return Promise.resolve({ ...this.withName(f), mailBounced })
   }
 
   getLatestSuccessfulForReports(reportIds: readonly string[]): Promise<FilingRecord[]> {

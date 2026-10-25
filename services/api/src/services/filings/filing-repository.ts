@@ -11,6 +11,7 @@ import type {
   FilingRouteRecord,
   FilingSettingsRecord,
   InsertFilingMessageInput,
+  LatestSuccessfulFiling,
   ListDueQueuedArgs,
   ListFilingsArgs,
   ListFilingsResult,
@@ -31,7 +32,7 @@ export interface FilingRepository {
   getActiveForReport(reportId: string): Promise<FilingRecord | null>
   /** The report's newest filing in any status. */
   getLatestForReport(reportId: string): Promise<FilingRecord | null>
-  getLatestSuccessfulForReport(reportId: string): Promise<FilingRecord | null>
+  getLatestSuccessfulForReport(reportId: string): Promise<LatestSuccessfulFiling | null>
   /** One row per report that has a successful filing; at most 100 ids. */
   getLatestSuccessfulForReports(reportIds: readonly string[]): Promise<FilingRecord[]>
   transition(id: string, input: TransitionInput): Promise<FilingRecord | null>

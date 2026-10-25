@@ -379,11 +379,18 @@ export function makeDrizzleFilingRepository(sql: Sql): FilingRepository {
       `)
     },
 
-    getLatestSuccessfulForReport(reportId) {
-      return oneFiling(sql`
+    async getLatestSuccessfulForReport(reportId) {
+      const [row] = await sql<(FilingRow & { mail_bounced: boolean })[]>`
+        SELECT f.*, j.name AS jurisdiction_name,
+               (f.status = 'submitted' AND t.status = 'bounced') IS TRUE AS mail_bounced
+        FROM report_filings f
+        LEFT JOIN jurisdictions j ON j.geoid = f.geoid
+        LEFT JOIN mail_threads t ON t.id = f.mail_thread_id
         WHERE f.report_id = ${reportId} AND f.status IN ('submitted', 'linked_existing')
         ORDER BY f.submitted_at DESC NULLS LAST, f.id DESC
-      `)
+        LIMIT 1
+      `
+      return row === undefined ? null : { ...toFiling(row), mailBounced: row.mail_bounced }
     },
 
     async getLatestSuccessfulForReports(reportIds) {
