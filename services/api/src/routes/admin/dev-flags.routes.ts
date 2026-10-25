@@ -12,7 +12,7 @@ import { requireOperator } from "../../auth/admin-guard.js"
 import { perIdentity } from "../../plugins/rate-limit.js"
 import { isRuntimeFlagKey } from "../../services/admin/runtime-flag-service.js"
 
-const ADMIN_RUNTIME_FLAG_RATE_LIMIT = perIdentity({
+export const ADMIN_RUNTIME_FLAG_RATE_LIMIT = perIdentity({
   max: 20,
   timeWindow: "1 minute",
   skipOnError: false,
