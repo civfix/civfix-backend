@@ -687,7 +687,12 @@ describe.skipIf(!pg)("report fixed votes (integration)", () => {
       expect(res.statusCode).toBe(200)
       expect(res.headers["cache-control"]).toBe("public, max-age=60")
 
-      const plan = await explainPressingAlone(h.sql, { west: -179, south: -50, east: 21, north: 50 })
+      const plan = await explainPressingAlone(h.sql, {
+        west: -179,
+        south: -50,
+        east: 21,
+        north: 50,
+      })
       expect(plan, plan).toContain(`Index Scan using ${PRESSING_INDEX}`)
     })
   })

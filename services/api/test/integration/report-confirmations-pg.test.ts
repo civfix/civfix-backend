@@ -537,7 +537,12 @@ describe.skipIf(!pg)("report confirmations (integration)", () => {
     })
 
     it("T26b: a wide bbox plans the real statement as a walk of the pressing index", async () => {
-      const plan = await explainPressingAlone(h.sql, { west: -179, south: -50, east: 21, north: 50 })
+      const plan = await explainPressingAlone(h.sql, {
+        west: -179,
+        south: -50,
+        east: 21,
+        north: 50,
+      })
       expect(plan, plan).toContain(`Index Scan using ${PRESSING_INDEX}`)
     })
   })
