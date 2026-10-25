@@ -44,9 +44,11 @@ const CASE_TOKEN_MIN = 5
 const CASE_TOKEN_MAX = 64
 
 const typeCodes = [...new Set(Object.values(REPORT_TYPE_CODE))].join("|")
-// The line CivFix writes into every portal filing (D11), echoed back by the city's notification.
+// The line CivFix writes into every portal filing (D11), echoed back by the city's notification. It
+// runs on unauthenticated mail, so no two quantifiers may compete for the same whitespace: the
+// separator and its trailing space are one optional group, which keeps the scan linear.
 const FRAMING_LINE_RE = new RegExp(
-  String.raw`Reported\s+by\s+a\s+resident\s+via\s+CivFix\s*[^\sA-Za-z0-9]?\s*ref\s*((?:${typeCodes})-\d+-\d{6,})(?![A-Za-z0-9])`,
+  String.raw`Reported\s+by\s+a\s+resident\s+via\s+CivFix\s*(?:[^\sA-Za-z0-9]\s*)?ref\s*((?:${typeCodes})-\d+-\d{6,})(?![A-Za-z0-9])`,
   "gi",
 )
 
