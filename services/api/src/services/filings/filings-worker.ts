@@ -178,8 +178,15 @@ export function makeFilingsWorker(sql: Sql): FilingsWorker {
     claimFiling: (filingId, attempt) => filings.claim(filingId, attempt),
     listRunningFilings: () => filings.listRunningFilings(),
 
-    isReportFileable(_filingId) {
-      throw new Error("not implemented")
+    async isReportFileable(filingId) {
+      const [row] = await sql<{ fileable: boolean }[]>`
+        SELECT r.status <> 'rejected' AND r.deleted_at IS NULL
+               AND r.verification_verdict IS DISTINCT FROM 'rejected' AS fileable
+        FROM report_filings f
+        JOIN reports r ON r.id = f.report_id
+        WHERE f.id = ${filingId}
+      `
+      return row?.fileable ?? false
     },
   }
 }

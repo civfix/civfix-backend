@@ -180,7 +180,11 @@ export function makeApplyFilingResult(
   return async (raw) => {
     const payload = parsePayload(raw)
     const filing = await deps.filings.getById(payload.filingId)
-    const applied = filing !== null && (await apply(filing, payload))
+    // A requeue that spends no attempt (ai_unavailable) gives the next run the same attempt number, so
+    // only the run id tells its result from a late one of the run before. filing.result is worked one
+    // job at a time, so nothing moves the filing to another run between this read and the guarded write.
+    const applied =
+      filing !== null && filing.runId === payload.runId && (await apply(filing, payload))
     if (!applied) {
       deps.logger?.warn(
         { filingId: payload.filingId, runId: payload.runId, attempt: payload.attempt },
