@@ -692,14 +692,23 @@ describe.skipIf(!pg)("report fixed votes (integration)", () => {
       `
       await h.sql`ANALYZE reports`
       const wide = { west: -179, south: -50, east: 21, north: 50 }
-      // On a table this small reports_public_recent_idx is an equally cheap ordered path, so the planner
-      // flips between the two from run to run. Dropping it inside a rolled-back transaction leaves the
-      // assertion about the one thing it guards: the query's WHERE still implies the pressing predicate.
+      // On a table this small several reports indexes are about as cheap as the pressing one, so the
+      // planner's pick flips from run to run. Dropping every other droppable index inside a rolled-back
+      // transaction leaves the assertion about the one thing it guards: the query's WHERE still implies
+      // the pressing predicate.
       const rollback = new Error("rollback")
       let plan = ""
       await h.sql
         .begin(async (tx) => {
-          await tx`DROP INDEX reports_public_recent_idx`
+          const others = await tx<{ relname: string }[]>`
+            SELECT c.relname
+            FROM pg_index i
+            JOIN pg_class c ON c.oid = i.indexrelid
+            WHERE i.indrelid = 'reports'::regclass
+              AND c.relname <> ${PRESSING_INDEX}
+              AND NOT EXISTS (SELECT 1 FROM pg_constraint k WHERE k.conindid = i.indexrelid)
+          `
+          for (const { relname } of others) await tx`DROP INDEX ${tx(relname)}`
           await tx`SET LOCAL enable_seqscan = off`
           await tx`SET LOCAL enable_bitmapscan = off`
           plan = await explainPressing(tx, wide, 20)
