@@ -106,7 +106,9 @@ describe.skipIf(!pg)("city filing (integration)", () => {
   })
 
   /** A jurisdiction of its own, so its contacts and routes are exactly what the case inserts. */
-  async function jurisdiction(contact: string | null = null): Promise<{ geoid: string; name: string }> {
+  async function jurisdiction(
+    contact: string | null = null,
+  ): Promise<{ geoid: string; name: string }> {
     const geoid = `f${randomUUID().slice(0, 8)}`
     const name = `Filing city ${geoid}`
     await h.sql`
@@ -157,7 +159,9 @@ describe.skipIf(!pg)("city filing (integration)", () => {
   }
 
   async function reportStatus(reportId: string): Promise<string> {
-    const [row] = await h.sql<{ status: string }[]>`SELECT status FROM reports WHERE id = ${reportId}`
+    const [row] = await h.sql<
+      { status: string }[]
+    >`SELECT status FROM reports WHERE id = ${reportId}`
     return row!.status
   }
 
@@ -180,7 +184,9 @@ describe.skipIf(!pg)("city filing (integration)", () => {
   }
 
   async function filingStatus(id: string): Promise<string> {
-    const [row] = await h.sql<{ status: string }[]>`SELECT status FROM report_filings WHERE id = ${id}`
+    const [row] = await h.sql<
+      { status: string }[]
+    >`SELECT status FROM report_filings WHERE id = ${id}`
     return row!.status
   }
 
@@ -210,7 +216,11 @@ describe.skipIf(!pg)("city filing (integration)", () => {
       const res = await post(main, `/v1/admin/reports/${id}/route`)
       expect(res.statusCode).toBe(200)
       const body = res.json<{ ok: boolean; threadId: string; routedTo: string }>()
-      expect(body).toEqual({ ok: true, threadId: expect.any(String), routedTo: "graffiti@city.test" })
+      expect(body).toEqual({
+        ok: true,
+        threadId: expect.any(String),
+        routedTo: "graffiti@city.test",
+      })
 
       const filings = await filingsOf(id)
       expect(filings).toHaveLength(1)
@@ -360,11 +370,7 @@ describe.skipIf(!pg)("city filing (integration)", () => {
       return row!.id
     }
 
-    async function packet(
-      threadId: string,
-      event: "sent" | "failed",
-      at: Date,
-    ): Promise<string> {
+    async function packet(threadId: string, event: "sent" | "failed", at: Date): Promise<string> {
       const [m] = await h.sql<{ id: string }[]>`
         INSERT INTO mail_messages (thread_id, direction, to_addr, kind, created_at)
         VALUES (${threadId}, 'out', 'city@city.test', 'packet', ${at})
