@@ -8,12 +8,14 @@ import {
   makeDrizzleAnalyticsRepository,
 } from "../../services/admin/analytics-repository.drizzle.js"
 import type { AnalyticsRepository } from "../../services/admin/analytics-repository.js"
+import type { FilingRepository } from "../../services/filings/filing-repository.js"
 import { route } from "../../versioning/route.js"
 import { overridableService, spreadNow } from "./_route-utils.js"
 
 export interface HomeRouteOverrides {
   repo: HomeRepository
   analytics: AnalyticsRepository
+  filings: Pick<FilingRepository, "countGroups">
   now?: () => Date
 }
 
