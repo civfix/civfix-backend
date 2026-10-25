@@ -181,6 +181,8 @@ export function makeHomeService(deps: HomeServiceDeps): HomeService {
         livePins24h,
         moderationQueue,
         inboxUnread,
+        // Nothing creates a needs_human filing until filing from the admin lands (#171), which counts them.
+        filingsNeedsHuman: 0,
       }
     },
 

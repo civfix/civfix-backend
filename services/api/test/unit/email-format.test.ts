@@ -389,10 +389,19 @@ describe("buildReportPacket", () => {
     expect(packet.html).toContain(
       "Location: 100 Main St<br>Coordinates: 39.5, -98.35<br>View the exact location",
     )
-    expect(packet.html).toContain(
+    expect(packet.text).toContain("Location: 100 Main St\nCoordinates: 39.5, -98.35\n")
+
+    // The default template no longer lists media (it is appended), so a custom one carries the link.
+    const linked = buildReportPacket(
+      reportRecord(),
+      null,
+      photos("https://cdn.example.org/a.jpg", "https://cdn.example.org/b.jpg"),
+      null,
+      { subject: null, body: "Photos ({photoCount}):\n{photoLinks}" },
+    )
+    expect(linked.html).toContain(
       'a.jpg</a><br>- Photo 2: <a class="cv-link" href="https://cdn.example.org/b.jpg"',
     )
-    expect(packet.text).toContain("Location: 100 Main St\nCoordinates: 39.5, -98.35\n")
   })
 
   it("renders the operator-facing status LABEL, not the raw enum value", () => {
