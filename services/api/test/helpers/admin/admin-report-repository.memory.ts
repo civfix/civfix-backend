@@ -25,8 +25,6 @@ import {
   pickPreviewMedia,
   REPORT_VERIFIED_THRESHOLD,
 } from "../../../src/services/admin/admin-report-types.js"
-import type { InMemoryFilingRepository } from "../filings/filing-repository.memory.js"
-import { insertReopenFilingInMemory } from "../filings/filing-reopen.memory.js"
 import { STATUS_BUCKETS } from "../../../src/services/admin/admin-report-status.js"
 
 export interface RecordedAudit {
@@ -57,8 +55,6 @@ export interface SeededReport {
 }
 
 export class InMemoryAdminReportRepository implements AdminReportRepository {
-  /** The filing twin a status change away from a city-closed `resolved` writes its D12 filing into. */
-  filings?: InMemoryFilingRepository
   readonly reports = new Map<string, SeededReport>()
   readonly timeline = new Map<string, AdminReportTimelineRecord[]>()
   readonly audits: RecordedAudit[] = []
@@ -282,10 +278,6 @@ export class InMemoryAdminReportRepository implements AdminReportRepository {
     const seeded = this.reports.get(id)
     if (!seeded) return false
     if (!input.from.includes(seeded.record.status)) return false
-    const reopen =
-      seeded.record.status === "resolved" && input.to !== "resolved" && this.filings !== undefined
-        ? await insertReopenFilingInMemory(this.filings, id)
-        : "none"
     seeded.record.status = input.to
     this.appendTimeline(id, {
       status: input.to,
@@ -298,7 +290,7 @@ export class InMemoryAdminReportRepository implements AdminReportRepository {
       actorId: input.actorId,
       action: "report.status_changed",
       target: `report:${id}`,
-      meta: { status: input.to, ...(reopen === "skipped_active" ? { reopenSkipped: true } : {}) },
+      meta: { status: input.to },
     })
     return true
   }
