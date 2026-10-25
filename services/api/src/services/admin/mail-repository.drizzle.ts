@@ -315,9 +315,13 @@ export function sendFailedExpr(sql: Queryable, threadRef: SqlFragment, since?: D
   const sentSince =
     since === undefined
       ? sql``
-      : sql`AND EXISTS (
+      : // The thread bound lets mail_messages_thread_created_idx serve this; a sent event's message is
+        // always on its own thread (recordSent).
+        sql`AND EXISTS (
           SELECT 1 FROM mail_messages sm
-          WHERE sm.id::text = e.message_id ${createdSince(sql, sql`sm.created_at`, since)}
+          WHERE sm.thread_id = ${threadRef}
+            AND sm.id::text = e.message_id
+            ${createdSince(sql, sql`sm.created_at`, since)}
         )`
   return sql`
     NOT EXISTS (
