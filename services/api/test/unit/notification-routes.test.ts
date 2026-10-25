@@ -245,6 +245,17 @@ describe("GET + PUT /notifications/prefs", () => {
     expect(res.json().mentions).toBe(false)
   })
 
+  it("keeps muted host broadcasts muted when a later update changes another preference", async () => {
+    const { app, token } = await makeHarness()
+    const put = (payload: Record<string, unknown>) =>
+      app.inject({ method: "PUT", url: "/v1/notifications/prefs", headers: auth(token), payload })
+    expect((await put({ hostBroadcasts: false })).json().hostBroadcasts).toBe(false)
+    const res = await put({ mentions: false })
+    expect(res.statusCode).toBe(200)
+    expect(res.json().hostBroadcasts).toBe(false)
+    expect(res.json().mentions).toBe(false)
+  })
+
   it("422s an unknown field (strict schema)", async () => {
     const { app, token } = await makeHarness()
     const res = await app.inject({
