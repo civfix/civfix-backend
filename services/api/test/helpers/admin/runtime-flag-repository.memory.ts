@@ -45,7 +45,11 @@ export class InMemoryRuntimeFlagRepository implements RuntimeFlagRepository {
       if (previous === undefined) return Promise.resolve()
       this.rows.delete(input.key)
     } else {
-      this.rows.set(input.key, { value: input.value, updatedAt: this.now, updatedBy: input.actorId })
+      this.rows.set(input.key, {
+        value: input.value,
+        updatedAt: this.now,
+        updatedBy: input.actorId,
+      })
     }
     this.audits.push({
       actorId: input.actorId,

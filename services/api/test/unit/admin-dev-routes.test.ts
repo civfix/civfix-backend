@@ -80,7 +80,7 @@ async function harness(extraEnv: NodeJS.ProcessEnv = {}): Promise<Harness> {
     logger: { warn: () => undefined, error: () => undefined },
     now: () => clock.now,
   })
-  const container = { ...makeContainer(env), getRuntimeFlags: () => flags } as Container
+  const container: Container = { ...makeContainer(env), getRuntimeFlags: () => flags }
   const app = await makeServer({ env, container, authServices: services })
   current = app
 
@@ -140,7 +140,7 @@ function putFlag(
 async function listFlags(h: Harness): Promise<RuntimeFlagStateDTO[]> {
   const res = await call(h, "GET", "/v1/admin/dev/flags", { as: h.operator })
   expect(res.statusCode).toBe(200)
-  return (res.json() as { flags: RuntimeFlagStateDTO[] }).flags
+  return res.json<{ flags: RuntimeFlagStateDTO[] }>().flags
 }
 
 function entry(flags: RuntimeFlagStateDTO[], key: RuntimeFlagKey): RuntimeFlagStateDTO {
@@ -155,7 +155,7 @@ function stored(h: Harness): string {
 
 function expectError(res: LightMyRequestResponse, status: number, code: string): void {
   expect(res.statusCode).toBe(status)
-  expect((res.json() as { code: string }).code).toBe(code)
+  expect(res.json<{ code: string }>().code).toBe(code)
 }
 
 describe("PUT /v1/admin/dev/flags/:key", () => {
@@ -306,7 +306,12 @@ describe("PUT /v1/admin/dev/flags/:key", () => {
     const before = stored(h)
     expectError(await putFlag(h, "announcement_text", { value: "Hi 20" }), 429, "RATE_LIMITED")
     expect(stored(h)).toBe(before)
-    const other = await putFlag(h, "announcement_text", { value: "Other" }, { as: h.secondOperator })
+    const other = await putFlag(
+      h,
+      "announcement_text",
+      { value: "Other" },
+      { as: h.secondOperator },
+    )
     expect(other.statusCode).toBe(200)
   })
 
@@ -382,11 +387,7 @@ describe("GET /v1/admin/dev/flags", () => {
   it("T35: needs an operator", async () => {
     const h = await harness()
     expectError(await call(h, "GET", "/v1/admin/dev/flags"), 401, "UNAUTHORIZED")
-    expectError(
-      await call(h, "GET", "/v1/admin/dev/flags", { as: h.citizen }),
-      403,
-      "FORBIDDEN",
-    )
+    expectError(await call(h, "GET", "/v1/admin/dev/flags", { as: h.citizen }), 403, "FORBIDDEN")
   })
 })
 
@@ -428,12 +429,10 @@ describe("GET /v1/app/config", () => {
     seedT50(h)
     h.repo.seed("announcement_level", "warning")
     const withText = await call(h, "GET", "/v1/app/config")
-    expect((withText.json() as { announcement: { level: string } }).announcement.level).toBe(
-      "warning",
-    )
+    expect(withText.json<{ announcement: { level: string } }>().announcement.level).toBe("warning")
     expect((await putFlag(h, "announcement_text", { value: null })).statusCode).toBe(200)
     const cleared = await call(h, "GET", "/v1/app/config")
-    expect((cleared.json() as { announcement: unknown }).announcement).toBe(null)
+    expect(cleared.json<{ announcement: unknown }>().announcement).toBe(null)
   })
 
   it("T52: the same answer for a guest, a citizen and an operator", async () => {
@@ -479,7 +478,7 @@ describe("developer placeholders", () => {
     for (const p of PLACEHOLDERS) {
       const res = await call(h, p.method, p.url, { as: h.operator, body: p.body })
       expectError(res, 404, "NOT_FOUND")
-      expect((res.json() as { message: string }).message.startsWith("Route ")).toBe(false)
+      expect(res.json<{ message: string }>().message.startsWith("Route ")).toBe(false)
     }
   })
 
@@ -487,11 +486,7 @@ describe("developer placeholders", () => {
     const h = await harness()
     for (const p of PLACEHOLDERS) {
       expectError(await call(h, p.method, p.url, { body: p.body }), 401, "UNAUTHORIZED")
-      expectError(
-        await call(h, p.method, p.url, { as: h.citizen, body: p.body }),
-        403,
-        "FORBIDDEN",
-      )
+      expectError(await call(h, p.method, p.url, { as: h.citizen, body: p.body }), 403, "FORBIDDEN")
     }
   })
 

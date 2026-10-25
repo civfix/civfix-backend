@@ -111,7 +111,10 @@ describe("loadEnv: dev tools (D9)", () => {
   })
 
   it("T8: refused on prod", () => {
-    expectProblem({ ...TEST_ENV, DEV_TOOLS_ENABLED: "true", CIVFIX_ENV: "prod" }, "DEV_TOOLS_ENABLED:")
+    expectProblem(
+      { ...TEST_ENV, DEV_TOOLS_ENABLED: "true", CIVFIX_ENV: "prod" },
+      "DEV_TOOLS_ENABLED:",
+    )
   })
 
   it("T9: refused when the environment is unknown", () => {
@@ -198,10 +201,7 @@ describe("loadEnv: test accounts (D10)", () => {
     const listed = { ...DEV_TOOLS_ON, DEV_TEST_EMAILS: "a@civfix.org" }
     expectProblem(listed, "DEV_TEST_OTP_CODE:")
     expectProblem({ ...listed, DEV_TEST_OTP_CODE: "c".repeat(19) }, "DEV_TEST_OTP_CODE:")
-    expectProblem(
-      { ...listed, DEV_TEST_OTP_CODE: `  ${"c".repeat(19)}  ` },
-      "DEV_TEST_OTP_CODE:",
-    )
+    expectProblem({ ...listed, DEV_TEST_OTP_CODE: `  ${"c".repeat(19)}  ` }, "DEV_TEST_OTP_CODE:")
   })
 
   it("T17: boots with a code of exactly 20 characters", () => {

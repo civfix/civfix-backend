@@ -7736,6 +7736,32 @@ SELECT TRUE /* columns */ TRUE /* from */ WHERE <helper ["dm"]>.id = $1 AND TRUE
 => {"kind":"text","id":"id-1","createdAt":"createdAt-1","cleanupId":"cleanupId-1","mentions":[undefined],"reactions":[undefined],"mine":true,"body":"body-1","replyTo":{"kind":undefined,"id":undefined,"excerpt":undefined,"from":undefined,"deleted":undefined},"editedAt":"editedAt-1","replyToId":"replyToId-1","system":{"status":undefined,"kind":undefined,"note":undefined,"body":undefined},"poll":{"options":undefined,"question":undefined,"closed":undefined,"allowMultiple":undefined,"anonymous":undefined,"totalVoters":undefined,"myVote":undefined},"from":{"id":undefined,"name":undefined,"followers":undefined,"following":undefined,"isFollowing":undefined,"handle":undefined,"avatar":undefined,"avatarUrl":undefined,"organization":undefined,"bio":undefined,"donationUrl":undefined,"deleted":undefined,"official":undefined},"roomKind":"report","attachments":[undefined],"deletedAt":"deletedAt-1","clientId":"clientId-1","cityMention":{"name":undefined,"handle":undefined,"geoid":undefined,"forwarded":undefined},"forwardedToCity":true,"pinnedAt":"pinnedAt-1"}"
 `;
 
+exports[`sql transcripts > makeDrizzleRuntimeFlagRepository.loadAll 1`] = `
+"-- empty
+SELECT f.key, f.value, f.updated_at, f.updated_by, u.email AS updated_by_email FROM runtime_flags f LEFT JOIN users u ON u.id = f.updated_by ORDER BY f.key LIMIT $1 -- [500]
+=> []
+-- row
+SELECT f.key, f.value, f.updated_at, f.updated_by, u.email AS updated_by_email FROM runtime_flags f LEFT JOIN users u ON u.id = f.updated_by ORDER BY f.key LIMIT $1 -- [500]
+=> [{"key":"key-row","value":"value-row","updatedAt":"2026-03-04T05:06:07.000Z","updatedBy":"updated_by-row","updatedByEmail":"updated_by_email-row"}]"
+`;
+
+exports[`sql transcripts > makeDrizzleRuntimeFlagRepository.set 1`] = `
+"-- empty
+BEGIN tx1
+[tx1] SELECT value FROM runtime_flags WHERE key = $1 FOR UPDATE -- ["key-1"]
+[tx1] INSERT INTO runtime_flags (key, value, updated_at, updated_by) VALUES ($1, $2, now(), $3) ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = EXCLUDED.updated_at, updated_by = EXCLUDED.updated_by -- ["key-1",{"<json>":"value-1"},"actorId-1"]
+[tx1] INSERT INTO audit_log (actor_id, action, target, meta) VALUES ($1, $2, $3, $4) RETURNING id -- ["actorId-1","dev.flag_set","flag:key-1",{"<json>":{"from":null,"to":"value-1"}}]
+ROLLBACK tx1
+=> throws Error: writeAudit: insert returned no row
+-- row
+BEGIN tx1
+[tx1] SELECT value FROM runtime_flags WHERE key = $1 FOR UPDATE -- ["key-1"]
+[tx1] INSERT INTO runtime_flags (key, value, updated_at, updated_by) VALUES ($1, $2, now(), $3) ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = EXCLUDED.updated_at, updated_by = EXCLUDED.updated_by -- ["key-1",{"<json>":"value-1"},"actorId-1"]
+[tx1] INSERT INTO audit_log (actor_id, action, target, meta) VALUES ($1, $2, $3, $4) RETURNING id -- ["actorId-1","dev.flag_set","flag:key-1",{"<json>":{"from":"value-row","to":"value-1"}}]
+COMMIT tx1
+=> undefined"
+`;
+
 exports[`sql transcripts > makeDrizzleSocialRepository.addFollow 1`] = `
 "-- empty
 SELECT 1 AS one FROM users WHERE id = $1 AND deleted_at IS NULL LIMIT 1 -- ["followeeId-1"]

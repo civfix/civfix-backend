@@ -61,7 +61,7 @@ describe.skipIf(!pg)("runtime flags store (integration)", () => {
   async function audits(): Promise<{ actor_id: string; target: string; meta: unknown }[]> {
     return [
       ...(await h.sql<{ actor_id: string; target: string; meta: unknown }[]>`
-        SELECT actor_id, target, meta FROM audit_log WHERE action = 'dev.flag_set' ORDER BY id
+        SELECT actor_id, target, meta FROM audit_log WHERE action = 'dev.flag_set' ORDER BY created_at
       `),
     ]
   }
@@ -137,7 +137,11 @@ describe.skipIf(!pg)("runtime flags store (integration)", () => {
     expect(await audits()).toEqual([
       { actor_id: actor, target: "flag:announcement_text", meta: { from: null, to: "Hi" } },
       { actor_id: actor, target: "flag:announcement_text", meta: { from: "Hi", to: "Bye" } },
-      { actor_id: actor, target: "flag:host_messaging_kill_switch", meta: { from: null, to: true } },
+      {
+        actor_id: actor,
+        target: "flag:host_messaging_kill_switch",
+        meta: { from: null, to: true },
+      },
       { actor_id: actor, target: "flag:announcement_text", meta: { from: "Bye", to: null } },
     ])
   })

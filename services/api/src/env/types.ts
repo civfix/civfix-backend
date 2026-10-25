@@ -1,11 +1,14 @@
-import type { FeedRankingConfig } from "@civfix/contract"
+import type { AdminDevEnvironment, FeedRankingConfig } from "@civfix/contract"
 import type { FeedAuthorBoosts } from "../services/feed-ranking.js"
 import type { TrustProxyValue } from "./parsers.js"
 import type { CommsEnv } from "./comms-env.js"
 import type { RegistrationEnv } from "./registration-env.js"
+import type { RuntimeFlagEnvFallbacks } from "./dev-console-env.js"
 
 export interface Env extends CommsEnv, RegistrationEnv {
   NODE_ENV: "development" | "test" | "production"
+  /** `CIVFIX_ENV` when set; otherwise `local` outside production and `unknown` in it. */
+  environment: AdminDevEnvironment
   PORT: number
   PUBLIC_API_URL: string
   WEB_ORIGINS: string[]
@@ -130,4 +133,17 @@ export interface Env extends CommsEnv, RegistrationEnv {
   USE_FAKE_SMS: boolean
 
   USE_REAL_NSFW: boolean
+
+  CIVFIX_RELEASE_REF?: string
+  CIVFIX_API_IMAGE_REF?: string
+  CIVFIX_WORKER_IMAGE_REF?: string
+
+  /** `DEV_TOOLS_ENABLED`, which the loader refuses outside staging and local. */
+  devToolsEnabled: boolean
+  /** The test accounts' addresses, lowercased; empty unless dev tools are on. */
+  DEV_TEST_EMAILS: string[]
+  DEV_TEST_OTP_CODE?: string
+  /** How many `DEV_TEST_EMAILS` entries were dropped for not being civfix.org addresses. */
+  devTestEmailsDropped: number
+  runtimeFlagEnvFallbacks: RuntimeFlagEnvFallbacks
 }

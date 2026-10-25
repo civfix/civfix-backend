@@ -28,7 +28,7 @@ describe("request log: app_version", () => {
       envFallbacks: env.runtimeFlagEnvFallbacks,
       logger: { warn: () => undefined, error: () => undefined },
     })
-    const container = { ...makeContainer(env), getRuntimeFlags: () => flags } as Container
+    const container: Container = { ...makeContainer(env), getRuntimeFlags: () => flags }
     app = await makeServer({
       env,
       container,
@@ -73,7 +73,14 @@ describe("request log: app_version", () => {
   })
 
   it("T54: leaves anything else off", async () => {
-    for (const header of ["ios/1.4", "web/1.4.0", "IOS/1.4.0", "ios/1.4.0-beta", "ios/1.4.0 ", ""]) {
+    for (const header of [
+      "ios/1.4",
+      "web/1.4.0",
+      "IOS/1.4.0",
+      "ios/1.4.0-beta",
+      "ios/1.4.0 ",
+      "",
+    ]) {
       const line = await lineFor(header)
       expect(line.msg).toBe("request completed")
       expect("app_version" in line, JSON.stringify(header)).toBe(false)
