@@ -91,3 +91,32 @@ describe("the run's output", () => {
     )
   })
 })
+
+describe("a broken linked_existing result", () => {
+  it("is uncertain_submission past the submit marker and portal_error before it", async () => {
+    const endings = []
+    for (const marker of [true, false]) {
+      for (const result of [
+        { outcome: "linked_existing", caseId: "<bad>", evidence: [] },
+        { outcome: "linked_existing", evidence: [] },
+      ]) {
+        await writeFile(join(out, "result.json"), JSON.stringify(result))
+        const ending = await runEnding({
+          outDir: out,
+          host: "portal.test",
+          dryRun: false,
+          run: { exitCode: 0, timedOut: false, sentinel: false, marker },
+          log: () => {},
+        })
+        endings.push(`${ending.outcome}/${"reason" in ending ? ending.reason : ""}`)
+      }
+    }
+
+    expect(endings).toEqual([
+      "failed/uncertain_submission",
+      "failed/uncertain_submission",
+      "failed/portal_error",
+      "failed/portal_error",
+    ])
+  })
+})

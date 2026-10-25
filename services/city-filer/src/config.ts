@@ -26,11 +26,11 @@ const WORKSPACE_DIR = "/workspace"
 const FILER_GROUP = "filer"
 const SCRIPT_TIMEOUT_MS = 5 * MS_PER_MINUTE
 
-/** A user's or group's id from /etc/passwd or /etc/group; null when it is not there. */
-function lookupId(file: "/etc/passwd" | "/etc/group", name: string): number | null {
+/** A group's id from /etc/group; null when it is not there. */
+function lookupGid(name: string): number | null {
   let text: string
   try {
-    text = readFileSync(file, "utf8")
+    text = readFileSync("/etc/group", "utf8")
   } catch {
     return null
   }
@@ -48,7 +48,7 @@ function required(source: NodeJS.ProcessEnv, key: string): string {
 }
 
 export function loadConfig(source: NodeJS.ProcessEnv = process.env): FilerConfig {
-  const filerGid = lookupId("/etc/group", FILER_GROUP)
+  const filerGid = lookupGid(FILER_GROUP)
   if (filerGid === null && source.NODE_ENV === "production") {
     throw new Error(`city-filer: the image's "${FILER_GROUP}" group is missing`)
   }

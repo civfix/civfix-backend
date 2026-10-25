@@ -111,9 +111,7 @@ export async function runEnding(input: OutputInput): Promise<RunEnding> {
         evidenceNames,
       }
     case "linked_existing":
-      if (r.caseId === undefined || !caseIdOk) {
-        return { outcome: "failed", reason: "portal_error", evidenceNames }
-      }
+      if (r.caseId === undefined || !caseIdOk) return { ...failed, evidenceNames }
       return {
         outcome: "linked_existing",
         caseId: r.caseId,
