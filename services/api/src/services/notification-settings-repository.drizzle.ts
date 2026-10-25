@@ -96,8 +96,18 @@ export function makeDrizzleNotificationSettingsRepository(
       `
     },
 
-    disableEmail(_userId: string, _category: NotificationCategory): Promise<boolean> {
-      throw new Error("not implemented")
+    // Reading the user in the same statement means an account erased concurrently gets no row.
+    async disableEmail(userId: string, category: NotificationCategory): Promise<boolean> {
+      const defaults = NOTIFICATION_CATEGORY_DEFAULTS[category]
+      const rows = await sql<{ user_id: string }[]>`
+        INSERT INTO notification_settings AS s (user_id, category, enabled, push, email)
+        SELECT u.id, ${category}, ${defaults.enabled}, ${defaults.push}, false
+        FROM users u
+        WHERE u.id = ${userId} AND u.deleted_at IS NULL
+        ON CONFLICT (user_id, category) DO UPDATE SET email = false, updated_at = now()
+        RETURNING s.user_id
+      `
+      return rows.length > 0
     },
   }
 }

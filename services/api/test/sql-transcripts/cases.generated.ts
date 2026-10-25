@@ -7415,6 +7415,13 @@ export const cases: TranscriptCase[] = [
       }),
   },
   {
+    key: "makeDrizzleNotificationSettingsRepository.disableEmail",
+    run: async (sql: any) =>
+      (m103 as any)
+        .makeDrizzleNotificationSettingsRepository(sql)
+        .disableEmail("userId-1", "followers"),
+  },
+  {
     key: "makeDrizzleNotificationSettingsRepository.getSettings",
     run: async (sql: any) =>
       (m103 as any).makeDrizzleNotificationSettingsRepository(sql).getSettings("userId-1"),

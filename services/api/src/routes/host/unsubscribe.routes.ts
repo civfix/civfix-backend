@@ -19,7 +19,7 @@ const OK: UnsubscribeBroadcastsResponse = { ok: true }
 
 const UNSUBSCRIBE_UNAVAILABLE_COPY = "We couldn't save your unsubscribe. Please try again."
 
-function tokenFrom(request: FastifyRequest): string | null {
+export function tokenFrom(request: FastifyRequest): string | null {
   const body = (request.body ?? {}) as Record<string, unknown>
   if (typeof body.token === "string" && body.token.length > 0) return body.token
   const query = (request.query ?? {}) as Record<string, unknown>
