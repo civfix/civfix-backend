@@ -535,10 +535,21 @@ export function makeDrizzleFilingRepository(sql: Sql): FilingRepository {
       return rows.map(toFiling)
     },
 
+    async listStaleRunningEmail(args) {
+      const limit = clampPageLimit(args.limit, FILING_DUE_MAX_LIMIT, FILING_DUE_MAX_LIMIT)
+      const rows = await sql<FilingRow[]>`
+        ${selectFilings(sql)}
+        WHERE f.status = 'running' AND f.channel = 'email' AND f.updated_at < ${args.updatedBefore}
+        ORDER BY f.updated_at, f.id
+        LIMIT ${limit}
+      `
+      return rows.map(toFiling)
+    },
+
     async listRunningFilings() {
       const rows = await sql<{ id: string; attempts: number; run_id: string | null }[]>`
         SELECT id, attempts, run_id FROM report_filings
-        WHERE status = 'running'
+        WHERE status = 'running' AND channel = 'portal'
         ORDER BY updated_at, id
         LIMIT ${FILING_RUNNING_MAX}
       `

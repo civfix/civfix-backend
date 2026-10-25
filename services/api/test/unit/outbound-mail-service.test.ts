@@ -857,6 +857,15 @@ describe("OutboundMailService: total send deadline", () => {
     expect(base64Bytes(3000)).toBe(4000)
   })
 
+  it("E17: payload bytes add the base64 size of every attachment", () => {
+    const attachment = {
+      filename: "photo-1.jpg",
+      contentType: "image/jpeg",
+      content: new Uint8Array(3000),
+    }
+    expect(outboundPayloadBytes({ body: "x".repeat(100), attachments: [attachment] })).toBe(4100)
+  })
+
   describe("send-deadline / in-flight-window invariant", () => {
     const DEFAULTS = { smtpTimeoutMs: 15_000, minThroughputBytesPerSec: 256 * 1024 }
 

@@ -4355,11 +4355,20 @@ SELECT geoid, category, channel, form_url, request_type_hint, include_link, stat
 
 exports[`sql transcripts > makeDrizzleFilingRepository.listRunningFilings 1`] = `
 "-- empty
-SELECT id, attempts, run_id FROM report_filings WHERE status = 'running' ORDER BY updated_at, id LIMIT $1 -- [100]
+SELECT id, attempts, run_id FROM report_filings WHERE status = 'running' AND channel = 'portal' ORDER BY updated_at, id LIMIT $1 -- [100]
 => []
 -- row
-SELECT id, attempts, run_id FROM report_filings WHERE status = 'running' ORDER BY updated_at, id LIMIT $1 -- [100]
+SELECT id, attempts, run_id FROM report_filings WHERE status = 'running' AND channel = 'portal' ORDER BY updated_at, id LIMIT $1 -- [100]
 => [{"id":"id-row","attempts":"attempts-row","runId":"run_id-row"}]"
+`;
+
+exports[`sql transcripts > makeDrizzleFilingRepository.listStaleRunningEmail 1`] = `
+"-- empty
+SELECT f.*, j.name AS jurisdiction_name FROM report_filings f LEFT JOIN jurisdictions j ON j.geoid = f.geoid WHERE f.status = 'running' AND f.channel = 'email' AND f.updated_at < $1 ORDER BY f.updated_at, f.id LIMIT $2 -- ["2026-03-04T05:06:07.000Z",3]
+=> []
+-- row
+SELECT f.*, j.name AS jurisdiction_name FROM report_filings f LEFT JOIN jurisdictions j ON j.geoid = f.geoid WHERE f.status = 'running' AND f.channel = 'email' AND f.updated_at < $1 ORDER BY f.updated_at, f.id LIMIT $2 -- ["2026-03-04T05:06:07.000Z",3]
+=> [{"id":"id-row","reportId":"report_id-row","geoid":"geoid-row","jurisdictionName":"jurisdiction_name-row","category":"category-row","routeCategory":"route_category-row","channel":"channel-row","portalHost":"portal_host-row","formUrl":"form_url-row","status":"status-row","method":"method-row","reason":"reason-row","reasonDetail":"reason_detail-row","caseId":"case_id-row","caseUrl":"case_url-row","cityClosedAt":"2026-03-04T05:06:07.000Z","attempts":"attempts-row","runId":"run_id-row","nextAttemptAt":"2026-03-04T05:06:07.000Z","aiWaitSince":"2026-03-04T05:06:07.000Z","scriptVersion":"script_version-row","dryRun":"dry_run-row","ticketText":"ticket_text-row","note":"note-row","mailThreadId":"mail_thread_id-row","createdBy":"created_by-row","createdAt":"2026-03-04T05:06:07.000Z","updatedAt":"2026-03-04T05:06:07.000Z","submittedAt":"2026-03-04T05:06:07.000Z"}]"
 `;
 
 exports[`sql transcripts > makeDrizzleFilingRepository.recordSuccess 1`] = `
@@ -6070,6 +6079,15 @@ SELECT id FROM mail_messages WHERE thread_id = $1 AND direction = 'out' ORDER BY
 => null
 -- row
 SELECT id FROM mail_messages WHERE thread_id = $1 AND direction = 'out' ORDER BY created_at DESC, id DESC LIMIT 1 -- ["threadId-1"]
+=> "id-row""
+`;
+
+exports[`sql transcripts > makeDrizzleMailRepository.latestUnsentPacketId 1`] = `
+"-- empty
+SELECT m.id FROM ( SELECT id FROM mail_messages WHERE thread_id = $1 AND direction = 'out' AND COALESCE(kind, 'packet') = 'packet' AND created_at >= $2 ORDER BY created_at DESC, id DESC LIMIT 1 ) m WHERE NOT EXISTS ( SELECT 1 FROM mail_events e WHERE e.thread_id = $3 AND e.message_id = m.id::text AND e.type = 'sent' ) -- ["threadId-1","2026-03-04T05:06:07.000Z","threadId-1"]
+=> null
+-- row
+SELECT m.id FROM ( SELECT id FROM mail_messages WHERE thread_id = $1 AND direction = 'out' AND COALESCE(kind, 'packet') = 'packet' AND created_at >= $2 ORDER BY created_at DESC, id DESC LIMIT 1 ) m WHERE NOT EXISTS ( SELECT 1 FROM mail_events e WHERE e.thread_id = $3 AND e.message_id = m.id::text AND e.type = 'sent' ) -- ["threadId-1","2026-03-04T05:06:07.000Z","threadId-1"]
 => "id-row""
 `;
 
@@ -8377,10 +8395,10 @@ SELECT paused, updated_at, updated_by FROM filing_settings WHERE id = 1 -- []
 
 exports[`sql transcripts > makeFilingsWorker.listRunningFilings 1`] = `
 "-- empty
-SELECT id, attempts, run_id FROM report_filings WHERE status = 'running' ORDER BY updated_at, id LIMIT $1 -- [100]
+SELECT id, attempts, run_id FROM report_filings WHERE status = 'running' AND channel = 'portal' ORDER BY updated_at, id LIMIT $1 -- [100]
 => []
 -- row
-SELECT id, attempts, run_id FROM report_filings WHERE status = 'running' ORDER BY updated_at, id LIMIT $1 -- [100]
+SELECT id, attempts, run_id FROM report_filings WHERE status = 'running' AND channel = 'portal' ORDER BY updated_at, id LIMIT $1 -- [100]
 => [{"id":"id-row","attempts":"attempts-row","runId":"run_id-row"}]"
 `;
 

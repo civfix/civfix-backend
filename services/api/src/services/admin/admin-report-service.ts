@@ -70,7 +70,7 @@ const EMPTY_REPORT_COUNTS: AdminReportCounts = {
   needsVerification: 0,
 }
 
-function firstTemplate(...candidates: (string | null | undefined)[]): string | null {
+export function firstTemplate(...candidates: (string | null | undefined)[]): string | null {
   for (const candidate of candidates) {
     if (typeof candidate === "string" && candidate.trim() !== "") return candidate
   }
@@ -324,7 +324,11 @@ export function makeAdminReportService(deps: AdminReportServiceDeps): AdminRepor
         isPubliclyVisibleStatus(record.status) && record.visibility === "public"
       const packetMedia: PacketMediaLink[] = []
       for (const m of media) {
-        packetMedia.push({ kind: m.kind, url: await presignPacketMedia(m.r2Key, publiclyVisible) })
+        packetMedia.push({
+          id: m.id,
+          kind: m.kind,
+          url: await presignPacketMedia(m.r2Key, publiclyVisible),
+        })
       }
 
       const defaults =

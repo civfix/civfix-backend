@@ -122,7 +122,8 @@ function filingNote(
     : `Filed with ${j} · Request ${caseId}`
 }
 
-function isFileable(report: AdminReportRecord): boolean {
+/** D6's re-check: a rejected or removed report is never filed. */
+export function isFileable(report: AdminReportRecord): boolean {
   return report.status !== "rejected" && report.verificationVerdict !== "rejected"
 }
 
@@ -310,7 +311,7 @@ export function makeFilingService(deps: FilingServiceDeps): FilingService {
     })
   }
 
-  return {
+  const service: FilingService = {
     async create(input) {
       const [report, routing] = await Promise.all([
         deps.reports.getReport(input.reportId),
@@ -384,8 +385,12 @@ export function makeFilingService(deps: FilingServiceDeps): FilingService {
     cancelForReport,
 
     async onVerdict(input) {
-      // Approve only records the verdict until approve-to-file lands with the email worker (D17).
-      if (input.verdict === "rejected") await cancelForReport(input.reportId)
+      if (input.verdict === "rejected") {
+        await cancelForReport(input.reportId)
+        return
+      }
+      // Approve and file (D1): an already filed or unfileable report keeps its verdict and gets nothing.
+      await service.create({ reportId: input.reportId, actorId: input.actorId })
     },
 
     async adminReportView(report, routing) {
@@ -402,4 +407,5 @@ export function makeFilingService(deps: FilingServiceDeps): FilingService {
       }
     },
   }
+  return service
 }
