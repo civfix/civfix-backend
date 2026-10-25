@@ -17,7 +17,6 @@ import {
   InMemoryNotificationRepository,
   InMemoryNotificationSettingsRepository,
   flushNotificationDispatch,
-  InMemoryNotificationSettingsRepository,
 } from "../helpers/notifications.js"
 import { normalizeDeviceId } from "../../src/routes/notifications.routes.js"
 
