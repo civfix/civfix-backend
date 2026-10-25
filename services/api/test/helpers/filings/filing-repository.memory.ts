@@ -172,7 +172,8 @@ export class InMemoryFilingRepository implements FilingRepository {
       throw err
     }
     this.filings.set(filing.id, filing)
-    if (audit !== undefined) this.audits.push(audit)
+    if (audit !== undefined)
+      this.audits.push({ ...audit, target: audit.target ?? `filing:${filing.id}` })
     return Promise.resolve({ kind: "created", filing: this.withName(filing) })
   }
 

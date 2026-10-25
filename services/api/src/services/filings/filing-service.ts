@@ -76,6 +76,8 @@ export interface FilingService {
     reportId: string
     actorId: string | null
     note?: string | null
+    /** Written with the filing; a missing target becomes the new filing's. */
+    audit?: WriteAuditInput
   }): Promise<CreateFilingOutcome>
   /** D1's two "already filed" conditions and D6's re-check, for a report that exists. */
   fileability(report: AdminReportRecord): Promise<Fileability>
@@ -124,7 +126,7 @@ function isFileable(report: AdminReportRecord): boolean {
   return report.status !== "rejected" && report.verificationVerdict !== "rejected"
 }
 
-function initialState(
+export function initialState(
   route: ResolvedFilingRoute,
   automaticFiling: boolean,
 ): { status: FilingStatus; reason: FilingReason | null } {
@@ -139,7 +141,7 @@ function iso(date: Date | null): string | null {
   return date === null ? null : date.toISOString()
 }
 
-function toAdminFilingDTO(
+export function toAdminFilingDTO(
   filing: FilingRecord,
   report: Pick<AdminReportRecord, "title" | "referenceCode">,
 ): AdminReportFilingDTO {
@@ -321,20 +323,23 @@ export function makeFilingService(deps: FilingServiceDeps): FilingService {
       const route = await routeFor(report, routing)
       const { status, reason } = initialState(route, deps.automaticFiling)
       const note = input.note?.trim() || null
-      const created = await deps.filings.create({
-        reportId: report.id,
-        geoid: routing?.geoid ?? null,
-        category: report.category,
-        routeCategory: route.routeCategory,
-        channel: route.channel,
-        portalHost: route.portalHost,
-        formUrl: route.formUrl,
-        status,
-        reason,
-        ticketText: ticketText(report, route.includeLink, note),
-        note,
-        createdBy: input.actorId,
-      })
+      const created = await deps.filings.create(
+        {
+          reportId: report.id,
+          geoid: routing?.geoid ?? null,
+          category: report.category,
+          routeCategory: route.routeCategory,
+          channel: route.channel,
+          portalHost: route.portalHost,
+          formUrl: route.formUrl,
+          status,
+          reason,
+          ticketText: ticketText(report, route.includeLink, note),
+          note,
+          createdBy: input.actorId,
+        },
+        input.audit,
+      )
       if (created.kind === "active_exists") return { kind: "already_filed" }
       if (created.filing.status === "queued") await queue.enqueueFiling(created.filing)
       return created

@@ -137,7 +137,7 @@ function call(
   const headers = { authorization: `Bearer ${opts.token ?? h.token}` }
   return ep.method === "GET"
     ? h.app.inject({ method: "GET", url, headers })
-    : h.app.inject({ method: ep.method, url, headers, payload: (opts.body ?? {}) as object })
+    : h.app.inject({ method: ep.method, url, headers, payload: opts.body ?? {} })
 }
 
 interface FilingJson {
