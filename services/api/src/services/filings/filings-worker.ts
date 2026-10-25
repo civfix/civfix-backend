@@ -122,6 +122,8 @@ export interface FilingsWorker {
   /** The atomic queued -> running claim for that attempt; null when the job is stale. */
   claimFiling(filingId: string, attempt: number): Promise<{ runId: string } | null>
   listRunningFilings(): Promise<RunningFiling[]>
+  /** D6's re-check before a run; false for an unknown filing. */
+  isReportFileable(filingId: string): Promise<boolean>
 }
 
 const RUN_PHOTOS_MAX = 5
@@ -175,5 +177,9 @@ export function makeFilingsWorker(sql: Sql): FilingsWorker {
     getFilingSettings: () => filings.getSettings(),
     claimFiling: (filingId, attempt) => filings.claim(filingId, attempt),
     listRunningFilings: () => filings.listRunningFilings(),
+
+    isReportFileable(_filingId) {
+      throw new Error("not implemented")
+    },
   }
 }
