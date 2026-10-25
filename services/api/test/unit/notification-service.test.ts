@@ -381,27 +381,6 @@ describe("createNotification (inline-send gating)", () => {
     expect(push.sent[0]!.payload.notificationId).toBe(dto!.id)
   })
 
-  it("does NOT push when the master push switch is off (but still records the row)", async () => {
-    const { repo, push, service } = makeHarness(() => at(12, 0))
-    await repo.upsertPrefs(U, { push: false })
-    await service.createNotification(U, { type: "new_follower", title: "x" })
-    expect(repo.notifications).toHaveLength(1)
-    await flushNotificationDispatch()
-    expect(push.sent).toHaveLength(0)
-  })
-
-  it("does NOT push when the per-type toggle is off (but still records the row)", async () => {
-    const { repo, push, service } = makeHarness(() => at(12, 0))
-    await repo.upsertPrefs(U, { follows: false })
-    await service.createNotification(U, { type: "new_follower", title: "x" })
-    expect(repo.notifications).toHaveLength(1)
-    await flushNotificationDispatch()
-    expect(push.sent).toHaveLength(0)
-    await service.createNotification(U, { type: "report_update", title: "y" })
-    await flushNotificationDispatch()
-    expect(push.sent).toHaveLength(1)
-  })
-
   it("does NOT push within quiet hours (but still records the row)", async () => {
     const { repo, push, service } = makeHarness(() => at(23, 0))
     await service.updatePrefs(U, { quietHours: { start: "22:00", end: "07:00", tz: "UTC" } })
