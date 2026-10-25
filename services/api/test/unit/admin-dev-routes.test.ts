@@ -195,7 +195,7 @@ describe("PUT /v1/admin/dev/flags/:key", () => {
       ["host_messaging_kill_switch", "true"],
     ]
     for (const [key, value] of cases) {
-      expectError(await putFlag(h, key, { value }), 400, "VALIDATION")
+      expectError(await putFlag(h, key, { value }), 422, "VALIDATION")
     }
     expect(stored(h)).toBe(before)
   })
@@ -203,10 +203,10 @@ describe("PUT /v1/admin/dev/flags/:key", () => {
   it("T39: rejects a body without value or with an extra key", async () => {
     const h = await harness()
     const before = stored(h)
-    expectError(await putFlag(h, "host_messaging_kill_switch", {}), 400, "VALIDATION")
+    expectError(await putFlag(h, "host_messaging_kill_switch", {}), 422, "VALIDATION")
     expectError(
       await putFlag(h, "host_messaging_kill_switch", { value: true, extra: 1 }),
-      400,
+      422,
       "VALIDATION",
     )
     expect(stored(h)).toBe(before)
