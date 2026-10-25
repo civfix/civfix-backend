@@ -12,6 +12,7 @@ import type {
   ReportClusterResponse,
   ReportConfirmResponse,
   ReportDTO,
+  ReportFilingDTO,
   ReportPinDTO,
   ReportTimelineEntryDTO,
   ReportType,
@@ -22,7 +23,6 @@ import { isUuid } from "../db/cursor-helpers.js"
 import { UNKNOWN_JURCODE } from "../db/reference-code.js"
 import { toLinkedEventRef, type LinkedEventView } from "./cleanup-service.js"
 import { mapWithLimit } from "../lib/concurrency.js"
-import { REPORT_AUTOFORWARD_JOB } from "../lib/queue-names.js"
 import { PRESIGN_CONCURRENCY } from "./media-presign.js"
 import {
   clusterByZoom,
@@ -44,7 +44,6 @@ import {
   REPORT_VISIBILITY_TIMELINE_KIND,
   REPORTS_DEFAULT_LIMIT,
   REPORTS_SEARCH_DEFAULT_LIMIT,
-  type ReportAutoForwardJob,
   type ReportChatMeta,
   type ReportDiscussionMeta,
   type ReportOwner,
@@ -61,6 +60,7 @@ import type {
   ReportRecord,
   ReportTimelineView,
 } from "./report-repository.js"
+import type { FilingRecord } from "./filings/filing-types.js"
 
 export * from "./report-types.js"
 export * from "./report-clustering.js"
@@ -83,6 +83,7 @@ interface ReportViewFlags {
   linkedEvents?: LinkedEventRef[]
   discussionMeta?: ReportDiscussionMeta | null
   chatMeta?: ReportChatMeta | null
+  filing?: ReportFilingDTO | null
 }
 
 async function toMediaDTO(view: ReportMediaView, presign: PresignMedia): Promise<MediaDTO> {
@@ -132,6 +133,16 @@ function toTimelineDTO(view: ReportTimelineView): ReportTimelineEntryDTO {
   }
 }
 
+function toReportFilingDTO(filing: FilingRecord): ReportFilingDTO {
+  return {
+    jurisdictionName: filing.jurisdictionName,
+    caseId: filing.caseId,
+    caseUrl: filing.caseUrl,
+    filedAt: (filing.submittedAt ?? filing.createdAt).toISOString(),
+    linkedExisting: filing.status === "linked_existing",
+  }
+}
+
 function discussionFields(meta: ReportDiscussionMeta | null): Partial<ReportDTO> {
   if (meta === null) return {}
   return {
@@ -166,6 +177,7 @@ export function makeReportService(deps: ReportServiceDeps): ReportService {
     flags: ReportViewFlags,
   ): Promise<ReportDTO> {
     const reportIsPublic = isPubliclyVisibleStatus(record.status) && record.visibility === "public"
+    const filing = flags.filing ?? null
     const mediaDTOs = await mapWithLimit(media, PRESIGN_CONCURRENCY, (view) => {
       const usePrivate = !reportIsPublic || view.status === "validating"
       return toMediaDTO(view, usePrivate ? privatePresign : publicPresign)
@@ -189,7 +201,8 @@ export function makeReportService(deps: ReportServiceDeps): ReportService {
       createdAt: record.createdAt.toISOString(),
       ...(record.publishedAt !== null ? { publishedAt: record.publishedAt.toISOString() } : {}),
       mine: flags.mine,
-      gov: false,
+      gov: filing !== null,
+      filing,
       following: false,
       media: mediaDTOs,
       mediaPending: flags.mediaPending ?? 0,
@@ -203,6 +216,12 @@ export function makeReportService(deps: ReportServiceDeps): ReportService {
       fixedCount: record.fixedCount,
       fixedByMe: flags.fixedByMe ?? false,
     }
+  }
+
+  async function filingsFor(reportIds: string[]): Promise<Map<string, ReportFilingDTO>> {
+    if (deps.filings === undefined || reportIds.length === 0) return new Map()
+    const filings = await deps.filings.getLatestSuccessfulForReports(reportIds)
+    return new Map(filings.map((f) => [f.reportId, toReportFilingDTO(f)]))
   }
 
   async function linkedEventsFor(reportId: string): Promise<LinkedEventRef[]> {
@@ -246,18 +265,27 @@ export function makeReportService(deps: ReportServiceDeps): ReportService {
     const isPublic = isPubliclyVisibleStatus(record.status) && record.visibility === "public"
     if (!isPublic && !mine) return null
 
-    const [media, timeline, mediaStates, linkedEvents, discussionMeta, chatMeta, voteByMe] =
-      await Promise.all([
-        deps.repo.findMediaForReport(record.id, mine),
-        deps.repo.findTimelineForReport(record.id),
-        deps.repo.countMediaStatesForReport(record.id),
-        linkedEventsFor(record.id),
-        discussionMetaFor(record.id),
-        chatMetaFor(record.id, viewerId),
-        opts.withVoteByMe === true && viewerId !== null && !mine
-          ? deps.repo.findVote(record.id, viewerId)
-          : Promise.resolve(null),
-      ])
+    const [
+      media,
+      timeline,
+      mediaStates,
+      linkedEvents,
+      discussionMeta,
+      chatMeta,
+      voteByMe,
+      filings,
+    ] = await Promise.all([
+      deps.repo.findMediaForReport(record.id, mine),
+      deps.repo.findTimelineForReport(record.id),
+      deps.repo.countMediaStatesForReport(record.id),
+      linkedEventsFor(record.id),
+      discussionMetaFor(record.id),
+      chatMetaFor(record.id, viewerId),
+      opts.withVoteByMe === true && viewerId !== null && !mine
+        ? deps.repo.findVote(record.id, viewerId)
+        : Promise.resolve(null),
+      filingsFor([record.id]),
+    ])
 
     const validatingShown = media.reduce((n, m) => (m.status === "validating" ? n + 1 : n), 0)
     const mediaPending = Math.max(0, mediaStates.validating - validatingShown)
@@ -273,6 +301,7 @@ export function makeReportService(deps: ReportServiceDeps): ReportService {
       chatMeta,
       confirmedByMe: voteByMe === "seen",
       fixedByMe: voteByMe === "fixed",
+      filing: filings.get(record.id) ?? null,
     })
   }
 
@@ -349,8 +378,6 @@ export function makeReportService(deps: ReportServiceDeps): ReportService {
 
       await maybeJoinReportChatAsOwner(deps, result.snapshot.id, owner.userId)
 
-      await maybeEnqueueAutoForward(deps, result.snapshot.id, owner.userId)
-
       return result.snapshot
     },
 
@@ -374,18 +401,20 @@ export function makeReportService(deps: ReportServiceDeps): ReportService {
       const { records, nextCursor } = await deps.repo.listMyReports(userId, cursor, limit)
 
       const ids = records.map((r) => r.id)
-      const [mediaById, timelineById, linkedEventsById] = await Promise.all([
+      const [mediaById, timelineById, linkedEventsById, filingsById] = await Promise.all([
         deps.repo.findMediaForReports(ids, true),
         deps.repo.findTimelineForReports(ids),
         deps.loadLinkedEventsForReports !== undefined
           ? deps.loadLinkedEventsForReports(ids)
           : Promise.resolve(new Map<string, LinkedEventView[]>()),
+        filingsFor(ids),
       ])
 
       const items = await mapWithLimit(records, PRESIGN_CONCURRENCY, (record) =>
         toReportDTO(record, mediaById.get(record.id) ?? [], timelineById.get(record.id) ?? [], {
           mine: true,
           linkedEvents: (linkedEventsById.get(record.id) ?? []).map(toLinkedEventRef),
+          filing: filingsById.get(record.id) ?? null,
         }),
       )
 
@@ -543,24 +572,6 @@ async function resolvePlacement(
       ? await deps.resolveJurisdictionCode(jurisdictionGeoid)
       : UNKNOWN_JURCODE
   return { jurisdictionGeoid, reversed, jurCode }
-}
-
-async function maybeEnqueueAutoForward(
-  deps: ReportServiceDeps,
-  reportId: string,
-  reporterUserId: string,
-): Promise<void> {
-  if (deps.autoForwardEnabled !== true) return
-  if (deps.jobs === undefined || deps.isReportVerified === undefined) return
-  try {
-    const verified = await deps.isReportVerified(reporterUserId)
-    if (!verified) return
-    await deps.jobs.enqueue(REPORT_AUTOFORWARD_JOB, { reportId } satisfies ReportAutoForwardJob, {
-      singletonKey: reportId,
-    })
-  } catch (err) {
-    deps.logger?.warn({ err, reportId }, "report.autoforward enqueue failed")
-  }
 }
 
 async function maybeJoinReportChatAsOwner(

@@ -25,6 +25,10 @@ export const en = {
   "notification.report_mention.title": "You were mentioned",
   "notification.report_mention.body": "Someone mentioned you in a report discussion.",
 
+  // {{jurisdiction}} = the name of the jurisdiction the report was filed with.
+  "notification.report_filed.title": "Your report was sent to {{jurisdiction}}",
+  "notification.report_filed.title_city": "Your report was sent to the city",
+
   // {{name}} = the actor's display name / @handle.
   "notification.post.like.title": "New like",
   "notification.post.like.body": "{{name}} liked your post.",

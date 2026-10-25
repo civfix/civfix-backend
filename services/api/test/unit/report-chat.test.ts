@@ -70,6 +70,9 @@ class SpyOutboundMail implements OutboundMailService {
     this.reportCalls.push(input)
     return Promise.resolve({ thread: stubThread(), messageId: "<stub@civfix.org>" })
   }
+  redeliverReportPacket(): Promise<{ thread: MailThreadRecord; messageId: string }> {
+    return Promise.reject(new Error("unused"))
+  }
   sendEventToJurisdiction(): Promise<{ thread: MailThreadRecord; messageId: string }> {
     return Promise.resolve({ thread: stubThread(), messageId: "<stub@civfix.org>" })
   }

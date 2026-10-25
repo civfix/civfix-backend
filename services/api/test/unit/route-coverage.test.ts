@@ -40,6 +40,9 @@ const SIGNING_KEY = "test-anon-signing-key"
 
 const PARAM_VALUE = "11111111-1111-1111-1111-111111111111"
 
+// Contract endpoints the server does not serve yet, skipped by name with the reason.
+const NOT_YET_ROUTED: Readonly<Record<string, string>> = {}
+
 async function buildFullFakeServer(): Promise<FastifyInstance> {
   const env = loadEnv({ NODE_ENV: "test" })
 
@@ -216,6 +219,7 @@ describe("route-coverage: every shared endpoint is registered (offline boot smok
   })
 
   for (const [name, ep] of Object.entries(endpoints)) {
+    if (name in NOT_YET_ROUTED) continue
     it(`registers ${name}: ${ep.method} ${ep.path}`, async () => {
       const res = await app.inject(injectArgs(ep))
 
@@ -231,8 +235,8 @@ describe("route-coverage: every shared endpoint is registered (offline boot smok
     })
   }
 
-  it("T42: covers ALL 341 endpoints in the registry (no endpoint skipped)", () => {
-    expect(Object.keys(endpoints).length).toBe(341)
+  it("T42: covers ALL 351 endpoints in the registry (only NOT_YET_ROUTED skipped)", () => {
+    expect(Object.keys(endpoints).length).toBe(351)
   })
 
   it("the discriminator is not vacuous: a bogus path IS detected as route-missing", async () => {

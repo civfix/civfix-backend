@@ -10,6 +10,7 @@ import {
   type HomeService,
 } from "../../src/services/admin/home-service.js"
 import { PINS_BY_WEEK_WEEKS } from "../../src/services/admin/analytics-types.js"
+import { InMemoryFilingRepository } from "../helpers/filings/filing-repository.memory.js"
 import type { AnalyticsRepository } from "../../src/services/admin/analytics-repository.js"
 
 const NOW = new Date("2026-06-15T12:00:00.000Z")
@@ -21,7 +22,12 @@ function harness(): {
 } {
   const repo = new InMemoryHomeRepository()
   const analytics = new InMemoryAnalyticsRepository()
-  const svc = makeHomeService({ repo, analytics, now: () => NOW })
+  const svc = makeHomeService({
+    repo,
+    analytics,
+    filings: new InMemoryFilingRepository(),
+    now: () => NOW,
+  })
   return { repo, analytics, svc }
 }
 
@@ -84,10 +90,18 @@ describe("F119 home summary fan-out is bounded", () => {
       pinsByWeek: track(() => analytics.pinsByWeek(PINS_BY_WEEK_WEEKS)),
     } as unknown as AnalyticsRepository
 
-    const svc = makeHomeService({ repo: trackedRepo, analytics: trackedAnalytics, now: () => NOW })
+    const filings = new InMemoryFilingRepository()
+    const trackedFilings = { countGroups: track(() => filings.countGroups()) }
+
+    const svc = makeHomeService({
+      repo: trackedRepo,
+      analytics: trackedAnalytics,
+      filings: trackedFilings,
+      now: () => NOW,
+    })
     const res = await svc.summary()
 
-    expect(started).toBe(11)
+    expect(started).toBe(12)
     expect(peak).toBeGreaterThan(1)
     expect(peak).toBeLessThanOrEqual(HOME_SUMMARY_CONCURRENCY)
     expect(res.livePins24h).toBe(9)
