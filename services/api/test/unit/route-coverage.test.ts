@@ -38,7 +38,6 @@ import {
 import { makeTicketTokenSigner } from "../../src/services/host/ticket-token.js"
 import { NO_HOST_STANDING } from "@civfix/contract/host"
 import { fakeCleanupReader } from "../helpers/host-team.js"
-import { PENDING_IN_EPIC } from "../helpers/pending-in-epic.js"
 
 const SIGNING_KEY = "test-anon-signing-key"
 
@@ -223,15 +222,6 @@ describe("route-coverage: every shared endpoint is registered (offline boot smok
   })
 
   for (const [name, ep] of Object.entries(endpoints)) {
-    if (PENDING_IN_EPIC.has(name)) {
-      it(`T4: ${name} is pending in the epic and not registered yet: ${ep.method} ${ep.path}`, async () => {
-        const res = await app.inject(injectArgs(ep))
-        expect(res.statusCode).toBe(404)
-        const body = res.json<{ message?: string }>()
-        expect(body.message?.startsWith(`Route ${ep.method} `)).toBe(true)
-      })
-      continue
-    }
     it(`registers ${name}: ${ep.method} ${ep.path}`, async () => {
       const res = await app.inject(injectArgs(ep))
 
@@ -253,7 +243,6 @@ describe("route-coverage: every shared endpoint is registered (offline boot smok
 
   it("T13: getNotificationSettings and updateNotificationSettings are registered", async () => {
     for (const name of ["getNotificationSettings", "updateNotificationSettings"] as const) {
-      expect(PENDING_IN_EPIC.has(name), name).toBe(false)
       const res = await app.inject(injectArgs(endpoints[name]))
       const body = res.json<{ message?: string }>()
       expect(
@@ -263,19 +252,16 @@ describe("route-coverage: every shared endpoint is registered (offline boot smok
     }
   })
 
-  it("T43: PENDING_IN_EPIC names exactly the two notification-center endpoints still unregistered, each in the registry", () => {
-    expect([...PENDING_IN_EPIC].sort()).toEqual(
-      ["unsubscribeNotificationEmail", "openUnsubscribeNotificationEmail"].sort(),
-    )
-    for (const name of PENDING_IN_EPIC) expect(Object.keys(endpoints)).toContain(name)
+  it("T44: unsubscribeNotificationEmail and openUnsubscribeNotificationEmail are registered", async () => {
     for (const name of [
-      "getNotificationUnread",
-      "markAllNotificationsRead",
-      "dismissNotification",
-      "getPushWebConfig",
-    ]) {
-      expect(Object.keys(endpoints)).toContain(name)
-      expect(PENDING_IN_EPIC.has(name)).toBe(false)
+      "unsubscribeNotificationEmail",
+      "openUnsubscribeNotificationEmail",
+    ] as const) {
+      const res = await app.inject(injectArgs(endpoints[name]))
+      // The GET answers a bodiless 302, so only a 404 has a message to read.
+      const missing =
+        res.statusCode === 404 && res.json<{ message?: string }>().message?.startsWith("Route ")
+      expect(missing === true, `${name} is not registered`).toBe(false)
     }
   })
 
