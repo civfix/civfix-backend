@@ -7263,6 +7263,14 @@ export const cases: TranscriptCase[] = [
       ),
   },
   {
+    key: "explainHasUnread",
+    run: async (sql: any) => (m102 as any).explainHasUnread(sql, "userId-1"),
+  },
+  {
+    key: "explainMarkAllRead",
+    run: async (sql: any) => (m102 as any).explainMarkAllRead(sql, "userId-1"),
+  },
+  {
     key: "makeDrizzleNotificationRepository.clearByTypeAndLink",
     run: async (sql: any) =>
       (m102 as any)
@@ -7280,6 +7288,11 @@ export const cases: TranscriptCase[] = [
       (m102 as any)
         .makeDrizzleNotificationRepository(sql)
         .deleteAllNotificationsForUser("userId-1"),
+  },
+  {
+    key: "makeDrizzleNotificationRepository.deleteNotification",
+    run: async (sql: any) =>
+      (m102 as any).makeDrizzleNotificationRepository(sql).deleteNotification("userId-1", "id-1"),
   },
   {
     key: "makeDrizzleNotificationRepository.deletePushTokensForUser",
@@ -7307,6 +7320,11 @@ export const cases: TranscriptCase[] = [
       (m102 as any).makeDrizzleNotificationRepository(sql).findUserLocaleMany(["userId-1"]),
   },
   {
+    key: "makeDrizzleNotificationRepository.hasUnread",
+    run: async (sql: any) =>
+      (m102 as any).makeDrizzleNotificationRepository(sql).hasUnread("userId-1"),
+  },
+  {
     key: "makeDrizzleNotificationRepository.insertNotification",
     run: async (sql: any) =>
       (m102 as any).makeDrizzleNotificationRepository(sql).insertNotification({
@@ -7330,6 +7348,11 @@ export const cases: TranscriptCase[] = [
       (m102 as any)
         .makeDrizzleNotificationRepository(sql)
         .listNotifications("userId-1", "cursor-1", 3),
+  },
+  {
+    key: "makeDrizzleNotificationRepository.markAllRead",
+    run: async (sql: any) =>
+      (m102 as any).makeDrizzleNotificationRepository(sql).markAllRead("userId-1"),
   },
   {
     key: "makeDrizzleNotificationRepository.markRead",

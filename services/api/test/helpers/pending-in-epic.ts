@@ -3,10 +3,6 @@
 // sub-issue that registers one also removes it here, and the one that removes the last name deletes the
 // set. csrf-pairing.test.ts leaves them out of the mutations it checks until then.
 export const PENDING_IN_EPIC: ReadonlySet<string> = new Set([
-  "getNotificationUnread",
-  "markAllNotificationsRead",
-  "dismissNotification",
-  "getPushWebConfig",
   "unsubscribeNotificationEmail",
   "openUnsubscribeNotificationEmail",
 ])

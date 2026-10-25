@@ -97,6 +97,12 @@ describe("CSRF pairing: every mutation runs csrfProtect or is a reviewed excepti
     }
   })
 
+  it("T44: checks the inbox mutations", () => {
+    expect(mutations).toEqual(
+      expect.arrayContaining(["markAllNotificationsRead", "dismissNotification"]),
+    )
+  })
+
   it("T13: checks updateNotificationSettings and finds csrfProtect", () => {
     expect(mutations).toContain("updateNotificationSettings")
     expect(preHandlersOf("updateNotificationSettings")).toContain(harness.container.csrf.protect)
