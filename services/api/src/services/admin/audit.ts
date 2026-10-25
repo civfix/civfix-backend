@@ -111,6 +111,12 @@ export type AdminAuditAction =
   | "event.roster_exported"
   | "host.messaging_suspended"
   | "host.messaging_restored"
+  | "dev.flag_set"
+  | "dev.job_run"
+  | "dev.force_update_set"
+  | "dev.test_push"
+  | "dev.test_email"
+  | "dev.reset_first_run"
 
 export const AUDIT_READ_ACTIONS: readonly AdminAuditAction[] = [
   "user.detail_viewed",
