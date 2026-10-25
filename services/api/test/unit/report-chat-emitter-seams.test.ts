@@ -27,6 +27,8 @@ import type { Container } from "../../src/di.js"
 const stub = vi.hoisted(() => ({
   // eslint-disable-next-line @typescript-eslint/no-unnecessary-type-assertion -- the assertion is the field's declared type: vi.hoisted infers the record from this literal
   notifRepo: undefined as unknown,
+  // eslint-disable-next-line @typescript-eslint/no-unnecessary-type-assertion -- the assertion is the field's declared type: vi.hoisted infers the record from this literal
+  settingsRepo: undefined as unknown,
   members: [] as string[],
   /** `${roomKind}|${roomId}|${userId}` */
   muted: new Set<string>(),
@@ -37,6 +39,10 @@ const stub = vi.hoisted(() => ({
 
 vi.mock("../../src/services/notification-repository.drizzle.js", () => ({
   makeDrizzleNotificationRepository: () => stub.notifRepo,
+}))
+
+vi.mock("../../src/services/notification-settings-repository.drizzle.js", () => ({
+  makeDrizzleNotificationSettingsRepository: () => stub.settingsRepo,
 }))
 
 vi.mock("../../src/services/report-chat-repository.drizzle.js", async (importOriginal) => {
@@ -81,7 +87,8 @@ vi.mock("../../src/services/conversation-mutes-repository.drizzle.js", async (im
 })
 
 const { makeContainerReportChatEmitter } = await import("../../src/services/report-chat-emitter.js")
-const { InMemoryNotificationRepository } = await import("../helpers/notifications.js")
+const { InMemoryNotificationRepository, InMemoryNotificationSettingsRepository } =
+  await import("../helpers/notifications.js")
 
 const REPORT = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
 const A = "11111111-1111-1111-1111-111111111111"
@@ -107,6 +114,7 @@ function systemMessage(reportId: string): ChatMessageDTO {
 beforeEach(() => {
   notifRepo = new InMemoryNotificationRepository()
   stub.notifRepo = notifRepo
+  stub.settingsRepo = new InMemoryNotificationSettingsRepository()
   stub.members = []
   stub.muted = new Set()
   stub.batchMutes = true

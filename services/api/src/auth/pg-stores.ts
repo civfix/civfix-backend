@@ -4,6 +4,8 @@ import type { Db } from "../db/client.js"
 import {
   cleanups,
   emailOtps,
+  notificationPrefs,
+  notificationSettings,
   notifications,
   oauthIdentities,
   posts,
@@ -463,6 +465,9 @@ export class PgUserStore implements UserStore {
     await tx.delete(sessions).where(eq(sessions.userId, id))
     await tx.delete(pushTokens).where(eq(pushTokens.userId, id))
     await tx.delete(notifications).where(eq(notifications.userId, id))
+    // Erasure keeps the users row, so notification_settings' ON DELETE CASCADE never fires.
+    await tx.delete(notificationSettings).where(eq(notificationSettings.userId, id))
+    await tx.delete(notificationPrefs).where(eq(notificationPrefs.userId, id))
   }
 
   private async cancelRemainingHostedEvents(tx: DbTransaction, id: string): Promise<void> {

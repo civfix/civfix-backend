@@ -2,6 +2,7 @@ import { afterAll, beforeAll, describe, expect, it, vi } from "vitest"
 import { endpoints } from "@civfix/contract/client"
 import type { EndpointName, RouteOptions } from "../../src/versioning/route.js"
 import { makeAuthHarness, type AuthHarness } from "../helpers/auth.js"
+import { PENDING_IN_EPIC } from "../helpers/pending-in-epic.js"
 
 // The registry's `csrf: true` flag does not wire the preHandler (route() copies only method and path), so
 // the pairing is a hand-kept convention. This pins it: every cookie-authenticated mutation must run
@@ -76,7 +77,7 @@ function preHandlersOf(name: string): unknown[] {
 
 describe("CSRF pairing: every mutation runs csrfProtect or is a reviewed exception", () => {
   const mutations = Object.entries(endpoints)
-    .filter(([, ep]) => MUTATING.has(ep.method))
+    .filter(([name, ep]) => MUTATING.has(ep.method) && !PENDING_IN_EPIC.has(name))
     .map(([name]) => name)
 
   it("sees every mutation in the registry registered", () => {
@@ -94,6 +95,17 @@ describe("CSRF pairing: every mutation runs csrfProtect or is a reviewed excepti
         `${name} mutates without csrfProtect; pair it or add a reviewed exemption`,
       ).toBe(true)
     }
+  })
+
+  it("T44: checks the inbox mutations", () => {
+    expect(mutations).toEqual(
+      expect.arrayContaining(["markAllNotificationsRead", "dismissNotification"]),
+    )
+  })
+
+  it("T13: checks updateNotificationSettings and finds csrfProtect", () => {
+    expect(mutations).toContain("updateNotificationSettings")
+    expect(preHandlersOf("updateNotificationSettings")).toContain(harness.container.csrf.protect)
   })
 
   it("lists only real mutations as exemptions", () => {

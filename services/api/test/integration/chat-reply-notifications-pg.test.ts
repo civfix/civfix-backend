@@ -27,6 +27,7 @@ import { makeCleanupService } from "../../src/services/cleanup-service.js"
 import { makeReportChatRepository } from "../../src/services/report-chat-repository.drizzle.js"
 import { makeChatGroupRepository } from "../../src/services/chat-group-repository.drizzle.js"
 import { makeDrizzleNotificationRepository } from "../../src/services/notification-repository.drizzle.js"
+import { makeDrizzleNotificationSettingsRepository } from "../../src/services/notification-settings-repository.drizzle.js"
 import { makeNotificationService } from "../../src/services/notification-service.js"
 import { makeConversationMutesRepository } from "../../src/services/conversation-mutes-repository.drizzle.js"
 import { makeDrizzleBlocksRepository } from "../../src/services/blocks-repository.drizzle.js"
@@ -114,6 +115,7 @@ describe.skipIf(!pg)("reply notifications + report @mentions (integration)", () 
     return {
       notificationService: makeNotificationService({
         repo: makeDrizzleNotificationRepository(h.sql),
+        settingsRepo: makeDrizzleNotificationSettingsRepository(h.sql),
         pushSender: new FakePushSender(),
       }),
       isMutedFor: (userId, kind, roomId) => mutes.isMuted(userId, kind, roomId),
@@ -189,6 +191,7 @@ describe.skipIf(!pg)("reply notifications + report @mentions (integration)", () 
     await deps.notificationService.getPrefs(target) // materialize defaults
     await makeNotificationService({
       repo: makeDrizzleNotificationRepository(h.sql),
+      settingsRepo: makeDrizzleNotificationSettingsRepository(h.sql),
       pushSender: new FakePushSender(),
     }).updatePrefs(target, { mentions: false })
 
@@ -245,6 +248,7 @@ describe.skipIf(!pg)("reply notifications + report @mentions (integration)", () 
     const fanOut = makeReportChatNotifier({
       notificationService: makeNotificationService({
         repo: makeDrizzleNotificationRepository(h.sql),
+        settingsRepo: makeDrizzleNotificationSettingsRepository(h.sql),
         pushSender: new FakePushSender(),
       }),
       reportChatRepo: { listMemberIds: (id) => reportChatRepo.listMemberIds(id) },
