@@ -24,6 +24,7 @@ import {
   replyAddressToken,
 } from "../../adapters/inbound-mail.cf.js"
 import { CONSUMER_MAIL_DOMAINS } from "./inbound-bounce.js"
+import type { FilingRepository } from "../filings/filing-repository.js"
 
 export { JURISDICTION_REPLY_NOTE }
 
@@ -38,6 +39,7 @@ export interface InboundEffectDeps {
   notifications?: ReporterNotifier
   chatEmitter?: ReportChatSystemEmitter
   logger?: InboundLogger
+  filings?: FilingRepository
 }
 
 export const EFFECTS_LEASE_MS = 10 * 60 * 1000

@@ -25,6 +25,7 @@ import {
   pickPreviewMedia,
   REPORT_VERIFIED_THRESHOLD,
 } from "../../../src/services/admin/admin-report-types.js"
+import type { InMemoryFilingRepository } from "../filings/filing-repository.memory.js"
 import { STATUS_BUCKETS } from "../../../src/services/admin/admin-report-status.js"
 
 export interface RecordedAudit {
@@ -55,6 +56,8 @@ export interface SeededReport {
 }
 
 export class InMemoryAdminReportRepository implements AdminReportRepository {
+  /** The filing twin a status change away from a city-closed `resolved` writes its D12 filing into. */
+  filings?: InMemoryFilingRepository
   readonly reports = new Map<string, SeededReport>()
   readonly timeline = new Map<string, AdminReportTimelineRecord[]>()
   readonly audits: RecordedAudit[] = []

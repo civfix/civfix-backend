@@ -32,6 +32,8 @@ import {
   readMailAuthVerdict,
   type MailAuthVerdict,
 } from "../../adapters/inbound-mail.cf.js"
+import type { FilingRepository } from "../filings/filing-repository.js"
+import type { FilingIngestSql } from "../filings/filing-ingest-sql.drizzle.js"
 import { sanitizeInboundHtml } from "./inbound-html-sanitizer.js"
 import { htmlToText } from "./mail-preview.js"
 import { ATTACHMENT_FILENAME_MAX_CHARS, safeFilenameChars } from "../../lib/filename.js"
@@ -95,6 +97,8 @@ export interface InboundProcessorDeps {
   cleanupRepo?: CleanupRepository
   notifications?: ReporterNotifier
   chatEmitter?: ReportChatSystemEmitter
+  filings?: FilingRepository
+  filingIngest?: FilingIngestSql
 }
 
 export async function processInboundObject(

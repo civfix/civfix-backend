@@ -19,6 +19,7 @@ import {
   PRESSING_DROP_FIXED,
   PRESSING_RECENT_VOTES,
 } from "../../src/services/report-repository.js"
+import type { InMemoryFilingRepository } from "./filings/filing-repository.memory.js"
 import { formatReferenceCode, reportScopeKey, typeCodeFor } from "../../src/db/reference-code.js"
 import {
   confirmationVerdict,
@@ -59,6 +60,9 @@ interface StoredIdempotency {
 }
 
 export class InMemoryReportRepository implements ReportRepository {
+  /** The filing twin a reopen of a city-closed report writes its D12 filing into. */
+  constructor(readonly filings?: InMemoryFilingRepository) {}
+
   readonly reports = new Map<string, ReportRecord>()
   readonly media: StoredMediaAsset[] = []
   readonly timeline: StoredTimeline[] = []
