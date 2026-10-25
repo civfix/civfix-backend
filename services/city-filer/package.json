@@ -5,6 +5,12 @@
   "description": "civfix city filer. Works the filing.run queue: runs each portal's workspace script as the credential-less filer user through filer-shell, checks its output, uploads the evidence and hands the outcome back on filing.result.",
   "license": "AGPL-3.0-only",
   "type": "module",
+  "files": [
+    "dist",
+    "kit",
+    "bin",
+    "playbook"
+  ],
   "scripts": {
     "typecheck": "tsc --noEmit",
     "lint": "eslint .",
@@ -14,6 +20,7 @@
   "dependencies": {
     "@civfix/api": "workspace:*",
     "@civfix/contract": "0.66.0-b-feat-city-filing-contract.g82d07a7",
+    "playwright-core": "1.64.0-alpha-1790635538000",
     "zod": "^4.6.6"
   },
   "devDependencies": {
