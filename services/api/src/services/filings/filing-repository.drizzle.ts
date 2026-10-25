@@ -353,7 +353,9 @@ export function makeDrizzleFilingRepository(sql: Sql): FilingRepository {
       try {
         return await sql.begin(async (tx) => {
           const row = await insertFiling(tx, input, false)
-          if (audit !== undefined) await insertAuditRow(tx, audit)
+          if (audit !== undefined) {
+            await insertAuditRow(tx, { ...audit, target: audit.target ?? `filing:${row.id}` })
+          }
           return { kind: "created" as const, filing: toFiling(row) }
         })
       } catch (err) {

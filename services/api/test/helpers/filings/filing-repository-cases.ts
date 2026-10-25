@@ -231,6 +231,32 @@ export function defineFilingRepositoryCases(setup: () => Promise<FilingWorld>): 
       expect(await w.audits()).toHaveLength(1)
     })
 
+    describe("#171", () => {
+      it("T24: an audit with no target gets the new filing's id; a given target is kept", async () => {
+        const input = (reportId: string) =>
+          ({
+            reportId,
+            geoid: w.G,
+            category: "pothole",
+            status: "queued",
+            ticketText: "t",
+          }) as const
+        const first = await w.report()
+        const created = createdFiling(
+          await w.repo.create(input(first.id), { action: AUDIT_ACTION, actorId: w.actor }),
+        )
+        expect(await w.audits()).toEqual([
+          { action: AUDIT_ACTION, actorId: w.actor, target: `filing:${created.id}` },
+        ])
+
+        const second = await w.report()
+        expect((await w.repo.create(input(second.id), audit("report:x"))).kind).toBe("created")
+        const rows = await w.audits()
+        expect(rows).toHaveLength(2)
+        expect(rows).toContainEqual({ action: AUDIT_ACTION, actorId: w.actor, target: "report:x" })
+      })
+    })
+
     it("T16: a jurisdiction-less filing has no geoid, channel or jurisdiction name", async () => {
       const r = await w.report({ geoid: null })
       const filing = createdFiling(

@@ -19,6 +19,7 @@ import type {
   UsersSectionCounts,
 } from "./home-repository.js"
 import { mapWithLimit } from "../../lib/concurrency.js"
+import type { FilingRepository } from "../filings/filing-repository.js"
 
 export * from "./home-repository.js"
 
@@ -99,6 +100,7 @@ async function runBounded<T extends SectionTasks>(
 export interface HomeServiceDeps {
   repo: HomeRepository
   analytics: AnalyticsRepository
+  filings: Pick<FilingRepository, "countGroups">
   now?: () => Date
   onSectionError?: (section: string, err: unknown) => void
 }
@@ -143,6 +145,7 @@ export function makeHomeService(deps: HomeServiceDeps): HomeService {
         pinsByWeek,
         moderationQueue,
         inboxUnread,
+        filingsNeedsHuman,
       ] = await runBounded(HOME_SUMMARY_CONCURRENCY, [
         () => safeSection(() => deps.repo.discoverySummary(), ZERO_DISCOVERY, report("discovery")),
         () => safeSection(() => deps.repo.reportsSummary(), ZERO_REPORTS, report("reports")),
@@ -170,6 +173,12 @@ export function makeHomeService(deps: HomeServiceDeps): HomeService {
           ),
         () => safeSection(() => deps.repo.moderationQueue(), 0, report("moderationQueue")),
         () => safeSection(() => deps.repo.inboxUnread(), 0, report("inboxUnread")),
+        () =>
+          safeSection(
+            async () => (await deps.filings.countGroups()).needs_human,
+            0,
+            report("filingsNeedsHuman"),
+          ),
       ] as const)
       return {
         discovery,
@@ -181,8 +190,7 @@ export function makeHomeService(deps: HomeServiceDeps): HomeService {
         livePins24h,
         moderationQueue,
         inboxUnread,
-        // Nothing creates a needs_human filing until filing from the admin lands (#171), which counts them.
-        filingsNeedsHuman: 0,
+        filingsNeedsHuman,
       }
     },
 
