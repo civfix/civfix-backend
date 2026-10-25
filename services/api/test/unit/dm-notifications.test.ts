@@ -15,7 +15,10 @@ import {
   InMemoryBlocksRepository,
   InMemoryDmRepository,
 } from "../../src/services/dm-repository.memory.js"
-import { InMemoryNotificationRepository } from "../helpers/notifications.js"
+import {
+  InMemoryNotificationRepository,
+  InMemoryNotificationSettingsRepository,
+} from "../helpers/notifications.js"
 import {
   makeNotificationService,
   type NotificationService,
@@ -133,7 +136,11 @@ beforeEach(async () => {
   chat = new WsChatService({ repo: makeUnusedChatRepo(), pubsub })
   notifRepo = new InMemoryNotificationRepository()
   push = new FakePushSender()
-  notifications = makeNotificationService({ repo: notifRepo, pushSender: push })
+  notifications = makeNotificationService({
+    repo: notifRepo,
+    settingsRepo: new InMemoryNotificationSettingsRepository(),
+    pushSender: push,
+  })
   const thread = await dmRepo.openOrCreateThread(ALICE, BOB)
   THREAD = thread.id
 })

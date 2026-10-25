@@ -55,6 +55,7 @@ import { chatAuthorityRoleOf } from "../../src/routes/chat-powers-wiring.js"
 import { makeConversationMutesRepository } from "../../src/services/conversation-mutes-repository.drizzle.js"
 import { makeContainerPollNotifier } from "../../src/services/chat-poll-notifier.js"
 import { makeChatPollService } from "../../src/services/chat-poll-service.js"
+import { fakeNotificationEmail } from "../helpers/notification-email.js"
 
 const pg = await withPg()
 
@@ -728,6 +729,7 @@ describe.skipIf(!pg)("chat polls: create / vote / close + hydration (integration
         env: { USE_FAKE_CHAT: false },
         getDb: () => ({ sql: h.sql }),
         pushSender: new FakePushSender(),
+        getNotificationEmail: fakeNotificationEmail,
         userChannel: undefined,
         getBlocksRepo: () => makeDrizzleBlocksRepository(h.sql, fakeAvatarPresigner),
       }) as unknown as Container

@@ -1,8 +1,17 @@
-import type { PushPayload } from "@civfix/seams"
-import type { PushSenderConfig, PushLogger, PlatformDispatcher } from "./push-sender.js"
+import { encodePushMessageData } from "@civfix/contract"
+import type {
+  PushSenderConfig,
+  PushLogger,
+  PlatformDispatcher,
+  PushDelivery,
+} from "./push-sender.js"
 import { hashForLog } from "./push-sender.js"
+import { androidChannelFor, pushMessageData } from "./push-message.js"
 
-const FCM_MULTICAST_MAX = 500
+const FCM_SEND_EACH_MAX = 500
+
+// Clears are background work, which Android delivers without waking a dozing device (D8).
+const FCM_SILENT_PRIORITY = "normal"
 
 const FCM_APP_NAME = "civfix-push"
 
@@ -12,7 +21,7 @@ const PRUNE_CODES = new Set([
 ])
 
 // FCM v1 answers both a malformed token and a bad payload (too large, reserved data key) with
-// INVALID_ARGUMENT, so it only proves a token fault when the same payload reached another token.
+// INVALID_ARGUMENT, so it only proves a token fault when another message in the same call got through.
 const AMBIGUOUS_INVALID_CODE = "messaging/invalid-argument"
 
 export function isFcmPruneCode(code: string): boolean {
@@ -78,23 +87,12 @@ export function makeFcmDispatcher(
 
   async function dispatchSlice(
     messaging: any,
-    tokens: string[],
-    payload: PushPayload,
+    slice: PushDelivery[],
     invalidTokens: string[],
   ): Promise<FcmSliceVerdict["payloadRejected"]> {
-    const message = {
-      tokens,
-      notification: {
-        title: payload.title,
-        ...(payload.body !== undefined ? { body: payload.body } : {}),
-      },
-      data: stringifyData({
-        ...(payload.data ?? {}),
-        ...(payload.link !== undefined ? { link: payload.link } : {}),
-      }),
-    }
+    const tokens = slice.map((d) => d.token)
     try {
-      const resp = (await messaging.sendEachForMulticast(message)) as {
+      const resp = (await messaging.sendEach(slice.map(fcmMessage))) as {
         responses: FcmSendResponse[]
       }
       const verdict = classifyFcmResponses(tokens, resp.responses)
@@ -112,16 +110,15 @@ export function makeFcmDispatcher(
     }
   }
 
-  const dispatch: PlatformDispatcher = async (tokens, payload) => {
+  const dispatch: PlatformDispatcher = async (deliveries) => {
     const messaging = await getMessaging()
     const invalidTokens: string[] = []
     let payloadRejection: FcmSliceVerdict["payloadRejected"] = null
     let rejectedSlices = 0
-    for (let i = 0; i < tokens.length; i += FCM_MULTICAST_MAX) {
+    for (let i = 0; i < deliveries.length; i += FCM_SEND_EACH_MAX) {
       const rejection = await dispatchSlice(
         messaging,
-        tokens.slice(i, i + FCM_MULTICAST_MAX),
-        payload,
+        deliveries.slice(i, i + FCM_SEND_EACH_MAX),
         invalidTokens,
       )
       if (rejection !== null) {
@@ -151,10 +148,25 @@ export function makeFcmDispatcher(
   return dispatch
 }
 
-function stringifyData(data: Record<string, unknown>): Record<string, string> {
-  const out: Record<string, string> = {}
-  for (const [k, v] of Object.entries(data)) {
-    out[k] = typeof v === "string" ? v : JSON.stringify(v)
+// `channelId` is the Admin SDK's name for the v1 API's android.notification.channel_id.
+function fcmMessage({ token, message }: PushDelivery): Record<string, unknown> {
+  const data = encodePushMessageData(pushMessageData(message))
+  if (message.kind === "clear") {
+    return { token, data, android: { priority: FCM_SILENT_PRIORITY } }
   }
-  return out
+  const { payload } = message
+  return {
+    token,
+    notification: {
+      title: payload.title,
+      ...(payload.body !== undefined ? { body: payload.body } : {}),
+    },
+    data,
+    android: {
+      notification: {
+        tag: payload.notificationId,
+        channelId: androidChannelFor(payload.category),
+      },
+    },
+  }
 }

@@ -53,9 +53,10 @@ response can be answered truthfully. It is the source of record for the
      the rows written while it did are retained. See the ⚖️ DECISION below.
    - **Revokes and scrubs their issued service-hours certificates**; see the
      dedicated section below.
-   - **Deletes** every durable session row, every device push token and every
-     notification row of the user, so no session outlives the tombstone and no
-     device can be reached after the erasure commits.
+   - **Deletes** every durable session row, every device push token, every
+     notification row and the notification settings and prefs rows of the user,
+     so no session outlives the tombstone and no device can be reached after the
+     erasure commits.
    - Keeps every content foreign key intact (the rows survive; the author
      de-links).
    - AFTER the commit, best-effort deletes each revoked certificate's R2 object.
@@ -81,6 +82,7 @@ response can be answered truthfully. It is the source of record for the
 | OAuth identity links | **Deleted** (best-effort, step 3); otherwise a provider sign-in walks back into the tombstone once the ban marker's TTL lapses. |
 | Device push tokens | **Deleted** inside the erasure transaction. |
 | Notifications | **Deleted** inside the erasure transaction (they can hold verbatim chat/DM previews and are not civic record). |
+| `notification_settings`, `notification_prefs` (per-category notification settings, the old prefs row and quiet hours) | **Deleted** inside the erasure transaction: they describe how to reach a person who no longer has an account, and are not civic record. `notification_settings` declares `ON DELETE CASCADE`, but civfix erasure is a SOFT delete, so that action never fires and the explicit delete is what removes the rows. |
 | Reports the user filed | **Kept** as rows; the user's `public` ones are flipped to `hidden` (see public rendering below). |
 | Report chat, event/group chat, DMs the user wrote | **Kept** (soft-deleted only where the user deleted them individually). |
 | Cleanups organized / joined | **Kept**; an `upcoming`/`active` event they organize is TRANSFERRED where anyone can take it over, and cancelled only when nobody can (ladder below). |

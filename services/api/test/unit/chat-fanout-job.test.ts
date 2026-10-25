@@ -19,6 +19,7 @@ import { makeNotificationService } from "../../src/services/notification-service
 import {
   InMemoryNotificationRepository,
   flushNotificationDispatch,
+  InMemoryNotificationSettingsRepository,
 } from "../helpers/notifications.js"
 
 const ACTOR = "dddddddd-dddd-dddd-dddd-dddddddddddd"
@@ -55,10 +56,15 @@ class RecordingJobs {
 
 function harness(overrides: Partial<RoomFanoutNotifierDeps> = {}) {
   const repo = new InMemoryNotificationRepository()
+  const settings = new InMemoryNotificationSettingsRepository()
   const push = new FakePushSender()
   const listed: string[] = []
   const deps: RoomFanoutNotifierDeps = {
-    notificationService: makeNotificationService({ repo, pushSender: push }),
+    notificationService: makeNotificationService({
+      repo,
+      settingsRepo: settings,
+      pushSender: push,
+    }),
     listMemberIds: (roomId) => {
       listed.push(roomId)
       return Promise.resolve([ACTOR, A, MUTED, PRESENT])
@@ -69,7 +75,7 @@ function harness(overrides: Partial<RoomFanoutNotifierDeps> = {}) {
     isBlockedEitherWay: () => Promise.resolve(false),
     ...overrides,
   }
-  return { repo, push, deps, listed }
+  return { repo, settings, push, deps, listed }
 }
 
 function bells(repo: InMemoryNotificationRepository, userId: string) {
@@ -183,7 +189,8 @@ describe("chat.room.fanout job dispatch (H19)", () => {
 
 describe("chat.room.fanout job body", () => {
   it("runRoomFanout applies the sender, presence, mute and coalescing gates the live path applied", async () => {
-    const { repo, push, deps } = harness()
+    const { repo, settings, push, deps } = harness()
+    await settings.upsertSettings(A, { groupChats: { push: true } })
 
     await runRoomFanout(ROOM_FANOUT_SPEC.group, deps, ROOM, message("msg-1", "hello"))
     await runRoomFanout(ROOM_FANOUT_SPEC.group, deps, ROOM, message("msg-2", "hello again"))

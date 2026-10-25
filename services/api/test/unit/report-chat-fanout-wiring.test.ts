@@ -2,10 +2,13 @@ import { describe, it, expect, beforeEach, vi } from "vitest"
 import { FakePushSender } from "@civfix/seams"
 import type { ChatMessageDTO } from "@civfix/contract"
 import type { Container } from "../../src/di.js"
+import { fakeNotificationEmail } from "../helpers/notification-email.js"
 
 const stub = vi.hoisted(() => ({
   // eslint-disable-next-line @typescript-eslint/no-unnecessary-type-assertion -- the assertion is the field's declared type: vi.hoisted infers the record from this literal
   notifRepo: undefined as unknown,
+  // eslint-disable-next-line @typescript-eslint/no-unnecessary-type-assertion -- the assertion is the field's declared type: vi.hoisted infers the record from this literal
+  settingsRepo: undefined as unknown,
   roster: [] as string[],
   limits: [] as (number | undefined)[],
   mutesFail: false,
@@ -13,6 +16,10 @@ const stub = vi.hoisted(() => ({
 
 vi.mock("../../src/services/notification-repository.drizzle.js", () => ({
   makeDrizzleNotificationRepository: () => stub.notifRepo,
+}))
+
+vi.mock("../../src/services/notification-settings-repository.drizzle.js", () => ({
+  makeDrizzleNotificationSettingsRepository: () => stub.settingsRepo,
 }))
 
 vi.mock("../../src/services/report-chat-repository.drizzle.js", async (importOriginal) => {
@@ -55,7 +62,8 @@ const { makeContainerReportChatSendDeps } =
 const { makeReportChatNotifier, REPORT_CHAT_FANOUT_MEMBER_CAP } =
   await import("../../src/services/report-chat-notifier.js")
 const { makeNotificationService } = await import("../../src/services/notification-service.js")
-const { InMemoryNotificationRepository } = await import("../helpers/notifications.js")
+const { InMemoryNotificationRepository, InMemoryNotificationSettingsRepository } =
+  await import("../helpers/notifications.js")
 
 const REPORT = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
 const ACTOR = "dddddddd-dddd-dddd-dddd-dddddddddddd"
@@ -103,6 +111,7 @@ function containerFor(): Container {
     env: { USE_FAKE_CHAT: false },
     getDb: () => ({ sql: {} }),
     pushSender: new FakePushSender(),
+    getNotificationEmail: fakeNotificationEmail,
     userChannel: undefined,
     chatService: { broadcast: () => Promise.resolve() },
     getBlocksRepo: () => ({ isBlockedEitherWay: () => Promise.resolve(false) }),
@@ -120,6 +129,7 @@ function warnLogger(): { warn: ReturnType<typeof vi.fn>; error: ReturnType<typeo
 beforeEach(() => {
   notifRepo = new InMemoryNotificationRepository()
   stub.notifRepo = notifRepo
+  stub.settingsRepo = new InMemoryNotificationSettingsRepository()
   stub.roster = rosterOf(OVERSIZED_ROSTER)
   stub.limits = []
   stub.mutesFail = false
@@ -153,6 +163,7 @@ describe("report-chat fan-out honours REPORT_CHAT_FANOUT_MEMBER_CAP on every wir
     const notify = makeReportChatNotifier({
       notificationService: makeNotificationService({
         repo: notifRepo,
+        settingsRepo: new InMemoryNotificationSettingsRepository(),
         pushSender: new FakePushSender(),
       }),
       reportChatRepo: { listMemberIds: () => Promise.resolve(rosterOf(OVERSIZED_ROSTER)) },
