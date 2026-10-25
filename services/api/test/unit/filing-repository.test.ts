@@ -47,7 +47,11 @@ function memoryWorld(): FilingWorld {
       repo.evidence.push({ id: randomUUID(), filingId, ...e })
       return Promise.resolve()
     },
-    mailThread: () => Promise.resolve(randomUUID()),
+    mailThread(status = "sent") {
+      const id = randomUUID()
+      repo.mailThreads.set(id, status)
+      return Promise.resolve(id)
+    },
     mailMessage: () => Promise.resolve(randomUUID()),
     inboundEmail: () => Promise.resolve(randomUUID()),
     setReport(id, patch) {

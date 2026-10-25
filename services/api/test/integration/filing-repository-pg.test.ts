@@ -97,9 +97,9 @@ async function addFiling(sql: Sql, row: FilingSeedRow): Promise<string> {
   return f!.id
 }
 
-async function addMailThread(sql: Sql): Promise<string> {
+async function addMailThread(sql: Sql, status = "sent"): Promise<string> {
   const [t] = await sql<{ id: string }[]>`
-    INSERT INTO mail_threads (thread_token) VALUES (${randomUUID()}) RETURNING id
+    INSERT INTO mail_threads (thread_token, status) VALUES (${randomUUID()}, ${status}) RETURNING id
   `
   return t!.id
 }
@@ -155,7 +155,7 @@ async function pgWorld(h: PgHarness): Promise<FilingWorld> {
         VALUES (${filingId}, ${e.r2Key}, ${e.kind}, ${e.label}, ${e.createdAt})
       `
     },
-    mailThread: () => addMailThread(sql),
+    mailThread: (status) => addMailThread(sql, status),
     mailMessage: (threadId) => addMailMessage(sql, threadId),
     inboundEmail: () => addInboundEmail(sql),
     async setReport(id, patch) {

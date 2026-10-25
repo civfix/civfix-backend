@@ -291,6 +291,47 @@ describe.skipIf(!pg)("city filing (integration)", () => {
         await slow.app.close()
       }
     })
+
+    /** A report routed once, whose packet then bounced. */
+    async function routedThenBounced(): Promise<{ id: string; name: string; threadId: string }> {
+      const j = await jurisdiction("bounce@city.test")
+      const id = await report(j.geoid)
+      const res = await post(main, `/v1/admin/reports/${id}/route`)
+      expect(res.statusCode).toBe(200)
+      const { threadId } = res.json<{ threadId: string }>()
+      await h.sql`UPDATE mail_threads SET status = 'bounced' WHERE id = ${threadId}`
+      return { id, name: j.name, threadId }
+    }
+
+    it("C45: a submitted email filing whose thread bounced does not block sending again, and the send is recorded as a new filing", async () => {
+      const { id, threadId: bouncedThread } = await routedThenBounced()
+      const before = outboundCount(main)
+
+      const res = await post(main, `/v1/admin/reports/${id}/route`)
+      expect(res.statusCode).toBe(200)
+      const body = res.json<{ ok: boolean; threadId: string; routedTo: string }>()
+      expect(body).toEqual({ ok: true, threadId: expect.any(String), routedTo: "bounce@city.test" })
+      expect(outboundCount(main)).toBe(before + 1)
+
+      const filings = await filingsOf(id)
+      expect(filings).toHaveLength(2)
+      expect(filings[0]).toMatchObject({ status: "submitted", mail_thread_id: bouncedThread })
+      expect(filings[1]).toMatchObject({
+        status: "submitted",
+        method: "email",
+        channel: "email",
+        mail_thread_id: body.threadId,
+      })
+    })
+
+    it("C47: after the bounce and before a new send, the report still shows the bounced filing", async () => {
+      const { id, name } = await routedThenBounced()
+      const res = await main.app.inject({ method: "GET", url: `/v1/reports/${id}` })
+      expect(res.statusCode).toBe(200)
+      const dto = res.json<{ filing: { jurisdictionName: string | null } | null; gov: boolean }>()
+      expect(dto.filing).toMatchObject({ jurisdictionName: name })
+      expect(dto.gov).toBe(true)
+    })
   })
 
   describe("cancels", () => {

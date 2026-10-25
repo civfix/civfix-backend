@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto"
 import { describe, expect, it } from "vitest"
 import { FakeMailer } from "@civfix/seams"
 import { renderMessage } from "../../src/i18n/renderMessage.js"
@@ -168,6 +169,38 @@ describe("filingService.create", () => {
     })
     expect(h.filings.filings.size).toBe(0)
     expect(h.jobs.enqueued).toEqual([])
+  })
+
+  it("C46: an open submitted filing whose mail thread bounced does not block filing again; a delivered or a linked one does", async () => {
+    const h = filingHarness()
+    async function filedBefore(patch: Partial<FilingRecord>, threadStatus: string | null) {
+      const r = h.seed({ contact: J_CONTACT })
+      let mailThreadId: string | null = null
+      if (threadStatus !== null) {
+        mailThreadId = randomUUID()
+        h.filings.mailThreads.set(mailThreadId, threadStatus)
+      }
+      await h.addFiling(
+        r.record.id,
+        { channel: "email" },
+        { submittedAt: new Date(), cityClosedAt: null, mailThreadId, ...patch },
+      )
+      return r.record.id
+    }
+
+    const bounced = await filedBefore({ status: "submitted", method: "email" }, "bounced")
+    const again = await h.svc.create({ reportId: bounced, actorId: "op-1" })
+    expect(again).toMatchObject({ kind: "created", filing: { status: "queued", channel: "email" } })
+
+    const delivered = await filedBefore({ status: "submitted", method: "email" }, "delivered")
+    expect(await h.svc.create({ reportId: delivered, actorId: "op-1" })).toEqual({
+      kind: "already_filed",
+    })
+
+    const linked = await filedBefore({ status: "linked_existing", method: "operator" }, null)
+    expect(await h.svc.create({ reportId: linked, actorId: "op-1" })).toEqual({
+      kind: "already_filed",
+    })
   })
 })
 

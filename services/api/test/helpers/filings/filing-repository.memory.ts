@@ -84,6 +84,8 @@ export class InMemoryFilingRepository implements FilingRepository {
   readonly evidence: FilingEvidenceRecord[] = []
   routes: FilingRouteRecord[] = []
   readonly messages: FilingMessageRecord[] = []
+  /** `mail_threads.status` by thread id, for the D1 read that joins it. */
+  readonly mailThreads = new Map<string, string>()
   private last = 0
   settings: FilingSettingsRecord = { paused: false, updatedAt: this.now(), updatedBy: null }
 
