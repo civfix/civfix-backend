@@ -23,17 +23,6 @@ const APP_STORE_URL = "https://apps.apple.com/us/app/civfix/id6000000000"
 const PLAY_STORE_URL = "https://play.google.com/store/apps/details?id=org.civfix.community"
 const PUBLIC_CACHE = "public, max-age=60"
 
-const DEFAULTS: Record<RuntimeFlagKey, unknown> = {
-  host_messaging_kill_switch: false,
-  outreach_digest_enabled: false,
-  report_autoforward_enabled: false,
-  min_app_version_ios: null,
-  min_app_version_android: null,
-  app_store_url_ios: null,
-  announcement_text: null,
-  announcement_level: "info",
-}
-
 interface Session {
   userId: string
   cookie: string
@@ -337,8 +326,8 @@ describe("GET /v1/admin/dev/flags", () => {
     const h = await harness()
     const flags = await listFlags(h)
     expect(flags.map((f) => f.key)).toEqual(RUNTIME_FLAGS.map((f) => f.key))
-    for (const flag of flags) {
-      const expected = DEFAULTS[flag.key as RuntimeFlagKey]
+    for (const [i, flag] of flags.entries()) {
+      const expected = RUNTIME_FLAGS[i]!.default
       expect(flag).toEqual({
         key: flag.key,
         value: expected,

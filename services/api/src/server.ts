@@ -222,10 +222,7 @@ export class RequestLogController extends LogController {
     })
     reply.raw.once("close", () => {
       if (finished) return
-      reply.log.info(
-        { req: request, responseTime: reply.elapsedTime, ...appVersionField(request) },
-        "request aborted",
-      )
+      reply.log.info({ req: request, responseTime: reply.elapsedTime }, "request aborted")
     })
   }
 
