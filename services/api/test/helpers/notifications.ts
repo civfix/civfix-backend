@@ -412,4 +412,13 @@ export class InMemoryNotificationSettingsRepository implements NotificationSetti
     }
     return Promise.resolve()
   }
+
+  /** The accounts disableEmail may write for: live users, as its join on `users` reads them. */
+  readonly liveUserIds = new Set<string>()
+
+  async disableEmail(userId: string, category: NotificationCategory): Promise<boolean> {
+    if (!this.liveUserIds.has(userId)) return false
+    await this.upsertSettings(userId, { [category]: { email: false } })
+    return true
+  }
 }

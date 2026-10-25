@@ -28,6 +28,7 @@ interface Stored {
 interface Subject {
   repo: NotificationSettingsRepository
   newUser(): Promise<string>
+  newErasedUser(): Promise<string>
   stored(userId: string): Promise<Stored[]>
 }
 
@@ -161,6 +162,33 @@ function contract(
       await s.repo.upsertSettings(user, {})
       expect(await s.stored(user)).toEqual([])
     })
+
+    it("disableEmail unchecks Email from the default for a new row and keeps a stored row's other fields", async () => {
+      const user = await s.newUser()
+      await s.repo.upsertSettings(user, {
+        hostAnnouncements: { enabled: true, push: false, email: true },
+      })
+
+      expect(await s.repo.disableEmail(user, "events")).toBe(true)
+      expect(await s.repo.disableEmail(user, "hostAnnouncements")).toBe(true)
+      expect(await s.repo.disableEmail(user, "hostAnnouncements")).toBe(true)
+
+      expect((await s.stored(user)).map(({ updatedAt: _, ...row }) => row)).toEqual([
+        { category: "events", enabled: true, push: true, email: false },
+        { category: "hostAnnouncements", enabled: true, push: false, email: false },
+      ])
+    })
+
+    it("disableEmail writes nothing for an erased or unknown account", async () => {
+      const erased = await s.newErasedUser()
+      const unknown = randomUUID()
+
+      expect(await s.repo.disableEmail(erased, "events")).toBe(false)
+      expect(await s.repo.disableEmail(unknown, "events")).toBe(false)
+
+      expect(await s.stored(erased)).toEqual([])
+      expect(await s.stored(unknown)).toEqual([])
+    })
   })
 }
 
@@ -175,6 +203,14 @@ contract(
       async newUser() {
         const [row] = await h.sql<{ id: string }[]>`
           INSERT INTO users (display_name, handle) VALUES ('Settings', ${testHandle()}) RETURNING id
+        `
+        return row!.id
+      },
+      async newErasedUser() {
+        const [row] = await h.sql<{ id: string }[]>`
+          INSERT INTO users (display_name, handle, deleted_at)
+          VALUES ('Erased', ${testHandle()}, now())
+          RETURNING id
         `
         return row!.id
       },
@@ -215,7 +251,12 @@ contract(
     repo.now = () => new Date((tick += 1000))
     return Promise.resolve({
       repo,
-      newUser: () => Promise.resolve(randomUUID()),
+      newUser: () => {
+        const id = randomUUID()
+        repo.liveUserIds.add(id)
+        return Promise.resolve(id)
+      },
+      newErasedUser: () => Promise.resolve(randomUUID()),
       stored: (userId) =>
         Promise.resolve(
           byCategory([...repo.rows.values()].filter((r) => r.userId === userId)).map(
