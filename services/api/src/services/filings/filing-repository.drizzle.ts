@@ -304,6 +304,8 @@ async function updateToSuccess(
     caseId: input.caseId,
     caseUrl: input.caseUrl,
     mailThreadId: input.mailThreadId,
+    scriptVersion: input.scriptVersion,
+    dryRun: input.dryRun,
   }
   const attempts =
     input.from.attempts === undefined ? tx`` : tx`AND attempts = ${input.from.attempts}`
@@ -370,11 +372,25 @@ export function makeDrizzleFilingRepository(sql: Sql): FilingRepository {
       )
     },
 
-    getLatestSuccessfulForReport(reportId) {
+    getLatestForReport(reportId) {
       return oneFiling(sql`
+        WHERE f.report_id = ${reportId}
+        ORDER BY f.created_at DESC, f.id DESC
+      `)
+    },
+
+    async getLatestSuccessfulForReport(reportId) {
+      const [row] = await sql<(FilingRow & { mail_bounced: boolean })[]>`
+        SELECT f.*, j.name AS jurisdiction_name,
+               (f.status = 'submitted' AND t.status = 'bounced') IS TRUE AS mail_bounced
+        FROM report_filings f
+        LEFT JOIN jurisdictions j ON j.geoid = f.geoid
+        LEFT JOIN mail_threads t ON t.id = f.mail_thread_id
         WHERE f.report_id = ${reportId} AND f.status IN ('submitted', 'linked_existing')
         ORDER BY f.submitted_at DESC NULLS LAST, f.id DESC
-      `)
+        LIMIT 1
+      `
+      return row === undefined ? null : { ...toFiling(row), mailBounced: row.mail_bounced }
     },
 
     async getLatestSuccessfulForReports(reportIds) {

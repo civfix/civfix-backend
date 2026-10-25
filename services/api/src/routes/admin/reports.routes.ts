@@ -26,8 +26,10 @@ import {
 import { requireOperator } from "../../auth/admin-guard.js"
 import {
   makeAdminReportService,
+  type AdminReportServiceDeps,
   type ReporterNotifier,
 } from "../../services/admin/admin-report-service.js"
+import { makeContainerFilingService } from "../../services/filings/filing-wiring.js"
 import type { AdminReportRepository } from "../../services/admin/admin-report-repository.js"
 import { makeDrizzleAdminReportRepository } from "../../services/admin/admin-report-repository.drizzle.js"
 import { makeDrizzleForwardTemplateRepository } from "../../services/admin/forward-template-repository.drizzle.js"
@@ -63,6 +65,7 @@ export const ADMIN_REPORT_MUTATION_RATE_LIMIT = perIdentity({
 export interface AdminReportRouteOverrides {
   repo: AdminReportRepository
   outboundMail: OutboundMailService
+  filings: AdminReportServiceDeps["filings"]
   presignMedia?: (
     r2Key: string,
     thumbKey: string | null,
@@ -93,6 +96,7 @@ export async function registerAdminReportsRoutes(
       makeAdminReportService({
         repo: overrides.repo,
         outboundMail: overrides.outboundMail,
+        filings: overrides.filings,
         ...(overrides.presignMedia !== undefined ? { presignMedia: overrides.presignMedia } : {}),
         ...(overrides.loadLinkedEventsForReports !== undefined
           ? { loadLinkedEventsForReports: overrides.loadLinkedEventsForReports }
@@ -118,6 +122,7 @@ export async function registerAdminReportsRoutes(
       return makeAdminReportService({
         repo,
         outboundMail,
+        filings: makeContainerFilingService(container, app.log),
         presignMedia: makePrivateMediaPresigner(container.storage),
         presignPacketMedia: makePacketMediaPresigner(container.storage),
         loadLinkedEventsForReports: (reportIds) =>

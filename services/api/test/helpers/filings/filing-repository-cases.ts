@@ -66,7 +66,8 @@ export interface FilingWorld {
     filingId: string,
     e: { r2Key: string; kind: FilingEvidenceKind; label: string | null; createdAt: Date },
   ): Promise<void>
-  mailThread(): Promise<string>
+  /** A mail thread, `sent` unless given its status. */
+  mailThread(status?: string): Promise<string>
   mailMessage(threadId: string): Promise<string>
   inboundEmail(): Promise<string>
   setReport(id: string, patch: Partial<WorldReport>): Promise<void>
@@ -299,6 +300,21 @@ export function defineFilingRepositoryCases(setup: () => Promise<FilingWorld>): 
       expect(await w.repo.getLatestSuccessfulForReport(r2.id)).toBeNull()
     })
 
+    it("getLatestForReport returns the newest filing in any status", async () => {
+      const r = await w.report()
+      await seed({ reportId: r.id, geoid: w.G, status: "submitted", createdAt: ago(2 * DAY) })
+      const cancelled = await seed({
+        reportId: r.id,
+        geoid: w.G,
+        status: "cancelled",
+        createdAt: ago(DAY),
+      })
+      const latest = await w.repo.getLatestForReport(r.id)
+      expect(latest?.id).toBe(cancelled)
+      expect(latest?.jurisdictionName).toBe("City of Los Angeles")
+      expect(await w.repo.getLatestForReport((await w.report()).id)).toBeNull()
+    })
+
     it("T20: getLatestSuccessfulForReports returns one row per filed report", async () => {
       const [r, r2, r3] = [await w.report(), await w.report(), await w.report()]
       await seed({ reportId: r.id, geoid: w.G, status: "submitted", submittedAt: ago(2 * DAY) })
@@ -332,6 +348,25 @@ export function defineFilingRepositoryCases(setup: () => Promise<FilingWorld>): 
       const before = w.queries()
       await expect(w.repo.getLatestSuccessfulForReports(ids)).rejects.toThrow(Error)
       expect(w.queries()).toBe(before)
+    })
+
+    it("getLatestSuccessfulForReport marks a submitted filing whose mail thread bounced", async () => {
+      const latest = async (status: FilingStatus, threadStatus: string | null) => {
+        const r = await w.report()
+        const thread = threadStatus === null ? null : await w.mailThread(threadStatus)
+        await seed({
+          reportId: r.id,
+          geoid: w.G,
+          status,
+          submittedAt: ago(DAY),
+          mailThreadId: thread,
+        })
+        return w.repo.getLatestSuccessfulForReport(r.id)
+      }
+      expect((await latest("submitted", "bounced"))?.mailBounced).toBe(true)
+      expect((await latest("submitted", "delivered"))?.mailBounced).toBe(false)
+      expect((await latest("submitted", null))?.mailBounced).toBe(false)
+      expect((await latest("linked_existing", "bounced"))?.mailBounced).toBe(false)
     })
   })
 

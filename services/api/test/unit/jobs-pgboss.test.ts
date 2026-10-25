@@ -90,6 +90,23 @@ describe("PgBossJobs (API enqueue adapter)", () => {
     }
   })
 
+  it("C34: start() creates each filing queue with exactly its FILING_QUEUE_OPTIONS entry", async () => {
+    const jobs = new PgBossJobs({ connectionString: "postgres://localhost/civfix" })
+    await jobs.start()
+    const expected = {
+      "filing.run": { policy: "short", retryLimit: 0, expireInSeconds: 3600 },
+      "filing.email": { policy: "short", retryLimit: 2, retryDelay: 60 },
+      "filing.result": { policy: "short", retryLimit: 2, retryDelay: 30, retryBackoff: true },
+      "filing.city_update": { policy: "short", retryLimit: 2, retryDelay: 30, retryBackoff: true },
+      "filing.classify": { policy: "short", retryLimit: 1 },
+      "filing.sweep": { policy: "short", retryLimit: 0 },
+    }
+    for (const [name, options] of Object.entries(expected)) {
+      expect(lastBoss.createQueue).toHaveBeenCalledWith(name, { name, ...options })
+      expect(lastBoss.updateQueue).toHaveBeenCalledWith(name, { name, ...options })
+    }
+  })
+
   it("start() is idempotent (a second call does not re-open pg-boss)", async () => {
     const jobs = new PgBossJobs({ connectionString: "postgres://localhost/civfix" })
     await jobs.start()

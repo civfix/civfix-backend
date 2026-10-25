@@ -30,6 +30,7 @@ import {
   type FilingRouteRecord,
   type FilingSettingsRecord,
   type InsertFilingMessageInput,
+  type LatestSuccessfulFiling,
   type ListDueQueuedArgs,
   type ListFilingsArgs,
   type ListFilingsResult,
@@ -84,6 +85,8 @@ export class InMemoryFilingRepository implements FilingRepository {
   readonly evidence: FilingEvidenceRecord[] = []
   routes: FilingRouteRecord[] = []
   readonly messages: FilingMessageRecord[] = []
+  /** `mail_threads.status` by thread id, for the D1 read that joins it. */
+  readonly mailThreads = new Map<string, string>()
   private last = 0
   settings: FilingSettingsRecord = { paused: false, updatedAt: this.now(), updatedBy: null }
 
@@ -185,6 +188,13 @@ export class InMemoryFilingRepository implements FilingRepository {
     return Promise.resolve(f === undefined ? null : this.withName(f))
   }
 
+  getLatestForReport(reportId: string): Promise<FilingRecord | null> {
+    const f = this.all()
+      .filter((x) => x.reportId === reportId)
+      .sort((a, b) => byNewest({ at: a.createdAt, id: a.id }, { at: b.createdAt, id: b.id }))[0]
+    return Promise.resolve(f === undefined ? null : this.withName(f))
+  }
+
   private latestSuccessful(reportId: string): StoredFiling | undefined {
     return this.all()
       .filter((f) => f.reportId === reportId && SUCCESSFUL_FILING_STATUSES.includes(f.status))
@@ -196,9 +206,14 @@ export class InMemoryFilingRepository implements FilingRepository {
       )[0]
   }
 
-  getLatestSuccessfulForReport(reportId: string): Promise<FilingRecord | null> {
+  getLatestSuccessfulForReport(reportId: string): Promise<LatestSuccessfulFiling | null> {
     const f = this.latestSuccessful(reportId)
-    return Promise.resolve(f === undefined ? null : this.withName(f))
+    if (f === undefined) return Promise.resolve(null)
+    const mailBounced =
+      f.status === "submitted" &&
+      f.mailThreadId !== null &&
+      this.mailThreads.get(f.mailThreadId) === "bounced"
+    return Promise.resolve({ ...this.withName(f), mailBounced })
   }
 
   getLatestSuccessfulForReports(reportIds: readonly string[]): Promise<FilingRecord[]> {
@@ -247,6 +262,8 @@ export class InMemoryFilingRepository implements FilingRepository {
           caseId: input.caseId,
           caseUrl: input.caseUrl,
           mailThreadId: input.mailThreadId,
+          scriptVersion: input.scriptVersion,
+          dryRun: input.dryRun,
         }),
         status: input.outcome,
         method: input.method,

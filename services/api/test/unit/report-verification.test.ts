@@ -13,6 +13,7 @@ import {
 } from "../../src/services/admin/admin-user-service.js"
 import { InMemoryMailRepository } from "../helpers/admin/mail-repository.memory.js"
 import { makeOutboundMailService } from "../../src/services/admin/outbound-mail-service.js"
+import { memoryFilingService } from "../helpers/filings/filing-harness.js"
 
 const NOW = new Date("2026-06-22T00:00:00.000Z")
 
@@ -41,7 +42,12 @@ function verdictHarness(): VerdictHarness {
     mailer,
     env: { MAIL_FROM_OUTREACH: "outreach@civfix.org", MAIL_REPLY_DOMAIN: "civfix.org" },
   })
-  const svc = makeAdminReportService({ repo, outboundMail, now: () => NOW })
+  const svc = makeAdminReportService({
+    repo,
+    outboundMail,
+    filings: memoryFilingService(repo),
+    now: () => NOW,
+  })
   return { repo, svc }
 }
 

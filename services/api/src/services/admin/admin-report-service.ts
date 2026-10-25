@@ -45,9 +45,12 @@ import type {
 export * from "./admin-report-types.js"
 export * from "./admin-report-status.js"
 
-const ROUTABLE_FROM_STATUSES: readonly AdminReportStatus[] = ["submitted", "held", "published"]
-
 const ALREADY_ROUTED_CONFLICT = "This report has already been sent to its jurisdiction"
+
+const ALREADY_FILED_CONFLICT =
+  "This report is already filed with its city, or a filing for it is still open"
+
+const NOT_FILEABLE_CONFLICT = "This report was rejected or removed, so it can't be filed"
 
 export const SEND_IN_FLIGHT_CONFLICT =
   "A send to this jurisdiction is still in progress. Check back shortly to see the outcome on the outreach trail."
@@ -166,7 +169,10 @@ export function makeAdminReportService(deps: AdminReportServiceDeps): AdminRepor
         contact: routing?.contact ?? null,
         routed: routing?.routed ?? false,
       }
-      const mediaDtos: ReportMedia[] = await mapWithLimit(media, PRESIGN_CONCURRENCY, toMediaDTO)
+      const [mediaDtos, filingView] = await Promise.all([
+        mapWithLimit(media, PRESIGN_CONCURRENCY, toMediaDTO),
+        deps.filings.adminReportView(record, routing),
+      ])
       const base = toListItem(record, ref, pickPreviewMedia(mediaDtos))
       const linkedEvents: LinkedEventRef[] = (linkedEventsMap.get(id) ?? []).map(toLinkedEventRef)
       const outreachDTO: ReportOutreach = {
@@ -185,6 +191,8 @@ export function makeAdminReportService(deps: AdminReportServiceDeps): AdminRepor
         linkedEvents,
         geoid: routing?.geoid ?? null,
         outreach: outreachDTO,
+        filing: filingView.filing,
+        filingRoute: filingView.filingRoute,
         ...(record.referenceCode !== null ? { referenceCode: record.referenceCode } : {}),
         ...(record.verificationVerdict !== null
           ? { verificationVerdict: record.verificationVerdict }
@@ -270,6 +278,7 @@ export function makeAdminReportService(deps: AdminReportServiceDeps): AdminRepor
           : statusChangeNote("rejected")
       const ok = await deps.repo.remove(id, { note, actorId: input.actorId })
       if (!ok) throw AppError.notFound(REPORT_NOT_FOUND)
+      await deps.filings.cancelForReport(id)
       await emitTimeline(deps, {
         reportId: id,
         status: "rejected",
@@ -296,6 +305,9 @@ export function makeAdminReportService(deps: AdminReportServiceDeps): AdminRepor
     ): Promise<RouteToJurisdictionResult> {
       const record = await deps.repo.getReport(id)
       if (!record) throw AppError.notFound(REPORT_NOT_FOUND)
+      const fileability = await deps.filings.fileability(record)
+      if (fileability === "already_filed") throw AppError.conflict(ALREADY_FILED_CONFLICT)
+      if (fileability === "not_fileable") throw AppError.conflict(NOT_FILEABLE_CONFLICT)
 
       const routing = await deps.repo.getRouting(id)
       const toAddr = routing?.contact ?? null
@@ -322,7 +334,6 @@ export function makeAdminReportService(deps: AdminReportServiceDeps): AdminRepor
         body: firstTemplate(routing?.forwardBodyTemplate, defaults?.bodyTemplate),
       })
 
-      const routeNote = `Sent to jurisdiction (${toAddr})`
       const prepared = await deps.repo.withRouteLock(id, async () => {
         assertRoutable(await deps.repo.getOutreach(id), toAddr)
         return deps.outboundMail.prepareReportToJurisdiction({
@@ -341,17 +352,18 @@ export function makeAdminReportService(deps: AdminReportServiceDeps): AdminRepor
         })
       })
 
-      const outcome: RouteOutcome = {
-        reportId: id,
-        note: routeNote,
-        actorId: input.actorId,
-        statusBefore: record.status,
-      }
-      await prepared.deliver({ onLateSuccess: () => recordRouteOutcome(deps, outcome) })
-
       const threadId = prepared.thread.id
-
-      await recordRouteOutcome(deps, outcome)
+      const recordFiling = () =>
+        retryOnce(() =>
+          deps.filings.recordEmailRoute({
+            report: record,
+            routing,
+            mailThreadId: threadId,
+            actorId: input.actorId,
+          }),
+        )
+      await prepared.deliver({ onLateSuccess: recordFiling })
+      await recordFiling()
 
       return { threadId, routedTo: toAddr }
     },
@@ -369,6 +381,11 @@ export function makeAdminReportService(deps: AdminReportServiceDeps): AdminRepor
         note,
       })
       if (!ok) throw AppError.notFound(REPORT_NOT_FOUND)
+      await deps.filings.onVerdict({
+        reportId: input.id,
+        verdict: input.verdict,
+        actorId: input.actorId,
+      })
       const record = await deps.repo.getReport(input.id)
       await emitTimeline(deps, {
         reportId: input.id,
@@ -400,36 +417,6 @@ async function emitTimeline(
   await deps.reportChatEmitter.emit(event)
 }
 
-interface RouteOutcome {
-  reportId: string
-  note: string
-  actorId: string | null
-  statusBefore: AdminReportStatus
-}
-
-async function recordRouteOutcome(
-  deps: AdminReportServiceDeps,
-  outcome: RouteOutcome,
-): Promise<void> {
-  const { reportId, note, actorId } = outcome
-  let advanced = false
-  await retryOnce(async () => {
-    advanced = await deps.repo.advanceStatusIfIn(reportId, {
-      from: ROUTABLE_FROM_STATUSES,
-      to: "acknowledged",
-      note,
-      actorId,
-      kind: "route",
-    })
-    if (!advanced) {
-      await deps.repo.appendSystemTimeline(reportId, { note, kind: "route" })
-    }
-  })
-  const current = advanced
-    ? "acknowledged"
-    : ((await deps.repo.getReport(reportId))?.status ?? outcome.statusBefore)
-  await emitTimeline(deps, { reportId, status: current, kind: "route", note })
-}
 function sameAddress(a: string, b: string): boolean {
   return a.trim().toLowerCase() === b.trim().toLowerCase()
 }
@@ -440,7 +427,8 @@ function assertNoSendInFlight(existing: ReportOutreachState): void {
   }
 }
 
-function assertRoutable(existing: ReportOutreachState, toAddr: string): void {
+/** @public The email filing worker (#184) runs this same check under the route lock. */
+export function assertRoutable(existing: ReportOutreachState, toAddr: string): void {
   assertNoSendInFlight(existing)
   const retargeted = existing.routedTo !== null && !sameAddress(existing.routedTo, toAddr)
   const bounced = existing.status === "bounced"

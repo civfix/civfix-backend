@@ -27,6 +27,7 @@ import type {
   AdminReportTimelineRecord,
   AdminReporterRecord,
   ListReportsArgs,
+  OutreachOptions,
   ReportOutreachState,
 } from "./admin-report-repository.js"
 import type {
@@ -355,7 +356,8 @@ export function makeDrizzleAdminReportRepository(
       }
     },
 
-    async getOutreach(id: string): Promise<ReportOutreachState> {
+    async getOutreach(id: string, opts: OutreachOptions = {}): Promise<ReportOutreachState> {
+      const since = opts.packetsSince
       const rows = await sql<
         {
           thread_id: string
@@ -387,9 +389,10 @@ export function makeDrizzleAdminReportRepository(
             SELECT 1 FROM mail_messages m
             WHERE m.thread_id = t.id AND m.direction = 'out'
               AND COALESCE(m.kind, 'packet') = 'packet'
+              ${since === undefined ? sql`` : sql`AND m.created_at >= ${since}`}
           ) AS packet_sent,
-          (${sendFailedExpr(sql, sql`t.id`)}) AS send_failed,
-          (${sendInFlightExpr(sql, sql`t.id`)}) AS send_in_flight
+          (${sendFailedExpr(sql, sql`t.id`, since)}) AS send_failed,
+          (${sendInFlightExpr(sql, sql`t.id`, since)}) AS send_in_flight
         FROM mail_threads t
         WHERE t.report_id = ${id}
         ORDER BY t.created_at DESC, t.id DESC

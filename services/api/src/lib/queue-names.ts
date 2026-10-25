@@ -32,3 +32,49 @@ export const ANON_HOLD_RELEASE_SWEEP_JOB = "anon.hold.release.sweep"
 export const RETENTION_SWEEP_JOB = "retention.sweep"
 export const MEDIA_STUCK_SWEEP_JOB = "media.stuck.sweep"
 export const MEDIA_UPLOAD_REAP_JOB = "media.upload.reap"
+
+// City filing (DECISIONS §64). The API creates all six queues; the filer creates the ones it touches with
+// the same options, since pg-boss keeps whichever createQueue/updateQueue ran last.
+export const FILING_EMAIL_JOB = "filing.email"
+export const FILING_RUN_JOB = "filing.run"
+export const FILING_RESULT_JOB = "filing.result"
+export const FILING_CLASSIFY_JOB = "filing.classify"
+export const FILING_CITY_UPDATE_JOB = "filing.city_update"
+export const FILING_SWEEP_JOB = "filing.sweep"
+
+export type FilingQueueName =
+  | typeof FILING_EMAIL_JOB
+  | typeof FILING_RUN_JOB
+  | typeof FILING_RESULT_JOB
+  | typeof FILING_CLASSIFY_JOB
+  | typeof FILING_CITY_UPDATE_JOB
+  | typeof FILING_SWEEP_JOB
+
+export interface FilingQueueOptions {
+  policy: typeof SHARED_QUEUE_POLICY
+  retryLimit: number
+  retryDelay?: number
+  retryBackoff?: boolean
+  expireInSeconds?: number
+}
+
+// A portal run is never retried by pg-boss: the filer records its own outcome (D6), and a second run of
+// a submit that may have landed would file the report twice.
+export const FILING_QUEUE_OPTIONS: Readonly<Record<FilingQueueName, FilingQueueOptions>> = {
+  [FILING_EMAIL_JOB]: { policy: SHARED_QUEUE_POLICY, retryLimit: 2, retryDelay: 60 },
+  [FILING_RUN_JOB]: { policy: SHARED_QUEUE_POLICY, retryLimit: 0, expireInSeconds: 3600 },
+  [FILING_RESULT_JOB]: {
+    policy: SHARED_QUEUE_POLICY,
+    retryLimit: 2,
+    retryDelay: 30,
+    retryBackoff: true,
+  },
+  [FILING_CLASSIFY_JOB]: { policy: SHARED_QUEUE_POLICY, retryLimit: 1 },
+  [FILING_CITY_UPDATE_JOB]: {
+    policy: SHARED_QUEUE_POLICY,
+    retryLimit: 2,
+    retryDelay: 30,
+    retryBackoff: true,
+  },
+  [FILING_SWEEP_JOB]: { policy: SHARED_QUEUE_POLICY, retryLimit: 0 },
+}

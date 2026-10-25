@@ -62,6 +62,7 @@ import { registerCleanupCancelFanoutJob } from "./services/cleanup-jobs.js"
 import { registerGuestJobs } from "./services/guest-jobs.js"
 import { registerRegistrationJobs } from "./services/host/registration-jobs.js"
 import { registerCommsJobs } from "./services/host/comms-jobs.js"
+import { registerFilingJobs } from "./services/filings/filing-jobs.js"
 import { SERVICE_VERSION } from "./version.js"
 import { makeLifecycle, makeShutdown, REQUEST_TIMEOUT_MS } from "./lifecycle.js"
 
@@ -337,6 +338,7 @@ export async function startBackgroundJobs(app: FastifyInstance, env: Env): Promi
   await registerChatRoomFanoutJob(app.container, app.log)
   await registerRegistrationJobs(app.container, app.log)
   await registerCommsJobs(app.container, app.log)
+  await registerFilingJobs(app.container, app.log)
 }
 
 export async function start(env: Env = loadEnv()): Promise<FastifyInstance> {

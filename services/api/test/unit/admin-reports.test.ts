@@ -18,6 +18,7 @@ import {
   OutboundSendDeadlineError,
   type OutboundMailService,
 } from "../../src/services/admin/outbound-mail-service.js"
+import { memoryFilingService } from "../helpers/filings/filing-harness.js"
 
 const NOW = new Date("2026-06-06T00:00:00.000Z")
 
@@ -86,6 +87,7 @@ function harness(): Harness {
   const svc = makeAdminReportService({
     repo,
     outboundMail,
+    filings: memoryFilingService(repo, { reportChatEmitter: emitter, notifications: notifier }),
     now: () => NOW,
     reportChatEmitter: emitter,
     forwardTemplates,
@@ -905,15 +907,15 @@ describe("M5: routeToJurisdiction destination + audit", () => {
     })
   })
 
-  it("sends the packet to the jurisdiction's own contact and records it in the resident-visible note", async () => {
+  it("sends the packet to the jurisdiction's own contact and records the fixed filing note, without the address", async () => {
     const h = harness()
     seedRoutable(h)
     const { routedTo } = await h.svc.routeToJurisdiction("rep-1", { note: null, actorId: "op-1" })
 
     expect(routedTo).toBe("311@lacity.gov")
     expect(h.mailer.sent.some((m) => m.to === "311@lacity.gov")).toBe(true)
-    const routeEntry = (await h.svc.get("rep-1")).timeline.find((t) => t.kind === "route")
-    expect(routeEntry?.what).toContain("311@lacity.gov")
+    const routeEntries = (await h.svc.get("rep-1")).timeline.filter((t) => t.kind === "route")
+    expect(routeEntries.map((t) => t.what)).toEqual(["Filed with Los Angeles"])
   })
 
   it("REFUSES to route when the jurisdiction has NO contact on file (NOT_ROUTABLE, sends NOTHING)", async () => {
@@ -1284,7 +1286,12 @@ describe("F009 routeToJurisdiction concurrent double-send guard", () => {
       },
     } as unknown as OutboundMailService
 
-    const svc = makeAdminReportService({ repo, outboundMail, now: () => NOW })
+    const svc = makeAdminReportService({
+      repo,
+      outboundMail,
+      filings: memoryFilingService(repo),
+      now: () => NOW,
+    })
 
     const results = await Promise.allSettled([
       svc.routeToJurisdiction("rep-1", { note: null, actorId: "op-1" }),
@@ -1339,7 +1346,12 @@ describe("F009 routeToJurisdiction concurrent double-send guard", () => {
       },
     } as unknown as OutboundMailService
 
-    const svc = makeAdminReportService({ repo, outboundMail, now: () => NOW })
+    const svc = makeAdminReportService({
+      repo,
+      outboundMail,
+      filings: memoryFilingService(repo),
+      now: () => NOW,
+    })
 
     await expect(
       svc.routeToJurisdiction("rep-1", {
@@ -1361,7 +1373,7 @@ describe("F009 routeToJurisdiction concurrent double-send guard", () => {
     expect(repo.reports.get("rep-1")?.record.status).toBe("in_progress")
     const timeline = repo.timeline.get("rep-1") ?? []
     expect(timeline).toHaveLength(afterOperator + 1)
-    expect(timeline.at(-1)?.note).toContain("Sent to jurisdiction")
+    expect(timeline.at(-1)?.note).toBe("Filed with Los Angeles")
     expect(timeline.at(-1)?.status).toBe("in_progress")
     expect(timeline.filter((t) => t.status === "acknowledged")).toHaveLength(0)
     expect(
@@ -1398,7 +1410,12 @@ describe("F009 routeToJurisdiction concurrent double-send guard", () => {
         }),
     } as unknown as OutboundMailService
 
-    const svc = makeAdminReportService({ repo, outboundMail, now: () => NOW })
+    const svc = makeAdminReportService({
+      repo,
+      outboundMail,
+      filings: memoryFilingService(repo),
+      now: () => NOW,
+    })
     await expect(
       svc.routeToJurisdiction("rep-1", {
         note: null,
@@ -1413,14 +1430,7 @@ describe("F009 routeToJurisdiction concurrent double-send guard", () => {
     expect(timeline).toHaveLength(1)
     expect(timeline[0]?.status).toBe("acknowledged")
     expect(timeline[0]?.who).toBe("op-1")
-    expect(repo.audits.filter((a) => a.action === "report.status_changed")).toEqual([
-      {
-        actorId: "op-1",
-        action: "report.status_changed",
-        target: "report:rep-1",
-        meta: { status: "acknowledged" },
-      },
-    ])
+    expect(timeline[0]?.note).toBe("Filed with Los Angeles")
   })
 
   it("does NOT hold the route lock across the mailer network send", async () => {
@@ -1481,7 +1491,12 @@ describe("F009 routeToJurisdiction concurrent double-send guard", () => {
       },
     } as unknown as OutboundMailService
 
-    const svc = makeAdminReportService({ repo, outboundMail, now: () => NOW })
+    const svc = makeAdminReportService({
+      repo,
+      outboundMail,
+      filings: memoryFilingService(repo),
+      now: () => NOW,
+    })
     const routing = svc.routeToJurisdiction("rep-1", {
       note: null,
       actorId: "op-1",
@@ -1510,6 +1525,7 @@ describe("report packets carry media as links, never as attachments", () => {
     const svc = makeAdminReportService({
       repo,
       outboundMail,
+      filings: memoryFilingService(repo),
       now: () => NOW,
       presignMedia: async (r2Key) => ({ url: `https://media.test/${r2Key}` }),
     })

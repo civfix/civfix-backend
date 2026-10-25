@@ -69,6 +69,11 @@ export interface FilingRecord {
   submittedAt: Date | null
 }
 
+export interface LatestSuccessfulFiling extends FilingRecord {
+  /** A `submitted` filing whose mail thread bounced: the city never got it, so it does not count as filed (D1). */
+  mailBounced: boolean
+}
+
 export interface FilingListRecord extends FilingRecord {
   reportTitle: string | null
   referenceCode: string | null
@@ -169,6 +174,9 @@ interface RecordSuccessCommon {
   caseId?: string | null
   caseUrl?: string | null
   mailThreadId?: string | null
+  /** Omitted keeps the filing's value; a filer result sets both in the success's own transaction. */
+  scriptVersion?: string | null
+  dryRun?: boolean
   /** The fixed public timeline note (D5). */
   note: string
   actorId?: string | null
