@@ -13,6 +13,7 @@ import { CONVERSATION_BELL } from "./conversation-bell.js"
 import { messageAuthorName, textPreview } from "./chat-notify-copy.js"
 import type { MessageKey } from "../i18n/renderMessage.js"
 import type { GatewayChatMentions, OnChatReply, OnDmDelivered } from "../ws/types.js"
+import type { ConversationNameLookups } from "./conversation-names.js"
 
 type GroupRoomKind = "cleanup" | "report" | "group"
 
@@ -57,6 +58,7 @@ export interface ChatBellDeps {
   /** Optional presence source; when absent no one is treated as present. */
   presence?: { online(roomKey: string): Promise<string[]> } | undefined
   roomKeyFor(kind: RoomKind, id: string): string
+  conversationNames?: ConversationNameLookups
 }
 
 async function isGroupMember(

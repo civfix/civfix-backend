@@ -6,6 +6,7 @@ import type { CacheClient } from "../../auth/cache.js"
 import type { AdminAuditAction } from "../admin/audit.js"
 import type { NotificationService } from "../notification-service.js"
 import { makeInsightsGeneration } from "./host-analytics-cache.js"
+import type { NotificationSettingsRepository } from "../notification-settings-repository.js"
 import type { BroadcastRepository } from "./broadcast-repository.js"
 import type {
   BroadcastRecipientKind,
@@ -44,6 +45,7 @@ export interface BroadcastPipelineDeps {
   repo: BroadcastRepository
   service: BroadcastService
   notifications: NotificationService
+  settingsRepo?: Pick<NotificationSettingsRepository, "getSettingsMany">
   mailer: Mailer
   cache: CacheClient
   config: BroadcastConfig

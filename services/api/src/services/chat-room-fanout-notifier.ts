@@ -5,6 +5,7 @@ import type { MessageKey } from "../i18n/renderMessage.js"
 import { CONVERSATION_BELL } from "./conversation-bell.js"
 import { textPreview } from "./chat-notify-copy.js"
 import { mapWithLimit } from "../lib/concurrency.js"
+import type { ConversationNameLookups } from "./conversation-names.js"
 
 export type RoomFanoutKind = "report" | "group"
 
@@ -45,6 +46,7 @@ export interface RoomFanoutNotifierDeps {
   now?: () => number
   claimWindow?: (roomId: string, windowMs: number) => Promise<boolean>
   dispatchToJob?: (roomId: string, messageId: string) => Promise<void>
+  conversationNames?: ConversationNameLookups
   logger?: Pick<FastifyBaseLogger, "warn" | "error">
 }
 

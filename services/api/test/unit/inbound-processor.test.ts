@@ -5,6 +5,7 @@ import { InMemoryMailRepository } from "../helpers/admin/mail-repository.memory.
 import { InMemoryInboundRepository } from "../helpers/admin/inbound-repository.memory.js"
 import { InMemoryAdminReportRepository } from "../helpers/admin/admin-report-repository.memory.js"
 import { RecordingNotifier } from "../helpers/notifications.js"
+import { categoryOfInput } from "../helpers/notification-capture.js"
 import { InMemoryCleanupRepository } from "../helpers/cleanups.js"
 import {
   processInboundObject,
@@ -291,6 +292,40 @@ describe("processInboundObject: jurisdiction reply -> report side-effects (#40)"
     expect(
       c.notifier.sent.some((n) => n.userId === reporterId && n.link === `/reports/${reportId}`),
     ).toBe(true)
+  })
+
+  it("T45: a city email reply is Updates on your reports", async () => {
+    const c = ctx()
+    c.adminReportRepo.seedReport({
+      id: "report-1",
+      status: "published",
+      reporter: {
+        id: "user-1",
+        name: "Jane",
+        handle: "jane",
+        emailVerified: true,
+        hasOauth: false,
+        joinedAt: new Date("2025-01-01T00:00:00Z"),
+      },
+    })
+    const thread = c.mailRepo.seedThread({
+      threadToken: TOKEN,
+      reportId: "report-1",
+      status: "sent",
+    })
+    seedContact(c, thread.id, "publicworks@lacity.gov")
+    const key = `${INBOUND_PENDING_PREFIX}reply.eml`
+    await put(
+      c,
+      key,
+      rfc822({
+        from: "clerk@lacity.gov",
+        to: `reply+${TOKEN}@civfix.org`,
+        body: "Crew scheduled.",
+      }),
+    )
+    await processInboundObject(c.container, key, c.deps)
+    expect(c.notifier.sent.map(categoryOfInput)).toEqual(["reportUpdates"])
   })
 
   it("records a system 'reply' timeline row WITHOUT a status change for an already-resolved report", async () => {

@@ -14,7 +14,9 @@ import {
   TEAM_INVITE_INBOX_LINK,
   TEAM_INVITE_TTL_MS,
   type HostTeamService,
+  type HostTeamServiceDeps,
 } from "../../../src/services/host/host-team-service.js"
+import { captureNotifications, categoryOfInput, OFF } from "../../helpers/notification-capture.js"
 import type { CreateNotificationInput } from "../../../src/services/notification-service.js"
 
 const EVENT = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
@@ -65,7 +67,9 @@ function seedOpenInvites(count: number, cleanupId: string = EVENT): void {
   }
 }
 
-function makeService(): HostTeamService {
+function makeService(
+  over: Pick<HostTeamServiceDeps, "notifier" | "notificationSettings"> = {},
+): HostTeamService {
   return makeHostTeamService({
     repo,
     standing: (cleanupId: string, userId: string, capability: HostCapability) => {
@@ -100,6 +104,7 @@ function makeService(): HostTeamService {
       },
     },
     eventTitleOf: () => Promise.resolve("Beach cleanup"),
+    ...over,
     webOrigin: "https://civfix.test",
     now: () => clock,
     newToken: () => `token-${++tokenSeq}-aaaaaaaaaaaaaaaaaaaaaaaa`,
@@ -168,6 +173,56 @@ describe("listEventTeam", () => {
     const staff = payload.members.find((m) => m.person.id === STAFF)
     expect(organizer?.person.avatarUrl).toBe("https://cdn.civfix.test/olive.jpg")
     expect(staff?.person).not.toHaveProperty("avatarUrl")
+  })
+})
+
+describe("inviteEventTeamMember: Event team and hours (GH#224)", () => {
+  const byHandle = { identifierKind: "handle", identifier: "ida", role: "staff" } as const
+
+  function withSettings() {
+    const n = captureNotifications(() => clock)
+    return { n, svc: makeService({ notifier: n.service, notificationSettings: n.settings }) }
+  }
+
+  it("T33: an account at the default gets the row without the email", async () => {
+    const { n, svc } = withSettings()
+    await svc.inviteMember(EVENT, ORGANIZER, byHandle)
+    expect(n.rows(INVITEE).map((r) => r.type)).toEqual(["event_team_invite"])
+    expect(n.inputs[0]?.input.email).toBe("never")
+    expect(sentMail).toHaveLength(0)
+  })
+
+  it("T34: an account with Email checked gets the email and the row", async () => {
+    const { n, svc } = withSettings()
+    await n.set(INVITEE, "eventTeam", [true, true, true])
+    await svc.inviteMember(EVENT, ORGANIZER, byHandle)
+    expect(sentMail.map((m) => m.to)).toEqual(["ida@x.org"])
+    expect(n.rows(INVITEE)).toHaveLength(1)
+  })
+
+  it("T35: an account with Event team Off gets neither", async () => {
+    const { n, svc } = withSettings()
+    await n.set(INVITEE, "eventTeam", OFF)
+    await svc.inviteMember(EVENT, ORGANIZER, byHandle)
+    expect(n.rows(INVITEE)).toEqual([])
+    expect(sentMail).toHaveLength(0)
+  })
+
+  it("T36: a typed address with no account is always mailed, with no row", async () => {
+    const { n, svc } = withSettings()
+    await svc.inviteMember(EVENT, ORGANIZER, {
+      identifierKind: "email",
+      identifier: "newcomer@x.org",
+      role: "staff",
+    })
+    expect(sentMail.map((m) => m.to)).toEqual(["newcomer@x.org"])
+    expect(n.repo.notifications).toEqual([])
+  })
+
+  it("T51: the team invite bell is Event team and hours", async () => {
+    const { n, svc } = withSettings()
+    await svc.inviteMember(EVENT, ORGANIZER, byHandle)
+    expect(n.inputs.map((c) => categoryOfInput(c.input))).toEqual(["eventTeam"])
   })
 })
 

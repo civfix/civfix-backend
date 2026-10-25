@@ -124,6 +124,17 @@ describe("GET /notifications", () => {
     expect(res.json().items.map((n: { title: string }) => n.title)).toEqual(["newer", "older"])
   })
 
+  it("T15: a chat_mention row shows on the page and a group_chat row does not", async () => {
+    const { app, token, userId, repo } = await makeHarness()
+    const link = "/messages/group/99999999-0000-4000-8000-000000000001"
+    await repo.insertNotification({ userId, type: "chat_mention", title: "m", body: null, link })
+    await repo.insertNotification({ userId, type: "group_chat", title: "g", body: null, link })
+    const res = await app.inject({ method: "GET", url: "/v1/notifications", headers: auth(token) })
+    expect(res.statusCode).toBe(200)
+    expect(res.json().items).toMatchObject([{ type: "chat_mention", link }])
+    expect(res.json().items).toHaveLength(1)
+  })
+
   it("401s anonymously", async () => {
     const { app } = await makeHarness()
     const res = await app.inject({ method: "GET", url: "/v1/notifications" })

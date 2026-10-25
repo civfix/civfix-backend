@@ -1,6 +1,7 @@
 import type { BroadcastKind, BroadcastSegment } from "@civfix/contract"
 import { randomUUID } from "node:crypto"
-import { afterAll, beforeAll, describe, expect, it } from "vitest"
+import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest"
+import { NotificationCategorySchema } from "@civfix/contract"
 import { withPg, type PgHarness } from "../helpers/pg.js"
 import { seedCleanup } from "../helpers/cleanups.js"
 import { audiencePages } from "../../src/services/host/broadcast-audience.js"
@@ -227,6 +228,107 @@ describe.skipIf(!pg)("broadcast audience resolution (integration)", () => {
         }
       }
     }
+  })
+
+  describe("account holders' category settings (GH#224)", () => {
+    let event: string
+
+    async function member(name: string): Promise<string> {
+      const userId = await newUser(name)
+      await h.sql`
+        INSERT INTO cleanup_registrations (cleanup_id, user_id, status)
+        VALUES (${event}, ${userId}, 'registered')`
+      return userId
+    }
+
+    async function categoryOff(userId: string, category: string): Promise<void> {
+      await h.sql`
+        INSERT INTO notification_settings (user_id, category, enabled, push, email)
+        VALUES (${userId}, ${category}, false, false, false)`
+    }
+
+    function page(kind: BroadcastKind) {
+      return repo.audiencePage({
+        cleanupId: event,
+        segment: { kind: "all_registered" },
+        kind,
+        afterMember: null,
+        afterGuest: null,
+        limit: 1000,
+      })
+    }
+
+    async function cancellationSetup(): Promise<{ e: string; g: string }> {
+      const b = await member("B")
+      const c = await member("C")
+      const d = await member("D")
+      const e = await member("E")
+      await repo.recordUnsubscribe({
+        scope: "event",
+        cleanupId: event,
+        subjectKind: "user",
+        subjectId: b,
+        reason: "one_click",
+      })
+      await repo.setEventMute(event, c, true)
+      await categoryOff(d, "events")
+      const [guest] = await h.sql<{ id: string }[]>`
+        INSERT INTO cleanup_guests (cleanup_id, name, channel, email, manage_token_hash)
+        VALUES (${event}, 'Guest', 'email', 'g@example.test', ${randomUUID()})
+        RETURNING id`
+      await repo.recordUnsubscribe({
+        scope: "event",
+        cleanupId: event,
+        subjectKind: "guest",
+        subjectId: guest!.id,
+        reason: "one_click",
+      })
+      return { e, g: guest!.id }
+    }
+
+    beforeEach(async () => {
+      event = await newCleanup(organizerId)
+    })
+
+    it("T28: a cancellation honours members' unsubscribes, mutes and Events Off, not a guest's unsubscribe", async () => {
+      const { e, g } = await cancellationSetup()
+      expect(await page("event_cancelled")).toEqual({ members: [e], guests: [g] })
+    })
+
+    it("T29: a host broadcast reads Announcements from hosts, not the old host_broadcasts boolean", async () => {
+      const b = await member("B")
+      const c = await member("C")
+      await categoryOff(b, "hostAnnouncements")
+      await h.sql`
+        INSERT INTO notification_prefs (user_id, host_broadcasts) VALUES (${c}, false)
+        ON CONFLICT (user_id) DO UPDATE SET host_broadcasts = false`
+      expect((await page("host_broadcast")).members).toEqual([c])
+    })
+
+    it("T30: a reminder leaves out a member with Events Off", async () => {
+      const b = await member("B")
+      const c = await member("C")
+      await categoryOff(b, "events")
+      expect((await page("reminder")).members).toEqual([c])
+    })
+
+    it("T31: a confirmation reaches a member with every category Off", async () => {
+      const b = await member("B")
+      for (const category of NotificationCategorySchema.options) await categoryOff(b, category)
+      expect((await page("confirmation")).members).toEqual([b])
+    })
+
+    it("T32: the count matches the T28 audience", async () => {
+      await cancellationSetup()
+      expect(
+        await repo.audienceCount({
+          cleanupId: event,
+          segment: { kind: "all_registered" },
+          kind: "event_cancelled",
+          cap: 1000,
+        }),
+      ).toBe(2)
+    })
   })
 
   it("suppresses an email hash and reads it back", async () => {

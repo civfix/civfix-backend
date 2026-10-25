@@ -50,6 +50,7 @@ import type {
   OrgVerificationRecord,
   UpdateOrganizationPatch,
 } from "./organization-repository.js"
+import type { NotificationSettingsRepository } from "../notification-settings-repository.js"
 
 export const ORGS_CREATED_PER_DAY = 5
 const ORG_CREATE_WINDOW_SEC = SECONDS_PER_DAY
@@ -139,6 +140,7 @@ export interface OrganizationServiceDeps {
   affiliations?: AffiliationLoader
   mailer?: OrganizationMailer
   notifier?: OrganizationNotifier
+  notificationSettings?: Pick<NotificationSettingsRepository, "getSettings">
   webOrigin: string
   logger?: {
     error: (obj: unknown, msg?: string) => void

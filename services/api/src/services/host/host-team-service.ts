@@ -29,6 +29,7 @@ import { MS_PER_DAY, SECONDS_PER_DAY } from "../../lib/time.js"
 import { PRESIGN_CONCURRENCY } from "../media-presign.js"
 import type { MessageKey } from "../../i18n/renderMessage.js"
 import type { CreateNotificationInput } from "../notification-service.js"
+import type { NotificationSettingsRepository } from "../notification-settings-repository.js"
 import { assertMayGrantRole, isEventPubliclyVisible, requireCapability } from "./authz.js"
 import type { EventMediaPresigner } from "./event-media.js"
 import type { HostStandingResolution } from "./host-standing-repository.js"
@@ -100,6 +101,7 @@ export interface HostTeamServiceDeps {
   counters?: CounterStore
   mailer?: HostTeamMailer
   notifier?: HostTeamNotifier
+  notificationSettings?: Pick<NotificationSettingsRepository, "getSettings">
   presignEventMedia?: EventMediaPresigner
   affiliations?: AffiliationLoader
   eventTitleOf?: (cleanupId: string) => Promise<string | null>
