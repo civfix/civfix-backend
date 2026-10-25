@@ -3,8 +3,8 @@
  * person per conversation per hour (a `SET NX` key with a one-hour TTL), and at most
  * NOTIFICATION_EMAILS_PER_HOUR per person (a counter whose window starts with its first email). A claim
  * that loses to the conversation key never touches the counter, and a claim refused by the counter gives
- * its conversation key back, so only emails that go out use up either limit; a send that fails gives
- * back both.
+ * back its increment and its conversation key, so only emails that go out use up either limit; a send
+ * that fails gives back both.
  */
 
 import type { RedisClient } from "./redis.js"
@@ -48,7 +48,11 @@ function repliesOf(replies: ExecReplies): unknown[] {
   })
 }
 
-/** A claim's commands run as MULTI, so each of its round trips is atomic as well as pipelined. */
+/**
+ * A claim's checks run as MULTI, so each of its round trips is atomic as well as pipelined. Requests the
+ * cap refuses are given back through `release`, whose floored decrement cannot recreate a counter that
+ * expired in between.
+ */
 export class RedisNotificationEmailThrottle implements NotificationEmailThrottle {
   // A getter, so building the notification service opens no socket.
   constructor(private readonly redis: () => RedisClient) {}
@@ -80,13 +84,9 @@ export class RedisNotificationEmailThrottle implements NotificationEmailThrottle
     counted.forEach((i, n) => {
       if (Number(replies[n * 2 + 1]) <= NOTIFICATION_EMAILS_PER_HOUR) return
       granted[i] = false
-      if (requests[i]!.conversation !== null) refused.push(requests[i]!)
+      refused.push(requests[i]!)
     })
-    if (refused.length > 0) {
-      const giveBack = this.redis().multi()
-      for (const r of refused) giveBack.del(conversationKey(r.userId, r.conversation!))
-      repliesOf(await giveBack.exec())
-    }
+    await this.release(refused)
     return granted
   }
 

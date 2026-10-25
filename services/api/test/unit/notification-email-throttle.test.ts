@@ -51,6 +51,16 @@ describe("RedisNotificationEmailThrottle", () => {
     expect(await redis.exists(`notifemail:conv:${U}:/messages/dm/R1`)).toBe(0)
   })
 
+  it("an email refused by the cap leaves no count behind, so a failed send frees a slot", async () => {
+    const twenty = Array.from({ length: NOTIFICATION_EMAILS_PER_HOUR }, () => plain(U))
+    await throttle.claim(twenty)
+    expect(await throttle.claim([plain(U)])).toEqual([false])
+    expect(await redis.get(`notifemail:cap:${U}`)).toBe(String(NOTIFICATION_EMAILS_PER_HOUR))
+
+    await throttle.release([plain(U)])
+    expect(await throttle.claim([plain(U)])).toEqual([true])
+  })
+
   it("a chat email refused by its conversation key does not count toward the cap", async () => {
     await throttle.claim([chat(U)])
     for (let i = 0; i < 5; i++) await throttle.claim([chat(U)])
