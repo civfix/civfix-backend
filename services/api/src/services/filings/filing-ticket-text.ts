@@ -32,3 +32,18 @@ export function renderTicketText(input: TicketTextInput): string {
   if (note !== "") lines.push(`Note from CivFix: ${note}`)
   return lines.join("\n")
 }
+
+/**
+ * The ticket text from its framing line to the end (D3's lines 2–4), which an email filing carries as its
+ * closing paragraph. The framing line is found as the last one that follows a blank line, since a
+ * description can hold blank lines and even the framing words.
+ */
+export function ticketTextClosing(ticketText: string): string {
+  const lines = ticketText.split("\n")
+  for (let i = lines.length - 1; i > 0; i--) {
+    if (lines[i - 1] === "" && lines[i]?.startsWith(FRAMING_LINE) === true) {
+      return lines.slice(i).join("\n")
+    }
+  }
+  throw new Error("ticket text has no framing line")
+}

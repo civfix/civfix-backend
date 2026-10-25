@@ -611,4 +611,29 @@ describe.skipIf(!pg)("admin mail repository (integration: real schema)", () => {
 
     await h.sql`DELETE FROM reports WHERE id = ${report!.id}`
   })
+
+  it("latestUnsentPacketId finds the newest packet since a time only while it has no sent event", async () => {
+    const t = await repo.createThread({ subject: "Report" })
+    const packet = (body: string, kind: "packet" | "reply" = "packet") =>
+      repo.insertMessage({
+        threadId: t.id,
+        direction: "out",
+        toAddr: "311@city.gov",
+        body,
+        kind,
+      })
+    const before = await packet("before the filing")
+    await h.sql`UPDATE mail_messages SET created_at = now() - interval '1 hour' WHERE id = ${before!.id}`
+    const since = new Date(Date.now() - 60_000)
+    expect(await repo.latestUnsentPacketId(t.id, since)).toBeNull()
+
+    const mine = await packet("the filing's packet")
+    await packet("an operator follow-up", "reply")
+    expect(await repo.latestUnsentPacketId(t.id, since)).toBe(mine!.id)
+    await repo.recordEvent({ threadId: t.id, messageId: mine!.id, type: "failed" })
+    expect(await repo.latestUnsentPacketId(t.id, since)).toBe(mine!.id)
+
+    await repo.recordEvent({ threadId: t.id, messageId: mine!.id, type: "sent" })
+    expect(await repo.latestUnsentPacketId(t.id, since)).toBeNull()
+  })
 })

@@ -854,19 +854,58 @@ export function defineFilingRepositoryCases(setup: () => Promise<FilingWorld>): 
   })
 
   describe("runner reads", () => {
-    it("T44: listRunningFilings returns every running filing's id, attempts and run id", async () => {
+    it("T44: listRunningFilings returns every running portal filing's id, attempts and run id", async () => {
       const expected = []
       for (const attempts of [1, 2]) {
         const r = await w.report()
         const runId = randomUUID()
-        const id = await seed({ reportId: r.id, geoid: w.G, status: "running", attempts, runId })
+        const id = await seed({
+          reportId: r.id,
+          geoid: w.G,
+          channel: "portal",
+          status: "running",
+          attempts,
+          runId,
+        })
         expected.push({ id, attempts, runId })
       }
       const r = await w.report()
-      await seed({ reportId: r.id, geoid: w.G, status: "queued" })
+      await seed({ reportId: r.id, geoid: w.G, channel: "portal", status: "queued" })
+      // An email filing's try runs in the API, which the filer's startup must not settle.
+      const e = await w.report()
+      await seed({ reportId: e.id, geoid: w.G, channel: "email", status: "running", attempts: 1 })
       const running = await w.repo.listRunningFilings()
       const byId = (a: { id: string }, b: { id: string }) => a.id.localeCompare(b.id)
       expect([...running].sort(byId)).toEqual(expected.sort(byId))
+    })
+
+    it("listStaleRunningEmail returns running email filings last written before the cutoff, oldest first", async () => {
+      const N = Date.now()
+      const ids: Record<string, string> = {}
+      for (const [key, channel, status, updated] of [
+        ["old", "email", "running", ago(30 * MINUTE, N)],
+        ["older", "email", "running", ago(40 * MINUTE, N)],
+        ["young", "email", "running", ago(5 * MINUTE, N)],
+        ["portal", "portal", "running", ago(40 * MINUTE, N)],
+        ["queued", "email", "queued", ago(40 * MINUTE, N)],
+      ] as const) {
+        const r = await w.report()
+        ids[key] = await seed({
+          reportId: r.id,
+          geoid: w.G,
+          channel,
+          status,
+          attempts: 1,
+          createdAt: ago(60 * MINUTE, N),
+          updatedAt: updated,
+        })
+      }
+      const cutoff = ago(15 * MINUTE, N)
+      const stale = await w.repo.listStaleRunningEmail({ updatedBefore: cutoff, limit: 100 })
+      expect(stale.map((f) => f.id)).toEqual([ids.older, ids.old])
+      expect(stale[0]).toMatchObject({ status: "running", channel: "email", attempts: 1 })
+      const one = await w.repo.listStaleRunningEmail({ updatedBefore: cutoff, limit: 1 })
+      expect(one.map((f) => f.id)).toEqual([ids.older])
     })
 
     it("T45: getLatestByMailThread returns the newest filing on that thread", async () => {

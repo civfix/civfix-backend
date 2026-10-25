@@ -383,7 +383,10 @@ describe("filing.email: outcomes", () => {
   it("E11: a packet delivered after the filing records it with no second email; one from before it does not", async () => {
     const w = emailWorld()
     const r = w.seed({ contact: J_CONTACT })
-    const f = await queuedFiling(w, r)
+    const queued = await queuedFiling(w, r)
+    // Created an hour ago, so the packet after it is still before the filing made below.
+    const f = { ...filing(w, queued.id), createdAt: ago(60 * 60 * SECOND_MS) }
+    w.filings.filings.set(f.id, f)
     const threadId = deliveredPacket(w, r.record.id, new Date(f.createdAt.getTime() + SECOND_MS))
 
     await w.run(f.id)

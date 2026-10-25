@@ -915,6 +915,26 @@ export function makeDrizzleMailRepository(sql: Sql): MailRepository {
       return rows[0]?.id ?? null
     },
 
+    async latestUnsentPacketId(threadId: string, since: Date): Promise<string | null> {
+      const rows = await sql<{ id: string }[]>`
+        SELECT m.id
+        FROM (
+          SELECT id
+          FROM mail_messages
+          WHERE thread_id = ${threadId} AND direction = 'out'
+            AND COALESCE(kind, 'packet') = 'packet'
+            AND created_at >= ${since}
+          ORDER BY created_at DESC, id DESC
+          LIMIT 1
+        ) m
+        WHERE NOT EXISTS (
+          SELECT 1 FROM mail_events e
+          WHERE e.thread_id = ${threadId} AND e.message_id = m.id::text AND e.type = 'sent'
+        )
+      `
+      return rows[0]?.id ?? null
+    },
+
     async getOutboundMessageForResend(messageId: string): Promise<OutboundMessageSnapshot | null> {
       const rows = await sql<
         {
