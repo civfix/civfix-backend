@@ -685,30 +685,30 @@ describe.skipIf(!pg)("report fixed votes (integration)", () => {
       expect(res.statusCode).toBe(200)
       expect(res.headers["cache-control"]).toBe("public, max-age=60")
 
-      await h.sql`
-        CREATE INDEX IF NOT EXISTS reports_pressing_idx
-          ON reports (confirm_count DESC, created_at DESC)
-          WHERE confirm_count >= 1 AND visibility = 'public' AND deleted_at IS NULL
-      `
-      await h.sql`ANALYZE reports`
       const wide = { west: -179, south: -50, east: 21, north: 50 }
-      // On a table this small several reports indexes are about as cheap as the pressing one, so the
-      // planner's pick flips from run to run. Dropping every other droppable index inside a rolled-back
-      // transaction leaves the assertion about the one thing it guards: the query's WHERE still implies
-      // the pressing predicate.
+      // The planner's pick among reports indexes flips from run to run on a table this small, and a
+      // pressing index left behind by earlier work need not match 0195's definition. So inside one
+      // rolled-back transaction every droppable reports index goes, the pressing index is rebuilt exactly
+      // as docs/out-of-band-indexes.md builds it, and the plan has nothing else to choose: the assertion
+      // is only about whether the query's WHERE still implies the pressing predicate.
       const rollback = new Error("rollback")
       let plan = ""
       await h.sql
         .begin(async (tx) => {
-          const others = await tx<{ relname: string }[]>`
+          const droppable = await tx<{ relname: string }[]>`
             SELECT c.relname
             FROM pg_index i
             JOIN pg_class c ON c.oid = i.indexrelid
             WHERE i.indrelid = 'reports'::regclass
-              AND c.relname <> ${PRESSING_INDEX}
               AND NOT EXISTS (SELECT 1 FROM pg_constraint k WHERE k.conindid = i.indexrelid)
           `
-          for (const { relname } of others) await tx`DROP INDEX ${tx(relname)}`
+          for (const { relname } of droppable) await tx`DROP INDEX ${tx(relname)}`
+          await tx`
+            CREATE INDEX reports_pressing_idx
+              ON reports (confirm_count DESC, created_at DESC)
+              WHERE confirm_count >= 1 AND visibility = 'public' AND deleted_at IS NULL
+          `
+          await tx`ANALYZE reports`
           await tx`SET LOCAL enable_seqscan = off`
           await tx`SET LOCAL enable_bitmapscan = off`
           plan = await explainPressing(tx, wide, 20)
