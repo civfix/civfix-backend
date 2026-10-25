@@ -22,7 +22,6 @@ import { isUuid } from "../db/cursor-helpers.js"
 import { UNKNOWN_JURCODE } from "../db/reference-code.js"
 import { toLinkedEventRef, type LinkedEventView } from "./cleanup-service.js"
 import { mapWithLimit } from "../lib/concurrency.js"
-import { REPORT_AUTOFORWARD_JOB } from "../lib/queue-names.js"
 import { PRESIGN_CONCURRENCY } from "./media-presign.js"
 import {
   clusterByZoom,
@@ -44,7 +43,6 @@ import {
   REPORT_VISIBILITY_TIMELINE_KIND,
   REPORTS_DEFAULT_LIMIT,
   REPORTS_SEARCH_DEFAULT_LIMIT,
-  type ReportAutoForwardJob,
   type ReportChatMeta,
   type ReportDiscussionMeta,
   type ReportOwner,
@@ -349,8 +347,6 @@ export function makeReportService(deps: ReportServiceDeps): ReportService {
 
       await maybeJoinReportChatAsOwner(deps, result.snapshot.id, owner.userId)
 
-      await maybeEnqueueAutoForward(deps, result.snapshot.id, owner.userId)
-
       return result.snapshot
     },
 
@@ -543,24 +539,6 @@ async function resolvePlacement(
       ? await deps.resolveJurisdictionCode(jurisdictionGeoid)
       : UNKNOWN_JURCODE
   return { jurisdictionGeoid, reversed, jurCode }
-}
-
-async function maybeEnqueueAutoForward(
-  deps: ReportServiceDeps,
-  reportId: string,
-  reporterUserId: string,
-): Promise<void> {
-  if (deps.autoForwardEnabled !== true) return
-  if (deps.jobs === undefined || deps.isReportVerified === undefined) return
-  try {
-    const verified = await deps.isReportVerified(reporterUserId)
-    if (!verified) return
-    await deps.jobs.enqueue(REPORT_AUTOFORWARD_JOB, { reportId } satisfies ReportAutoForwardJob, {
-      singletonKey: reportId,
-    })
-  } catch (err) {
-    deps.logger?.warn({ err, reportId }, "report.autoforward enqueue failed")
-  }
 }
 
 async function maybeJoinReportChatAsOwner(

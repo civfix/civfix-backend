@@ -186,7 +186,7 @@ describe("makeContainerReportChatEmitter: the block seam stays LAZY", () => {
     stub.members = [A, B]
 
     // A container with NO getBlocksRepo at all: constructing the emitter must not reach for it. Callers of
-    // this factory (inbound mail correlation, autoforward/outreach jobs, the report + moderation routers)
+    // this factory (inbound mail correlation, outreach jobs, the report + moderation routers)
     // build it PER EVENT off containers that are minimal in tests, and a throw in the factory escapes the
     // emit() try/catch; it aborted the caller's remaining work (e.g. flipping a mail thread to 'replied').
     const container = {

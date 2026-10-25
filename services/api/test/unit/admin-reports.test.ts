@@ -1,7 +1,6 @@
 import { describe, it, expect } from "vitest"
-import { AppError, DEFAULT_FORWARD_SUBJECT_TEMPLATE, templateUsesToken } from "@civfix/contract"
+import { DEFAULT_FORWARD_SUBJECT_TEMPLATE, templateUsesToken } from "@civfix/contract"
 import { FakeMailer } from "@civfix/seams"
-import { runAutoForwardWith } from "../../src/services/admin/autoforward-jobs.js"
 import { InMemoryAdminReportRepository } from "../helpers/admin/admin-report-repository.memory.js"
 import type { MailMessageKind } from "../../src/services/admin/mail-repository.js"
 import {
@@ -1550,95 +1549,5 @@ describe("report packets carry media as links, never as attachments", () => {
       expect(sent?.text).toContain(`https://media.test/${key}`)
       expect(sent?.html).toContain(`https://media.test/${key}`)
     }
-  })
-})
-
-describe("runAutoForwardWith delegates the duplicate-send decision", () => {
-  function routable(h: Harness): void {
-    h.repo.seedReport({
-      id: "rep-1",
-      status: "submitted",
-      routing: {
-        geoid: "0644000",
-        dept: "LA",
-        place: "Los Angeles",
-        contact: "311@lacity.gov",
-        routed: false,
-      },
-    })
-  }
-
-  it("retries a report whose send THREW (the job's own pre-check used to make that permanent)", async () => {
-    const h = harness()
-    routable(h)
-    h.mailer.sendOutbound = () => Promise.reject(new Error("smtp down"))
-    await expect(runAutoForwardWith(h.svc, "rep-1")).rejects.toThrow(/smtp down/)
-
-    const seeded = h.repo.reports.get("rep-1")
-    if (seeded) {
-      seeded.outreach = {
-        threadId: "t-1",
-        threadStatus: "sent",
-        hasInbound: false,
-        packetSent: true,
-        routedTo: "311@lacity.gov",
-        routedAt: NOW,
-        sendFailed: true,
-      }
-    }
-    h.mailer.sendOutbound = FakeMailer.prototype.sendOutbound.bind(h.mailer)
-    const infos: unknown[] = []
-    const warnings: unknown[] = []
-    await runAutoForwardWith(h.svc, "rep-1", {
-      info: (o) => infos.push(o),
-      warn: (o) => warnings.push(o),
-    })
-    expect(h.mailer.sent).toHaveLength(1)
-    expect(warnings).toHaveLength(0)
-  })
-
-  it("skips an already-delivered report at INFO (not as a failure) and mails nothing", async () => {
-    const h = harness()
-    h.repo.seedReport({
-      id: "rep-1",
-      status: "acknowledged",
-      routing: {
-        geoid: "0644000",
-        dept: "LA",
-        place: "Los Angeles",
-        contact: "311@lacity.gov",
-        routed: true,
-      },
-      outreach: {
-        threadId: "t-1",
-        threadStatus: "delivered",
-        hasInbound: false,
-        routedTo: "311@lacity.gov",
-      },
-    })
-    const infos: unknown[] = []
-    const warnings: unknown[] = []
-    await runAutoForwardWith(h.svc, "rep-1", {
-      info: (o) => infos.push(o),
-      warn: (o) => warnings.push(o),
-    })
-    expect(h.mailer.sent).toHaveLength(0)
-    expect(infos).toHaveLength(1)
-    expect(warnings).toHaveLength(0)
-  })
-
-  it("keeps a MAILER 409 (unapproved sender) a warned failure, not an idempotent skip", async () => {
-    const h = harness()
-    routable(h)
-    h.mailer.sendOutbound = () => Promise.reject(AppError.conflict("sender not approved"))
-    const infos: unknown[] = []
-    const warnings: unknown[] = []
-    await expect(
-      runAutoForwardWith(h.svc, "rep-1", {
-        info: (o) => infos.push(o),
-        warn: (o) => warnings.push(o),
-      }),
-    ).resolves.toBeUndefined()
-    expect(warnings).toHaveLength(1)
   })
 })
