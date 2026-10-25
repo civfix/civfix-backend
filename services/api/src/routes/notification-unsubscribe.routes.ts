@@ -5,7 +5,7 @@ import {
   UnsubscribeNotificationEmailRequestSchema,
   type UnsubscribeNotificationEmailResponse,
 } from "@civfix/contract"
-import type { FastifyInstance, FastifyRequest } from "fastify"
+import type { FastifyInstance } from "fastify"
 import type { Container } from "../di.js"
 import { exposeMessage } from "../errors/exposed-message.js"
 import { webBaseUrlOf } from "../lib/base-url.js"
@@ -13,19 +13,14 @@ import { verifyNotificationEmailToken } from "../services/notification-email-tok
 import { makeDrizzleNotificationSettingsRepository } from "../services/notification-settings-repository.drizzle.js"
 import type { NotificationSettingsRepository } from "../services/notification-settings-repository.js"
 import { route } from "../versioning/route.js"
-import { UNSUBSCRIBE_RATE_LIMIT } from "./host/unsubscribe.routes.js"
+import {
+  addFormBodyParser,
+  tokenFrom,
+  UNSUBSCRIBE_RATE_LIMIT,
+  UNSUBSCRIBE_UNAVAILABLE_COPY,
+} from "./host/unsubscribe.routes.js"
 
 const NOTHING_APPLIED: UnsubscribeNotificationEmailResponse = { ok: true, category: null }
-
-const UNSUBSCRIBE_UNAVAILABLE_COPY = "We couldn't save your unsubscribe. Please try again."
-
-function tokenFrom(request: FastifyRequest): string | null {
-  const body = (request.body ?? {}) as Record<string, unknown>
-  if (typeof body.token === "string" && body.token.length > 0) return body.token
-  const query = (request.query ?? {}) as Record<string, unknown>
-  if (typeof query.t === "string" && query.t.length > 0) return query.t
-  return null
-}
 
 // D10's "Stop these emails": public, because the signed token rather than a session is the capability,
 // and exempt from CSRF for the same reason (RFC 8058 one-click senders carry no cookie or header).
@@ -45,17 +40,7 @@ export async function registerNotificationUnsubscribeRoutes(
   }
 
   await app.register(async (unsubscribeScope) => {
-    unsubscribeScope.addContentTypeParser(
-      "application/x-www-form-urlencoded",
-      { parseAs: "string" },
-      (_req, body, done) => {
-        try {
-          done(null, Object.fromEntries(new URLSearchParams(body as string)))
-        } catch (err) {
-          done(err as Error)
-        }
-      },
-    )
+    addFormBodyParser(unsubscribeScope)
 
     route(
       unsubscribeScope,

@@ -6686,10 +6686,10 @@ UPDATE push_tokens SET revoked_at = now() WHERE user_id = $1 AND revoked_at IS N
 
 exports[`sql transcripts > makeDrizzleNotificationSettingsRepository.disableEmail 1`] = `
 "-- empty
-INSERT INTO notification_settings AS s (user_id, category, enabled, push, email) SELECT u.id, $1, $2, $3, false FROM users u WHERE u.id = $4 AND u.deleted_at IS NULL ON CONFLICT (user_id, category) DO UPDATE SET email = false, updated_at = now() RETURNING s.user_id -- ["followers",true,false,"userId-1"]
+INSERT INTO notification_settings AS s (user_id, category, enabled, push, email) SELECT u.id, $1, $2, $3, false FROM users u WHERE u.id = $4 AND u.deleted_at IS NULL FOR SHARE OF u ON CONFLICT (user_id, category) DO UPDATE SET email = false, updated_at = now() RETURNING s.user_id -- ["followers",true,false,"userId-1"]
 => false
 -- row
-INSERT INTO notification_settings AS s (user_id, category, enabled, push, email) SELECT u.id, $1, $2, $3, false FROM users u WHERE u.id = $4 AND u.deleted_at IS NULL ON CONFLICT (user_id, category) DO UPDATE SET email = false, updated_at = now() RETURNING s.user_id -- ["followers",true,false,"userId-1"]
+INSERT INTO notification_settings AS s (user_id, category, enabled, push, email) SELECT u.id, $1, $2, $3, false FROM users u WHERE u.id = $4 AND u.deleted_at IS NULL FOR SHARE OF u ON CONFLICT (user_id, category) DO UPDATE SET email = false, updated_at = now() RETURNING s.user_id -- ["followers",true,false,"userId-1"]
 => true"
 `;
 
