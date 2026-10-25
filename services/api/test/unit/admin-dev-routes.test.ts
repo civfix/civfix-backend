@@ -12,6 +12,7 @@ import {
   makeRuntimeFlagService,
   type RuntimeFlagService,
 } from "../../src/services/admin/runtime-flag-service.js"
+import type { WriteAuditInput } from "../../src/services/admin/audit.js"
 import { StubJwksVerifier } from "../helpers/auth.js"
 import { InMemoryRuntimeFlagRepository } from "../helpers/admin/runtime-flag-repository.memory.js"
 
@@ -142,6 +143,16 @@ function stored(h: Harness): string {
   return JSON.stringify({ rows: [...h.repo.rows], audits: h.repo.audits })
 }
 
+function flagSet(h: Harness, from: string | null, to: string | null): WriteAuditInput {
+  const meta = { from, to }
+  return {
+    actorId: h.operator.userId,
+    action: "dev.flag_set",
+    target: "flag:announcement_text",
+    meta,
+  }
+}
+
 function expectError(res: LightMyRequestResponse, status: number, code: string): void {
   expect(res.statusCode).toBe(status)
   expect(res.json<{ code: string }>().code).toBe(code)
@@ -224,20 +235,7 @@ describe("PUT /v1/admin/dev/flags/:key", () => {
     const h = await harness()
     expect((await putFlag(h, "announcement_text", { value: "Hi" })).statusCode).toBe(200)
     expect((await putFlag(h, "announcement_text", { value: "Bye" })).statusCode).toBe(200)
-    expect(h.repo.audits).toEqual([
-      {
-        actorId: h.operator.userId,
-        action: "dev.flag_set",
-        target: "flag:announcement_text",
-        meta: { from: null, to: "Hi" },
-      },
-      {
-        actorId: h.operator.userId,
-        action: "dev.flag_set",
-        target: "flag:announcement_text",
-        meta: { from: "Hi", to: "Bye" },
-      },
-    ])
+    expect(h.repo.audits).toEqual([flagSet(h, null, "Hi"), flagSet(h, "Hi", "Bye")])
   })
 
   it("T42: value null clears the override and audits it", async () => {
@@ -247,14 +245,7 @@ describe("PUT /v1/admin/dev/flags/:key", () => {
     expect(res.statusCode).toBe(200)
     expect(res.json()).toMatchObject({ override: null, value: null, fallbackSource: "default" })
     expect(h.repo.rows.has("announcement_text")).toBe(false)
-    expect(h.repo.audits).toEqual([
-      {
-        actorId: h.operator.userId,
-        action: "dev.flag_set",
-        target: "flag:announcement_text",
-        meta: { from: "Bye", to: null },
-      },
-    ])
+    expect(h.repo.audits).toEqual([flagSet(h, "Bye", null)])
   })
 
   it("T43: clearing a flag with no override changes nothing", async () => {

@@ -1,9 +1,6 @@
 /**
- * The runtime flag store against a real database: drizzle/0220_runtime_flags.sql as the runner applies it
- * (the template every file clones has run every migration), and the postgres-js repository the flag
- * service reads and writes through, with its audit row in the same transaction.
+ * drizzle/0220_runtime_flags.sql as the runner applies it, and the flag repository on real Postgres.
  */
-
 import { readFile } from "node:fs/promises"
 import { fileURLToPath } from "node:url"
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest"
