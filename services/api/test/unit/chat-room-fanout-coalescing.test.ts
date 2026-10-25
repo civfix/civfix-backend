@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach } from "vitest"
 import { FakePushSender } from "@civfix/seams"
 import type { ChatMessageDTO, PersonDTO, UserMentionDTO } from "@civfix/contract"
-import type { PushPayload, PushSender } from "@civfix/seams"
+import type { PushItem, PushSender } from "@civfix/seams"
 import {
   makeRoomFanoutNotifier,
   ROOM_ACTIVITY_COALESCE_WINDOW_MS,
@@ -14,6 +14,7 @@ import {
 import {
   InMemoryNotificationRepository,
   flushNotificationDispatch,
+  InMemoryNotificationSettingsRepository,
 } from "../helpers/notifications.js"
 
 const ACTOR = "dddddddd-dddd-dddd-dddd-dddddddddddd"
@@ -60,13 +61,17 @@ let push: FakePushSender
 let notifications: NotificationService
 let clockMs: number
 
-beforeEach(() => {
+beforeEach(async () => {
   clockMs = 1_700_000_000_000
   repo = new InMemoryNotificationRepository()
   repo.now = () => new Date(clockMs)
   push = new FakePushSender()
+  const settings = new InMemoryNotificationSettingsRepository()
+  // Group chats default to in-app only (D1); these members check Push.
+  for (const userId of [A, B]) await settings.upsertSettings(userId, { groupChats: { push: true } })
   notifications = makeNotificationService({
     repo,
+    settingsRepo: settings,
     pushSender: push,
     now: () => new Date(clockMs),
   })
@@ -202,10 +207,12 @@ describe("room-activity coalescing (H19)", () => {
     const hanging: PushSender = {
       registerToken: () => Promise.resolve(),
       send: (): Promise<void> => new Promise(() => {}),
-      sendMany: (_userIds: string[], _payload: PushPayload): Promise<void> => new Promise(() => {}),
+      sendEach: (_items: PushItem[]): Promise<void> => new Promise(() => {}),
+      clear: (): Promise<void> => new Promise(() => {}),
     }
     const service = makeNotificationService({
       repo,
+      settingsRepo: new InMemoryNotificationSettingsRepository(),
       pushSender: hanging,
       now: () => new Date(clockMs),
     })

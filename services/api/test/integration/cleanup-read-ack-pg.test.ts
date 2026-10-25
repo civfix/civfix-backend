@@ -7,7 +7,10 @@ import type { Container } from "../../src/di.js"
 import { withPg, type PgHarness } from "../helpers/pg.js"
 import { InMemoryChatPresence } from "../../src/adapters/chat-presence.js"
 import { InMemoryThreadsRepository } from "../helpers/chat.js"
-import { InMemoryNotificationRepository } from "../helpers/notifications.js"
+import {
+  InMemoryNotificationRepository,
+  InMemoryNotificationSettingsRepository,
+} from "../helpers/notifications.js"
 import {
   InMemoryBlocksRepository,
   InMemoryDmRepository,
@@ -82,7 +85,11 @@ describe.skipIf(!pg)("F040: the cleanup read ack only advances on a message from
   function wire(): MarkRead {
     captured.markRead = undefined
     notifRepo = new InMemoryNotificationRepository()
-    notifications = makeNotificationService({ repo: notifRepo, pushSender: new FakePushSender() })
+    notifications = makeNotificationService({
+      repo: notifRepo,
+      settingsRepo: new InMemoryNotificationSettingsRepository(),
+      pushSender: new FakePushSender(),
+    })
     const blocks = new InMemoryBlocksRepository()
     const app = {
       chatOverrides: {

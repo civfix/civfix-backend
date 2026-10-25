@@ -110,7 +110,12 @@ function footerSegments(footer: string | EmailFooter): readonly FooterSegment[] 
 
 function footerText(footer: string | EmailFooter): string {
   return footerSegments(footer)
-    .map((segment) => segment.text)
+    .map((segment) =>
+      // Plain text carries no links, so a link labelled with words prints its URL after them.
+      segment.href !== undefined && segment.text !== segment.href
+        ? `${segment.text}: ${segment.href}`
+        : segment.text,
+    )
     .join("")
 }
 

@@ -53,6 +53,7 @@ import {
 } from "../../src/services/chat-group-repository.drizzle.js"
 import { makeConversationMutesRepository } from "../../src/services/conversation-mutes-repository.drizzle.js"
 import { makeDrizzleNotificationRepository } from "../../src/services/notification-repository.drizzle.js"
+import { makeDrizzleNotificationSettingsRepository } from "../../src/services/notification-settings-repository.drizzle.js"
 import { makeNotificationService } from "../../src/services/notification-service.js"
 import { makeGroupChatNotifier } from "../../src/services/group-chat-notifier.js"
 import {
@@ -289,6 +290,7 @@ describe.skipIf(!pg)("chat groups: threads inbox + group_chat bells (integration
       const presence = new InMemoryChatPresence()
       const notificationService = makeNotificationService({
         repo: makeDrizzleNotificationRepository(h.sql),
+        settingsRepo: makeDrizzleNotificationSettingsRepository(h.sql),
         pushSender: new FakePushSender(),
       })
       const bellDeps: ChatBellDeps = {
@@ -512,6 +514,7 @@ describe.skipIf(!pg)("chat groups: threads inbox + group_chat bells (integration
 
       const notificationService = makeNotificationService({
         repo: makeDrizzleNotificationRepository(h.sql),
+        settingsRepo: makeDrizzleNotificationSettingsRepository(h.sql),
         pushSender: new FakePushSender(),
       })
       await notificationService.createNotification(member, {

@@ -1,7 +1,6 @@
 import { isIP } from "node:net"
 import { lookup, Resolver } from "node:dns/promises"
 import type { PushPlatform } from "@civfix/contract"
-import { isExpoPushToken } from "../adapters/push-expo.js"
 import { expandIpv6Hextets } from "../adapters/net-ipv6.js"
 
 export const PUSH_DNS_TIMEOUT_MS = 2_000
@@ -173,7 +172,13 @@ const WEB_PUSH_AUTH_BYTES = 16
 const BASE64URL_RE = /^[A-Za-z0-9_-]+={0,2}$/
 const APNS_TOKEN_RE = /^[0-9a-fA-F]{64,200}$/
 const FCM_TOKEN_RE = /^[A-Za-z0-9_:.~%+-]{64,2048}$/
-const EXPO_PUSH_TOKEN_MAX_LENGTH = 512
+const EXPO_TOKEN_PREFIXES = ["ExponentPushToken[", "ExpoPushToken["] as const
+
+// D7: pushes go to APNs, FCM and web push directly, so an Expo token can't be registered, and one
+// stored from before is revoked the first time a send meets it.
+export function isExpoPushToken(token: string): boolean {
+  return EXPO_TOKEN_PREFIXES.some((prefix) => token.startsWith(prefix))
+}
 
 function decodedByteLength(value: string): number | null {
   if (!BASE64URL_RE.test(value)) return null
@@ -185,7 +190,6 @@ function decodedByteLength(value: string): number | null {
 }
 
 export type PushTokenShape =
-  | { ok: true; kind: "expo" }
   | { ok: true; kind: "apns" }
   | { ok: true; kind: "fcm" }
   | { ok: true; kind: "web"; endpoint: string }
@@ -220,9 +224,7 @@ function classifyWebSubscription(token: string): PushTokenShape {
 
 export function classifyPushToken(platform: PushPlatform, token: string): PushTokenShape {
   if (isExpoPushToken(token)) {
-    return token.endsWith("]") && token.length <= EXPO_PUSH_TOKEN_MAX_LENGTH
-      ? { ok: true, kind: "expo" }
-      : invalidToken("malformed Expo push token")
+    return invalidToken("Expo push tokens are no longer accepted; register the device's own token")
   }
   if (platform === "web") return classifyWebSubscription(token)
   if (platform === "ios") {

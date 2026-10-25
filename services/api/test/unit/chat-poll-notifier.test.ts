@@ -23,6 +23,7 @@ import { describe, it, expect, beforeEach, vi } from "vitest"
 import { FakePushSender } from "@civfix/seams"
 import type { ChatMessageDTO, PersonDTO } from "@civfix/contract"
 import type { Container } from "../../src/di.js"
+import { fakeNotificationEmail } from "../helpers/notification-email.js"
 
 /**
  * Mock state. Held in a hoisted record because the vi.mock factories below are lifted above the imports;
@@ -32,6 +33,8 @@ const stub = vi.hoisted(() => ({
   /** The InMemoryNotificationRepository instance, installed per test (see beforeEach). */
   // eslint-disable-next-line @typescript-eslint/no-unnecessary-type-assertion -- the assertion is the field's declared type: vi.hoisted infers the record from this literal
   notifRepo: undefined as unknown,
+  // eslint-disable-next-line @typescript-eslint/no-unnecessary-type-assertion -- the assertion is the field's declared type: vi.hoisted infers the record from this literal
+  settingsRepo: undefined as unknown,
   reportMembers: [] as string[],
   groupMembers: [] as string[],
   /** `${roomKind}|${roomId}|${userId}` entries. */
@@ -44,6 +47,10 @@ const stub = vi.hoisted(() => ({
 
 vi.mock("../../src/services/notification-repository.drizzle.js", () => ({
   makeDrizzleNotificationRepository: () => stub.notifRepo,
+}))
+
+vi.mock("../../src/services/notification-settings-repository.drizzle.js", () => ({
+  makeDrizzleNotificationSettingsRepository: () => stub.settingsRepo,
 }))
 
 vi.mock("../../src/services/report-chat-repository.drizzle.js", async (importOriginal) => {
@@ -103,7 +110,8 @@ vi.mock("../../src/services/conversation-mutes-repository.drizzle.js", async (im
 })
 
 const { makeContainerPollNotifier } = await import("../../src/services/chat-poll-notifier.js")
-const { InMemoryNotificationRepository } = await import("../helpers/notifications.js")
+const { InMemoryNotificationRepository, InMemoryNotificationSettingsRepository } =
+  await import("../helpers/notifications.js")
 const { InMemoryBlocksRepository } = await import("../../src/services/dm-repository.memory.js")
 
 const ROOM = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
@@ -119,6 +127,7 @@ beforeEach(() => {
   notifRepo = new InMemoryNotificationRepository()
   blocks = new InMemoryBlocksRepository()
   stub.notifRepo = notifRepo
+  stub.settingsRepo = new InMemoryNotificationSettingsRepository()
   stub.reportMembers = []
   stub.groupMembers = []
   stub.muted = new Set()
@@ -176,6 +185,7 @@ function containerFor(useFakeChat = false): Container {
       return { sql: {} }
     },
     pushSender: new FakePushSender(),
+    getNotificationEmail: fakeNotificationEmail,
     userChannel: undefined,
     getBlocksRepo: () => blocksRepoForContainer(),
   } as unknown as Container
