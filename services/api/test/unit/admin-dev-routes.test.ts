@@ -317,8 +317,9 @@ describe("GET /v1/admin/dev/flags", () => {
     const h = await harness()
     const flags = await listFlags(h)
     expect(flags.map((f) => f.key)).toEqual(RUNTIME_FLAGS.map((f) => f.key))
+    const T21_DEFAULTS = [false, false, false, null, null, null, null, "info"]
     for (const [i, flag] of flags.entries()) {
-      const expected = RUNTIME_FLAGS[i]!.default
+      const expected = T21_DEFAULTS[i]
       expect(flag).toEqual({
         key: flag.key,
         value: expected,
