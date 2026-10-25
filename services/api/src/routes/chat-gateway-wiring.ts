@@ -90,6 +90,8 @@ import { InMemoryChatReadState, type ChatReadState } from "../services/threads-s
 import { makeMarkRoomRead, type MarkRoomRead } from "../services/room-read-service.js"
 import type { ChatGatewayOverrides } from "./chat.routes.js"
 import { avatarPresigner } from "../services/user-avatar.js"
+import { makeConversationNameRepository } from "../services/conversation-name-repository.drizzle.js"
+import type { ConversationNameLookups } from "../services/conversation-names.js"
 
 const WS_UPGRADE_RATE_LIMIT = { max: 60, timeWindow: "1 minute" } as const
 
@@ -277,6 +279,7 @@ interface ChatRepos {
   getGroupsRepo(): ChatGroupRepository | undefined
   groupWired: boolean
   getReportRepo(): DiscussionRepository
+  getConversationNames(): ConversationNameLookups
 }
 
 function makeChatRepos({ container, overrides, useFakeChat }: WiringContext): ChatRepos {
@@ -297,6 +300,7 @@ function makeChatRepos({ container, overrides, useFakeChat }: WiringContext): Ch
   let reportChatRepo: ReportChatRepository | undefined
   let groupsRepo: ChatGroupRepository | undefined
   let reportRepo: DiscussionRepository | undefined
+  let conversationNames: ConversationNameLookups | undefined
 
   return {
     getCleanupRepo,
@@ -322,6 +326,8 @@ function makeChatRepos({ container, overrides, useFakeChat }: WiringContext): Ch
           : (groupsRepo ??= makeChatGroupRepository(container.getDb().sql, presignMedia)),
     groupWired: overrides ? overrides.groups !== undefined : !useFakeChat,
     getReportRepo: () => (reportRepo ??= makeDrizzleDiscussionRepository(container.getDb().sql)),
+    getConversationNames: () =>
+      (conversationNames ??= makeConversationNameRepository(container.getDb().sql)),
   }
 }
 
@@ -439,7 +445,7 @@ function makeThreadRecipientsOf(
 }
 
 function makeBellDeps(
-  { useFakeChat }: WiringContext,
+  { app, overrides, useFakeChat }: WiringContext,
   repos: ChatRepos,
   notifications: ChatNotifications,
   presence: ChatPresence,
@@ -447,6 +453,8 @@ function makeBellDeps(
   const { notificationService, isMutedFor } = notifications
   if (useFakeChat || !notificationService) return undefined
   return {
+    ...(overrides ? {} : { conversationNames: repos.getConversationNames() }),
+    logger: app.log,
     notificationService,
     isMutedFor,
     isCleanupMember: repos.isMember,
@@ -565,7 +573,7 @@ interface RoomMemberNotifiers {
 }
 
 function makeRoomMemberNotifiers(
-  { app }: WiringContext,
+  { app, overrides }: WiringContext,
   repos: ChatRepos,
   notifications: ChatNotifications,
   presence: ChatPresence,
@@ -574,6 +582,7 @@ function makeRoomMemberNotifiers(
 ): RoomMemberNotifiers {
   const { notificationService, conversationMutes, mutedUserIdsFor } = notifications
   const { blockedIdsFor, isBlockedEitherWay } = repos
+  const names = () => (overrides ? {} : { conversationNames: repos.getConversationNames() })
 
   const notifyReportChatMembers =
     notificationService && conversationMutes
@@ -589,6 +598,7 @@ function makeRoomMemberNotifiers(
           roomKeyFor,
           isBlockedEitherWay,
           ...(blockedIdsFor ? { blockedIdsFor } : {}),
+          ...names(),
           ...fanoutHandoff("report"),
           logger: app.log,
         })
@@ -607,6 +617,7 @@ function makeRoomMemberNotifiers(
           roomKeyFor,
           isBlockedEitherWay,
           ...(blockedIdsFor ? { blockedIdsFor } : {}),
+          ...names(),
           ...fanoutHandoff("group"),
           logger: app.log,
         })

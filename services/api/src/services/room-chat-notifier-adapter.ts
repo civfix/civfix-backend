@@ -18,6 +18,7 @@ export type RoomChatNotifierDeps<K extends RoomFanoutKind> = Pick<
   | "now"
   | "claimWindow"
   | "dispatchToJob"
+  | "conversationNames"
 > & {
   presence?: { online(roomKey: string): Promise<string[]> }
   roomKeyFor: (kind: K, id: string) => string
@@ -42,6 +43,7 @@ export function makeRoomChatNotifier<K extends RoomFanoutKind>(
     ...(deps.now !== undefined ? { now: deps.now } : {}),
     ...(deps.claimWindow !== undefined ? { claimWindow: deps.claimWindow } : {}),
     ...(deps.dispatchToJob !== undefined ? { dispatchToJob: deps.dispatchToJob } : {}),
+    ...(deps.conversationNames !== undefined ? { conversationNames: deps.conversationNames } : {}),
     ...(deps.logger !== undefined ? { logger: deps.logger } : {}),
   })
 }

@@ -6,6 +6,8 @@ import type {
 } from "@civfix/contract"
 import type { KeysetCursor } from "../../db/cursor-helpers.js"
 import type { NotificationPrefsRecord } from "../notification-repository.js"
+
+export type QuietHoursRecord = Pick<NotificationPrefsRecord, "quietStart" | "quietEnd" | "tz">
 import type { WriteAuditInput } from "../admin/audit.js"
 import type {
   AdminBroadcastRow,
@@ -155,7 +157,8 @@ export interface BroadcastRepository {
   listDeliveries(query: DeliveryListQuery): Promise<KeysetRow<DeliveryListRow>[]>
 
   memberContacts(userIds: readonly string[]): Promise<Map<string, MemberContact>>
-  pushPrefs(userIds: readonly string[]): Promise<Map<string, NotificationPrefsRecord>>
+  /** Quiet hours from notification_prefs, for the users who set them. */
+  quietHours(userIds: readonly string[]): Promise<Map<string, QuietHoursRecord>>
   guestContacts(guestIds: readonly string[]): Promise<Map<string, GuestContact>>
   ticketTypeNames(args: {
     cleanupId: string

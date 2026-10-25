@@ -7,13 +7,14 @@
  *   - dm reply vs dm delivered bell: makeDmBellNotifier is the single dm bell site, so one bell by
  *     construction.
  */
-import type { ChatMessageDTO, NotificationType, RoomKind } from "@civfix/contract"
+import type { ChatMessageDTO, RoomKind } from "@civfix/contract"
+import type { FastifyBaseLogger } from "fastify"
 import type { NotificationService } from "./notification-service.js"
 import { CONVERSATION_BELL } from "./conversation-bell.js"
 import { messageAuthorName, textPreview } from "./chat-notify-copy.js"
 import type { MessageKey } from "../i18n/renderMessage.js"
 import type { GatewayChatMentions, OnChatReply, OnDmDelivered } from "../ws/types.js"
-import type { ConversationNameLookups } from "./conversation-names.js"
+import { conversationNameOf, type ConversationNameLookups } from "./conversation-names.js"
 
 type GroupRoomKind = "cleanup" | "report" | "group"
 
@@ -30,20 +31,8 @@ function previewBody(message: ChatMessageDTO): { body: string } | { bodyKey: Mes
   return preview !== null ? { body: preview } : { bodyKey: NO_PREVIEW_BODY_KEY }
 }
 
-/**
- * Straight off CONVERSATION_BELL: clear-on-open (clearByTypeAndLink) matches on exactly these two
- * strings, so a second hand-written copy of the map would silently strand bells once either side changed.
- */
-function groupBellRoute(
-  kind: GroupRoomKind,
-  roomId: string,
-): { type: NotificationType; link: string } {
-  const spec = CONVERSATION_BELL[kind]
-  return { type: spec.type, link: spec.link(roomId) }
-}
-
 export interface ChatBellDeps {
-  notificationService: Pick<NotificationService, "createNotification" | "getPrefs">
+  notificationService: Pick<NotificationService, "createNotification" | "categorySetting">
   /** Best-effort: an absent store or a lookup error reads as not muted. */
   isMutedFor(
     userId: string,
@@ -59,6 +48,7 @@ export interface ChatBellDeps {
   presence?: { online(roomKey: string): Promise<string[]> } | undefined
   roomKeyFor(kind: RoomKind, id: string): string
   conversationNames?: ConversationNameLookups
+  logger?: Pick<FastifyBaseLogger, "warn">
 }
 
 async function isGroupMember(
@@ -80,14 +70,21 @@ async function bellGroupMember(
   message: ChatMessageDTO,
   titleKey: MessageKey,
 ): Promise<void> {
-  const name = messageAuthorName(message)
-  const { type, link } = groupBellRoute(kind, roomId)
+  const conversationName = await conversationNameOf(
+    deps.conversationNames,
+    kind,
+    roomId,
+    deps.logger,
+  )
+  // The link comes straight off CONVERSATION_BELL: clear-on-open matches chat_mention rows on the room's
+  // own link, so a hand-written copy would strand them once either side changed.
   await deps.notificationService.createNotification(recipientId, {
-    type,
+    type: "chat_mention",
     titleKey,
-    vars: { name },
+    vars: { name: messageAuthorName(message) },
     ...previewBody(message),
-    link,
+    link: CONVERSATION_BELL[kind].link(roomId),
+    ...(conversationName !== undefined ? { conversationName } : {}),
   })
 }
 
@@ -110,7 +107,6 @@ export function makeChatMentionNotifier(
     if (await deps.isMutedFor(mentionedUserId, kind, roomId)) return
     if (!(await isGroupMember(deps, kind, roomId, mentionedUserId))) return
     if (await deps.isBlockedEitherWay(actorUserId, mentionedUserId)) return
-    if (!(await deps.notificationService.getPrefs(mentionedUserId)).mentions) return
     await bellGroupMember(deps, mentionedUserId, kind, roomId, message, CHAT_MENTION_TITLE_KEY)
   }
 }
@@ -125,8 +121,6 @@ export function makeChatReplyNotifier(deps: ChatBellDeps): OnChatReply {
     if (kind === "dm") return
     if (!(await isGroupMember(deps, kind, roomId, targetUserId))) return
     if (await deps.isBlockedEitherWay(actorUserId, targetUserId)) return
-    // Reply urgency is mention-class, so the mentions pref gates the bell entirely (row and push).
-    if (!(await deps.notificationService.getPrefs(targetUserId)).mentions) return
     if (deps.presence) {
       let online: string[] = []
       try {
@@ -145,22 +139,25 @@ export type DmBellDeps = Pick<ChatBellDeps, "notificationService" | "isMutedFor"
 /**
  * The caller (frame-handler fireDmBell) already applies presence suppression and never fires for the
  * sender, and the send path already rejects blocked pairs, so this owns only mute, reply and copy.
- * In a muted thread only a reply to the recipient bells, and only when `prefs.mentions` allows it
- * (mute-piercing is mention-class urgency); in an unmuted thread a reply only swaps the title copy.
+ * In a muted thread only a reply to the recipient bells, and only with Mentions and replies on
+ * (mute-piercing is mention-class urgency); the row stays a dm, so Direct messages gates it too. In an
+ * unmuted thread a reply only swaps the title copy.
  */
 export function makeDmBellNotifier(deps: DmBellDeps): OnDmDelivered {
   return async (threadId, recipientId, message) => {
     const isReplyToRecipient = message.replyTo?.from?.id === recipientId
     if (await deps.isMutedFor(recipientId, "dm", threadId)) {
       if (!isReplyToRecipient) return
-      if (!(await deps.notificationService.getPrefs(recipientId)).mentions) return
+      if (!(await deps.notificationService.categorySetting(recipientId, "mentions")).enabled) return
     }
     const bell = CONVERSATION_BELL.dm
+    const name = messageAuthorName(message)
     await deps.notificationService.createNotification(recipientId, {
       type: bell.type,
-      ...dmBellTitle(messageAuthorName(message), isReplyToRecipient),
+      ...dmBellTitle(name, isReplyToRecipient),
       ...previewBody(message),
       link: bell.link(threadId),
+      ...(name !== "" ? { conversationName: name } : {}),
     })
   }
 }

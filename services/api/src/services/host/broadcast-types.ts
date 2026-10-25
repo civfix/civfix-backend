@@ -6,6 +6,7 @@ import type {
   DeliveryFailureKind,
   DeliveryStatus,
   DeliverySuppressionReason,
+  NotificationCategory,
 } from "@civfix/contract"
 import type { KeysetCursor } from "../../db/cursor-helpers.js"
 
@@ -185,10 +186,24 @@ export const DEFAULT_BROADCAST_CHUNK_SIZE = 200
 
 export const MAX_DELIVERY_ATTEMPTS = 3
 
+/** A guest has no settings, so only guests still get these past an opt-out (D3). */
 export const CRITICAL_BROADCAST_KINDS: ReadonlySet<BroadcastKind> = new Set<BroadcastKind>([
   "event_updated",
   "event_cancelled",
 ])
+
+/** The category an account holder's setting gates each kind by (D1); `null` is Always on. */
+export const BROADCAST_KIND_CATEGORY: Readonly<Record<BroadcastKind, NotificationCategory | null>> =
+  {
+    host_broadcast: "hostAnnouncements",
+    thank_you: "hostAnnouncements",
+    announcement: "hostAnnouncements",
+    reminder: "events",
+    event_updated: "events",
+    event_cancelled: "events",
+    confirmation: null,
+    waitlist_promoted: null,
+  }
 
 export const ANNOUNCEMENT_VISIBLE_STATUSES: readonly BroadcastStatus[] = ["sending", "sent"]
 

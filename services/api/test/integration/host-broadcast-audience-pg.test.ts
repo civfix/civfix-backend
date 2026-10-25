@@ -93,60 +93,6 @@ describe.skipIf(!pg)("broadcast audience resolution (integration)", () => {
     expect((await audience(true)).members).not.toContain(userId)
   })
 
-  it("honours host_broadcasts=false for HOST-COMPOSED kinds only", async () => {
-    const userId = await newUser("OptedOut")
-    await register(userId)
-    await h.sql`
-      INSERT INTO notification_prefs (user_id, host_broadcasts) VALUES (${userId}, false)
-      ON CONFLICT (user_id) DO UPDATE SET host_broadcasts = false`
-
-    async function membersFor(kind: BroadcastKind): Promise<string[]> {
-      const page = await repo.audiencePage({
-        cleanupId,
-        segment: { kind: "all_registered" },
-        kind,
-        afterMember: null,
-        afterGuest: null,
-        limit: 1000,
-      })
-      return page.members
-    }
-
-    for (const kind of ["host_broadcast", "thank_you"] as const) {
-      expect(await membersFor(kind), kind).not.toContain(userId)
-    }
-    for (const kind of [
-      "reminder",
-      "confirmation",
-      "waitlist_promoted",
-      "event_updated",
-      "event_cancelled",
-    ] as const) {
-      expect(await membersFor(kind), kind).toContain(userId)
-    }
-  })
-
-  it("honours an event unsubscribe and a per-event mute for bulk only", async () => {
-    const unsubscribed = await newUser("Unsub")
-    const muted = await newUser("Muted")
-    await register(unsubscribed)
-    await register(muted)
-    await repo.recordUnsubscribe({
-      scope: "event",
-      cleanupId,
-      subjectKind: "user",
-      subjectId: unsubscribed,
-      reason: "one_click",
-    })
-    await repo.setEventMute(cleanupId, muted, true)
-    const bulk = await audience(false)
-    expect(bulk.members).not.toContain(unsubscribed)
-    expect(bulk.members).not.toContain(muted)
-    const critical = await audience(true)
-    expect(critical.members).toContain(unsubscribed)
-    expect(critical.members).toContain(muted)
-  })
-
   it("records a one-click unsubscribe idempotently", async () => {
     const userId = await newUser("Twice")
     await register(userId)

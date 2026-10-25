@@ -4,7 +4,10 @@ import type {
   NotificationCategorySetting,
   NotificationType,
 } from "@civfix/contract"
-import type { NotificationSettingRecord } from "./notification-settings-repository.js"
+import type {
+  NotificationSettingRecord,
+  NotificationSettingsRepository,
+} from "./notification-settings-repository.js"
 
 // D1. A Record, so a type the contract adds does not compile until it is given a category. `null` is
 // Always on: transactional notices no setting can turn off.
@@ -45,4 +48,45 @@ export function categorySettings(
   const stored = new Map<string, NotificationCategorySetting>()
   for (const r of records) if (r.category === category) stored.set(r.userId, r)
   return (userId) => stored.get(userId) ?? NOTIFICATION_CATEGORY_DEFAULTS[category]
+}
+
+export async function categorySettingOf(
+  repo: Pick<NotificationSettingsRepository, "getSettings">,
+  userId: string,
+  category: NotificationCategory,
+): Promise<NotificationCategorySetting> {
+  return categorySettings(await repo.getSettings(userId), category)(userId)
+}
+
+export function emailAllowed(setting: NotificationCategorySetting): boolean {
+  return setting.enabled && setting.email
+}
+
+/**
+ * Whether a path that sends its own email may mail this account holder (D1): only with the category on
+ * and Email checked. Without a reader every account is at its default; a failed read mails nothing.
+ */
+export async function ownEmailAllowed(
+  repo: Pick<NotificationSettingsRepository, "getSettings"> | undefined,
+  userId: string,
+  category: NotificationCategory,
+  logger?: { warn?: (obj: unknown, msg?: string) => void },
+): Promise<boolean> {
+  if (repo === undefined) return emailAllowed(NOTIFICATION_CATEGORY_DEFAULTS[category])
+  try {
+    return emailAllowed(await categorySettingOf(repo, userId, category))
+  } catch (err) {
+    logger?.warn?.({ err, category }, "notification settings read failed; the email is not sent")
+    return false
+  }
+}
+
+/** Many users' setting for one category from one read; `null` for each when it is Always on. */
+export async function categorySettingsOfMany(
+  repo: Pick<NotificationSettingsRepository, "getSettingsMany">,
+  userIds: readonly string[],
+  category: NotificationCategory | null,
+): Promise<(userId: string) => NotificationCategorySetting | null> {
+  if (category === null || userIds.length === 0) return () => null
+  return categorySettings(await repo.getSettingsMany([...userIds]), category)
 }

@@ -255,32 +255,6 @@ describe("createNotification gated by category settings", () => {
     expect(h.pushItems()).toHaveLength(0)
   })
 
-  it('T14: push "always" skips the Push checkbox but never an Off category', async () => {
-    const h = harness()
-    await h.set(A, "events", [true, false, false])
-    const input = {
-      type: "cleanup_cancelled" as const,
-      title: "Cancelled",
-      push: "always" as const,
-    }
-
-    await h.service.createNotification(A, input)
-    await settle()
-
-    expect(h.rows(A)).toHaveLength(1)
-    expect(h.pushItems()).toHaveLength(1)
-    const signalsBefore = h.signals().length
-
-    await h.set(A, "events", [false, true, true])
-    const second = await h.service.createNotification(A, input)
-    await settle()
-
-    expect(second).toBeNull()
-    expect(h.rows(A)).toHaveLength(1)
-    expect(h.pushItems()).toHaveLength(1)
-    expect(h.signals()).toHaveLength(signalsBefore)
-  })
-
   it("T15: a dedupe hit pushes and signals nothing more", async () => {
     const h = harness()
     await h.set(A, "followers", [true, true, false])

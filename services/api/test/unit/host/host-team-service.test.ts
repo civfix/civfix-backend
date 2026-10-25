@@ -16,7 +16,12 @@ import {
   type HostTeamService,
   type HostTeamServiceDeps,
 } from "../../../src/services/host/host-team-service.js"
-import { captureNotifications, categoryOfInput, OFF } from "../../helpers/notification-capture.js"
+import {
+  AllOnSettingsRepository,
+  captureNotifications,
+  categoryOfInput,
+  OFF,
+} from "../../helpers/notification-capture.js"
 import type { CreateNotificationInput } from "../../../src/services/notification-service.js"
 
 const EVENT = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
@@ -104,6 +109,8 @@ function makeService(
       },
     },
     eventTitleOf: () => Promise.resolve("Beach cleanup"),
+    // Email checked for Event team and hours unless a case brings its own settings.
+    notificationSettings: new AllOnSettingsRepository(["eventTeam"]),
     ...over,
     webOrigin: "https://civfix.test",
     now: () => clock,
@@ -387,6 +394,7 @@ describe("inviteEventTeamMember", () => {
           varKeys: { role: "role.coordinator" },
           link: TEAM_INVITE_INBOX_LINK,
           push: "auto",
+          email: "never",
         },
       },
     ])

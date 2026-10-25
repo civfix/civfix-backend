@@ -7,6 +7,7 @@ import {
   type NotificationService,
 } from "../../src/services/notification-service.js"
 import { categoryForType } from "../../src/services/notification-categories.js"
+import type { NotificationSettingRecord } from "../../src/services/notification-settings-repository.js"
 import {
   InMemoryNotificationRepository,
   InMemoryNotificationSettingsRepository,
@@ -77,4 +78,25 @@ export type NotificationCapture = ReturnType<typeof captureNotifications>
 /** The category a captured input is gated by, the rule createNotification applies. */
 export function categoryOfInput(input: CreateNotificationInput): NotificationCategory | null {
   return input.category ?? categoryForType(input.type)
+}
+
+/**
+ * Settings in which every account holder has these categories fully on (Push and Email) unless a test
+ * stored otherwise, for broadcast tests about the pipeline rather than about settings.
+ */
+export class AllOnSettingsRepository extends InMemoryNotificationSettingsRepository {
+  constructor(private readonly categories: readonly NotificationCategory[]) {
+    super()
+  }
+
+  override async getSettingsMany(userIds: string[]): Promise<NotificationSettingRecord[]> {
+    const stored = await super.getSettingsMany(userIds)
+    const has = new Set(stored.map((r) => `${r.userId}:${r.category}`))
+    const filled = userIds.flatMap((userId) =>
+      this.categories
+        .filter((category) => !has.has(`${userId}:${category}`))
+        .map((category) => ({ userId, category, enabled: true, push: true, email: true })),
+    )
+    return [...stored, ...filled]
+  }
 }

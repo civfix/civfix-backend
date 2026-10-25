@@ -36,7 +36,9 @@ function erasureDb() {
   const client = {
     options: { parsers: {}, serializers: {} },
     unsafe(query: string) {
-      const result = Promise.resolve([]) as Promise<unknown[]> & { values(): Promise<unknown> }
+      const result = Promise.resolve<unknown[]>([]) as Promise<unknown[]> & {
+        values(): Promise<unknown>
+      }
       result.values = () => Promise.resolve(/^update "users"/i.test(query) ? [tombstone] : [])
       return result
     },

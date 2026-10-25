@@ -36,6 +36,7 @@ import { makeRouteNotificationService } from "../../services/route-notifier.js"
 import { makeRouteCleanupReader } from "../../services/route-cleanup-reader.js"
 import { webBaseUrlOf } from "../../lib/base-url.js"
 import { avatarPresigner } from "../../services/user-avatar.js"
+import { makeDrizzleNotificationSettingsRepository } from "../../services/notification-settings-repository.drizzle.js"
 
 const ONE_MINUTE = "1 minute"
 const ONE_HOUR = "1 hour"
@@ -112,6 +113,7 @@ export async function registerHostTeamRoutes(
       counters: container.getCounterStore(),
       mailer: container.mailer,
       notifier: makeRouteNotificationService(container, app.log),
+      notificationSettings: makeDrizzleNotificationSettingsRepository(sql),
       presignEventMedia: makeEventMediaPresigner(container.storage),
       affiliations: container.getAffiliationLoader(),
       eventTitleOf: (cleanupId: string) => repo.eventTitleOf(cleanupId),

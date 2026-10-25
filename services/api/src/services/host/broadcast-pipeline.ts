@@ -45,7 +45,7 @@ export interface BroadcastPipelineDeps {
   repo: BroadcastRepository
   service: BroadcastService
   notifications: NotificationService
-  settingsRepo?: Pick<NotificationSettingsRepository, "getSettingsMany">
+  settingsRepo: Pick<NotificationSettingsRepository, "getSettingsMany">
   mailer: Mailer
   cache: CacheClient
   config: BroadcastConfig
@@ -116,6 +116,7 @@ export function makeBroadcastPipeline(deps: BroadcastPipelineDeps) {
     repo,
     config,
     notifications: deps.notifications,
+    settingsRepo: deps.settingsRepo,
     now,
     ...optionalLogger,
   })
@@ -123,6 +124,7 @@ export function makeBroadcastPipeline(deps: BroadcastPipelineDeps) {
     repo,
     config,
     mailer: deps.mailer,
+    settingsRepo: deps.settingsRepo,
     cache: deps.cache,
     mailDomain: deps.mailDomain,
     now,
