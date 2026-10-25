@@ -543,6 +543,16 @@ INSERT INTO moderation_items ( kind, subject_type, subject_id, flag, reason, cat
 => "id-row""
 `;
 
+exports[`sql transcripts > insertReopenFilingIn 1`] = `
+"-- empty
+SELECT geoid, category, case_id, ticket_text, city_closed_at FROM report_filings WHERE report_id = $1 AND status IN ('submitted', 'linked_existing') ORDER BY submitted_at DESC NULLS LAST, id DESC LIMIT 1 -- ["reportId-1"]
+=> "none"
+-- row
+SELECT geoid, category, case_id, ticket_text, city_closed_at FROM report_filings WHERE report_id = $1 AND status IN ('submitted', 'linked_existing') ORDER BY submitted_at DESC NULLS LAST, id DESC LIMIT 1 -- ["reportId-1"]
+INSERT INTO report_filings (report_id, geoid, category, status, reason, reason_detail, ticket_text) SELECT $1, $2, $3, 'needs_human', 'reopened_after_city_closed', $4, $5 WHERE NOT EXISTS ( SELECT 1 FROM report_filings WHERE report_id = $6 AND status IN ('queued', 'running', 'needs_human') ) ON CONFLICT (report_id) WHERE status IN ('queued', 'running', 'needs_human') DO NOTHING RETURNING id -- ["reportId-1","geoid-row","category-row","Previous request case_id-row","ticket_text-row","reportId-1"]
+=> "created""
+`;
+
 exports[`sql transcripts > isBannedIn 1`] = `
 "-- empty
 SELECT 1 AS one FROM cleanup_bans WHERE cleanup_id = $1 AND user_id = $2 LIMIT 1 -- ["cleanupId-1","userId-1"]
@@ -1459,11 +1469,13 @@ SELECT id FROM reports WHERE id = $1 LIMIT 1 -- ["reportId-1"]
 exports[`sql transcripts > makeDrizzleAdminReportRepository.advanceStatusIfIn 1`] = `
 "-- empty
 BEGIN tx1
+[tx1] SELECT status FROM reports WHERE id = $1 AND deleted_at IS NULL FOR UPDATE -- ["id-1"]
 [tx1] UPDATE reports SET status = $1 WHERE id = $2 AND deleted_at IS NULL AND status = ANY($3::text[]) RETURNING id -- ["published","id-1",["published"]]
 COMMIT tx1
 => false
 -- row
 BEGIN tx1
+[tx1] SELECT status FROM reports WHERE id = $1 AND deleted_at IS NULL FOR UPDATE -- ["id-1"]
 [tx1] UPDATE reports SET status = $1 WHERE id = $2 AND deleted_at IS NULL AND status = ANY($3::text[]) RETURNING id -- ["published","id-1",["published"]]
 [tx1] INSERT INTO report_timeline (report_id, status, note, kind, actor_id) VALUES ($1, $2, $3, $4, $5) -- ["id-1","published","note-1","warn","actorId-1"]
 [tx1] INSERT INTO audit_log (actor_id, action, target, meta) VALUES ($1, $2, $3, $4) RETURNING id -- ["actorId-1","report.status_changed","report:id-1",{"<json>":{"status":"published"}}]
@@ -4166,6 +4178,29 @@ SELECT rep.status AS key, count(*)::int AS n FROM cleanup_reports cr JOIN report
 -- row
 SELECT rep.status AS key, count(*)::int AS n FROM cleanup_reports cr JOIN reports rep ON rep.id = cr.report_id WHERE cr.cleanup_id = $1 GROUP BY rep.status ORDER BY count(*) DESC, rep.status ASC LIMIT $2 -- ["cleanupId-1",50]
 => [{"key":"key-row","count":2}]"
+`;
+
+exports[`sql transcripts > makeDrizzleFilingIngestSql.applyCityUpdate 1`] = `
+"-- empty
+BEGIN tx1
+[tx1] UPDATE filing_messages SET applied_at = now(), classification = $1, summary = $2 WHERE id = $3 AND applied_at IS NULL AND trusted AND NOT flagged RETURNING filing_id -- [{"<json>":{"caseId":"caseId-1","status":"in_progress","summary":"summary-1","confidence":3}},"summary-1","messageId-1"]
+COMMIT tx1
+=> {"claimed":false}
+-- row
+BEGIN tx1
+[tx1] UPDATE filing_messages SET applied_at = now(), classification = $1, summary = $2 WHERE id = $3 AND applied_at IS NULL AND trusted AND NOT flagged RETURNING filing_id -- [{"<json>":{"caseId":"caseId-1","status":"in_progress","summary":"summary-1","confidence":3}},"summary-1","messageId-1"]
+[tx1] SELECT f.id, f.report_id, f.channel, f.status, f.case_id, j.name AS jurisdiction_name FROM report_filings f LEFT JOIN jurisdictions j ON j.geoid = f.geoid WHERE f.id = $1 FOR UPDATE OF f -- ["filing_id-row"]
+COMMIT tx1
+=> {"claimed":true,"filing":{"id":"id-row","reportId":"report_id-row","channel":"channel-row","status":"status-row","caseId":"case_id-row","jurisdictionName":"jurisdiction_name-row"},"effect":{"kind":"none"},"applied":false}"
+`;
+
+exports[`sql transcripts > makeDrizzleFilingIngestSql.reportIdByReferenceCode 1`] = `
+"-- empty
+SELECT id FROM reports WHERE reference_code = $1 LIMIT 1 -- ["code-1"]
+=> null
+-- row
+SELECT id FROM reports WHERE reference_code = $1 LIMIT 1 -- ["code-1"]
+=> "id-row""
 `;
 
 exports[`sql transcripts > makeDrizzleFilingRepository.claim 1`] = `

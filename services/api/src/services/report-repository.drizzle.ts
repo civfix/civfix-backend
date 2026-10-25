@@ -30,6 +30,7 @@ import {
   type CreateReportTxArgs,
   type CreateReportTxResult,
   type OwnerToggleStatus,
+  type ResolveByOwnerOutcome,
   type ReportConfirmationOutcome,
   type ReportMapPoint,
   type ReportMediaView,
@@ -59,6 +60,7 @@ import {
 } from "./report-sql.js"
 import { touchUserActivity } from "../db/sql/user-activity.js"
 import { isUniqueViolation } from "../db/pg-errors.js"
+import { insertReopenFilingIn } from "./filings/filing-reopen.drizzle.js"
 
 const REPORT_SEARCH_MIN_QUERY_LENGTH = 3
 
@@ -635,7 +637,7 @@ export function makeDrizzleReportRepository(sql: Sql): ReportRepository {
       reportId: string,
       userId: string,
       input: { status: OwnerToggleStatus; note: string },
-    ): Promise<"updated" | "unchanged" | "not_found" | "forbidden" | "invalid_state"> {
+    ): Promise<ResolveByOwnerOutcome> {
       return sql.begin(async (tx) => {
         const locked = await lockOwnedReport(tx, reportId, userId)
         if ("outcome" in locked) return locked.outcome
@@ -648,6 +650,10 @@ export function makeDrizzleReportRepository(sql: Sql): ReportRepository {
           INSERT INTO report_timeline (report_id, status, note, actor_id)
           VALUES (${reportId}, ${input.status}, ${input.note}, ${userId})
         `
+        if (row.status === "resolved" && input.status !== "resolved") {
+          const reopen = await insertReopenFilingIn(tx, reportId)
+          if (reopen === "skipped_active") return "updated_reopen_skipped"
+        }
         return "updated"
       })
     },

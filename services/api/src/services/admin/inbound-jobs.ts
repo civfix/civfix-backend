@@ -1,6 +1,11 @@
 import type { Container } from "../../di.js"
 import { runInboundSweep } from "./inbound-sweep.js"
-import { INBOUND_SWEEP_JOB } from "../../lib/queue-names.js"
+import { FILING_CITY_UPDATE_JOB, INBOUND_SWEEP_JOB } from "../../lib/queue-names.js"
+import { makeDrizzleAdminReportRepository } from "./admin-report-repository.drizzle.js"
+import { makeContainerReportChatEmitter } from "../report-chat-emitter.js"
+import { makeRouteNotificationService } from "../route-notifier.js"
+import { makeApplyCityUpdate } from "../filings/city-update-jobs.js"
+import { makeDrizzleFilingIngestSql } from "../filings/filing-ingest-sql.drizzle.js"
 
 export async function registerInboundJobs(container: Container): Promise<void> {
   await container.jobs.schedule(INBOUND_SWEEP_JOB, container.env.INBOUND_SWEEP_CRON)
@@ -36,5 +41,20 @@ export async function registerInboundJobs(container: Container): Promise<void> {
           `their claims were released and the next run re-drives them`,
       )
     }
+  })
+
+  const cityUpdateLogger = {
+    warn: (obj: unknown, msg?: string) => console.warn(msg ?? FILING_CITY_UPDATE_JOB, obj),
+    error: (obj: unknown, msg?: string) => console.error(msg ?? FILING_CITY_UPDATE_JOB, obj),
+  }
+  await container.jobs.work(FILING_CITY_UPDATE_JOB, async (job) => {
+    const sql = container.getDb().sql
+    await makeApplyCityUpdate({
+      ingest: makeDrizzleFilingIngestSql(sql),
+      reports: makeDrizzleAdminReportRepository(sql),
+      notifications: makeRouteNotificationService(container, cityUpdateLogger),
+      chatEmitter: makeContainerReportChatEmitter(container, cityUpdateLogger),
+      logger: cityUpdateLogger,
+    })(job.data)
   })
 }

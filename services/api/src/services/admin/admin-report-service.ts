@@ -27,6 +27,7 @@ import {
   timelineKindForStatus,
 } from "./admin-report-status.js"
 import { buildReportPacket, type PacketMediaLink } from "./mail-format.js"
+import { notifyReporterOfStatus } from "./report-status-notifier.js"
 import { pickPreviewMedia, previewThumbnailUrl } from "./admin-report-types.js"
 import type {
   AdminReportService,
@@ -434,43 +435,6 @@ export function assertRoutable(existing: ReportOutreachState, toAddr: string): v
   const bounced = existing.status === "bounced"
   if (existing.packetSent && existing.sendFailed !== true && !retargeted && !bounced) {
     throw AppError.conflict(ALREADY_ROUTED_CONFLICT)
-  }
-}
-
-const STATUS_NOTIFICATION_BODIES: Partial<Record<AdminReportStatus, string>> = {
-  in_progress: "The city is working on your report.",
-  resolved: "Your report has been marked resolved.",
-}
-
-async function notifyReporterOfStatus(
-  deps: AdminReportServiceDeps,
-  reportId: string,
-  reporterUserId: string | null,
-  status: AdminReportStatus,
-): Promise<void> {
-  const body = STATUS_NOTIFICATION_BODIES[status]
-  if (body === undefined) return
-  if (reporterUserId === null || reporterUserId === "") return
-  const notifications = deps.notifications
-  if (notifications === undefined) {
-    deps.logger?.warn(
-      { reportId, status },
-      "report status changed with no notifier wired: the reporter was not told",
-    )
-    return
-  }
-  try {
-    await notifications.createNotification(reporterUserId, {
-      type: "report_update",
-      title: `Your report is ${ADMIN_REPORT_STATUS_LABELS[status].toLowerCase()}`,
-      body,
-      link: `/reports/${reportId}`,
-    })
-  } catch (err) {
-    deps.logger?.warn(
-      { err, reportId, status },
-      "report_update notification failed (suppressed: the status change is committed)",
-    )
   }
 }
 

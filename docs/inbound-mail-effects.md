@@ -1,7 +1,7 @@
 # Mail effects and the outbound send triad
 
 **Audience:** internal (engineering). Not served publicly.
-**Last updated:** 2026-09-23 (a thread in review stays there while it holds a withheld reply, whatever reply settles it, an operator's included; Mark replied keeps the reply dismissed; the stripped-reply audit row is written once; an attempt with no outcome yet counts as in flight; bounce bookkeeping and its completion marker).
+**Last updated:** 2026-10-25 (city mail is linked to filings: the filings inbox, email-filing replies, `filing.classify` and the `filing.city_update` effects).
 
 An inbound message that correlates to a mail thread can drive **public** effects: a report status
 transition, a public `report_timeline` row, a report-chat system message, and a push to the reporter.
@@ -247,6 +247,68 @@ address. Discovery, the jurisdiction health probe behind `resolveForPoint` and t
 apply it, and all ignore a per-category contact whose `bounced_at` is set. Saving the contact again moves
 `contact_updated_at` past the old event, which makes a corrected address usable again.
 
+
+## City mail and filings (D11, D12)
+
+A city's messages about a filed report are linked to its filing as `filing_messages` rows. Linking never
+creates a mail thread or a chat message and never removes the message from where it was stored. Each
+message is linked at most once (`insertMessageIfAbsent` on the message's own unique index), which is
+what makes its effects at-most-once.
+
+**The filings inbox.** With `FILING_INBOX_ADDRESS` set, a message `routeInbox` stored (outcome `inbox`
+or `replay`) is correlated when that address, compared case-insensitively, is one of its To addresses
+or appears in its raw `Cc` header (the envelope never counts). Bounces and our own looped-back mail
+never get here. The subject and the first 20,000 body characters are read in two steps:
+
+1. Framing lines: "Reported by a resident via CivFix", optional whitespace and at most one separator,
+   `ref` and a report reference code. Exactly one distinct code links the message to that report's
+   latest submitted or linked filing. When the filing has a case id, the message must contain it, or
+   the row is flagged: a framing line is easy to copy.
+2. Otherwise case-id tokens (runs of `[A-Za-z0-9-]`, 5 to 64 characters, at most 500) through
+   `findByCaseIds` (successful filings submitted in the last 180 days). Exactly one filing must match;
+   zero or several leave the message in the Inbox only.
+
+A filings-inbox row is **trusted** when the verdict is `pass` and the From hostname exactly equals one of
+the `status_sender_domains` of the filing's route (`(geoid, route_category)` in `filing_routes`). An
+email filing on an implicit route (no route row) checks the sender against its thread's outbound
+recipients instead: the same hostname, or for a consumer mail domain the exact mailbox, as
+`isJurisdictionSender` does. A portal filing with no route row, or a route with no domains, is never
+trusted. An untrusted row is flagged.
+
+**Email-filing replies.** `applyInboundEffects` links a reply on a thread that is a filing's
+`mail_thread_id` (looked up by thread, so the report's resident @city discussion gets no row) before its
+unaffiliated return. The row is trusted when the reply is not unaffiliated, and flagged otherwise. The
+reply's own effects (stages 1 to 4 above) are unchanged.
+
+**Classify.** A row that is trusted, not flagged and unclassified is sent on `filing.classify`
+(`singletonKey` = the row id, text clipped to 20,000 characters) when `FILING_AUTOMATIC_ENABLED` is on,
+never for an operator publishing a withheld reply. A replay reads the existing row back and applies the
+same rule, so an enqueue lost to a failure is sent on the next delivery or sweep: a filings-inbox
+failure keeps the pending object, and an email reply's failure is re-driven with its effects.
+
+**`filing.city_update`** applies the classification (re-validated with `FilingClassificationSchema`;
+a case id outside D7's pattern counts as none) in one transaction that first claims the row
+(`applied_at IS NULL AND trusted AND NOT flagged`), so a redelivered or concurrent job applies once. An
+invalid payload or a confidence under 0.7 claims and flags the row and does nothing else. The effects
+are guarded writes; a guard that no longer holds flags the row instead:
+
+| Status | Effect |
+|---|---|
+| `received` | fills an empty case id, note "J received request N" (`reply`) |
+| `in_progress` | portal filings only: `acknowledged` → `in_progress`, note "J is working on …" (`status`), status push |
+| `closed` | `acknowledged` / `in_progress` → `resolved`, sets `city_closed_at`, note "J closed …" (`done`), status push |
+| `needs_info` | a successful filing → `needs_human` / `city_needs_info` with the summary, nothing public |
+| `other` | nothing public |
+
+J is the jurisdiction's name, or "The city". The notes are fixed copy: no city or classifier text reaches
+the timeline or the chat. The push (`notifyReporterOfStatus`, shared with an operator's status change)
+and the chat event go out after commit.
+
+**Reopen (D12).** When a report leaves `resolved` (the reporter's reopen, or an operator's status change)
+and its latest successful filing has `city_closed_at`, the same transaction inserts a `needs_human`
+filing, reason `reopened_after_city_closed`, so a failed insert rolls the status change back. A report
+that already has an active filing gets none: the operator's audit row records `reopenSkipped`, and the
+reporter's reopen logs a warning.
 
 ---
 

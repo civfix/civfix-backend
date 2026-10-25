@@ -24,6 +24,8 @@ import {
   replyAddressToken,
 } from "../../adapters/inbound-mail.cf.js"
 import { CONSUMER_MAIL_DOMAINS } from "./inbound-bounce.js"
+import { correlateFilingThreadReply } from "../filings/filing-correlator.js"
+import { makeDrizzleFilingRepository } from "../filings/filing-repository.drizzle.js"
 import type { FilingRepository } from "../filings/filing-repository.js"
 
 export { JURISDICTION_REPLY_NOTE }
@@ -68,10 +70,12 @@ export function inboundEffectDeps(
     notifications?: ReporterNotifier
     chatEmitter?: ReportChatSystemEmitter
     logger?: InboundLogger
+    filings?: FilingRepository
   } = {},
 ): InboundEffectDeps {
   return {
     ...(deps.adminReportRepo !== undefined ? { reportRepo: deps.adminReportRepo } : {}),
+    ...(deps.filings !== undefined ? { filings: deps.filings } : {}),
     ...(deps.cleanupRepo !== undefined ? { cleanupRepo: deps.cleanupRepo } : {}),
     ...(deps.notifications !== undefined ? { notifications: deps.notifications } : {}),
     ...(deps.chatEmitter !== undefined ? { chatEmitter: deps.chatEmitter } : {}),
@@ -241,11 +245,11 @@ const BRACKETED_MAILBOX_RE = /<([^<>]*)>/
 
 // Provider aliasing (Gmail dots, +tags, googlemail.com) is deliberately not folded: every folding
 // rule widens the set of mailboxes that count as the contact.
-function normalizedMailbox(address: string): string {
+export function normalizedMailbox(address: string): string {
   return (BRACKETED_MAILBOX_RE.exec(address)?.[1] ?? address).trim().toLowerCase()
 }
 
-function isConsumerMailDomain(domain: string): boolean {
+export function isConsumerMailDomain(domain: string): boolean {
   return CONSUMER_MAIL_DOMAINS.has(organizationalDomain(domain) ?? domain)
 }
 
@@ -258,6 +262,24 @@ export async function applyInboundEffects(
   opts: ApplyEffectsOptions = {},
 ): Promise<void> {
   if (message.direction !== "in") return
+  if (thread.reportId !== null) {
+    // Before the unaffiliated return: a withheld reply is still linked, untrusted and flagged (D11).
+    await correlateFilingThreadReply(
+      {
+        filings: injected.filings ?? makeDrizzleFilingRepository(container.getDb().sql),
+        jobs: container.jobs,
+        automaticFiling: container.env.FILING_AUTOMATIC_ENABLED,
+      },
+      {
+        threadId: thread.id,
+        mailMessageId: message.id,
+        unaffiliated: message.unaffiliated,
+        publishedByOperator: opts.publishedBy !== undefined,
+        subject: message.subject ?? "",
+        text: message.body ?? "",
+      },
+    )
+  }
   if (message.unaffiliated) return
   if (thread.reportId === null && thread.cleanupId === null) return
   const now = opts.now ?? (() => new Date())

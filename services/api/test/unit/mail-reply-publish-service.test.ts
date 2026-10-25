@@ -12,6 +12,7 @@ import {
   MAIL_REPLY_NOT_PUBLISHABLE,
 } from "../../src/services/admin/mail-reply-publish-service.js"
 import type { ReportTimelineEvent } from "../../src/services/report-timeline-event.js"
+import { InMemoryFilingRepository } from "../helpers/filings/filing-repository.memory.js"
 
 const REPORT_ID = "report-1"
 const OPERATOR_ID = "operator-1"
@@ -38,6 +39,7 @@ function harness() {
   })
   const effects = {
     reportRepo: reports,
+    filings: new InMemoryFilingRepository(),
     cleanupRepo: cleanups,
     notifications: notifier,
     chatEmitter: {
