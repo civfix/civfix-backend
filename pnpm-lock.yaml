@@ -239,6 +239,40 @@ importers:
         specifier: ^3.2.7
         version: 3.2.7(@types/node@22.20.5)(jiti@2.7.0)(tsx@4.23.15)(yaml@2.9.1)
 
+  services/city-filer:
+    dependencies:
+      '@civfix/api':
+        specifier: workspace:*
+        version: link:../api
+      '@civfix/contract':
+        specifier: 0.66.0-b-feat-city-filing-contract.g82d07a7
+        version: 0.66.0-b-feat-city-filing-contract.g82d07a7
+      zod:
+        specifier: ^4.6.6
+        version: 4.6.7
+    devDependencies:
+      '@civfix/config':
+        specifier: workspace:*
+        version: link:../../packages/config
+      '@civfix/seams':
+        specifier: workspace:*
+        version: link:../../packages/seams
+      '@types/node':
+        specifier: ^22.20.5
+        version: 22.20.5
+      eslint:
+        specifier: ^9.39.5
+        version: 9.39.5(jiti@2.7.0)
+      rimraf:
+        specifier: ^6.1.3
+        version: 6.1.3
+      typescript:
+        specifier: ^5.9.3
+        version: 5.9.3
+      vitest:
+        specifier: ^3.2.7
+        version: 3.2.7(@types/node@22.20.5)(jiti@2.7.0)(tsx@4.23.15)(yaml@2.9.1)
+
   services/media-worker:
     dependencies:
       '@aws-sdk/client-s3':

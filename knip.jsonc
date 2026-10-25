@@ -44,6 +44,11 @@
         "https-proxy-agent",
       ],
     },
+    "services/city-filer": {
+      // The kit runs under node, loaded by path or through a workspace script's import, never from src.
+      "entry": ["kit/**/*.mjs"],
+      "project": ["src/**/*.ts", "kit/**/*.mjs", "test/**/*.ts"],
+    },
     "packages/config": {},
     // Outside pnpm-workspace.yaml (it deploys with wrangler from its own lockfile); CI installs it before
     // knip runs so its dependencies resolve.

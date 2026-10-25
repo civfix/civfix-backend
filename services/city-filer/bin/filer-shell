@@ -1,0 +1,4 @@
+#!/bin/sh
+echo "filer-shell: not implemented" >&2
+exit 70
+exec /usr/bin/env -i /usr/bin/setpriv -- "$@"
