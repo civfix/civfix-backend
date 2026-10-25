@@ -16,16 +16,21 @@ import type { FastifyBaseLogger } from "fastify"
 import type { SocialNotifier } from "./social-service.js"
 import type { PersonView } from "./social-repository.js"
 import type { PushGateMode } from "./notification-helpers.js"
-import { isWithinQuietHours, toNotificationDTO, toPrefsDTO } from "./notification-helpers.js"
+import {
+  isWithinQuietHours,
+  prefsFromSettings,
+  settingsPatchFromPrefs,
+  toNotificationDTO,
+} from "./notification-helpers.js"
 import { categoryForType, categorySettings } from "./notification-categories.js"
-import type { NotificationSettingsRepository } from "./notification-settings-repository.js"
 import { mapWithLimit } from "../lib/concurrency.js"
 import { classifyPushToken, isRegistrablePushEndpoint } from "./push-token-policy.js"
 import { renderMessage, type MessageKey, type MessageVars } from "../i18n/renderMessage.js"
 import { DEFAULT_LOCALE } from "../i18n/locales.js"
 import { actorDisplayName } from "./public-author.js"
+import type { NotificationSettingsRepository } from "./notification-settings-repository.js"
+import { effectiveNotificationSettings } from "./notification-settings-service.js"
 import type {
-  NotificationPrefsPatch,
   NotificationPrefsRecord,
   NotificationRecord,
   NotificationRepository,
@@ -240,10 +245,12 @@ export function makeNotificationService(deps: NotificationServiceDeps): Notifica
   const now = deps.now ?? (() => new Date())
   const isSafeEndpoint = deps.isSafePushEndpoint ?? isRegistrablePushEndpoint
 
-  async function resolvePrefs(userId: string): Promise<NotificationPrefsRecord> {
-    const existing = await deps.repo.findPrefs(userId)
-    if (existing) return existing
-    return deps.repo.createDefaultPrefs(userId)
+  async function getPrefs(userId: string): Promise<NotificationPrefsDTO> {
+    const [settings, quiet] = await Promise.all([
+      deps.settingsRepo.getSettings(userId),
+      deps.repo.findPrefs(userId),
+    ])
+    return prefsFromSettings(effectiveNotificationSettings(settings), quiet)
   }
 
   async function maybeSendPush(
@@ -619,28 +626,17 @@ export function makeNotificationService(deps: NotificationServiceDeps): Notifica
       return { ok: true }
     },
 
-    async getPrefs(userId: string): Promise<NotificationPrefsDTO> {
-      return toPrefsDTO(await resolvePrefs(userId))
-    },
+    getPrefs,
 
     async updatePrefs(
       userId: string,
       patch: UpdateNotificationPrefsRequest,
     ): Promise<NotificationPrefsDTO> {
-      await resolvePrefs(userId)
-      const repoPatch: NotificationPrefsPatch = {
-        ...(patch.push !== undefined ? { push: patch.push } : {}),
-        ...(patch.cleanupChat !== undefined ? { cleanupChat: patch.cleanupChat } : {}),
-        ...(patch.reportUpdates !== undefined ? { reportUpdates: patch.reportUpdates } : {}),
-        ...(patch.follows !== undefined ? { follows: patch.follows } : {}),
-        ...(patch.mentions !== undefined ? { mentions: patch.mentions } : {}),
-        ...(patch.postInteractions !== undefined
-          ? { postInteractions: patch.postInteractions }
-          : {}),
-        ...(patch.hostBroadcasts !== undefined ? { hostBroadcasts: patch.hostBroadcasts } : {}),
-        ...("quietHours" in patch ? { quietHours: patch.quietHours ?? null } : {}),
+      await deps.settingsRepo.upsertSettings(userId, settingsPatchFromPrefs(patch))
+      if ("quietHours" in patch) {
+        await deps.repo.upsertPrefs(userId, { quietHours: patch.quietHours ?? null })
       }
-      return toPrefsDTO(await deps.repo.upsertPrefs(userId, repoPatch))
+      return getPrefs(userId)
     },
 
     async registerPushToken(userId: string, req: RegisterPushTokenRequest): Promise<{ ok: true }> {

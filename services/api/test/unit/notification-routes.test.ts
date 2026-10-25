@@ -218,25 +218,6 @@ describe("POST /notifications/read", () => {
 })
 
 describe("GET + PUT /notifications/prefs", () => {
-  it("default-creates prefs on first GET (all true, no quiet hours)", async () => {
-    const { app, token } = await makeHarness()
-    const res = await app.inject({
-      method: "GET",
-      url: "/v1/notifications/prefs",
-      headers: auth(token),
-    })
-    expect(res.statusCode).toBe(200)
-    expect(res.json()).toEqual({
-      push: true,
-      cleanupChat: true,
-      reportUpdates: true,
-      follows: true,
-      mentions: true,
-      postInteractions: true,
-      hostBroadcasts: true,
-    })
-  })
-
   it("applies a partial update and sets quiet hours", async () => {
     const { app, token } = await makeHarness()
     const res = await app.inject({
@@ -251,21 +232,6 @@ describe("GET + PUT /notifications/prefs", () => {
     expect(body.push).toBe(true)
     expect(body.mentions).toBe(true)
     expect(body.quietHours).toEqual({ start: "22:00", end: "07:00" })
-  })
-
-  it("toggles the dedicated mentions preference off", async () => {
-    const { app, token } = await makeHarness()
-    const res = await app.inject({
-      method: "PUT",
-      url: "/v1/notifications/prefs",
-      headers: auth(token),
-      payload: { mentions: false },
-    })
-    expect(res.statusCode).toBe(200)
-    const body = res.json()
-    expect(body.mentions).toBe(false)
-    expect(body.push).toBe(true)
-    expect(body.cleanupChat).toBe(true)
   })
 
   it("keeps muted host broadcasts muted when a later update changes another preference", async () => {

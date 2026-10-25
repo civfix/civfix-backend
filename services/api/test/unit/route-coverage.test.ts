@@ -251,11 +251,21 @@ describe("route-coverage: every shared endpoint is registered (offline boot smok
     expect(Object.keys(endpoints).length).toBe(349)
   })
 
-  it("T3: PENDING_IN_EPIC names exactly the eight notification-center endpoints, each in the registry", () => {
+  it("T13: getNotificationSettings and updateNotificationSettings are registered", async () => {
+    for (const name of ["getNotificationSettings", "updateNotificationSettings"] as const) {
+      expect(PENDING_IN_EPIC.has(name), name).toBe(false)
+      const res = await app.inject(injectArgs(endpoints[name]))
+      const body = res.json<{ message?: string }>()
+      expect(
+        res.statusCode === 404 && body.message?.startsWith("Route ") === true,
+        `${name} is not registered`,
+      ).toBe(false)
+    }
+  })
+
+  it("T13: PENDING_IN_EPIC names exactly the six notification-center endpoints still to come, each in the registry", () => {
     expect([...PENDING_IN_EPIC].sort()).toEqual(
       [
-        "getNotificationSettings",
-        "updateNotificationSettings",
         "getNotificationUnread",
         "markAllNotificationsRead",
         "dismissNotification",
