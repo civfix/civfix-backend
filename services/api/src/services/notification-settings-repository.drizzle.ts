@@ -95,5 +95,21 @@ export function makeDrizzleNotificationSettingsRepository(
           updated_at = now()
       `
     },
+
+    // FOR SHARE waits for an erasure holding the users row and then re-checks deleted_at, so erasure's
+    // DELETE of the settings can't be followed by this INSERT; if this commits first, erasure deletes the row.
+    async disableEmail(userId: string, category: NotificationCategory): Promise<boolean> {
+      const defaults = NOTIFICATION_CATEGORY_DEFAULTS[category]
+      const rows = await sql<{ user_id: string }[]>`
+        INSERT INTO notification_settings AS s (user_id, category, enabled, push, email)
+        SELECT u.id, ${category}, ${defaults.enabled}, ${defaults.push}, false
+        FROM users u
+        WHERE u.id = ${userId} AND u.deleted_at IS NULL
+        FOR SHARE OF u
+        ON CONFLICT (user_id, category) DO UPDATE SET email = false, updated_at = now()
+        RETURNING s.user_id
+      `
+      return rows.length > 0
+    },
   }
 }

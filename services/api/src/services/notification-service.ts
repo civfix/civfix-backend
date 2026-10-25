@@ -24,6 +24,11 @@ import {
   toNotificationDTO,
 } from "./notification-helpers.js"
 import { categoryForType, categorySettingOf, categorySettings } from "./notification-categories.js"
+import {
+  makeNotificationEmailer,
+  type NotificationContent,
+  type NotificationEmailDeps,
+} from "./notification-email.js"
 import { mapWithLimit } from "../lib/concurrency.js"
 import { classifyPushToken, isRegistrablePushEndpoint } from "./push-token-policy.js"
 import { renderMessage, type MessageKey, type MessageVars } from "../i18n/renderMessage.js"
@@ -98,6 +103,7 @@ export interface NotificationServiceDeps {
   logger?: Pick<FastifyBaseLogger, "warn" | "error">
   now?: () => Date
   isSafePushEndpoint?: (endpoint: string) => Promise<boolean>
+  email?: NotificationEmailDeps
 }
 
 export interface PostActivity {
@@ -253,6 +259,15 @@ function pushPayloadOf(
 export function makeNotificationService(deps: NotificationServiceDeps): NotificationService {
   const now = deps.now ?? (() => new Date())
   const isSafeEndpoint = deps.isSafePushEndpoint ?? isRegistrablePushEndpoint
+  const emailer =
+    deps.email !== undefined
+      ? makeNotificationEmailer({
+          ...deps.email,
+          repo: deps.repo,
+          now,
+          ...(deps.logger !== undefined ? { logger: deps.logger } : {}),
+        })
+      : undefined
 
   async function getPrefs(userId: string): Promise<NotificationPrefsDTO> {
     const [settings, quiet] = await Promise.all([
@@ -313,6 +328,20 @@ export function makeNotificationService(deps: NotificationServiceDeps): Notifica
     return localized
   }
 
+  function contentIn(locale: string, input: CreateNotificationInput): NotificationContent {
+    const vars = varsIn(locale, input)
+    return {
+      title:
+        input.titleKey !== undefined
+          ? renderMessage(locale, input.titleKey, vars)
+          : (input.title ?? ""),
+      body:
+        input.bodyKey !== undefined
+          ? renderMessage(locale, input.bodyKey, vars)
+          : (input.body ?? null),
+    }
+  }
+
   async function localeFor(
     userId: string,
     input: CreateNotificationInput,
@@ -367,15 +396,7 @@ export function makeNotificationService(deps: NotificationServiceDeps): Notifica
     onFallback: FallbackReporter = (lane, err) => logFallback(lane, err, userId, input),
   ): Promise<{ record: NotificationRecord; deduped: boolean }> {
     const locale = await localeFor(userId, input, resolvedLocales)
-    const vars = varsIn(locale, input)
-    const title =
-      input.titleKey !== undefined
-        ? renderMessage(locale, input.titleKey, vars)
-        : (input.title ?? "")
-    const body =
-      input.bodyKey !== undefined
-        ? renderMessage(locale, input.bodyKey, vars)
-        : (input.body ?? null)
+    const { title, body } = contentIn(locale, input)
     const link = input.link ?? null
     if (input.coalesceWindowMs !== undefined && link !== null) {
       try {
@@ -416,6 +437,31 @@ export function makeNotificationService(deps: NotificationServiceDeps): Notifica
     return { record, deduped: false }
   }
 
+  // D10: after the row and the push, so neither waits on it, and never failing either.
+  async function maybeEmail(
+    created: readonly CreatedNotification[],
+    category: NotificationCategory | null,
+    input: CreateNotificationInput,
+  ): Promise<void> {
+    if (emailer === undefined || category === null || input.email === "never") return
+    const recipients = created.filter((c) => c.gate?.email === true)
+    if (recipients.length === 0) return
+    try {
+      await emailer.send({
+        category,
+        link: input.link ?? null,
+        conversationName: input.conversationName ?? null,
+        contentIn: (locale) => contentIn(locale, input),
+        recipients: recipients.map((c) => ({ userId: c.userId, notificationId: c.record.id })),
+      })
+    } catch (err) {
+      deps.logger?.error(
+        { err, category, count: recipients.length },
+        "notification email dispatch failed (suppressed)",
+      )
+    }
+  }
+
   async function gateFor(userId: string, category: NotificationCategory | null): Promise<Gate> {
     if (category === null) return null
     return categorySettingOf(deps.settingsRepo, userId, category)
@@ -430,11 +476,12 @@ export function makeNotificationService(deps: NotificationServiceDeps): Notifica
     if (gate !== null && !gate.enabled) return null
     const { record, deduped } = await persistNotification(userId, input)
     if (deduped) return toNotificationDTO(record)
-    if (pushAllowed(gate, input.push ?? "auto")) {
-      void maybeSendPush(userId, record, category).catch((err: unknown) => {
-        deps.logger?.error({ err, userId }, "push dispatch failed (suppressed)")
-      })
-    }
+    const pushed = pushAllowed(gate, input.push ?? "auto")
+      ? maybeSendPush(userId, record, category).catch((err: unknown) => {
+          deps.logger?.error({ err, userId }, "push dispatch failed (suppressed)")
+        })
+      : Promise.resolve()
+    void pushed.then(() => maybeEmail([{ userId, gate, record }], category, input))
     void maybeSignalNotification(userId).catch((err: unknown) => {
       deps.logger?.error({ err, userId }, "notification signal dispatch failed (suppressed)")
     })
@@ -616,14 +663,16 @@ export function makeNotificationService(deps: NotificationServiceDeps): Notifica
     if (created.length === 0) return result
     const mode = input.push ?? "auto"
     const pushable = created.filter((c) => pushAllowed(c.gate, mode))
-    if (pushable.length > 0) {
-      void sendBatchedPush(pushable, category).catch((err: unknown) => {
-        deps.logger?.error(
-          { err, count: pushable.length },
-          "batched push dispatch failed (suppressed)",
-        )
-      })
-    }
+    const pushed =
+      pushable.length > 0
+        ? sendBatchedPush(pushable, category).catch((err: unknown) => {
+            deps.logger?.error(
+              { err, count: pushable.length },
+              "batched push dispatch failed (suppressed)",
+            )
+          })
+        : Promise.resolve()
+    void pushed.then(() => maybeEmail(created, category, input))
     void signalMany(created.map((c) => c.userId))
     return result
   }

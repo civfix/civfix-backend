@@ -79,8 +79,24 @@ export const de: Partial<Record<MessageKey, string>> = {
     "Er läuft in {{minutes}} Minuten ab. Falls du ihn nicht angefordert hast, kannst du diese E-Mail ignorieren.",
   "email.otp.html_intro": "Dein civfix-Anmeldecode lautet:",
 
-  "email.report_update.subject": "Dein civfix-Bericht wurde {{status}}",
-  "email.report_update.body": "Dein Bericht hat einen neuen Status: {{status}}.",
+  "notification.category.reportUpdates": "Updates zu deinen Meldungen",
+  "notification.category.reportDiscussions": "Diskussionen zu Meldungen",
+  "notification.category.directMessages": "Direktnachrichten",
+  "notification.category.mentions": "Erwähnungen und Antworten",
+  "notification.category.groupChats": "Gruppenchats",
+  "notification.category.events": "Veranstaltungen, zu denen du gehst",
+  "notification.category.hostAnnouncements": "Ankündigungen der Veranstalter",
+  "notification.category.eventTeam": "Veranstaltungsteam und Stunden",
+  "notification.category.followers": "Neue Follower",
+  "notification.category.likesAndReposts": "Likes und Reposts",
+  "notification.category.organizations": "Organisationen",
+
+  "email.notification.open_cta": "In civfix öffnen",
+  "email.notification.conversation_subject": "Neue Nachrichten in {{conversation}}",
+  "email.notification.footer_reason":
+    "Du bekommst diese E-Mail, weil E-Mail für {{category}} eingeschaltet ist.",
+  "email.notification.footer_stop": "Diese E-Mails abbestellen",
+  "email.notification.footer_manage": "Benachrichtigungseinstellungen verwalten",
 
   "email.generic.subject": "Eine civfix-Benachrichtigung",
   "email.generic.body": "Du hast eine neue civfix-Benachrichtigung.",

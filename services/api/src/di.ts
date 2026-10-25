@@ -86,6 +86,14 @@ import { RedisPendingClears } from "./adapters/push-clears.js"
 import { HttpRoutingProvider } from "./adapters/routing-provider.js"
 import { RealAbuseChecks } from "./adapters/abuse-checks.js"
 import { PgBossJobs } from "./adapters/jobs.pgboss.js"
+import {
+  InMemoryNotificationEmailThrottle,
+  RedisNotificationEmailThrottle,
+} from "./adapters/notification-email-throttle.js"
+import {
+  notificationEmailConfigOf,
+  type NotificationEmailDeps,
+} from "./services/notification-email.js"
 
 export interface Container {
   readonly env: Env
@@ -125,6 +133,7 @@ export interface Container {
   getPostRepo(): PostRepository
   getPostService(): PostService
   getNotificationService(logger?: NotificationLogger): NotificationService
+  getNotificationEmail(): NotificationEmailDeps
   getCounterStore(): CounterStore
   getCache(): CacheClient
   getByteMeter(): ByteMeter
@@ -466,6 +475,16 @@ export function makeContainer(env: Env): Container {
         }),
   )
 
+  // One per container: the in-memory throttle only limits anything if every service shares it.
+  const notificationEmail = lazy<NotificationEmailDeps>(() => ({
+    mailer: seams.mailer,
+    throttle:
+      env.REDIS_URL.length > 0
+        ? new RedisNotificationEmailThrottle(getRedis)
+        : new InMemoryNotificationEmailThrottle(),
+    config: notificationEmailConfigOf(env),
+  }))
+
   let notificationService: NotificationService | undefined
   let notificationLoggerWired = false
   // Rebuilt once when the first logger arrives, so a service built earlier without one does not keep
@@ -478,6 +497,7 @@ export function makeContainer(env: Env): Container {
         settingsRepo: makeDrizzleNotificationSettingsRepository(getDb().sql),
         pushSender: pushSender.get(),
         userChannel: userChannel.get(),
+        email: notificationEmail.get(),
         ...(logger !== undefined ? { logger } : {}),
       })
       notificationLoggerWired = logger !== undefined
@@ -579,6 +599,7 @@ export function makeContainer(env: Env): Container {
     getPostRepo: postRepo.get,
     getPostService: postService.get,
     getNotificationService,
+    getNotificationEmail: notificationEmail.get,
     getCounterStore: () => lazyCounters,
     getCache: cacheClient.get,
     getByteMeter: () => lazyByteMeter,

@@ -14,6 +14,7 @@ import {
   InMemoryNotificationRepository,
   InMemoryNotificationSettingsRepository,
 } from "../helpers/notifications.js"
+import { fakeNotificationEmail } from "../helpers/notification-email.js"
 import { InMemoryThreadsRepository } from "../helpers/chat.js"
 import {
   InMemoryBlocksRepository,
@@ -133,6 +134,7 @@ function containerWith(counters: InMemoryCounterStore): Container {
     chatService: { broadcast: () => Promise.resolve() },
     userChannel: undefined,
     pushSender: new FakePushSender(),
+    getNotificationEmail: fakeNotificationEmail,
     getDb: () => ({ sql: {} }),
     getCounterStore: () => counters,
     getBlocksRepo: () => new InMemoryBlocksRepository(),

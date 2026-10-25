@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto"
 import type { CreateNotificationInput } from "../../src/services/notification-service.js"
 import type {
+  EmailRecipientRecord,
   NewNotificationArgs,
   NotificationPrefsPatch,
   NotificationPrefsRecord,
@@ -24,6 +25,7 @@ import type {
   PushPlatform,
 } from "@civfix/contract"
 import type { ReporterNotifier } from "../../src/services/admin/admin-report-service.js"
+import { emailHashOf } from "../../src/services/host/broadcast-service.js"
 
 export interface RecordedNotification extends CreateNotificationInput {
   userId: string
@@ -361,6 +363,30 @@ export class InMemoryNotificationRepository implements NotificationRepository {
     }
     return Promise.resolve(out)
   }
+
+  /** The `users` columns the email-recipient lookup reads; locale comes from `locales`. */
+  readonly accounts = new Map<string, StoredAccount>()
+  readonly suppressedEmailHashes = new Set<string>()
+  readonly emailRecipientCalls: string[][] = []
+
+  findEmailRecipients(userIds: string[]): Promise<EmailRecipientRecord[]> {
+    this.emailRecipientCalls.push([...userIds])
+    const out: EmailRecipientRecord[] = []
+    for (const userId of userIds) {
+      const account = this.accounts.get(userId)
+      if (!account || account.email === null || !account.emailVerified) continue
+      if (account.deletedAt !== null) continue
+      if (this.suppressedEmailHashes.has(emailHashOf(account.email))) continue
+      out.push({ userId, email: account.email, locale: this.locales.get(userId) ?? "en" })
+    }
+    return Promise.resolve(out)
+  }
+}
+
+export interface StoredAccount {
+  email: string | null
+  emailVerified: boolean
+  deletedAt: Date | null
 }
 
 export interface StoredNotificationSetting extends NotificationSettingRecord {
@@ -411,5 +437,14 @@ export class InMemoryNotificationSettingsRepository implements NotificationSetti
       })
     }
     return Promise.resolve()
+  }
+
+  /** The accounts disableEmail may write for: live users, as its join on `users` reads them. */
+  readonly liveUserIds = new Set<string>()
+
+  async disableEmail(userId: string, category: NotificationCategory): Promise<boolean> {
+    if (!this.liveUserIds.has(userId)) return false
+    await this.upsertSettings(userId, { [category]: { email: false } })
+    return true
   }
 }
