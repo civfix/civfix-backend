@@ -17,6 +17,7 @@ import {
 import type { ReportChatRepository } from "../../src/services/report-chat-repository.js"
 
 const REPORT = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
+const OTHER_USER = "eeeeeeee-eeee-eeee-eeee-eeeeeeeeeeee"
 
 function makeFakeReportChat(
   over: {
@@ -201,7 +202,7 @@ describe("POST /reports/:id/chat/leave", () => {
 describe("DELETE /reports/:id/messages/:messageId (membership gate)", () => {
   it("403s a NON-member (isMember -> false), never touching softDeleteReport", async () => {
     const { app, token, chatRepo } = await makeHarness({ isMember: false })
-    const messageId = await seedReportMessage(chatRepo, "someone-else")
+    const messageId = await seedReportMessage(chatRepo, OTHER_USER)
     const res = await app.inject({
       method: "DELETE",
       url: `/v1/reports/${REPORT}/messages/${messageId}`,
@@ -235,7 +236,7 @@ describe("DELETE /reports/:id/messages/:messageId (membership gate)", () => {
 describe("POST /reports/:id/messages/:messageId/reactions (membership gate)", () => {
   it("403s a NON-member (isMember -> false), keeping the room's Join copy", async () => {
     const { app, token, chatRepo, reportChat } = await makeHarness({ isMember: false })
-    const messageId = await seedReportMessage(chatRepo, "someone-else")
+    const messageId = await seedReportMessage(chatRepo, OTHER_USER)
     const res = await app.inject({
       method: "POST",
       url: `/v1/reports/${REPORT}/messages/${messageId}/reactions`,
@@ -251,7 +252,7 @@ describe("POST /reports/:id/messages/:messageId/reactions (membership gate)", ()
     const { app, token, chatRepo, discussionRepo, reportChat } = await makeHarness({
       isMember: true,
     })
-    const messageId = await seedReportMessage(chatRepo, "someone-else")
+    const messageId = await seedReportMessage(chatRepo, OTHER_USER)
     discussionRepo.seedReport({
       id: REPORT,
       status: "held",
@@ -276,7 +277,7 @@ describe("POST /reports/:id/messages/:messageId/reactions (membership gate)", ()
         userId = uid
       },
     })
-    const messageId = await seedReportMessage(chatRepo, "someone-else")
+    const messageId = await seedReportMessage(chatRepo, OTHER_USER)
     void userId
     const res = await app.inject({
       method: "POST",

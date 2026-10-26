@@ -14,6 +14,7 @@ import type {
   RouteShorthandOptions,
 } from "fastify"
 import type { z } from "zod"
+import { CHECK_RESPONSES, contractResponseCheck } from "./response-check.js"
 
 export type EndpointName = keyof typeof endpoints
 
@@ -54,6 +55,14 @@ export function route<N extends EndpointName>(
 
   app.route<{ Reply: EndpointReply<N> }>({
     ...opts,
+    ...(CHECK_RESPONSES
+      ? {
+          onSend:
+            opts.onSend === undefined
+              ? contractResponseCheck(name)
+              : [opts.onSend, contractResponseCheck(name)].flat(),
+        }
+      : {}),
     method: ep.method,
     url,
     handler,
