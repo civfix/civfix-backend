@@ -1,5 +1,6 @@
 import { DEFAULT_FEED_RANKING, FeedRankingConfigSchema } from "@civfix/contract"
 import type { FeedRankingConfig } from "@civfix/contract"
+import { z } from "zod"
 import type { Env } from "./types.js"
 import type { EnvReader } from "./reader.js"
 import {
@@ -441,6 +442,23 @@ export function loadScheduleEnv(
     REPORT_AUTOFORWARD_ENABLED: parseBool(r.source.REPORT_AUTOFORWARD_ENABLED, false),
     GUEST_RETENTION_CRON: r.cron("GUEST_RETENTION_CRON", GUEST_RETENTION_CRON_DEFAULT),
     INBOUND_SWEEP_CRON: r.cron("INBOUND_SWEEP_CRON", INBOUND_SWEEP_CRON_DEFAULT),
+  }
+}
+
+const EmailAddressSchema = z.email()
+
+export function loadFilingEnv(
+  r: EnvReader,
+): Pick<Env, "FILING_AUTOMATIC_ENABLED" | "FILING_INBOX_ADDRESS"> {
+  const FILING_INBOX_ADDRESS = r.trimmed("FILING_INBOX_ADDRESS")
+  if (FILING_INBOX_ADDRESS !== "" && !EmailAddressSchema.safeParse(FILING_INBOX_ADDRESS).success) {
+    r.errors.push(
+      "FILING_INBOX_ADDRESS: must be an email address, or empty to turn the correlator off",
+    )
+  }
+  return {
+    FILING_AUTOMATIC_ENABLED: parseBool(r.source.FILING_AUTOMATIC_ENABLED, false),
+    FILING_INBOX_ADDRESS,
   }
 }
 

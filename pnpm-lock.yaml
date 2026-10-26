@@ -68,8 +68,8 @@ importers:
   packages/seams:
     dependencies:
       '@civfix/contract':
-        specifier: ^0.64.0
-        version: 0.64.0
+        specifier: 0.66.0-b-feat-city-filing-contract.g82d07a7
+        version: 0.66.0-b-feat-city-filing-contract.g82d07a7
     devDependencies:
       '@civfix/config':
         specifier: workspace:*
@@ -99,8 +99,8 @@ importers:
         specifier: ^3.1147.0
         version: 3.1147.0
       '@civfix/contract':
-        specifier: ^0.64.0
-        version: 0.64.0
+        specifier: 0.66.0-b-feat-city-filing-contract.g82d07a7
+        version: 0.66.0-b-feat-city-filing-contract.g82d07a7
       '@civfix/tokens':
         specifier: ^0.1.0
         version: 0.1.0
@@ -235,6 +235,70 @@ importers:
         specifier: ^4.1.12
         version: 4.1.12(@opentelemetry/api@1.9.1)(@types/node@22.20.5)(vite@7.3.7(@types/node@22.20.5)(jiti@2.7.0)(tsx@4.23.15)(yaml@2.9.1))
 
+  services/city-filer:
+    dependencies:
+      '@aws-sdk/client-s3':
+        specifier: ^3.1147.0
+        version: 3.1147.0
+      '@aws-sdk/s3-request-presigner':
+        specifier: ^3.1147.0
+        version: 3.1147.0
+      '@civfix/api':
+        specifier: workspace:*
+        version: link:../api
+      '@civfix/contract':
+        specifier: 0.66.0-b-feat-city-filing-contract.g82d07a7
+        version: 0.66.0-b-feat-city-filing-contract.g82d07a7
+      '@sentry/node':
+        specifier: ^10.76.1
+        version: 10.76.1(@opentelemetry/core@2.12.0(@opentelemetry/api@1.9.1))
+      '@smithy/node-http-handler':
+        specifier: 4.7.5
+        version: 4.7.5
+      drizzle-orm:
+        specifier: ^0.45.3
+        version: 0.45.3(@opentelemetry/api@1.9.1)(@types/pg@8.6.1)(pg@8.23.1)(postgres@3.4.9)
+      https-proxy-agent:
+        specifier: 7.0.6
+        version: 7.0.6
+      pg-boss:
+        specifier: ^10.4.2
+        version: 10.4.2
+      playwright-core:
+        specifier: 1.64.0-alpha-1790635538000
+        version: 1.64.0-alpha-1790635538000
+      postgres:
+        specifier: ^3.4.9
+        version: 3.4.9
+      zod:
+        specifier: ^4.6.6
+        version: 4.6.7
+    devDependencies:
+      '@civfix/config':
+        specifier: workspace:*
+        version: link:../../packages/config
+      '@civfix/seams':
+        specifier: workspace:*
+        version: link:../../packages/seams
+      '@types/node':
+        specifier: ^22.20.5
+        version: 22.20.5
+      eslint:
+        specifier: ^9.39.5
+        version: 9.39.5(jiti@2.7.0)
+      rimraf:
+        specifier: ^6.1.3
+        version: 6.1.3
+      tsup:
+        specifier: ^8.5.1
+        version: 8.5.1(jiti@2.7.0)(postcss@8.5.29)(tsx@4.23.15)(typescript@5.9.3)(yaml@2.9.1)
+      typescript:
+        specifier: ^5.9.3
+        version: 5.9.3
+      vitest:
+        specifier: ^3.2.7
+        version: 3.2.7(@types/node@22.20.5)(jiti@2.7.0)(tsx@4.23.15)(yaml@2.9.1)
+
   services/media-worker:
     dependencies:
       '@aws-sdk/client-s3':
@@ -247,8 +311,8 @@ importers:
         specifier: workspace:*
         version: link:../api
       '@civfix/contract':
-        specifier: ^0.64.0
-        version: 0.64.0
+        specifier: 0.66.0-b-feat-city-filing-contract.g82d07a7
+        version: 0.66.0-b-feat-city-filing-contract.g82d07a7
       '@sentry/node':
         specifier: ^10.76.1
         version: 10.76.1(@opentelemetry/core@2.12.0(@opentelemetry/api@1.9.1))
@@ -404,8 +468,8 @@ packages:
   '@balena/dockerignore@1.0.2':
     resolution: {integrity: sha512-wMue2Sy4GAVTk6Ic4tJVcnfdau+gx2EnG7S+uAEe+TWJFqE4YoWN4/H8MSLj4eYJKxGg26lZwboEniNiNwZQ6Q==}
 
-  '@civfix/contract@0.64.0':
-    resolution: {integrity: sha512-I1dmMMhXqGaRhPUjIgwfxc9MApWAZBEWRiNUqWIxSRrgbeRYoO4IFPuXShphGPyL4g0Vo4qoHcgxPj/sx+nyEg==}
+  '@civfix/contract@0.66.0-b-feat-city-filing-contract.g82d07a7':
+    resolution: {integrity: sha512-X9XD70y6/RBCVzALe7Vtvp7Jdwqxs4UlyQdZqYaaKc6HcSP0YQXa5g27bNtKa2tcU4uqN5tBWdrXxEI5vrlccQ==}
     engines: {node: '>=20'}
 
   '@civfix/tokens@0.1.0':
@@ -3545,6 +3609,11 @@ packages:
   pkg-types@1.3.1:
     resolution: {integrity: sha512-/Jm5M4RvtBFVkKWRu2BLUTNP8/M2a+UwuAX+ae4770q1qVGtfjG+WTCupoZixokjmHiry8uI+dlY8KXYV5HVVQ==}
 
+  playwright-core@1.64.0-alpha-1790635538000:
+    resolution: {integrity: sha512-pNwaXirhXMRLaRQs4NQ18EpTdtDoFwyPH9FOaaDC7YXG4hpwE2xmwCic/1srbuExVQC7zT9LJSJpDBAru+Vo9A==}
+    engines: {node: '>=20'}
+    hasBin: true
+
   png-js@1.1.0:
     resolution: {integrity: sha512-PM/uYGzGdNSzqeOgly68+6wKQDL1SY0a/N+OEa/+br6LnHWOAJB0Npiamnodfq3jd2LS/i2fMeOKSAILjA+m5Q==}
 
@@ -4495,7 +4564,7 @@ snapshots:
 
   '@balena/dockerignore@1.0.2': {}
 
-  '@civfix/contract@0.64.0':
+  '@civfix/contract@0.66.0-b-feat-city-filing-contract.g82d07a7':
     dependencies:
       zod: 4.6.7
 
@@ -7522,6 +7591,8 @@ snapshots:
       confbox: 0.1.8
       mlly: 1.8.2
       pathe: 2.0.3
+
+  playwright-core@1.64.0-alpha-1790635538000: {}
 
   png-js@1.1.0:
     dependencies:

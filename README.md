@@ -34,6 +34,7 @@ civfix-backend/
   services/
     api/                        Fastify API (@civfix/api)
     media-worker/               pg-boss media worker (@civfix/media-worker)
+    city-filer/                 prod-only portal filer: works filing.run (@civfix/city-filer, docs/city-filing.md)
   infra/
     email-worker/               Cloudflare Email Worker for inbound mail (standalone, own wrangler toolchain)
   scripts/                      the CI no-frontend guard + the dynamic-SQL check (pnpm check:sql, a CI gate)
@@ -140,6 +141,13 @@ SDKs are confined to adapter files under `services/api/src/adapters/`. The DI co
 `LOCAL_STORAGE_DIR` selects the development-only local-disk store). The media worker is the
 deliberate exception: decoding untrusted bytes with sharp/exifr/ffmpeg and running pg-boss's work side
 is its job, and it has its own two-seam picker (`services/media-worker/src/seams.ts`).
+
+## City filer (`services/city-filer`)
+
+Works the `filing.run` queue the API fills when a report is filed through a city web portal. It runs
+each portal's script from its own workspace in headless Chromium, as a second, credential-less user,
+then sends the outcome back on `filing.result` for the API to apply. Prod only; see
+[docs/city-filing.md](docs/city-filing.md).
 
 ## Media worker (`services/media-worker`)
 
@@ -421,17 +429,19 @@ full list, each with its written consequence, is `FAKE_SEAM_FLAGS` in `services/
 
 ### Outbound mail to cities is opt-in
 
-Two flags, both OFF by default in every environment, decide whether civfix ever emails a city without
-an operator pressing "Send to city" (or "Verify and send to city") on a report in the admin dashboard:
+One flag, OFF by default in every environment, decides whether civfix ever emails a city without an
+operator pressing "Send to city" (or "Verify and send to city") on a report in the admin dashboard:
 
 | Flag                        | When ON                                                                                     |
 | --------------------------- | ------------------------------------------------------------------------------------------- |
-| `REPORT_AUTOFORWARD_ENABLED` | new reports from report-verified reporters are forwarded at submission, and a citizen `@city` mention in a report discussion forwards the comment |
 | `OUTREACH_DIGEST_ENABLED`    | the daily `outreach.digest` cron and the enqueue after saving a jurisdiction's contacts send the per-jurisdiction "reports awaiting your attention" digest |
 
-With both off, the only mail a city receives is the packet an operator sends per report. Enabling either
-is a SOPS edit to that environment's `secrets/<env>/api.sops.env` in civfix-infra followed by a deploy
-(both flags are read at boot; `OUTREACH_DIGEST_ENABLED` is also what schedules the cron).
+With it off, the only mail a city receives is the packet an operator sends per report. Enabling it is a
+SOPS edit to that environment's `secrets/<env>/api.sops.env` in civfix-infra followed by a deploy (the
+flag is read at boot and is also what schedules the cron).
+
+`REPORT_AUTOFORWARD_ENABLED` sends no mail: it only sets the `canForwardToCity` hint in report details
+for the resident `@city` discussion forward, and the forward itself does not read it.
 
 To exercise a real seam locally, run the dev infra from the civfix-infra repo
 (`compose/docker-compose.dev.yml` brings up PostGIS + Redis), set `DATABASE_URL` / `REDIS_URL`, and turn

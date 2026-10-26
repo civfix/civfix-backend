@@ -37,6 +37,7 @@ import {
 } from "../services/report-service.js"
 import type { ReportRepository } from "../services/report-repository.js"
 import { makeDrizzleReportRepository } from "../services/report-repository.drizzle.js"
+import { makeDrizzleFilingRepository } from "../services/filings/filing-repository.drizzle.js"
 import { resolveJurisdictionCode } from "../db/reference-code.js"
 import { makeDrizzleCleanupRepository } from "../services/cleanup-repository.drizzle.js"
 import { makeDrizzleChatRepository } from "../services/chat-repository.drizzle.js"
@@ -76,6 +77,7 @@ export interface ReportServiceOverrides {
   loadReportChatMeta?: ReportServiceDeps["loadReportChatMeta"]
   joinReportChatAsOwner?: ReportServiceDeps["joinReportChatAsOwner"]
   reportChatEmitter?: ReportServiceDeps["reportChatEmitter"]
+  filings?: ReportServiceDeps["filings"]
   newId?: ReportServiceDeps["newId"]
   now?: ReportServiceDeps["now"]
 }
@@ -364,6 +366,7 @@ function makeOverriddenReportService(
     ...(overrides.reportChatEmitter !== undefined
       ? { reportChatEmitter: overrides.reportChatEmitter }
       : {}),
+    ...(overrides.filings !== undefined ? { filings: overrides.filings } : {}),
     ...(overrides.newId !== undefined ? { newId: overrides.newId } : {}),
     ...(overrides.now !== undefined ? { now: overrides.now } : {}),
   })
@@ -388,11 +391,9 @@ function makeContainerReportService(
     resolveAddress: makeCachedAddressResolver(container),
     presignMedia: makeMediaPresigner(container.storage),
     presignPrivateMedia: makePrivateMediaPresigner(container.storage),
-    jobs: container.jobs,
-    autoForwardEnabled: container.env.REPORT_AUTOFORWARD_ENABLED,
-    isReportVerified: (userId) => reportChatRepo.isReportVerified(userId),
     joinReportChatAsOwner: (reportId, userId) => reportChatRepo.join(reportId, userId, "owner"),
     reportChatEmitter: makeContainerReportChatEmitter(container, log),
+    filings: makeDrizzleFilingRepository(sql),
     logger: log,
   })
 }

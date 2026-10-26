@@ -42,6 +42,18 @@ export function makePrivateMediaPresigner(storage: PresignStorage): PresignMedia
   )
 }
 
+const FILING_EVIDENCE_URL_TTL_SEC = 15 * 60
+
+export type PresignFilingEvidence = (r2Key: string) => Promise<string>
+
+/**
+ * Filing evidence (portal screenshots, script copies) is operator-only and kept indefinitely (D16), so it
+ * is never served from the public CDN: always a signed GET that expires.
+ */
+export function makeFilingEvidencePresigner(storage: PresignStorage): PresignFilingEvidence {
+  return (r2Key) => storage.presignGet(r2Key, FILING_EVIDENCE_URL_TTL_SEC, { forceSigned: true })
+}
+
 export const PACKET_MEDIA_URL_TTL_SEC = 7 * 24 * 60 * 60
 
 export type PresignPacketMedia = (r2Key: string, publiclyVisible: boolean) => Promise<string>

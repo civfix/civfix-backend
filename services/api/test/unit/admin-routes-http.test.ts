@@ -26,6 +26,8 @@ import { InMemoryMailRepository } from "../helpers/admin/mail-repository.memory.
 import { InMemoryInboundRepository } from "../helpers/admin/inbound-repository.memory.js"
 import { InMemoryForwardTemplateRepository } from "../helpers/admin/forward-template-repository.memory.js"
 import { makeOutboundMailService } from "../../src/services/admin/outbound-mail-service.js"
+import { memoryFilingService } from "../helpers/filings/filing-harness.js"
+import { InMemoryFilingRepository } from "../helpers/filings/filing-repository.memory.js"
 
 const OPERATOR = "ops@civfix.org"
 const FROM_OUTREACH = "outreach@civfix.org"
@@ -211,13 +213,21 @@ async function makeHarness(): Promise<Harness> {
     env: { MAIL_FROM_OUTREACH: FROM_OUTREACH, MAIL_REPLY_DOMAIN: "civfix.org" },
   })
 
-  app.homeOverrides = { repo: fakes.home, analytics: fakes.analytics }
+  app.homeOverrides = {
+    repo: fakes.home,
+    analytics: fakes.analytics,
+    filings: new InMemoryFilingRepository(),
+  }
   app.analyticsOverrides = { repo: fakes.analytics }
   app.activityOverrides = { repo: fakes.activity }
   app.auditOverrides = { repo: fakes.audit }
   app.discoveryOverrides = { repo: fakes.discovery }
   app.jurisdictionOverrides = { repo: fakes.jurisdictions, jobs: new FakeJobs(), throttleDays: 7 }
-  app.adminReportOverrides = { repo: fakes.reports, outboundMail }
+  app.adminReportOverrides = {
+    repo: fakes.reports,
+    outboundMail,
+    filings: memoryFilingService(fakes.reports),
+  }
   app.adminEventOverrides = { repo: fakes.events }
   app.adminUserOverrides = {
     repo: fakes.users,

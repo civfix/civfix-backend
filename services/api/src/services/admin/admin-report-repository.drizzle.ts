@@ -27,6 +27,7 @@ import type {
   AdminReportTimelineRecord,
   AdminReporterRecord,
   ListReportsArgs,
+  OutreachOptions,
   ReportOutreachState,
 } from "./admin-report-repository.js"
 import type {
@@ -42,6 +43,7 @@ import {
   ROUTE_DEADLINE_INFLIGHT_SECONDS,
 } from "./outbound-send-policy.js"
 import { sendFailedExpr, sendInFlightExpr } from "./mail-repository.drizzle.js"
+import { insertReopenFilingIn } from "../filings/filing-reopen.drizzle.js"
 
 export { ROUTE_CLAIM_STALE_SECONDS, ROUTE_DEADLINE_INFLIGHT_SECONDS }
 
@@ -355,7 +357,8 @@ export function makeDrizzleAdminReportRepository(
       }
     },
 
-    async getOutreach(id: string): Promise<ReportOutreachState> {
+    async getOutreach(id: string, opts: OutreachOptions = {}): Promise<ReportOutreachState> {
+      const since = opts.packetsSince
       const rows = await sql<
         {
           thread_id: string
@@ -387,9 +390,10 @@ export function makeDrizzleAdminReportRepository(
             SELECT 1 FROM mail_messages m
             WHERE m.thread_id = t.id AND m.direction = 'out'
               AND COALESCE(m.kind, 'packet') = 'packet'
+              ${since === undefined ? sql`` : sql`AND m.created_at >= ${since}`}
           ) AS packet_sent,
-          (${sendFailedExpr(sql, sql`t.id`)}) AS send_failed,
-          (${sendInFlightExpr(sql, sql`t.id`)}) AS send_in_flight
+          (${sendFailedExpr(sql, sql`t.id`, since)}) AS send_failed,
+          (${sendInFlightExpr(sql, sql`t.id`, since)}) AS send_in_flight
         FROM mail_threads t
         WHERE t.report_id = ${id}
         ORDER BY t.created_at DESC, t.id DESC
@@ -429,6 +433,9 @@ export function makeDrizzleAdminReportRepository(
       },
     ): Promise<boolean> {
       return sql.begin(async (tx) => {
+        const [locked] = await tx<{ status: AdminReportStatus }[]>`
+          SELECT status FROM reports WHERE id = ${id} AND deleted_at IS NULL FOR UPDATE
+        `
         const updated = await tx<{ id: string }[]>`
           UPDATE reports
           SET status = ${input.to}
@@ -442,11 +449,18 @@ export function makeDrizzleAdminReportRepository(
           INSERT INTO report_timeline (report_id, status, note, kind, actor_id)
           VALUES (${id}, ${input.to}, ${input.note}, ${input.kind ?? null}, ${input.actorId})
         `
+        const reopen =
+          locked?.status === "resolved" && input.to !== "resolved"
+            ? await insertReopenFilingIn(tx, id)
+            : "none"
         await insertAuditRow(tx, {
           actorId: input.actorId,
           action: "report.status_changed",
           target: `report:${id}`,
-          meta: { status: input.to },
+          meta: {
+            status: input.to,
+            ...(reopen === "skipped_active" ? { reopenSkipped: true } : {}),
+          },
         })
         return true
       })
