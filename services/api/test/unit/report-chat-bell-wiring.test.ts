@@ -8,7 +8,10 @@ import {
   makeNotificationService,
   type NotificationService,
 } from "../../src/services/notification-service.js"
-import { InMemoryNotificationRepository } from "../helpers/notifications.js"
+import {
+  InMemoryNotificationRepository,
+  InMemoryNotificationSettingsRepository,
+} from "../helpers/notifications.js"
 import { InMemoryThreadsRepository } from "../helpers/chat.js"
 import {
   InMemoryBlocksRepository,
@@ -100,6 +103,7 @@ describe("report chat bell wiring", () => {
     const notifRepo = new InMemoryNotificationRepository()
     const notifications = makeNotificationService({
       repo: notifRepo,
+      settingsRepo: new InMemoryNotificationSettingsRepository(),
       pushSender: new FakePushSender(),
     })
 

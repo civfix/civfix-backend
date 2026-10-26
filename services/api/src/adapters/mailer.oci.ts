@@ -244,7 +244,6 @@ interface TemplateContent {
 type TemplateRenderer = (vars: TemplateVars, locale: Locale) => TemplateContent
 
 const TEMPLATES: ReadonlyMap<string, TemplateRenderer> = new Map([
-  ["report_update", renderReportUpdate],
   ["guest_otp", renderGuestOtp],
   ["guest_confirmed", renderGuestConfirmed],
   ["guest_promoted", renderGuestPromoted],
@@ -257,13 +256,6 @@ export function renderTemplate(template: string, vars: TemplateVars): Rendered {
   const { subject, blocks } = render(vars, locale)
   const { text, html } = renderEmailBody({ preheader: subject, blocks })
   return { subject, text, html }
-}
-
-function renderReportUpdate(vars: TemplateVars, locale: Locale): TemplateContent {
-  const status = stringVar(vars, "status", "updated")
-  const subject = renderMessage(locale, "email.report_update.subject", { status })
-  const message = renderMessage(locale, "email.report_update.body", { status })
-  return { subject, blocks: [paragraph(message)] }
 }
 
 function renderGuestOtp(vars: TemplateVars, locale: Locale): TemplateContent {

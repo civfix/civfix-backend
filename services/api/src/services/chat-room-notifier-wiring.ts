@@ -2,6 +2,7 @@ import type { FastifyBaseLogger } from "fastify"
 import type { Container } from "../di.js"
 import { makeReportChatRepository } from "./report-chat-repository.drizzle.js"
 import { makeChatGroupRepository } from "./chat-group-repository.drizzle.js"
+import { makeConversationNameRepository } from "./conversation-name-repository.drizzle.js"
 import { makeRouteNotificationService } from "./route-notifier.js"
 import {
   bindMutedUserIdsFor,
@@ -30,6 +31,7 @@ export function makeContainerRoomFanoutDeps(
   const sql = container.getDb().sql
   const reportChatRepo = makeReportChatRepository(sql)
   const groupRepo = makeChatGroupRepository(sql)
+  const conversationNames = makeConversationNameRepository(sql)
 
   const notificationService = makeRouteNotificationService(container, logger)
 
@@ -54,6 +56,7 @@ export function makeContainerRoomFanoutDeps(
       roomKey: (roomId) => roomKeyFor(kind, roomId),
       isBlockedEitherWay,
       ...(blockedIdsFor ? { blockedIdsFor } : {}),
+      conversationNames,
       ...(claimWindow !== undefined
         ? { claimWindow: (roomId: string, windowMs: number) => claimWindow(kind, roomId, windowMs) }
         : {}),

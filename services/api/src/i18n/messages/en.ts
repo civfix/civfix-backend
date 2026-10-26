@@ -153,9 +153,26 @@ export const en = {
   // The code itself is rendered in a styled block by the template.
   "email.otp.html_intro": "Your civfix sign-in code is:",
 
-  // {{status}} = localized/raw status label.
-  "email.report_update.subject": "Your civfix report was {{status}}",
-  "email.report_update.body": "Your report has a new status: {{status}}.",
+  // D1's category labels, as the notification settings screen shows them.
+  "notification.category.reportUpdates": "Updates on your reports",
+  "notification.category.reportDiscussions": "Report discussions",
+  "notification.category.directMessages": "Direct messages",
+  "notification.category.mentions": "Mentions and replies",
+  "notification.category.groupChats": "Group chats",
+  "notification.category.events": "Events you're going to",
+  "notification.category.hostAnnouncements": "Announcements from hosts",
+  "notification.category.eventTeam": "Event team and hours",
+  "notification.category.followers": "New followers",
+  "notification.category.likesAndReposts": "Likes and reposts",
+  "notification.category.organizations": "Organizations",
+
+  // Notification emails (D10). {{conversation}} = the DM partner's name, the group's name, the report's
+  // category or the event's title. {{category}} = one of the labels above.
+  "email.notification.open_cta": "Open in civfix",
+  "email.notification.conversation_subject": "New messages in {{conversation}}",
+  "email.notification.footer_reason": "You're getting this because Email is on for {{category}}.",
+  "email.notification.footer_stop": "Stop these emails",
+  "email.notification.footer_manage": "Manage notification settings",
 
   // Fallback for an unknown template.
   "email.generic.subject": "A civfix notification",

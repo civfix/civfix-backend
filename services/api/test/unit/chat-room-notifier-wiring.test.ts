@@ -11,6 +11,7 @@ import {
   makeContainerRoomFanoutDeps,
   makeWindowClaim,
 } from "../../src/services/chat-room-notifier-wiring.js"
+import { fakeNotificationEmail } from "../helpers/notification-email.js"
 
 interface Harness {
   container: Container
@@ -27,6 +28,7 @@ function harness(opts: { useFakeChat?: boolean; usesRealRedis?: boolean } = {}):
     env: { USE_FAKE_CHAT: opts.useFakeChat ?? false },
     usesRealRedis: opts.usesRealRedis ?? false,
     pushSender: new FakePushSender(),
+    getNotificationEmail: fakeNotificationEmail,
     userChannel: new FakeUserChannel(),
     getDb: () => ({ sql: fake.sql }),
     getBlocksRepo: () => new InMemoryBlocksRepository(),

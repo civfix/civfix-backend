@@ -1,33 +1,42 @@
 import { AppError } from "@civfix/contract"
 import type {
   ListNotificationsResponse,
+  NotificationCategory,
+  NotificationCategorySetting,
   NotificationDTO,
   NotificationPrefsDTO,
   NotificationType,
+  NotificationUnreadResponse,
   PaginationQuery,
   RegisterPushTokenRequest,
   UnregisterPushTokenRequest,
   UpdateNotificationPrefsRequest,
 } from "@civfix/contract"
-import type { PushPayload, PushSender, UserChannel } from "@civfix/seams"
+import type { PushClearTarget, PushItem, PushPayload, PushSender, UserChannel } from "@civfix/seams"
 import type { FastifyBaseLogger } from "fastify"
 import type { SocialNotifier } from "./social-service.js"
 import type { PersonView } from "./social-repository.js"
 import type { PushGateMode } from "./notification-helpers.js"
 import {
-  DEFAULT_PREFS,
   isWithinQuietHours,
-  pushGateAllows,
+  prefsFromSettings,
+  settingsPatchFromPrefs,
   toNotificationDTO,
-  toPrefsDTO,
 } from "./notification-helpers.js"
+import { categoryForType, categorySettingOf, categorySettings } from "./notification-categories.js"
+import {
+  makeNotificationEmailer,
+  type NotificationContent,
+  type NotificationEmailDeps,
+} from "./notification-email.js"
 import { mapWithLimit } from "../lib/concurrency.js"
 import { classifyPushToken, isRegistrablePushEndpoint } from "./push-token-policy.js"
 import { renderMessage, type MessageKey, type MessageVars } from "../i18n/renderMessage.js"
 import { DEFAULT_LOCALE } from "../i18n/locales.js"
 import { actorDisplayName } from "./public-author.js"
+import type { NotificationSettingsRepository } from "./notification-settings-repository.js"
+import { effectiveNotificationSettings } from "./notification-settings-service.js"
 import type {
-  NotificationPrefsPatch,
   NotificationPrefsRecord,
   NotificationRecord,
   NotificationRepository,
@@ -40,7 +49,6 @@ export {
   isWithinQuietHours,
   parseTimeOfDayMinutes,
   toPrefsDTO,
-  typeAllowedByPrefs,
 } from "./notification-helpers.js"
 export type { PushGateMode } from "./notification-helpers.js"
 
@@ -50,11 +58,16 @@ export const NOTIFICATION_DEDUPE_WINDOW_MS = 5 * 60 * 1000
 
 const BULK_NOTIFY_CONCURRENCY = 8
 
+const SETTINGS_READ_BATCH_SIZE = 500
+
 export const PUSH_FANOUT_BATCH_SIZE = 100
 
 const NOTIFICATIONS_TOPIC = "notifications"
 
 const INVALID_PUSH_TOKEN_MESSAGE = "Invalid push token"
+
+// One message for an unknown id and for another person's, so a dismiss never reveals which ids exist.
+const NOTIFICATION_NOT_FOUND_MESSAGE = "Notification not found"
 
 function postLink(postId: string): string {
   return `/post/${postId}`
@@ -76,15 +89,21 @@ export interface CreateNotificationInput {
   dedupeWindowMs?: number
   coalesceWindowMs?: number
   push?: PushGateMode
+  /** Gates the notification by this category instead of its type's. */
+  category?: NotificationCategory
+  email?: "auto" | "never"
+  conversationName?: string
 }
 
 export interface NotificationServiceDeps {
   repo: NotificationRepository
+  settingsRepo: NotificationSettingsRepository
   pushSender: PushSender
   userChannel?: UserChannel
   logger?: Pick<FastifyBaseLogger, "warn" | "error">
   now?: () => Date
   isSafePushEndpoint?: (endpoint: string) => Promise<boolean>
+  email?: NotificationEmailDeps
 }
 
 export interface PostActivity {
@@ -112,18 +131,30 @@ export interface FanOutNotificationResult {
 
 export interface NotificationService extends SocialNotifier, PostNotifier {
   listNotifications(userId: string, pagination: PaginationQuery): Promise<ListNotificationsResponse>
+  hasUnread(userId: string): Promise<NotificationUnreadResponse>
   markRead(userId: string, ids: string[]): Promise<{ ok: true }>
+  markAllRead(userId: string): Promise<{ ok: true }>
+  dismiss(userId: string, id: string): Promise<{ ok: true }>
   getPrefs(userId: string): Promise<NotificationPrefsDTO>
+  /** The recipient's setting for one category, at its default when they never changed it. */
+  categorySetting(
+    userId: string,
+    category: NotificationCategory,
+  ): Promise<NotificationCategorySetting>
   updatePrefs(userId: string, patch: UpdateNotificationPrefsRequest): Promise<NotificationPrefsDTO>
   registerPushToken(userId: string, req: RegisterPushTokenRequest): Promise<{ ok: true }>
   unregisterPushToken(userId: string, req: UnregisterPushTokenRequest): Promise<{ ok: true }>
-  createNotification(userId: string, input: CreateNotificationInput): Promise<NotificationDTO>
+  /** Resolves `null` when the recipient turned the notification's category Off: nothing was written. */
+  createNotification(
+    userId: string,
+    input: CreateNotificationInput,
+  ): Promise<NotificationDTO | null>
   createNotifications(userIds: string[], input: CreateNotificationInput): Promise<void>
   createNotificationsReportingFailures(
     userIds: string[],
     input: CreateNotificationInput,
   ): Promise<FanOutNotificationResult>
-  clearByTypeAndLink(userId: string, type: NotificationType, link: string): Promise<void>
+  clearByTypeAndLink(userId: string, type: NotificationType, link: string): Promise<string[]>
 }
 
 type FallbackLane = "coalesce" | "dedupe"
@@ -173,71 +204,89 @@ const POST_ACTIVITY_SPECS: Record<PostActivityType, PostActivitySpec> = {
   },
 }
 
-interface CreatedNotification {
+/** The recipient's setting for the notification's category; `null` when it is Always on. */
+type Gate = NotificationCategorySetting | null
+
+interface Recipient {
   userId: string
+  gate: Gate
+}
+
+interface CreatedNotification extends Recipient {
   record: NotificationRecord
 }
 
-interface PushGroup {
-  payload: PushPayload
-  userIds: string[]
+function categoryOf(input: CreateNotificationInput): NotificationCategory | null {
+  return input.category ?? categoryForType(input.type)
 }
 
-function groupPushesByPayload(
+// No mode overrides Off: that is checked before the row is written.
+function pushAllowed(gate: Gate, mode: PushGateMode): boolean {
+  if (mode === "never") return false
+  return gate === null || gate.push
+}
+
+function pushItemsFor(
   created: readonly CreatedNotification[],
   { byUser, unreadable }: ResolvedPrefs,
-  mode: PushGateMode,
+  category: NotificationCategory | null,
   at: Date,
-): Map<string, PushGroup> {
-  const groups = new Map<string, PushGroup>()
+): PushItem[] {
+  const items: PushItem[] = []
   for (const { userId, record } of created) {
     if (unreadable.has(userId)) continue
-    const prefs = byUser.get(userId) ?? DEFAULT_PREFS
-    if (!pushGateAllows(record.type, prefs, mode)) continue
-    if (isWithinQuietHours(at, prefs.quietStart, prefs.quietEnd, prefs.tz)) continue
-    const key = JSON.stringify([record.title, record.body, record.link])
-    const group = groups.get(key)
-    if (group) {
-      group.userIds.push(userId)
-      continue
-    }
-    groups.set(key, { payload: pushPayloadOf(record, { type: record.type }), userIds: [userId] })
+    const prefs = byUser.get(userId)
+    if (prefs && isWithinQuietHours(at, prefs.quietStart, prefs.quietEnd, prefs.tz)) continue
+    items.push({ userId, payload: pushPayloadOf(record, category) })
   }
-  return groups
+  return items
 }
 
-function pushPayloadOf(record: NotificationRecord, data: Record<string, unknown>): PushPayload {
+function pushPayloadOf(
+  record: NotificationRecord,
+  category: NotificationCategory | null,
+): PushPayload {
   return {
     title: record.title,
     ...(record.body !== null ? { body: record.body } : {}),
     ...(record.link !== null ? { link: record.link } : {}),
-    data,
+    notificationId: record.id,
+    type: record.type,
+    category,
   }
 }
 
 export function makeNotificationService(deps: NotificationServiceDeps): NotificationService {
   const now = deps.now ?? (() => new Date())
   const isSafeEndpoint = deps.isSafePushEndpoint ?? isRegistrablePushEndpoint
+  const emailer =
+    deps.email !== undefined
+      ? makeNotificationEmailer({
+          ...deps.email,
+          repo: deps.repo,
+          now,
+          ...(deps.logger !== undefined ? { logger: deps.logger } : {}),
+        })
+      : undefined
 
-  async function resolvePrefs(userId: string): Promise<NotificationPrefsRecord> {
-    const existing = await deps.repo.findPrefs(userId)
-    if (existing) return existing
-    return deps.repo.createDefaultPrefs(userId)
+  async function getPrefs(userId: string): Promise<NotificationPrefsDTO> {
+    const [settings, quiet] = await Promise.all([
+      deps.settingsRepo.getSettings(userId),
+      deps.repo.findPrefs(userId),
+    ])
+    return prefsFromSettings(effectiveNotificationSettings(settings), quiet)
   }
 
   async function maybeSendPush(
     userId: string,
     record: NotificationRecord,
-    mode: PushGateMode,
+    category: NotificationCategory | null,
   ): Promise<void> {
-    if (mode === "never") return
     try {
-      const prefs = await resolvePrefs(userId)
-      if (!pushGateAllows(record.type, prefs, mode)) return
-      if (isWithinQuietHours(now(), prefs.quietStart, prefs.quietEnd, prefs.tz)) return
+      const prefs = await deps.repo.findPrefs(userId)
+      if (prefs && isWithinQuietHours(now(), prefs.quietStart, prefs.quietEnd, prefs.tz)) return
 
-      const payload = pushPayloadOf(record, { type: record.type, notificationId: record.id })
-      await deps.pushSender.send(userId, payload)
+      await deps.pushSender.send(userId, pushPayloadOf(record, category))
     } catch (err) {
       deps.logger?.warn(
         { err, userId, notificationId: record.id, type: record.type },
@@ -255,6 +304,17 @@ export function makeNotificationService(deps: NotificationServiceDeps): Notifica
     }
   }
 
+  // Runs once the change is stored. A clear that fails leaves a delivered push on another device, never
+  // a failed read, so it is logged and the change stands.
+  async function syncReadChange(userId: string, target: PushClearTarget): Promise<void> {
+    try {
+      await deps.pushSender.clear(userId, target)
+    } catch (err) {
+      deps.logger?.warn({ err, userId }, "push clear failed (suppressed)")
+    }
+    await maybeSignalNotification(userId)
+  }
+
   function needsLocale(input: CreateNotificationInput): boolean {
     return input.titleKey !== undefined || input.bodyKey !== undefined
   }
@@ -266,6 +326,20 @@ export function makeNotificationService(deps: NotificationServiceDeps): Notifica
       localized[name] = renderMessage(locale, key)
     }
     return localized
+  }
+
+  function contentIn(locale: string, input: CreateNotificationInput): NotificationContent {
+    const vars = varsIn(locale, input)
+    return {
+      title:
+        input.titleKey !== undefined
+          ? renderMessage(locale, input.titleKey, vars)
+          : (input.title ?? ""),
+      body:
+        input.bodyKey !== undefined
+          ? renderMessage(locale, input.bodyKey, vars)
+          : (input.body ?? null),
+    }
   }
 
   async function localeFor(
@@ -322,15 +396,7 @@ export function makeNotificationService(deps: NotificationServiceDeps): Notifica
     onFallback: FallbackReporter = (lane, err) => logFallback(lane, err, userId, input),
   ): Promise<{ record: NotificationRecord; deduped: boolean }> {
     const locale = await localeFor(userId, input, resolvedLocales)
-    const vars = varsIn(locale, input)
-    const title =
-      input.titleKey !== undefined
-        ? renderMessage(locale, input.titleKey, vars)
-        : (input.title ?? "")
-    const body =
-      input.bodyKey !== undefined
-        ? renderMessage(locale, input.bodyKey, vars)
-        : (input.body ?? null)
+    const { title, body } = contentIn(locale, input)
     const link = input.link ?? null
     if (input.coalesceWindowMs !== undefined && link !== null) {
       try {
@@ -371,15 +437,51 @@ export function makeNotificationService(deps: NotificationServiceDeps): Notifica
     return { record, deduped: false }
   }
 
+  // D10: after the row and the push, so neither waits on it, and never failing either.
+  async function maybeEmail(
+    created: readonly CreatedNotification[],
+    category: NotificationCategory | null,
+    input: CreateNotificationInput,
+  ): Promise<void> {
+    if (emailer === undefined || category === null || input.email === "never") return
+    const recipients = created.filter((c) => c.gate?.email === true)
+    if (recipients.length === 0) return
+    try {
+      await emailer.send({
+        category,
+        link: input.link ?? null,
+        conversationName: input.conversationName ?? null,
+        contentIn: (locale) => contentIn(locale, input),
+        recipients: recipients.map((c) => ({ userId: c.userId, notificationId: c.record.id })),
+      })
+    } catch (err) {
+      deps.logger?.error(
+        { err, category, count: recipients.length },
+        "notification email dispatch failed (suppressed)",
+      )
+    }
+  }
+
+  async function gateFor(userId: string, category: NotificationCategory | null): Promise<Gate> {
+    if (category === null) return null
+    return categorySettingOf(deps.settingsRepo, userId, category)
+  }
+
   async function doCreateNotification(
     userId: string,
     input: CreateNotificationInput,
-  ): Promise<NotificationDTO> {
+  ): Promise<NotificationDTO | null> {
+    const category = categoryOf(input)
+    const gate = await gateFor(userId, category)
+    if (gate !== null && !gate.enabled) return null
     const { record, deduped } = await persistNotification(userId, input)
     if (deduped) return toNotificationDTO(record)
-    void maybeSendPush(userId, record, input.push ?? "auto").catch((err: unknown) => {
-      deps.logger?.error({ err, userId }, "push dispatch failed (suppressed)")
-    })
+    const pushed = pushAllowed(gate, input.push ?? "auto")
+      ? maybeSendPush(userId, record, category).catch((err: unknown) => {
+          deps.logger?.error({ err, userId }, "push dispatch failed (suppressed)")
+        })
+      : Promise.resolve()
+    void pushed.then(() => maybeEmail([{ userId, gate, record }], category, input))
     void maybeSignalNotification(userId).catch((err: unknown) => {
       deps.logger?.error({ err, userId }, "notification signal dispatch failed (suppressed)")
     })
@@ -436,19 +538,16 @@ export function makeNotificationService(deps: NotificationServiceDeps): Notifica
 
   async function sendBatchedPush(
     created: CreatedNotification[],
-    mode: PushGateMode,
+    category: NotificationCategory | null,
   ): Promise<void> {
-    if (mode === "never") return
     const prefs = await prefsForMany(created.map((c) => c.userId))
-    const groups = groupPushesByPayload(created, prefs, mode, now())
-    for (const group of groups.values()) {
-      for (let i = 0; i < group.userIds.length; i += PUSH_FANOUT_BATCH_SIZE) {
-        const batch = group.userIds.slice(i, i + PUSH_FANOUT_BATCH_SIZE)
-        try {
-          await deps.pushSender.sendMany(batch, group.payload)
-        } catch (err) {
-          deps.logger?.warn({ err, count: batch.length }, "batched push send failed (suppressed)")
-        }
+    const items = pushItemsFor(created, prefs, category, now())
+    for (let i = 0; i < items.length; i += PUSH_FANOUT_BATCH_SIZE) {
+      const batch = items.slice(i, i + PUSH_FANOUT_BATCH_SIZE)
+      try {
+        await deps.pushSender.sendEach(batch)
+      } catch (err) {
+        deps.logger?.warn({ err, count: batch.length }, "batched push send failed (suppressed)")
       }
     }
   }
@@ -480,13 +579,52 @@ export function makeNotificationService(deps: NotificationServiceDeps): Notifica
     }
   }
 
+  // A batch whose settings cannot be read is reported as failed rather than written: a row we cannot
+  // gate could be one the recipient turned Off.
+  async function recipientsOf(
+    unique: string[],
+    category: NotificationCategory | null,
+  ): Promise<{ recipients: Recipient[]; unreadable: string[] }> {
+    if (category === null) {
+      return { recipients: unique.map((userId) => ({ userId, gate: null })), unreadable: [] }
+    }
+    const recipients: Recipient[] = []
+    const unreadable: string[] = []
+    for (let i = 0; i < unique.length; i += SETTINGS_READ_BATCH_SIZE) {
+      const batch = unique.slice(i, i + SETTINGS_READ_BATCH_SIZE)
+      let settingOf: (userId: string) => NotificationCategorySetting
+      try {
+        settingOf = categorySettings(await deps.settingsRepo.getSettingsMany(batch), category)
+      } catch (err) {
+        deps.logger?.warn(
+          { err, category, count: batch.length },
+          "fan-out settings read failed; reported to the caller",
+        )
+        unreadable.push(...batch)
+        continue
+      }
+      for (const userId of batch) {
+        const gate = settingOf(userId)
+        // Off is not a failure, so nothing retries it.
+        if (gate.enabled) recipients.push({ userId, gate })
+      }
+    }
+    return { recipients, unreadable }
+  }
+
   async function doCreateNotifications(
     userIds: string[],
     input: CreateNotificationInput,
   ): Promise<FanOutNotificationResult> {
     const unique = [...new Set(userIds)]
     if (unique.length === 0) return { failed: [] }
-    const locales = await localesForMany(unique, input)
+    const category = categoryOf(input)
+    const { recipients, unreadable } = await recipientsOf(unique, category)
+    if (recipients.length === 0) return { failed: unreadable }
+    const locales = await localesForMany(
+      recipients.map((r) => r.userId),
+      input,
+    )
     const failed: string[] = []
     let firstFailure: unknown
     const fallbacks = new Map<FallbackLane, { count: number; err: unknown }>()
@@ -497,33 +635,46 @@ export function makeNotificationService(deps: NotificationServiceDeps): Notifica
       if (seen) seen.count += 1
       else fallbacks.set(lane, { count: 1, err })
     }
-    const persisted = await mapWithLimit(unique, BULK_NOTIFY_CONCURRENCY, async (userId) => {
+    const persisted = await mapWithLimit(recipients, BULK_NOTIFY_CONCURRENCY, async (recipient) => {
+      const { userId } = recipient
       try {
         const { record, deduped } = await persistNotification(userId, input, locales, tallyFallback)
-        return deduped ? null : { userId, record }
+        return deduped ? null : { ...recipient, record }
       } catch (err) {
         if (failed.length === 0) firstFailure = err
         failed.push(userId)
         return null
       }
     })
-    logFanOutFallbacks(fallbacks, input, unique.length)
+    logFanOutFallbacks(fallbacks, input, recipients.length)
     if (failed.length > 0) {
       deps.logger?.warn(
-        { err: firstFailure, type: input.type, failed: failed.length, recipients: unique.length },
+        {
+          err: firstFailure,
+          type: input.type,
+          failed: failed.length,
+          recipients: recipients.length,
+        },
         "fan-out notification insert failed; reported to the caller",
       )
     }
     const created = persisted.filter((p): p is CreatedNotification => p !== null)
-    if (created.length === 0) return { failed }
-    void sendBatchedPush(created, input.push ?? "auto").catch((err: unknown) => {
-      deps.logger?.error(
-        { err, count: created.length },
-        "batched push dispatch failed (suppressed)",
-      )
-    })
+    const result = { failed: [...unreadable, ...failed] }
+    if (created.length === 0) return result
+    const mode = input.push ?? "auto"
+    const pushable = created.filter((c) => pushAllowed(c.gate, mode))
+    const pushed =
+      pushable.length > 0
+        ? sendBatchedPush(pushable, category).catch((err: unknown) => {
+            deps.logger?.error(
+              { err, count: pushable.length },
+              "batched push dispatch failed (suppressed)",
+            )
+          })
+        : Promise.resolve()
+    void pushed.then(() => maybeEmail(created, category, input))
     void signalMany(created.map((c) => c.userId))
-    return { failed }
+    return result
   }
 
   return {
@@ -539,33 +690,43 @@ export function makeNotificationService(deps: NotificationServiceDeps): Notifica
       return { items: records.map(toNotificationDTO), nextCursor }
     },
 
+    async hasUnread(userId: string): Promise<NotificationUnreadResponse> {
+      return { hasUnread: await deps.repo.hasUnread(userId) }
+    },
+
     async markRead(userId: string, ids: string[]): Promise<{ ok: true }> {
-      if (ids.length > 0) await deps.repo.markRead(userId, ids)
+      const changed = await deps.repo.markRead(userId, ids)
+      if (changed.length > 0) await syncReadChange(userId, { ids: changed })
       return { ok: true }
     },
 
-    async getPrefs(userId: string): Promise<NotificationPrefsDTO> {
-      return toPrefsDTO(await resolvePrefs(userId))
+    async markAllRead(userId: string): Promise<{ ok: true }> {
+      if ((await deps.repo.markAllRead(userId)) > 0) await syncReadChange(userId, { all: true })
+      return { ok: true }
     },
+
+    async dismiss(userId: string, id: string): Promise<{ ok: true }> {
+      if (!(await deps.repo.deleteNotification(userId, id))) {
+        throw AppError.notFound(NOTIFICATION_NOT_FOUND_MESSAGE)
+      }
+      await syncReadChange(userId, { ids: [id] })
+      return { ok: true }
+    },
+
+    getPrefs,
+
+    categorySetting: (userId: string, category: NotificationCategory) =>
+      categorySettingOf(deps.settingsRepo, userId, category),
 
     async updatePrefs(
       userId: string,
       patch: UpdateNotificationPrefsRequest,
     ): Promise<NotificationPrefsDTO> {
-      await resolvePrefs(userId)
-      const repoPatch: NotificationPrefsPatch = {
-        ...(patch.push !== undefined ? { push: patch.push } : {}),
-        ...(patch.cleanupChat !== undefined ? { cleanupChat: patch.cleanupChat } : {}),
-        ...(patch.reportUpdates !== undefined ? { reportUpdates: patch.reportUpdates } : {}),
-        ...(patch.follows !== undefined ? { follows: patch.follows } : {}),
-        ...(patch.mentions !== undefined ? { mentions: patch.mentions } : {}),
-        ...(patch.postInteractions !== undefined
-          ? { postInteractions: patch.postInteractions }
-          : {}),
-        ...(patch.hostBroadcasts !== undefined ? { hostBroadcasts: patch.hostBroadcasts } : {}),
-        ...("quietHours" in patch ? { quietHours: patch.quietHours ?? null } : {}),
+      await deps.settingsRepo.upsertSettings(userId, settingsPatchFromPrefs(patch))
+      if ("quietHours" in patch) {
+        await deps.repo.upsertPrefs(userId, { quietHours: patch.quietHours ?? null })
       }
-      return toPrefsDTO(await deps.repo.upsertPrefs(userId, repoPatch))
+      return getPrefs(userId)
     },
 
     async registerPushToken(userId: string, req: RegisterPushTokenRequest): Promise<{ ok: true }> {
@@ -613,7 +774,10 @@ export function makeNotificationService(deps: NotificationServiceDeps): Notifica
       return { ok: true }
     },
 
-    createNotification(userId: string, input: CreateNotificationInput): Promise<NotificationDTO> {
+    createNotification(
+      userId: string,
+      input: CreateNotificationInput,
+    ): Promise<NotificationDTO | null> {
       return doCreateNotification(userId, input)
     },
 
@@ -628,9 +792,14 @@ export function makeNotificationService(deps: NotificationServiceDeps): Notifica
       return doCreateNotifications(userIds, input)
     },
 
-    async clearByTypeAndLink(userId: string, type: NotificationType, link: string): Promise<void> {
-      await deps.repo.clearByTypeAndLink(userId, type, link)
-      await maybeSignalNotification(userId)
+    async clearByTypeAndLink(
+      userId: string,
+      type: NotificationType,
+      link: string,
+    ): Promise<string[]> {
+      const changed = await deps.repo.clearByTypeAndLink(userId, type, link)
+      if (changed.length > 0) await syncReadChange(userId, { ids: changed })
+      return changed
     },
 
     async onNewFollower(args: { followeeId: string; follower: PersonView }): Promise<void> {

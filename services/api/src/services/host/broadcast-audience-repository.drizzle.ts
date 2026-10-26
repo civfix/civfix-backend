@@ -1,7 +1,7 @@
 import type { BroadcastKind, BroadcastSegment } from "@civfix/contract"
 import type postgres from "postgres"
 import type { Queryable } from "../../db/client.js"
-import { CRITICAL_BROADCAST_KINDS, HOST_COMPOSED_BROADCAST_KINDS } from "./broadcast-types.js"
+import { BROADCAST_KIND_CATEGORY, CRITICAL_BROADCAST_KINDS } from "./broadcast-types.js"
 import type { AudienceCountQuery, AudiencePageQuery } from "./broadcast-repository.js"
 import type { BroadcastAudienceRepository } from "./broadcast-audience-repository.js"
 
@@ -86,24 +86,17 @@ export function makeDrizzleBroadcastAudienceRepository(
   }
 }
 
+// An account holder's opt-outs apply to every kind (D3); only guests keep the critical bypass. A member
+// with no notification_settings row is at the default, and both broadcast categories default to on.
 function memberSuppressionTail(sql: Queryable, cleanupId: string, kind: BroadcastKind) {
-  const hostComposedOptOut = HOST_COMPOSED_BROADCAST_KINDS.has(kind)
-    ? sql`
+  const category = BROADCAST_KIND_CATEGORY[kind]
+  const categoryOff =
+    category === null
+      ? sql``
+      : sql`
         AND NOT EXISTS (
-          SELECT 1 FROM notification_prefs np
-           WHERE np.user_id = u.id AND np.host_broadcasts = false)`
-    : sql``
-  const optOuts = CRITICAL_BROADCAST_KINDS.has(kind)
-    ? sql``
-    : sql`
-        AND NOT EXISTS (
-          SELECT 1 FROM broadcast_unsubscribes bu
-           WHERE bu.subject_kind = 'user' AND bu.user_id = u.id
-             AND (bu.scope = 'global' OR bu.cleanup_id = ${cleanupId}))
-        AND NOT EXISTS (
-          SELECT 1 FROM cleanup_broadcast_mutes cbm
-           WHERE cbm.cleanup_id = ${cleanupId} AND cbm.user_id = u.id)
-        ${hostComposedOptOut}`
+          SELECT 1 FROM notification_settings ns
+           WHERE ns.user_id = u.id AND ns.category = ${category} AND ns.enabled = false)`
   return sql`
        AND u.deleted_at IS NULL
        AND NOT EXISTS (
@@ -112,7 +105,14 @@ function memberSuppressionTail(sql: Queryable, cleanupId: string, kind: Broadcas
        AND NOT EXISTS (
          SELECT 1 FROM cleanup_bans cb
           WHERE cb.cleanup_id = ${cleanupId} AND cb.user_id = u.id)
-       ${optOuts}`
+       AND NOT EXISTS (
+         SELECT 1 FROM broadcast_unsubscribes bu
+          WHERE bu.subject_kind = 'user' AND bu.user_id = u.id
+            AND (bu.scope = 'global' OR bu.cleanup_id = ${cleanupId}))
+       AND NOT EXISTS (
+         SELECT 1 FROM cleanup_broadcast_mutes cbm
+          WHERE cbm.cleanup_id = ${cleanupId} AND cbm.user_id = u.id)
+       ${categoryOff}`
 }
 
 function guestSuppressionTail(sql: Queryable, cleanupId: string, kind: BroadcastKind) {

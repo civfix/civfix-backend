@@ -5,6 +5,7 @@ import { withPg, type PgHarness, testHandle } from "../helpers/pg.js"
 import { flushNotificationDispatch } from "../helpers/notifications.js"
 import { makeDrizzleSocialRepository } from "../../src/services/social-repository.drizzle.js"
 import { makeDrizzleNotificationRepository } from "../../src/services/notification-repository.drizzle.js"
+import { makeDrizzleNotificationSettingsRepository } from "../../src/services/notification-settings-repository.drizzle.js"
 import { makeSocialService } from "../../src/services/social-service.js"
 import { makeNotificationService } from "../../src/services/notification-service.js"
 import { makeDrizzleCleanupRepository } from "../../src/services/cleanup-repository.drizzle.js"
@@ -423,7 +424,11 @@ describe.skipIf(!pg)("social + notifications (integration)", () => {
   it("new_follower hook end to end: a NEW follow records a notification for the followee", async () => {
     const socialRepo = makeDrizzleSocialRepository(h.sql)
     const notifRepo = makeDrizzleNotificationRepository(h.sql)
-    const notifier = makeNotificationService({ repo: notifRepo, pushSender: new FakePushSender() })
+    const notifier = makeNotificationService({
+      repo: notifRepo,
+      settingsRepo: makeDrizzleNotificationSettingsRepository(h.sql),
+      pushSender: new FakePushSender(),
+    })
     const social = makeSocialService({ repo: socialRepo, notifier })
 
     const follower = await newUser("Hook Follower", "hookfol")
@@ -440,7 +445,7 @@ describe.skipIf(!pg)("social + notifications (integration)", () => {
     expect(list2.records).toHaveLength(1)
   })
 
-  it("F084: findPrefsMany reads the whole recipient set in one query and honours each row's opt-out", async () => {
+  it("F084: findPrefsMany reads the whole recipient set in one query and honours each row's quiet hours", async () => {
     const repo = makeDrizzleNotificationRepository(h.sql)
     const optedIn = await newUser("Prefs In")
     const optedOut = await newUser("Prefs Out")
@@ -455,6 +460,13 @@ describe.skipIf(!pg)("social + notifications (integration)", () => {
     expect(prefs.get(optedIn)?.cleanupChat).toBe(true)
     expect(prefs.get(optedOut)?.cleanupChat).toBe(false)
     expect(prefs.has(noRow)).toBe(false)
+
+    // Group chats default to in-app only (D1), so all three check Push; quiet hours hold back optedOut's.
+    const settingsRepo = makeDrizzleNotificationSettingsRepository(h.sql)
+    for (const userId of [optedIn, optedOut, noRow]) {
+      await settingsRepo.upsertSettings(userId, { groupChats: { push: true } })
+    }
+    await repo.upsertPrefs(optedOut, { quietHours: { start: "11:00", end: "13:00", tz: "UTC" } })
 
     const push = new FakePushSender()
     let fanoutReadPrefs = (): void => undefined
@@ -472,15 +484,17 @@ describe.skipIf(!pg)("social + notifications (integration)", () => {
       },
     }
 
-    await makeNotificationService({ repo: observedRepo, pushSender: push }).createNotifications(
-      [optedIn, optedOut, noRow],
-      {
-        type: "group_chat",
-        title: "New message",
-        body: "Someone posted.",
-        link: `/messages/group/${optedIn}`,
-      },
-    )
+    await makeNotificationService({
+      repo: observedRepo,
+      settingsRepo,
+      pushSender: push,
+      now: () => new Date("2026-10-24T12:00:00Z"),
+    }).createNotifications([optedIn, optedOut, noRow], {
+      type: "group_chat",
+      title: "New message",
+      body: "Someone posted.",
+      link: `/messages/group/${optedIn}`,
+    })
 
     await fanoutPrefsRead
     await flushNotificationDispatch()
