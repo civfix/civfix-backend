@@ -45,12 +45,14 @@
       ],
     },
     "services/city-filer": {
-      // The kit runs under node, loaded by path or through a workspace script's import, never from src.
-      "entry": ["kit/**/*.mjs"],
-      "project": ["src/**/*.ts", "kit/**/*.mjs", "test/**/*.ts"],
+      // The kit and the fixture portal's script run under node, loaded by path or through a workspace
+      // script's import, never from src.
+      "entry": ["kit/**/*.mjs", "test/fixtures/**/*.mjs"],
+      "project": ["src/**/*.ts", "kit/**/*.mjs", "test/**/*.ts", "test/fixtures/**"],
       "ignoreDependencies": [
-        // The kit's launch(), its browser half, imports it; the pin is here so CI's Chromium matches it.
-        "playwright-core",
+        // A workspace script's import, resolved through /workspace/node_modules (the image's link; the
+        // test harness makes the same one).
+        "@civfix/filer-kit",
       ],
     },
     "packages/config": {},

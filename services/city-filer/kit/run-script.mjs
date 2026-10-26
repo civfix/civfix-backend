@@ -5,7 +5,7 @@ import { createHash } from "node:crypto"
 import { readFile } from "node:fs/promises"
 import { join, resolve } from "node:path"
 import { pathToFileURL } from "node:url"
-import { startRun } from "./index.mjs"
+import { endRun, startRun } from "./index.mjs"
 
 const [runDir, ...flags] = process.argv.slice(2)
 const host = process.env.FILER_HOST ?? ""
@@ -24,5 +24,9 @@ const scriptSha256 = createHash("sha256")
   .digest("hex")
 const packet = JSON.parse(await readFile(join(runDir, "packet.json"), "utf8"))
 startRun({ runDir, dryRun: flags.includes("--dry-run"), scriptSha256 })
-const script = await import(pathToFileURL(scriptPath).href)
-await script.default(packet)
+try {
+  const script = await import(pathToFileURL(scriptPath).href)
+  await script.default(packet)
+} finally {
+  await endRun()
+}
