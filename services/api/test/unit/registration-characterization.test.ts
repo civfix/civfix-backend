@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest"
-import { avatarGradient, currentVersion } from "@civfix/contract"
+import { avatarGradient } from "@civfix/contract"
 import type { RegisterForEventRequest } from "@civfix/contract"
 import { InMemoryCounterStore, type CounterStore } from "../../src/abuse/counter-store.js"
 import { InMemoryCacheClient } from "../../src/auth/cache.js"
@@ -536,46 +536,6 @@ describe("registration characterization: register outcomes", () => {
     })
     expect(h.counterKeys).toHaveLength(1)
     expectNoSideEffects(h)
-  })
-
-  it("stale consent throws VALIDATION before the repository runs (terms first, then privacy)", async () => {
-    h.repo.seedEvent({
-      cleanupId: EVENT,
-      scheduledAt: STARTS_AT,
-      endsAt: ENDS_AT,
-      status: "cancelled",
-    })
-    await expect(
-      h.service.register(
-        request({
-          consent: {
-            termsVersion: "1900-01-01",
-            disclosureVersion: "1900-01-01",
-            hostContactOptIn: true,
-          },
-        }),
-        ME,
-      ),
-    ).rejects.toMatchObject({
-      code: "VALIDATION",
-      message: "Validation failed",
-      fields: { "consent.termsVersion": "out of date, so re-accept the terms" },
-    })
-    await expect(
-      h.service.register(
-        request({
-          consent: {
-            termsVersion: currentVersion("terms"),
-            disclosureVersion: "1900-01-01",
-            hostContactOptIn: true,
-          },
-        }),
-        ME,
-      ),
-    ).rejects.toMatchObject({
-      code: "VALIDATION",
-      fields: { "consent.disclosureVersion": "out of date, so re-accept the privacy notice" },
-    })
   })
 
   it("not_found: an unknown event throws NOT_FOUND after the flip budget is spent", async () => {

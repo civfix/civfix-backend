@@ -5,6 +5,7 @@ import type {
   ChatMessageExportRow,
   CleanupJoinedExportRow,
   CleanupOrganizedExportRow,
+  ConsentRecordExportRow,
   DataExportRepository,
   DmMessageExportRow,
   EventAnswerExportRow,
@@ -195,6 +196,13 @@ export function makeDrizzleDataExportRepository(sql: Sql): DataExportRepository 
       JOIN cleanup_registrations r ON r.id = s.registration_id
       WHERE r.user_id = ${userId} AND s.checked_in_at IS NOT NULL
       ORDER BY s.checked_in_at DESC
+      LIMIT ${rowCap + 1}
+    `,
+
+    consentRecords: (userId, rowCap) => sql<ConsentRecordExportRow[]>`
+      SELECT document_type, document_version, document_sha256, action, surface, accepted_at
+      FROM consent_records WHERE user_id = ${userId} AND subject_kind = 'user'
+      ORDER BY accepted_at DESC
       LIMIT ${rowCap + 1}
     `,
   }

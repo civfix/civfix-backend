@@ -1,7 +1,7 @@
 /**
  * Fastify error handler that renders the canonical AppError wire envelope.
  *
- *   AppError            -> { statusCode, body: { code, message, requestId, fields? } }
+ *   AppError            -> { statusCode, body: { code, message, requestId, fields?, details? } }
  *   ZodError            -> 422 VALIDATION (structural match: a ZodError thrown outside a route's
  *                          parse() wrapper would otherwise fall through to 500)
  *   Fastify validation  -> 422 VALIDATION with field details
@@ -14,7 +14,7 @@
  * GlitchTip/Sentry via captureError. There are NO silent catches: the handler always logs and responds.
  */
 
-import { AppError, ErrorCode } from "@civfix/contract"
+import { AppError, ErrorCode, type AppErrorDetails } from "@civfix/contract"
 import type { FastifyError, FastifyReply, FastifyRequest } from "fastify"
 import { isProd } from "../env.js"
 import { loggedRequestUrl } from "../lib/request-url.js"
@@ -43,6 +43,7 @@ interface ErrorBody {
   message: string
   requestId: string
   fields?: Record<string, string>
+  details?: AppErrorDetails
 }
 
 // A non-AppError client error carries its honest HTTP status; map it to the matching wire code so the
@@ -117,6 +118,7 @@ function sendAppError(error: AppError, request: FastifyRequest, reply: FastifyRe
     message: serverMessageHidden(error, request) ? INTERNAL_ERROR_MESSAGE : error.message,
     requestId,
     ...(error.fields ? { fields: error.fields } : {}),
+    ...(error.details !== undefined ? { details: error.details } : {}),
   }
   if (error.httpStatus >= HTTP_INTERNAL) {
     request.log.error({ err: error, requestId }, "AppError (server)")

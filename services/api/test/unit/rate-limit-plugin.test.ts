@@ -117,7 +117,10 @@ import {
 } from "../../src/routes/host/exports.routes.js"
 import { PAGE_VIEW_RATE_LIMIT } from "../../src/routes/host/page-views.routes.js"
 import { UNSUBSCRIBE_RATE_LIMIT } from "../../src/routes/host/unsubscribe.routes.js"
-import { LEGAL_VERSIONS_RATE_LIMIT } from "../../src/routes/legal.routes.js"
+import {
+  LEGAL_ACCEPT_RATE_LIMIT,
+  LEGAL_VERSIONS_RATE_LIMIT,
+} from "../../src/routes/legal.routes.js"
 import {
   ADMIN_REPORT_MUTATION_RATE_LIMIT,
   ROUTE_REPORT_RATE_LIMIT,
@@ -452,6 +455,7 @@ function recordingRedis(): RecordingRedis {
 }
 
 const IDENTITY_SCOPED_LIMITS = {
+  LEGAL_ACCEPT_RATE_LIMIT,
   CREATE_GROUP_RATE_LIMIT,
   ADD_GROUP_MEMBERS_RATE_LIMIT,
   JOIN_GROUP_RATE_LIMIT,

@@ -8,6 +8,7 @@ import { makeDrizzleGuestRsvpRepository } from "../guest-rsvp-repository.drizzle
 import { insertAuditRow } from "../admin/audit-repository.drizzle.js"
 import type { HostCapability } from "@civfix/contract"
 import { can, type HostStanding } from "@civfix/contract/host"
+import type { LegalDocumentVersion } from "@civfix/contract/legal"
 import { makeDrizzleHostStandingRepository } from "./host-standing-repository.drizzle.js"
 import {
   makeInsightsGeneration,
@@ -52,6 +53,7 @@ export interface HostRegistrationOverrides {
   audit?: RegistrationAudit
   now?: () => Date
   newId?: () => string
+  legalVersions?: readonly LegalDocumentVersion[]
 }
 
 export interface HostPageOverrides {
@@ -198,6 +200,7 @@ export function makeContainerRegistrationServices(
     ...(deps.sql === undefined ? {} : { affiliations: container.getAffiliationLoader() }),
     ...clock,
     ...(overrides?.newId !== undefined ? { newId: overrides.newId } : {}),
+    ...(overrides?.legalVersions !== undefined ? { legalVersions: overrides.legalVersions } : {}),
     ...log,
   })
 

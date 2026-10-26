@@ -70,6 +70,10 @@ const EXPECTED_PROJECTIONS: ReadonlyArray<readonly [from: string, columns: strin
     "a.cleanup_id, q.prompt, COALESCE(a.value_text, a.value_json::text) AS value",
   ],
   ["cleanup_registration_seats", "s.cleanup_id, s.seat_index, s.checked_in_at, s.checkin_method"],
+  [
+    "consent_records",
+    "document_type, document_version, document_sha256, action, surface, accepted_at",
+  ],
 ]
 
 const EXPECTED_TOP_LEVEL_KEYS = [
@@ -99,6 +103,7 @@ const EXPECTED_TOP_LEVEL_KEYS = [
   "eventRegistrations",
   "eventAnswers",
   "eventCheckins",
+  "consentRecords",
   "truncated",
 ]
 
@@ -197,6 +202,7 @@ describe("data export field set (BE-TEST-048)", () => {
       "eventRegistrations",
       "eventAnswers",
       "eventCheckins",
+      "consentRecords",
     ]) {
       expect(exported[section], section).toEqual([ROW])
     }

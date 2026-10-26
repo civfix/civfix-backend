@@ -1853,6 +1853,12 @@ export async function purgeDemo(tx: TransactionSql): Promise<Record<string, numb
     "notification_prefs",
     tx`DELETE FROM notification_prefs WHERE user_id IN (${demo}) RETURNING 1 AS one`,
   )
+  // An account's consent record must keep its user_id, so the FK's ON DELETE SET NULL would fail the
+  // users delete below.
+  await del(
+    "consent_records",
+    tx`DELETE FROM consent_records WHERE user_id IN (${demo}) RETURNING 1 AS one`,
+  )
   // posts / likes / saves / mentions / timeline cascade from users + reports + cleanups.
   await del(
     "users",

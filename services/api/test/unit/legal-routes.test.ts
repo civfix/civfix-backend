@@ -16,6 +16,7 @@ import {
   InMemoryLegalDocumentsRepository,
   type StoredLegalDocument,
 } from "../helpers/legal-documents-repository.memory.js"
+import { InMemoryLegalAcceptanceRepository } from "../helpers/legal-acceptance-repository.memory.js"
 import {
   FUTURE_PRIVACY,
   NEW_BLOCKS,
@@ -55,8 +56,10 @@ async function harness(rows: readonly StoredLegalDocument[] = defaultRows()): Pr
   })
   const env = loadEnv({ NODE_ENV: "test", ADMIN_EMAILS: OPERATOR_EMAIL })
   const app = await makeServer({ env, authServices: services })
+  const repo = new InMemoryLegalDocumentsRepository(rows)
   app.legalOverrides = {
-    repo: new InMemoryLegalDocumentsRepository(rows),
+    repo,
+    acceptances: new InMemoryLegalAcceptanceRepository(repo),
     now: () => TEST_NOW,
   }
   current = { app, services, stores }
@@ -257,8 +260,11 @@ describe("GET /admin/legal/versions", () => {
       for (const key of ["title", "summary", "material"]) {
         expect(key in entry, `${String(entry.type)}@${String(entry.version)} ${key}`).toBe(isNew)
       }
-      expect("acceptedCount" in entry).toBe(false)
-      expect("activeAccounts" in entry).toBe(false)
+      // The current Terms and Privacy carry the acceptance counts (#239's T45).
+      const key = `${String(entry.type)}@${String(entry.version)}`
+      const counted = key === "terms@2026-10-26" || key === "privacy@2026-09-21"
+      expect("acceptedCount" in entry).toBe(counted)
+      expect("activeAccounts" in entry).toBe(counted)
     }
     expect(documents[0]).toMatchObject({
       title: "Privacy Notice",
