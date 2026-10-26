@@ -24,7 +24,7 @@ import {
 
 export const LEGAL_VERSIONS_RATE_LIMIT = perHost({ max: 120, timeWindow: "1 minute" })
 
-const LEGAL_ACCEPT_RATE_LIMIT = perIdentity({ max: 20, timeWindow: "1 minute" })
+export const LEGAL_ACCEPT_RATE_LIMIT = perIdentity({ max: 20, timeWindow: "1 minute" })
 
 export interface LegalRouteOverrides {
   repo: LegalDocumentsRepository
