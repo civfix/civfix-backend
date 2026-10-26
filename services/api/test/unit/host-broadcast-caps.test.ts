@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest"
+import { ErrorCode } from "@civfix/contract"
 import { FakeMailer } from "@civfix/seams"
 import { InMemoryCounterStore, type CounterStore } from "../../src/abuse/counter-store.js"
 import { InMemoryBroadcastRepository } from "../helpers/host/broadcast-repository.memory.js"
@@ -13,7 +14,7 @@ const EVENT = "00000000-0000-0000-0000-0000000000ee"
 const HOST = "00000000-0000-0000-0000-0000000000aa"
 
 const CONFIG: BroadcastConfig = {
-  killSwitch: false,
+  killSwitch: () => Promise.resolve(false),
   perEventPerDay: 2,
   recipientsPerDay: 10,
   cooldownSec: 900,
@@ -75,8 +76,27 @@ async function capKind(fn: () => Promise<unknown>): Promise<string> {
 
 describe("broadcast caps", () => {
   it("refuses when the global kill switch is on", async () => {
-    const { service } = build({ config: { killSwitch: true } })
+    const { service } = build({ config: { killSwitch: () => Promise.resolve(true) } })
     expect(await capKind(() => service.assertComposeAllowed(EVENT, HOST))).toBe("kill_switch")
+  })
+
+  it("T1: follows a kill switch flipped after the service was built, in both directions", async () => {
+    let on = false
+    const { service } = build({ config: { killSwitch: () => Promise.resolve(on) } })
+
+    await expect(service.assertComposeAllowed(EVENT, HOST)).resolves.toBeUndefined()
+
+    on = true
+    const refused = await service.assertComposeAllowed(EVENT, HOST).then(
+      () => null,
+      (err: unknown) => err,
+    )
+    expect(refused).toBeInstanceOf(BroadcastCapError)
+    expect((refused as BroadcastCapError).kind).toBe("kill_switch")
+    expect(capError((refused as BroadcastCapError).kind).code).toBe(ErrorCode.CONFLICT)
+
+    on = false
+    await expect(service.assertComposeAllowed(EVENT, HOST)).resolves.toBeUndefined()
   })
 
   it("refuses a per-host suspension", async () => {
