@@ -34,6 +34,7 @@ civfix-backend/
   services/
     api/                        Fastify API (@civfix/api)
     media-worker/               pg-boss media worker (@civfix/media-worker)
+    city-filer/                 prod-only portal filer: works filing.run (@civfix/city-filer, docs/city-filing.md)
   infra/
     email-worker/               Cloudflare Email Worker for inbound mail (standalone, own wrangler toolchain)
   scripts/                      the CI no-frontend guard + the dynamic-SQL check (pnpm check:sql, a CI gate)
@@ -140,6 +141,13 @@ SDKs are confined to adapter files under `services/api/src/adapters/`. The DI co
 `LOCAL_STORAGE_DIR` selects the development-only local-disk store). The media worker is the
 deliberate exception: decoding untrusted bytes with sharp/exifr/ffmpeg and running pg-boss's work side
 is its job, and it has its own two-seam picker (`services/media-worker/src/seams.ts`).
+
+## City filer (`services/city-filer`)
+
+Works the `filing.run` queue the API fills when a report is filed through a city web portal. It runs
+each portal's script from its own workspace in headless Chromium, as a second, credential-less user,
+then sends the outcome back on `filing.result` for the API to apply. Prod only; see
+[docs/city-filing.md](docs/city-filing.md).
 
 ## Media worker (`services/media-worker`)
 

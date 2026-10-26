@@ -1,12 +1,14 @@
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises"
+import { chmod, mkdir, mkdtemp, readdir, rm, utimes, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { FakeJobs } from "@civfix/seams"
 import { FILING_RESULT_JOB, type FilingResultPayload } from "@civfix/api/filings-worker"
 import { afterEach, beforeEach, describe, expect, it } from "vitest"
+import { pruneRunDirs } from "../../src/prune.js"
 import { reconcileRunningFilings } from "../../src/reconcile.js"
 import { FakeFilingsWorker } from "../helpers/fake-filings-worker.js"
 import { makeWorkspace } from "../helpers/filer-harness.js"
+import { exists } from "../helpers/files.js"
 
 let dir: string
 let workspace: string
@@ -56,5 +58,33 @@ describe("startup and upkeep", () => {
       [a.id, a.runId, 1, "failed", "uncertain_submission"],
       [b.id, b.runId, 2, "failed", "portal_error"],
     ])
+  })
+
+  it("T25: a 31-day run directory is deleted, a 29-day one and portals/ are kept, an undeletable entry is logged and skipped", async () => {
+    const now = new Date("2026-10-25T12:00:00.000Z")
+    const daysAgo = (days: number) => new Date(now.getTime() - days * 86_400_000)
+    const locked = join(await runDir("stuck"), "out", "locked")
+    await mkdir(locked)
+    await writeFile(join(locked, "shot.png"), "x")
+    await chmod(locked, 0o500)
+    await mkdir(join(workspace, "portals", "x"))
+    for (const [path, days] of [
+      [await runDir("old"), 31],
+      [await runDir("recent"), 29],
+      [join(workspace, "runs", "stuck"), 31],
+      [join(workspace, "portals", "x"), 90],
+    ] as const) {
+      await utimes(path, daysAgo(days), daysAgo(days))
+    }
+    const logs: string[] = []
+
+    try {
+      await pruneRunDirs(workspace, { now, log: (line) => void logs.push(line) })
+      expect((await readdir(join(workspace, "runs"))).sort()).toEqual(["recent", "stuck"])
+      expect(await exists(join(workspace, "portals", "x"))).toBe(true)
+      expect(logs).toContain("filer: could not delete a run directory")
+    } finally {
+      await chmod(locked, 0o700)
+    }
   })
 })

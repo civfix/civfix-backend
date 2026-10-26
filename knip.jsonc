@@ -53,6 +53,21 @@
         // A workspace script's import, resolved through /workspace/node_modules (the image's link; the
         // test harness makes the same one).
         "@civfix/filer-kit",
+        // tsup inlines @civfix/api (noExternal) but keeps these external, so the bundled api code
+        // resolves them from the filer's own node_modules at runtime.
+        // @civfix/api/adapters/storage (R2 client)
+        "@aws-sdk/client-s3",
+        // @civfix/api/adapters/storage (presigned URLs)
+        "@aws-sdk/s3-request-presigner",
+        // @civfix/api/errors (GlitchTip reporting)
+        "@sentry/node",
+        // @civfix/api/adapters/storage (R2 request timeouts and egress proxy)
+        "@smithy/node-http-handler",
+        // @civfix/api/adapters/storage (egress proxy agent)
+        "https-proxy-agent",
+        // @civfix/api/db (the Drizzle client over postgres-js)
+        "drizzle-orm",
+        "postgres",
       ],
     },
     "packages/config": {},
