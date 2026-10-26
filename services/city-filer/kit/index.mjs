@@ -29,6 +29,18 @@ function printSentinel() {
   writeSync(1, `${DRY_RUN_SENTINEL} ${run.scriptSha256}\n`)
 }
 
+export async function launch() {
+  throw new Error("not implemented")
+}
+
+export async function screenshot(_label) {
+  throw new Error("not implemented")
+}
+
+export async function submit(_locator) {
+  throw new Error("not implemented")
+}
+
 /**
  * out/result.json: { outcome: "submitted" | "linked_existing" | "needs_human", caseId?, caseUrl?,
  * reason?, reasonDetail?, evidence? }. A dry run that finds a similar request has reached its last

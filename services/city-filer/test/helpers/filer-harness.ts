@@ -98,6 +98,8 @@ export async function filerHarness(
     logs,
     spawnEnvs,
     installScript,
+    installFixtureScript: async () =>
+      installScript(await readFile(join(PACKAGE_DIR, "test", "fixtures", "portal-script.mjs"))),
     async run(filingId: string, attempt = 1) {
       await jobs.enqueue(FILING_RUN_JOB, { filingId, attempt })
       return jobs.jobsFor(FILING_RUN_JOB).at(-1)?.state
