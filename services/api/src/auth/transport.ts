@@ -43,7 +43,8 @@ const CLIENT_HEADER = "x-client"
 
 const MOBILE_CLIENT = "mobile"
 
-const BEARER_RE = /^Bearer\s+(.+)$/i
+const BEARER_PREFIX_RE = /^Bearer\s+/i
+const LINE_TERMINATOR_RE = /[\n\r\u2028\u2029]/
 
 function sessionCookieName(): string {
   return isProd() ? SESSION_COOKIE_HOST : SESSION_COOKIE
@@ -85,8 +86,14 @@ export function clientKind(request: FastifyRequest): ClientKind {
 export function bearerToken(request: FastifyRequest): string | null {
   const header = firstHeaderValue(request.headers.authorization)
   if (!header) return null
-  const match = BEARER_RE.exec(header.trim())
-  return match ? match[1]!.trim() : null
+  const value = header.trim()
+  const prefix = BEARER_PREFIX_RE.exec(value)
+  if (!prefix) return null
+  // Split without backtracking: /^Bearer\s+(.+)$/ retries every whitespace split, which is quadratic on
+  // spaces before a line break. The value is trimmed, so the token is never empty, and like that pattern
+  // a token never spans a line break.
+  const token = value.slice(prefix[0].length)
+  return LINE_TERMINATOR_RE.test(token) ? null : token
 }
 
 export function presentedSessionToken(request: FastifyRequest): string | null {

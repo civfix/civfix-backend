@@ -1,4 +1,5 @@
 import type * as SentryNode from "@sentry/node"
+import { redactEmails } from "./email-redaction.js"
 import { redactPans } from "./pan-redaction.js"
 
 type SentryModule = typeof SentryNode
@@ -99,7 +100,6 @@ function deepRedact(value: unknown, depth = 0): unknown {
   return value
 }
 
-const EMAIL_RE = /[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}/g
 const BEARER_RE = /\bBearer\s+[\w.-]+/gi
 const SECRET_ASSIGN_RE =
   /\b(access_token|refresh_token|token|password|passwd|secret|api[_-]?key|authorization|auth|otp)\b(\s*[=:]\s*)([^\s,;&"']+)/gi
@@ -116,8 +116,7 @@ const QUERY_BREADCRUMB_MARKER = "query"
 
 function scrubMessage(text: string): string {
   const redacted = redactPans(
-    text
-      .replace(EMAIL_RE, REDACTED)
+    redactEmails(text, REDACTED)
       .replace(BEARER_RE, `Bearer ${REDACTED}`)
       .replace(SECRET_ASSIGN_RE, (_m, key: string, sep: string) => `${key}${sep}${REDACTED}`),
     REDACTED,
