@@ -162,9 +162,12 @@ ARG SERVICE_VERSION=0.0.0
 ENV NODE_ENV=production \
     SERVICE_VERSION=${SERVICE_VERSION}
 WORKDIR /app
+# npm is removed as in the api image: nothing runs it, and its bundled dependency tree is where the image
+# scan finds fixable HIGH advisories.
 RUN apt-get update \
  && apt-get install -y --no-install-recommends util-linux \
  && rm -rf /var/lib/apt/lists/* \
+ && rm -rf /usr/local/bin/npm /usr/local/bin/npx /usr/local/lib/node_modules/npm \
  && groupadd --system --gid 1001 mediatools \
  && useradd --system --uid 1001 --gid 1001 --no-create-home --shell /usr/sbin/nologin mediatools \
  && usermod --append --groups mediatools node \
