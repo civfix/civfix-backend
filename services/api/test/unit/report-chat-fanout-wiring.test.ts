@@ -1,4 +1,5 @@
-import { describe, it, expect, beforeEach, vi } from "vitest"
+import { describe, it, expect, beforeEach, vi, type Mock } from "vitest"
+import type { FastifyBaseLogger } from "fastify"
 import { FakePushSender } from "@civfix/seams"
 import type { ChatMessageDTO } from "@civfix/contract"
 import type { Container } from "../../src/di.js"
@@ -113,8 +114,11 @@ function reportBells(): number {
   return notifRepo.notifications.filter((n) => n.type === "report_chat").length
 }
 
-function warnLogger(): { warn: ReturnType<typeof vi.fn>; error: ReturnType<typeof vi.fn> } {
-  return { warn: vi.fn(), error: vi.fn() }
+function warnLogger(): {
+  warn: Mock<FastifyBaseLogger["warn"]>
+  error: Mock<FastifyBaseLogger["error"]>
+} {
+  return { warn: vi.fn<FastifyBaseLogger["warn"]>(), error: vi.fn<FastifyBaseLogger["error"]>() }
 }
 
 beforeEach(() => {
