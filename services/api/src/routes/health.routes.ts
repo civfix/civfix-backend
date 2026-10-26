@@ -6,7 +6,7 @@
  * Both are unauthenticated attack surface. /readyz does real I/O (`select 1` on a 10-connection pool plus a
  * Redis PING), so it is rate limited and memoized for READY_CACHE_MS: an uncached probe was a cheap
  * amplifier, one HTTP request per DB round-trip. /healthz does not disclose the build version, which would
- * only help someone match us against a CVE list; operators see it on the admin system-health surface.
+ * only help someone match us against a CVE list; operators see it on the admin developer overview.
  */
 
 import type { FastifyInstance } from "fastify"

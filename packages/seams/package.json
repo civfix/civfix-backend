@@ -16,7 +16,7 @@
     "clean": "rimraf .turbo *.tsbuildinfo"
   },
   "dependencies": {
-    "@civfix/contract": "^0.64.0"
+    "@civfix/contract": "0.67.0-b-feat-dev-console-contract.gee137fa"
   },
   "devDependencies": {
     "@civfix/config": "workspace:*",
