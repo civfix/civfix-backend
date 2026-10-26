@@ -467,6 +467,26 @@ works for this exact address, that address never accepts a mailed code, and a wr
 same per-IP verify throttle as any other failed sign-in. `@reviewer` is on the reserved-handle
 blocklist so no real user can take it.
 
+### Staging test accounts
+
+The developer console's test tools act only on test accounts, which sign in the same way but with a
+code of their own, so the code given to App Store reviewers is never shared with testers. They are
+wired only while dev tools are on (`DEV_TOOLS_ENABLED`, staging or local), whether or not the reviewer
+bypass is.
+
+| Variable | Meaning |
+| --- | --- |
+| `DEV_TEST_EMAILS` | comma-separated test addresses, trimmed and lowercased; only `@civfix.org` addresses are kept. Boot fails if one is `reviewer@civfix.org` or in `ADMIN_EMAILS` |
+| `DEV_TEST_OTP_CODE` | the test accounts' shared code, **at least 20 characters**; required whenever `DEV_TEST_EMAILS` lists an address |
+
+Behaviour when wired: requesting a code for a listed address sends **no** email and stores nothing;
+verifying with `DEV_TEST_OTP_CODE` signs in and, on first use, creates a citizen account with its
+profile incomplete (so it goes through first run) and a handle made from the address (`new.tester@…`
+becomes `@new_tester`, then `@new_tester_2` and so on when taken). An existing account whose role is
+not citizen is refused like a wrong code. The test code works only for listed addresses, the reviewer
+code never works for them, and a wrong guess spends the same per-IP verify throttle. With dev tools
+off a listed address gets a normal emailed code.
+
 ## License
 
 civfix-backend is free software, licensed under the

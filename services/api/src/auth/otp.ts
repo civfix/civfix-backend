@@ -1,10 +1,11 @@
 import { hash as argonHash, verify as argonVerify } from "@node-rs/argon2"
-import { AppError } from "@civfix/contract"
+import { AppError, HANDLE_MAX_LENGTH } from "@civfix/contract"
 import { constantTimeStringEqual, generateNumericCode } from "./crypto.js"
 import { normalizeIp } from "../abuse/ip-rate-limit.js"
 import type { CacheClient } from "./cache.js"
 import type { OAuthIdentityStore, OtpStore, UserRecord, UserStore } from "./stores.js"
 import { newAccountDisplayName } from "./official-account.js"
+import { isReservedHandle } from "./reserved-handles.js"
 import type { Mailer } from "@civfix/seams"
 import type { WriteAuditInput } from "../services/admin/audit.js"
 
@@ -83,7 +84,7 @@ export interface OtpLogger {
 
 export type OtpAuditSink = (input: WriteAuditInput) => Promise<void>
 
-type InboxProof = "reviewer" | "code"
+type InboxProof = "reviewer" | "test-account" | "code"
 
 type LocaleAwareMailer = Mailer & {
   sendOtp(to: string, code: string, locale?: string): Promise<void>
@@ -116,6 +117,7 @@ export class OtpService {
   private readonly now: () => number
   private readonly logger?: OtpLogger
   private readonly reviewer: ReviewerOtpConfig | null
+  private readonly testAccounts: { emails: ReadonlySet<string>; code: string } | null
   private readonly supportEmail: string | null
   private readonly audit?: OtpAuditSink
 
@@ -130,6 +132,12 @@ export class OtpService {
     this.reviewer = opts.reviewer
       ? { email: normalizeEmail(opts.reviewer.email), code: opts.reviewer.code }
       : null
+    this.testAccounts = opts.testAccounts
+      ? {
+          emails: new Set(opts.testAccounts.emails.map(normalizeEmail)),
+          code: opts.testAccounts.code,
+        }
+      : null
     this.supportEmail = opts.supportEmail ?? null
     this.audit = opts.audit
   }
@@ -138,10 +146,14 @@ export class OtpService {
     return this.reviewer !== null && normalizedEmail === this.reviewer.email
   }
 
+  private isTestAccountEmail(normalizedEmail: string): boolean {
+    return this.testAccounts !== null && this.testAccounts.emails.has(normalizedEmail)
+  }
+
   async issueOtp(email: string, ip: string | null): Promise<IssueResult> {
     const normalized = normalizeEmail(email)
 
-    if (this.isReviewerEmail(normalized)) {
+    if (this.isReviewerEmail(normalized) || this.isTestAccountEmail(normalized)) {
       return { resendAfterSec: OTP_EMAIL_WINDOW_SECONDS }
     }
 
@@ -188,9 +200,9 @@ export class OtpService {
 
   async verifyOtp(email: string, code: string, ip: string | null): Promise<string> {
     const normalized = normalizeEmail(email)
-    if ((await this.proveInbox(normalized, code, ip)) === "reviewer") {
-      return this.ensureReviewerUser(normalized)
-    }
+    const proof = await this.proveInbox(normalized, code, ip)
+    if (proof === "reviewer") return this.ensureReviewerUser(normalized)
+    if (proof === "test-account") return this.ensureTestAccountUser(normalized)
     const existing = await this.users.findByEmail(normalized)
     if (existing) {
       await this.refuseUnverifiedIdentityHolder(existing)
@@ -240,6 +252,17 @@ export class OtpService {
     if (this.isReviewerEmail(normalized)) {
       if (this.reviewer !== null && constantTimeStringEqual(code, this.reviewer.code)) {
         return "reviewer"
+      }
+      await this.bumpVerifyFailure(null, ipBucket)
+      throw AppError.unauthorized(INVALID_CODE_MESSAGE)
+    }
+
+    if (this.isTestAccountEmail(normalized)) {
+      // Only a citizen account may sign in with the shared test code: one that has since become an
+      // operator or a city official would hand that role to whoever holds the code.
+      if (this.testAccounts !== null && constantTimeStringEqual(code, this.testAccounts.code)) {
+        const account = await this.users.findByEmail(normalized)
+        if (account === null || account.role === "citizen") return "test-account"
       }
       await this.bumpVerifyFailure(null, ipBucket)
       throw AppError.unauthorized(INVALID_CODE_MESSAGE)
@@ -325,6 +348,37 @@ export class OtpService {
       profileComplete: true,
     })
     return created.id
+  }
+
+  // Created like any new citizen except for the handle, so the account goes through first run.
+  private async ensureTestAccountUser(normalizedEmail: string): Promise<string> {
+    const existing = await this.users.findByEmail(normalizedEmail)
+    if (existing) return existing.id
+    const created = await this.users.create(normalizedEmail, {
+      displayName: newAccountDisplayName(
+        defaultDisplayName(normalizedEmail),
+        UNNAMED_CITIZEN_DISPLAY_NAME,
+      ),
+      role: "citizen",
+      emailVerified: true,
+      handle: await this.freeTestAccountHandle(normalizedEmail),
+      profileComplete: false,
+    })
+    return created.id
+  }
+
+  private async freeTestAccountHandle(normalizedEmail: string): Promise<string> {
+    const base = defaultDisplayName(normalizedEmail)
+      .toLowerCase()
+      .replace(/[^a-z0-9_]/g, "_")
+      .slice(0, HANDLE_MAX_LENGTH)
+    for (let n = 1; ; n += 1) {
+      const suffix = n === 1 ? "" : `_${n}`
+      const handle = base.slice(0, HANDLE_MAX_LENGTH - suffix.length) + suffix
+      if (!isReservedHandle(handle) && (await this.users.findByHandle(handle)) === null) {
+        return handle
+      }
+    }
   }
 
   private async ipThrottleTripped(ip: string | null): Promise<boolean> {
