@@ -36,7 +36,7 @@ const OPERATOR = "0b8f3a52-7a55-4d6e-9d0c-5a8f1b7c9e0f"
 const NEXT = `${AT_TEXT}|${ID_A}`
 
 const CONFIG: BroadcastConfig = {
-  killSwitch: false,
+  killSwitch: () => Promise.resolve(false),
   perEventPerDay: 3,
   recipientsPerDay: 2000,
   cooldownSec: 900,

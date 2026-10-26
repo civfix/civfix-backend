@@ -21,6 +21,7 @@ const EXPECTED_TABLES = [
   "sessions",
   "jurisdictions",
   "forward_template_settings",
+  "runtime_flags",
   "reports",
   "media_assets",
   "report_timeline",

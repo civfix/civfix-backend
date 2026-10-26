@@ -32,6 +32,11 @@ export async function registerAutoForwardJobs(
   await container.jobs.work(REPORT_AUTOFORWARD_JOB, async (job) => {
     const reportId = extractReportId(job.data)
     if (reportId === null) return
+    // Read per job, so turning the flag off also drops forwards already queued.
+    if (!(await container.getRuntimeFlags().get("report_autoforward_enabled"))) {
+      logger?.info({ reportId }, "report.autoforward skip: auto-forward is off")
+      return
+    }
     await runAutoForward(container, reportId, logger)
   })
 }
