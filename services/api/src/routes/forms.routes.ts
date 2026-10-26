@@ -58,7 +58,7 @@ const HomeTurfFormSchema = z
     school: z.string().trim().min(1).max(160),
     city: z.string().trim().min(1).max(120),
     teamSize: z.string().trim().min(1).max(30),
-    email: z.string().trim().max(MAX_EMAIL_LENGTH).email(),
+    email: z.string().trim().max(MAX_EMAIL_LENGTH).check(z.email()),
     phone: z.string().trim().min(1).max(40),
     notes: z.string().trim().max(MAX_NOTES_LENGTH).optional(),
     turnstileToken: z.string().min(1).max(MAX_TOKEN_LENGTH),

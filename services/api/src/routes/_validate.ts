@@ -1,11 +1,11 @@
 import { AppError } from "@civfix/contract"
 import type { FastifyRequest } from "fastify"
-import { z, type ZodTypeAny } from "zod"
+import { z } from "zod"
 
 // Field key for an issue on the value itself (a non-object body, a refine on the whole schema).
 const ROOT_FIELD_KEY = "_"
 
-export function parse<S extends ZodTypeAny>(schema: S, data: unknown): z.infer<S> {
+export function parse<S extends z.ZodType>(schema: S, data: unknown): z.infer<S> {
   try {
     return schema.parse(data)
   } catch (err) {
@@ -31,12 +31,12 @@ export function parse<S extends ZodTypeAny>(schema: S, data: unknown): z.infer<S
 function trimTextValue(value: unknown): unknown {
   if (typeof value === "string") return value.trim()
   if (Array.isArray(value)) {
-    return value.map((entry) => (typeof entry === "string" ? entry.trim() : entry))
+    return value.map((entry: unknown) => (typeof entry === "string" ? entry.trim() : entry))
   }
   return value
 }
 
-export function trimTextFields<S extends ZodTypeAny>(
+export function trimTextFields<S extends z.ZodType>(
   schema: S,
   ...fields: readonly string[]
 ): z.ZodPreprocess<S> {

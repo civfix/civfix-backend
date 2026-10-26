@@ -110,6 +110,7 @@
     "@types/nodemailer": "^8.0.2",
     "@types/pdfkit": "^0.17.6",
     "@types/web-push": "^3.6.4",
+    "@types/ws": "^8.18.2",
     "drizzle-kit": "^0.31.11",
     "eslint": "^9.39.5",
     "ioredis-mock": "^8.13.1",

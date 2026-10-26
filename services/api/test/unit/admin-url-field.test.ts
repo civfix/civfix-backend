@@ -27,14 +27,14 @@ describe("L7: httpUrlField scheme allowlist", () => {
       "file:///etc/passwd",
       "ftp://lacity.gov/form",
     ]) {
-      expect(() => httpUrlField(hostile, "formUrl"), hostile).toThrowError(
+      expect(() => httpUrlField(hostile, "formUrl"), hostile).toThrow(
         expect.objectContaining({ httpStatus: 422 }),
       )
     }
   })
 
   it("REJECTS a string that is not a URL at all", () => {
-    expect(() => httpUrlField("not a url", "formUrl")).toThrowError(
+    expect(() => httpUrlField("not a url", "formUrl")).toThrow(
       expect.objectContaining({ httpStatus: 422 }),
     )
   })

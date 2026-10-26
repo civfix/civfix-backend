@@ -1,3 +1,4 @@
+import type { Notification, Provider } from "node-apn"
 import type { PushSenderConfig, PushLogger, PlatformDispatcher } from "./push-sender.js"
 import { hashForLog } from "./push-sender.js"
 
@@ -15,7 +16,10 @@ export function makeApnsDispatcher(
   apns: NonNullable<PushSenderConfig["apns"]>,
   logger: PushLogger,
 ): PlatformDispatcher {
-  let providerPromise: Promise<{ provider: any; Notification: any }> | null = null
+  let providerPromise: Promise<{
+    provider: Provider
+    Notification: typeof Notification
+  }> | null = null
 
   async function getProvider() {
     if (!providerPromise) {
@@ -35,10 +39,11 @@ export function makeApnsDispatcher(
     const { provider, Notification } = await getProvider()
     const note = new Notification()
     note.topic = apns.bundleId
-    note.alert = {
-      title: payload.title,
-      ...(payload.body !== undefined ? { body: payload.body } : {}),
-    }
+    // node-apn's `alert` setter writes `aps.alert`, but its typings demand a body; APNs takes a
+    // title-only alert, so the alert goes to `aps` directly.
+    const alert: { title: string; body?: string } = { title: payload.title }
+    if (payload.body !== undefined) alert.body = payload.body
+    note.aps.alert = alert
     note.sound = APNS_SOUND
     note.payload = {
       ...(payload.data ?? {}),
