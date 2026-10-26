@@ -3833,6 +3833,38 @@ SELECT id, source, report_id, cleanup_id, jurisdiction_geoid, hours::float8 AS h
 => [{}]"
 `;
 
+exports[`sql transcripts > makeDrizzleDevJobsRepository.runState 1`] = `
+"-- empty
+BEGIN tx1
+[tx1] SET LOCAL statement_timeout = '2s' -- []
+[tx1] SELECT EXISTS (SELECT 1 FROM pgboss.queue WHERE name = $1) AS exists, EXISTS ( SELECT 1 FROM pgboss.job WHERE name = $2 AND state IN ('created', 'retry') ) AS waiting -- ["name-1","name-1"]
+ROLLBACK tx1
+=> throws Error: runState: select returned no row
+-- row
+BEGIN tx1
+[tx1] SET LOCAL statement_timeout = '2s' -- []
+[tx1] SELECT EXISTS (SELECT 1 FROM pgboss.queue WHERE name = $1) AS exists, EXISTS ( SELECT 1 FROM pgboss.job WHERE name = $2 AND state IN ('created', 'retry') ) AS waiting -- ["name-1","name-1"]
+COMMIT tx1
+=> {"exists":true,"waiting":"waiting-row"}"
+`;
+
+exports[`sql transcripts > makeDrizzleDevJobsRepository.snapshot 1`] = `
+"-- empty
+BEGIN tx1
+[tx1] SET LOCAL statement_timeout = '2s' -- []
+[tx1] WITH live AS ( SELECT name, count(*) FILTER (WHERE state = 'created')::int AS created, count(*) FILTER (WHERE state = 'retry')::int AS retry, count(*) FILTER (WHERE state = 'active')::int AS active, count(*) FILTER (WHERE state = 'failed')::int AS failed, count(*) FILTER ( WHERE state = 'failed' AND completed_on >= now() - interval '24 hours' )::int AS failed_last_24h, min(start_after) FILTER ( WHERE state IN ('created', 'retry') AND start_after <= now() ) AS oldest_due_at, max(completed_on) FILTER (WHERE state = 'completed') AS last_completed_at FROM pgboss.job WHERE name = ANY($1::text[]) GROUP BY name ), archived AS ( SELECT name, count(*) FILTER ( WHERE state = 'failed' AND completed_on >= now() - interval '24 hours' )::int AS failed_last_24h, max(completed_on) FILTER (WHERE state = 'completed') AS last_completed_at FROM pgboss.archive WHERE archived_on >= now() - interval '48 hours' AND name = ANY($2::text[]) GROUP BY name ) SELECT coalesce(l.name, a.name) AS name, coalesce(l.created, 0) AS created, coalesce(l.retry, 0) AS retry, coalesce(l.active, 0) AS active, coalesce(l.failed, 0) AS failed, coalesce(l.failed_last_24h, 0) + coalesce(a.failed_last_24h, 0) AS failed_last_24h, l.oldest_due_at, greatest(l.last_completed_at, a.last_completed_at) AS last_completed_at FROM live l FULL JOIN archived a ON a.name = l.name -- [["name-1"],["name-1"]]
+[tx1] SELECT name, cron FROM pgboss.schedule WHERE name = ANY($1::text[]) -- [["name-1"]]
+COMMIT tx1
+=> {"stats":[],"schedules":[]}
+-- row
+BEGIN tx1
+[tx1] SET LOCAL statement_timeout = '2s' -- []
+[tx1] WITH live AS ( SELECT name, count(*) FILTER (WHERE state = 'created')::int AS created, count(*) FILTER (WHERE state = 'retry')::int AS retry, count(*) FILTER (WHERE state = 'active')::int AS active, count(*) FILTER (WHERE state = 'failed')::int AS failed, count(*) FILTER ( WHERE state = 'failed' AND completed_on >= now() - interval '24 hours' )::int AS failed_last_24h, min(start_after) FILTER ( WHERE state IN ('created', 'retry') AND start_after <= now() ) AS oldest_due_at, max(completed_on) FILTER (WHERE state = 'completed') AS last_completed_at FROM pgboss.job WHERE name = ANY($1::text[]) GROUP BY name ), archived AS ( SELECT name, count(*) FILTER ( WHERE state = 'failed' AND completed_on >= now() - interval '24 hours' )::int AS failed_last_24h, max(completed_on) FILTER (WHERE state = 'completed') AS last_completed_at FROM pgboss.archive WHERE archived_on >= now() - interval '48 hours' AND name = ANY($2::text[]) GROUP BY name ) SELECT coalesce(l.name, a.name) AS name, coalesce(l.created, 0) AS created, coalesce(l.retry, 0) AS retry, coalesce(l.active, 0) AS active, coalesce(l.failed, 0) AS failed, coalesce(l.failed_last_24h, 0) + coalesce(a.failed_last_24h, 0) AS failed_last_24h, l.oldest_due_at, greatest(l.last_completed_at, a.last_completed_at) AS last_completed_at FROM live l FULL JOIN archived a ON a.name = l.name -- [["name-1"],["name-1"]]
+[tx1] SELECT name, cron FROM pgboss.schedule WHERE name = ANY($1::text[]) -- [["name-1"]]
+COMMIT tx1
+=> {"stats":[{"name":"name-row","created":"created-row","retry":"retry-row","active":"active-row","failed":"failed-row","failedLast24h":"failed_last_24h-row","oldestDueAt":"2026-03-04T05:06:07.000Z","lastCompletedAt":"2026-03-04T05:06:07.000Z"}],"schedules":[{"name":"name-row","cron":"cron-row"}]}"
+`;
+
 exports[`sql transcripts > makeDrizzleDiscoveryRepository.addNote 1`] = `
 "-- empty
 INSERT INTO audit_log (actor_id, action, target, meta) VALUES ($1, $2, $3, $4) RETURNING id -- ["actorId-1","discovery.note_added","discovery:id-1",{"<json>":{"text":"text-1","who":"who-1"}}]
@@ -7736,6 +7768,32 @@ SELECT TRUE /* columns */ TRUE /* from */ WHERE <helper ["dm"]>.id = $1 AND TRUE
 => {"kind":"text","id":"id-1","createdAt":"createdAt-1","cleanupId":"cleanupId-1","mentions":[undefined],"reactions":[undefined],"mine":true,"body":"body-1","replyTo":{"kind":undefined,"id":undefined,"excerpt":undefined,"from":undefined,"deleted":undefined},"editedAt":"editedAt-1","replyToId":"replyToId-1","system":{"status":undefined,"kind":undefined,"note":undefined,"body":undefined},"poll":{"options":undefined,"question":undefined,"closed":undefined,"allowMultiple":undefined,"anonymous":undefined,"totalVoters":undefined,"myVote":undefined},"from":{"id":undefined,"name":undefined,"followers":undefined,"following":undefined,"isFollowing":undefined,"handle":undefined,"avatar":undefined,"avatarUrl":undefined,"organization":undefined,"bio":undefined,"donationUrl":undefined,"deleted":undefined,"official":undefined},"roomKind":"report","attachments":[undefined],"deletedAt":"deletedAt-1","clientId":"clientId-1","cityMention":{"name":undefined,"handle":undefined,"geoid":undefined,"forwarded":undefined},"forwardedToCity":true,"pinnedAt":"pinnedAt-1"}"
 `;
 
+exports[`sql transcripts > makeDrizzleRuntimeFlagRepository.loadAll 1`] = `
+"-- empty
+SELECT f.key, f.value, f.updated_at, f.updated_by, u.email AS updated_by_email FROM runtime_flags f LEFT JOIN users u ON u.id = f.updated_by ORDER BY f.key LIMIT $1 -- [500]
+=> []
+-- row
+SELECT f.key, f.value, f.updated_at, f.updated_by, u.email AS updated_by_email FROM runtime_flags f LEFT JOIN users u ON u.id = f.updated_by ORDER BY f.key LIMIT $1 -- [500]
+=> [{"key":"key-row","value":"value-row","updatedAt":"2026-03-04T05:06:07.000Z","updatedBy":"updated_by-row","updatedByEmail":"updated_by_email-row"}]"
+`;
+
+exports[`sql transcripts > makeDrizzleRuntimeFlagRepository.set 1`] = `
+"-- empty
+BEGIN tx1
+[tx1] SELECT value FROM runtime_flags WHERE key = $1 FOR UPDATE -- ["key-1"]
+[tx1] INSERT INTO runtime_flags (key, value, updated_at, updated_by) VALUES ($1, $2, now(), $3) ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = EXCLUDED.updated_at, updated_by = EXCLUDED.updated_by -- ["key-1",{"<json>":"value-1"},"actorId-1"]
+[tx1] INSERT INTO audit_log (actor_id, action, target, meta) VALUES ($1, $2, $3, $4) RETURNING id -- ["actorId-1","dev.flag_set","flag:key-1",{"<json>":{"from":null,"to":"value-1"}}]
+ROLLBACK tx1
+=> throws Error: writeAudit: insert returned no row
+-- row
+BEGIN tx1
+[tx1] SELECT value FROM runtime_flags WHERE key = $1 FOR UPDATE -- ["key-1"]
+[tx1] INSERT INTO runtime_flags (key, value, updated_at, updated_by) VALUES ($1, $2, now(), $3) ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = EXCLUDED.updated_at, updated_by = EXCLUDED.updated_by -- ["key-1",{"<json>":"value-1"},"actorId-1"]
+[tx1] INSERT INTO audit_log (actor_id, action, target, meta) VALUES ($1, $2, $3, $4) RETURNING id -- ["actorId-1","dev.flag_set","flag:key-1",{"<json>":{"from":"value-row","to":"value-1"}}]
+COMMIT tx1
+=> undefined"
+`;
+
 exports[`sql transcripts > makeDrizzleSocialRepository.addFollow 1`] = `
 "-- empty
 SELECT 1 AS one FROM users WHERE id = $1 AND deleted_at IS NULL LIMIT 1 -- ["followeeId-1"]
@@ -7870,12 +7928,12 @@ SELECT COUNT(*)::text AS n FROM jurisdictions -- []
 => [{}]"
 `;
 
-exports[`sql transcripts > makeDrizzleSystemHealthRepository.countMailEventsLast7Days 1`] = `
+exports[`sql transcripts > makeDrizzleSystemHealthRepository.countSentMailLast7Days 1`] = `
 "-- empty
-SELECT COUNT(*)::text AS n FROM mail_events WHERE created_at >= now() - make_interval(days => 7) -- []
+SELECT COUNT(*)::text AS n FROM mail_events WHERE type = 'sent' AND created_at >= now() - make_interval(days => 7) -- []
 => []
 -- row
-SELECT COUNT(*)::text AS n FROM mail_events WHERE created_at >= now() - make_interval(days => 7) -- []
+SELECT COUNT(*)::text AS n FROM mail_events WHERE type = 'sent' AND created_at >= now() - make_interval(days => 7) -- []
 => [{}]"
 `;
 

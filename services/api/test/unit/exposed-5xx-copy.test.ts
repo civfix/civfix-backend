@@ -63,7 +63,7 @@ describe("5xx copy written for the people who see it survives production masking
     const repo = new InMemoryBroadcastRepository()
     repo.recordUnsubscribe = () => Promise.reject(new Error("connection terminated"))
     const config = {
-      killSwitch: false,
+      killSwitch: () => Promise.resolve(false),
       unsubscribeSigningKey: SIGNING_KEY,
       webBaseUrl: "http://localhost:3000",
       apiBaseUrl: "http://localhost:8080",
