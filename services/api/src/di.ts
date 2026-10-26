@@ -83,6 +83,11 @@ import { MultiPushSender, type PushSenderConfig } from "./adapters/push-sender.j
 import { HttpRoutingProvider } from "./adapters/routing-provider.js"
 import { RealAbuseChecks } from "./adapters/abuse-checks.js"
 import { PgBossJobs } from "./adapters/jobs.pgboss.js"
+import { makeDrizzleRuntimeFlagRepository } from "./services/admin/runtime-flag-repository.drizzle.js"
+import {
+  makeRuntimeFlagService,
+  type RuntimeFlagService,
+} from "./services/admin/runtime-flag-service.js"
 
 export interface Container {
   readonly env: Env
@@ -126,6 +131,8 @@ export interface Container {
   getCache(): CacheClient
   getByteMeter(): ByteMeter
   getTicketTokenSigner(): TicketTokenSigner
+  /** One per process, so a write through this process's API refreshes every reader at once. */
+  getRuntimeFlags(): RuntimeFlagService
 
   close(): Promise<void>
 }
@@ -420,6 +427,13 @@ export function makeContainer(env: Env): Container {
     add: (subject, bytes) => redisByteMeter.get().add(subject, bytes),
   }
   const ticketTokenSigner = lazy(() => makeTicketTokenSigner(env.TICKET_TOKEN_SECRET.trim()))
+  const runtimeFlags = lazy(() =>
+    makeRuntimeFlagService({
+      repo: makeDrizzleRuntimeFlagRepository(getDb().sql),
+      envFallbacks: env.runtimeFlagEnvFallbacks,
+      logger: adapterLogger,
+    }),
+  )
 
   const feedPresence = lazy(() =>
     makeFeedPresence({
@@ -512,6 +526,7 @@ export function makeContainer(env: Env): Container {
     postService,
     userChannel,
     pushSender,
+    runtimeFlags,
   ]
 
   async function close(): Promise<void> {
@@ -577,6 +592,7 @@ export function makeContainer(env: Env): Container {
     getCache: cacheClient.get,
     getByteMeter: () => lazyByteMeter,
     getTicketTokenSigner: ticketTokenSigner.get,
+    getRuntimeFlags: runtimeFlags.get,
     close,
   }
 }

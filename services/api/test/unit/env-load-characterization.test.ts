@@ -105,6 +105,10 @@ const ENVIRONMENT_INDEPENDENT_DEFAULTS = {
   SMS_HOST_BROADCAST_ENABLED: false,
   WAITLIST_EXPIRE_CRON: "*/10 * * * *",
   CHECKIN_NOSHOW_CRON: "*/30 * * * *",
+  devToolsEnabled: false,
+  DEV_TEST_EMAILS: [],
+  devTestEmailsDropped: 0,
+  runtimeFlagEnvFallbacks: {},
 }
 
 function fakeFlags(value: boolean): Record<string, boolean> {
@@ -126,6 +130,7 @@ function nonProductionDefaults(nodeEnv: "development" | "test"): Record<string, 
     ...ENVIRONMENT_INDEPENDENT_DEFAULTS,
     ...fakeFlags(true),
     NODE_ENV: nodeEnv,
+    environment: "local",
     PUBLIC_API_URL: "",
     WEB_ORIGINS: [],
     DATABASE_URL: "",
@@ -184,6 +189,7 @@ describe("loadEnv characterization: resolved Env", () => {
       ...ENVIRONMENT_INDEPENDENT_DEFAULTS,
       ...fakeFlags(false),
       NODE_ENV: "production",
+      environment: "unknown",
       PUBLIC_API_URL: "https://api.civfix.org",
       WEB_ORIGINS: ["https://civfix.org", "https://app.civfix.org"],
       DATABASE_URL: "postgres://user:pass@db:5432/civfix?sslmode=require",

@@ -121,6 +121,7 @@ import * as m117 from "../../src/services/user-search-repository.drizzle.js"
 import * as m118 from "../../src/services/users-repository.drizzle.js"
 import * as m119 from "../../src/services/volunteer-hours-credit.drizzle.js"
 import * as m120 from "../../src/services/volunteer-hours-repository.drizzle.js"
+import * as m121 from "../../src/services/admin/runtime-flag-repository.drizzle.js"
 
 export interface TranscriptCase {
   key: string
@@ -1340,6 +1341,17 @@ export const cases: TranscriptCase[] = [
   {
     key: "makeDrizzleOutreachRepository.loadDigest",
     run: async (sql: any) => (m20 as any).makeDrizzleOutreachRepository(sql).loadDigest("geoid-1"),
+  },
+  {
+    key: "makeDrizzleRuntimeFlagRepository.loadAll",
+    run: async (sql: any) => (m121 as any).makeDrizzleRuntimeFlagRepository(sql).loadAll(),
+  },
+  {
+    key: "makeDrizzleRuntimeFlagRepository.set",
+    run: async (sql: any) =>
+      (m121 as any)
+        .makeDrizzleRuntimeFlagRepository(sql)
+        .set({ key: "key-1", value: "value-1", actorId: "actorId-1" }),
   },
   {
     key: "ilikeAnyOf",
