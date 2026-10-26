@@ -67,8 +67,8 @@ export function makeSystemHealthProbes(deps: SystemProbeDeps): SystemHealthProbe
 
     probes.ociEmail = async (): Promise<ProbeResult> => {
       const repo = makeDrizzleSystemHealthRepository(getSql())
-      const rows = await withQueryTimeout(repo.countMailEventsLast7Days(), PROBE_TIMEOUT_MS)
-      return { val: `${countOf(rows)} events 7d`, status: "ok" }
+      const rows = await withQueryTimeout(repo.countSentMailLast7Days(), PROBE_TIMEOUT_MS)
+      return { val: `${countOf(rows)} sent in the last 7 days`, status: "ok" }
     }
 
     probes.mediaWorker = async (): Promise<ProbeResult> => {

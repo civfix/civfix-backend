@@ -1,7 +1,15 @@
+import { createRequire } from "node:module"
 import { afterEach, describe, expect, it } from "vitest"
 import type { FastifyInstance, LightMyRequestResponse } from "fastify"
-import { FakeMailer } from "@civfix/seams"
-import { RUNTIME_FLAGS, type RuntimeFlagKey, type RuntimeFlagStateDTO } from "@civfix/contract"
+import { FakeJobs, FakeMailer } from "@civfix/seams"
+import {
+  AdminDevOverviewResponseSchema,
+  RUNTIME_FLAGS,
+  type AdminDevJobsResponse,
+  type AdminDevOverviewResponse,
+  type RuntimeFlagKey,
+  type RuntimeFlagStateDTO,
+} from "@civfix/contract"
 import { makeServer } from "../../src/server.js"
 import { makeContainer, type Container } from "../../src/di.js"
 import { loadEnv } from "../../src/env.js"
@@ -15,6 +23,8 @@ import {
 import type { WriteAuditInput } from "../../src/services/admin/audit.js"
 import { StubJwksVerifier } from "../helpers/auth.js"
 import { InMemoryRuntimeFlagRepository } from "../helpers/admin/runtime-flag-repository.memory.js"
+import { InMemoryDevJobsRepository } from "../helpers/admin/dev-jobs-repository.memory.js"
+import { ALL_QUEUE_NAMES } from "../../src/lib/queue-names.js"
 
 const OPERATOR_EMAIL = "o@civfix.org"
 const SECOND_OPERATOR_EMAIL = "p@civfix.org"
@@ -71,7 +81,13 @@ async function harness(extraEnv: NodeJS.ProcessEnv = {}): Promise<Harness> {
     now: () => clock.now,
   })
   const container: Container = { ...makeContainer(env), getRuntimeFlags: () => flags }
-  const app = await makeServer({ env, container, authServices: services })
+  // The server itself never connects: a test sets DATABASE_URL or REDIS_URL only to show that the
+  // overview never repeats them.
+  const app = await makeServer({
+    env: { ...env, DATABASE_URL: "", REDIS_URL: "" },
+    container,
+    authServices: services,
+  })
   current = app
 
   async function session(email: string, role: "operator" | "citizen"): Promise<Session> {
@@ -434,9 +450,6 @@ describe("GET /v1/app/config", () => {
 describe("developer placeholders", () => {
   const TEST_EMAIL = "a@civfix.org"
   const PLACEHOLDERS: { method: Method; url: string; body?: unknown; mutation: boolean }[] = [
-    { method: "GET", url: "/v1/admin/dev/overview", mutation: false },
-    { method: "GET", url: "/v1/admin/dev/jobs", mutation: false },
-    { method: "POST", url: "/v1/admin/dev/jobs/inbound.sweep/run", mutation: true },
     { method: "GET", url: "/v1/admin/dev/test/force-update", mutation: false },
     {
       method: "PUT",
@@ -480,5 +493,391 @@ describe("developer placeholders", () => {
         "FORBIDDEN",
       )
     }
+  })
+})
+
+const OVERVIEW_URL = "/v1/admin/dev/overview"
+const JOBS_URL = "/v1/admin/dev/jobs"
+const NOW = new Date(Date.UTC(2026, 9, 26, 12, 0, 0, 0))
+const BOOSTED_A = "11111111-1111-4111-8111-111111111111"
+const BOOSTED_B = "22222222-2222-4222-8222-222222222222"
+const REVIEWER_CODE = "reviewer-code-7f3a9c1e5b2d4f6a8c0e"
+const DEV_TEST_CODE = "devtest-code-4e6b8d0f2a4c6e8a0b2d"
+const WORKER_QUEUES = [
+  "media.checks",
+  "anon.hold.release",
+  "orphan.sweep",
+  "chat.partition.maintenance",
+  "anon.hold.release.sweep",
+  "retention.sweep",
+  "media.stuck.sweep",
+  "media.upload.reap",
+]
+const RUNNABLE_QUEUES = [
+  "inbound.sweep",
+  "event.metrics.rollup",
+  "anon.hold.release.sweep",
+  "chat.partition.maintenance",
+]
+
+interface DevStatus {
+  repo: InMemoryDevJobsRepository
+  jobs: FakeJobs
+  audits: WriteAuditInput[]
+}
+
+function devStatus(h: Harness): DevStatus {
+  const repo = new InMemoryDevJobsRepository(() => NOW)
+  const jobs = new FakeJobs()
+  const audits: WriteAuditInput[] = []
+  h.app.devStatusOverrides = {
+    repo,
+    jobs,
+    audit: (input) => {
+      audits.push(input)
+      return Promise.resolve()
+    },
+    now: () => NOW,
+  }
+  return { repo, jobs, audits }
+}
+
+async function overview(h: Harness): Promise<AdminDevOverviewResponse> {
+  const res = await call(h, "GET", OVERVIEW_URL, { as: h.operator })
+  expect(res.statusCode).toBe(200)
+  return res.json<AdminDevOverviewResponse>()
+}
+
+function settingValues(body: AdminDevOverviewResponse): string[] {
+  return body.settings.map((s) => s.value)
+}
+
+function runJob(h: Harness, name: string, opts: { as?: Session; csrf?: boolean } = {}) {
+  return call(h, "POST", `/v1/admin/dev/jobs/${name}/run`, { as: h.operator, ...opts })
+}
+
+function jobRun(h: Harness, name: string, enqueued: boolean): WriteAuditInput {
+  return {
+    actorId: h.operator.userId,
+    action: "dev.job_run",
+    target: `queue:${name}`,
+    meta: { enqueued },
+  }
+}
+
+describe("GET /v1/admin/dev/overview", () => {
+  it("T1: the shape with nothing set", async () => {
+    const h = await harness()
+    const res = await call(h, "GET", OVERVIEW_URL, { as: h.operator })
+    expect(res.statusCode).toBe(200)
+    const body = AdminDevOverviewResponseSchema.parse(res.json())
+    expect(body.environment).toBe("local")
+    expect(body.devToolsEnabled).toBe(false)
+    expect(body.api.releaseRef).toBe(null)
+    expect(body.api.image).toBe(null)
+    expect(body.worker.image).toBe(null)
+    expect(body.worker.lastJobCompletedAt).toBe(null)
+    expect(body.testAccounts).toEqual([])
+  })
+
+  it("T4: empty build refs count as unset", async () => {
+    const h = await harness({
+      CIVFIX_RELEASE_REF: "",
+      CIVFIX_API_IMAGE_REF: "",
+      CIVFIX_WORKER_IMAGE_REF: "",
+    })
+    const body = await overview(h)
+    expect(body.api.releaseRef).toBe(null)
+    expect(body.api.image).toBe(null)
+    expect(body.worker.image).toBe(null)
+  })
+
+  it("T5: the contract and node versions, and one process start time", async () => {
+    const h = await harness()
+    const installed = createRequire(import.meta.url)("@civfix/contract/package.json") as {
+      version: string
+    }
+    const before = Date.now()
+    const first = await overview(h)
+    const second = await overview(h)
+    expect(first.api.contractVersion).toBe(installed.version)
+    expect(first.api.nodeVersion).toBe(process.version)
+    expect(new Date(first.api.startedAt).toISOString()).toBe(first.api.startedAt)
+    expect(Date.parse(first.api.startedAt)).toBeLessThanOrEqual(before)
+    expect(second.api.startedAt).toBe(first.api.startedAt)
+  })
+
+  it("T7: the seven settings, summarized", async () => {
+    const h = await harness({
+      SMS_GUEST_ENABLED: "true",
+      SMS_DAILY_CAP: "75",
+      FEED_AUTHOR_BOOSTS: JSON.stringify({ [BOOSTED_A]: 2, [BOOSTED_B]: 1.5 }),
+      REVIEWER_OTP_BYPASS: "true",
+      REVIEWER_OTP_CODE: REVIEWER_CODE,
+      OAUTH_REQUIRE_NONCE: "true",
+      WS_ALLOW_QUERY_TOKEN: "false",
+    })
+    expect((await overview(h)).settings).toEqual([
+      { key: "SMS_GUEST_ENABLED", value: "on" },
+      { key: "SMS_DAILY_CAP", value: "75" },
+      { key: "FEED_RANKING", value: "Default" },
+      { key: "FEED_AUTHOR_BOOSTS", value: "2 accounts" },
+      { key: "REVIEWER_OTP_BYPASS", value: "on" },
+      { key: "OAUTH_REQUIRE_NONCE", value: "on" },
+      { key: "WS_ALLOW_QUERY_TOKEN", value: "off" },
+    ])
+  })
+
+  it("T8: the settings' defaults", async () => {
+    const h = await harness()
+    expect(settingValues(await overview(h))).toEqual([
+      "off",
+      "50",
+      "Default",
+      "0 accounts",
+      "off",
+      "off",
+      "off",
+    ])
+  })
+
+  it("T9: a feed ranking that differs from the default is Custom", async () => {
+    const h = await harness({ FEED_RANKING: JSON.stringify({ baseWeight: 11 }) })
+    const body = await overview(h)
+    expect(body.settings.find((s) => s.key === "FEED_RANKING")?.value).toBe("Custom")
+  })
+
+  it("T10: never contains a secret, code, key, boosted account or credentialed URL", async () => {
+    const secrets: Record<string, string> = {
+      REVIEWER_OTP_CODE: REVIEWER_CODE,
+      DEV_TEST_OTP_CODE: DEV_TEST_CODE,
+      FEED_AUTHOR_BOOSTS: JSON.stringify({ [BOOSTED_A]: 2, [BOOSTED_B]: 1.5 }),
+      SESSION_SIGNING_KEY: "session-signing-key-9d1f3b5a7c9e1a3c5e7a9b1d3f5a",
+      ANON_TOKEN_SIGNING_KEY: "anon-token-signing-key-2b4d6f8a0c2e4a6c8e0a2b4d6f",
+      DATABASE_URL: "postgres://civfix:pg-password-5c7e9a1b3d@db.example:5432/civfix",
+      REDIS_URL: "redis://:redis-password-8a0c2e4b6d@redis.example:6379",
+      GLITCHTIP_DSN: "https://glitchtip-key-3e5a7c9b1d@glitchtip.example/1",
+      VAPID_PRIVATE_KEY: "vapid-private-key-6b8d0f2a4c6e",
+      APNS_PRIVATE_KEY: "apns-private-key-1c3e5a7b9d1f",
+      FCM_SERVICE_ACCOUNT_JSON: JSON.stringify({ private_key: "fcm-private-key-4d6f8a0c2e4b" }),
+      EXPO_ACCESS_TOKEN: "expo-access-token-7e9a1c3b5d7f",
+    }
+    const h = await harness({
+      ...secrets,
+      REVIEWER_OTP_BYPASS: "true",
+      DEV_TOOLS_ENABLED: "true",
+      DEV_TEST_EMAILS: "a@civfix.org",
+    })
+    const res = await call(h, "GET", OVERVIEW_URL, { as: h.operator })
+    expect(res.statusCode).toBe(200)
+    const needles = [
+      ...Object.values(secrets),
+      BOOSTED_A,
+      BOOSTED_B,
+      "pg-password-5c7e9a1b3d",
+      "redis-password-8a0c2e4b6d",
+      "glitchtip-key-3e5a7c9b1d",
+      "fcm-private-key-4d6f8a0c2e4b",
+    ]
+    for (const needle of needles) expect(res.body).not.toContain(needle)
+    expect(res.json<AdminDevOverviewResponse>().settings.map((s) => s.key)).toEqual([
+      "SMS_GUEST_ENABLED",
+      "SMS_DAILY_CAP",
+      "FEED_RANKING",
+      "FEED_AUTHOR_BOOSTS",
+      "REVIEWER_OTP_BYPASS",
+      "OAUTH_REQUIRE_NONCE",
+      "WS_ALLOW_QUERY_TOKEN",
+    ])
+  })
+
+  it("T11: the test accounts only while dev tools are on", async () => {
+    const accounts = {
+      DEV_TEST_EMAILS: "A@civfix.org, b@civfix.org",
+      DEV_TEST_OTP_CODE: DEV_TEST_CODE,
+    }
+    const on = await overview(await harness({ ...accounts, DEV_TOOLS_ENABLED: "true" }))
+    expect(on.devToolsEnabled).toBe(true)
+    expect(on.testAccounts).toEqual(["a@civfix.org", "b@civfix.org"])
+    await current?.close()
+    const off = await overview(await harness({ ...accounts, DEV_TOOLS_ENABLED: "false" }))
+    expect(off.devToolsEnabled).toBe(false)
+    expect(off.testAccounts).toEqual([])
+  })
+
+  it("T14: needs an operator", async () => {
+    const h = await harness()
+    expectError(await call(h, "GET", OVERVIEW_URL), 401, "UNAUTHORIZED")
+    expectError(await call(h, "GET", OVERVIEW_URL, { as: h.citizen }), 403, "FORBIDDEN")
+  })
+})
+
+describe("GET /v1/admin/dev/jobs", () => {
+  async function jobsView(h: Harness): Promise<AdminDevJobsResponse> {
+    const res = await call(h, "GET", JOBS_URL, { as: h.operator })
+    expect(res.statusCode).toBe(200)
+    return res.json<AdminDevJobsResponse>()
+  }
+
+  it("T16: with fake jobs every queue is empty and pg-boss is never read", async () => {
+    const h = await harness()
+    const { repo } = devStatus(h)
+    repo.addJob("inbound.sweep", "created", { startAfter: NOW })
+    const { queues } = await jobsView(h)
+    expect(queues).toHaveLength(ALL_QUEUE_NAMES.length)
+    expect(queues.map((q) => q.name)).toEqual([...ALL_QUEUE_NAMES].sort())
+    for (const q of queues) {
+      expect(q, q.name).toMatchObject({
+        counts: { created: 0, retry: 0, active: 0, failed: 0 },
+        failedLast24h: 0,
+        oldestPendingSeconds: 0,
+        lastCompletedAt: null,
+        schedule: null,
+      })
+    }
+    expect(repo.snapshotCalls).toEqual([])
+    expect(repo.runStateCalls).toBe(0)
+  })
+
+  it("T17: the worker owns exactly its eight queues", async () => {
+    const h = await harness()
+    const { queues } = await jobsView(h)
+    expect(queues.filter((q) => q.owner === "worker").map((q) => q.name)).toEqual(
+      [...WORKER_QUEUES].sort(),
+    )
+    expect(queues.filter((q) => q.owner === "api")).toHaveLength(20)
+  })
+
+  it("T18: exactly four queues are runnable", async () => {
+    const h = await harness()
+    const { queues } = await jobsView(h)
+    expect(queues.filter((q) => q.runnable).map((q) => q.name)).toEqual([...RUNNABLE_QUEUES].sort())
+  })
+
+  it("T27: needs an operator", async () => {
+    const h = await harness()
+    expectError(await call(h, "GET", JOBS_URL), 401, "UNAUTHORIZED")
+    expectError(await call(h, "GET", JOBS_URL, { as: h.citizen }), 403, "FORBIDDEN")
+  })
+})
+
+describe("POST /v1/admin/dev/jobs/:name/run", () => {
+  const REAL_JOBS = { USE_FAKE_JOBS: "false" }
+
+  it("T31: enqueues one run of a runnable API queue, with no options, and audits it", async () => {
+    const h = await harness(REAL_JOBS)
+    const { repo, jobs, audits } = devStatus(h)
+    repo.queues.add("inbound.sweep")
+    const res = await runJob(h, "inbound.sweep")
+    expect(res.statusCode).toBe(200)
+    expect(res.json()).toEqual({ enqueued: true })
+    expect(jobs.enqueued).toHaveLength(1)
+    expect(jobs.enqueued[0]).toStrictEqual({
+      id: expect.any(String),
+      name: "inbound.sweep",
+      data: {},
+      state: "created",
+    })
+    expect(audits).toEqual([jobRun(h, "inbound.sweep", true)])
+  })
+
+  it("T32: a worker sweep is enqueued with its cron's singletonKey", async () => {
+    const h = await harness(REAL_JOBS)
+    const { repo, jobs } = devStatus(h)
+    for (const name of ["anon.hold.release.sweep", "chat.partition.maintenance"]) {
+      repo.queues.add(name)
+      const res = await runJob(h, name)
+      expect(res.statusCode, name).toBe(200)
+      expect(res.json(), name).toEqual({ enqueued: true })
+    }
+    expect(jobs.enqueued.map((j) => [j.name, j.data, j.opts])).toEqual([
+      ["anon.hold.release.sweep", {}, { singletonKey: "anon.hold.release.sweep" }],
+      ["chat.partition.maintenance", {}, { singletonKey: "chat.partition.maintenance" }],
+    ])
+  })
+
+  it("T33: a queue with a created or retry job waiting enqueues nothing", async () => {
+    for (const state of ["created", "retry"] as const) {
+      const h = await harness(REAL_JOBS)
+      const { repo, jobs, audits } = devStatus(h)
+      repo.addJob("event.metrics.rollup", state, { startAfter: NOW })
+      const res = await runJob(h, "event.metrics.rollup")
+      expect(res.statusCode, state).toBe(200)
+      expect(res.json(), state).toEqual({ enqueued: false })
+      expect(jobs.enqueued, state).toEqual([])
+      expect(audits, state).toEqual([jobRun(h, "event.metrics.rollup", false)])
+      await current?.close()
+    }
+  })
+
+  it("T34: an active run is not waiting", async () => {
+    const h = await harness(REAL_JOBS)
+    const { repo, jobs } = devStatus(h)
+    repo.addJob("inbound.sweep", "active", { startAfter: NOW })
+    const res = await runJob(h, "inbound.sweep")
+    expect(res.statusCode).toBe(200)
+    expect(res.json()).toEqual({ enqueued: true })
+    expect(jobs.enqueued).toHaveLength(1)
+  })
+
+  it("T35: a queue that is not runnable, or not a queue, is NOT_FOUND", async () => {
+    const h = await harness(REAL_JOBS)
+    const { repo, jobs, audits } = devStatus(h)
+    repo.queues.add("outreach.digest")
+    expectError(await runJob(h, "outreach.digest"), 404, "NOT_FOUND")
+    expectError(await runJob(h, "nope"), 404, "NOT_FOUND")
+    expect(jobs.enqueued).toEqual([])
+    expect(audits).toEqual([])
+  })
+
+  it("T36: a queue pg-boss has not created is NOT_FOUND", async () => {
+    const h = await harness(REAL_JOBS)
+    const { jobs, audits } = devStatus(h)
+    expectError(await runJob(h, "chat.partition.maintenance"), 404, "NOT_FOUND")
+    expect(jobs.enqueued).toEqual([])
+    expect(audits).toEqual([])
+  })
+
+  it("T37: with fake jobs nothing is enqueued and pg-boss is never read", async () => {
+    const h = await harness()
+    const { repo, jobs, audits } = devStatus(h)
+    repo.queues.add("inbound.sweep")
+    const res = await runJob(h, "inbound.sweep")
+    expect(res.statusCode).toBe(200)
+    expect(res.json()).toEqual({ enqueued: false })
+    expect(jobs.enqueued).toEqual([])
+    expect(repo.runStateCalls).toBe(0)
+    expect(repo.snapshotCalls).toEqual([])
+    expect(audits).toEqual([jobRun(h, "inbound.sweep", false)])
+    expectError(await runJob(h, "outreach.digest"), 404, "NOT_FOUND")
+  })
+
+  it("T38: a cookie session without the CSRF header is FORBIDDEN", async () => {
+    const h = await harness(REAL_JOBS)
+    const { repo, jobs, audits } = devStatus(h)
+    repo.queues.add("inbound.sweep")
+    expectError(await runJob(h, "inbound.sweep", { csrf: false }), 403, "FORBIDDEN")
+    expect(jobs.enqueued).toEqual([])
+    expect(audits).toEqual([])
+  })
+
+  it("T39: more than 10 runs a minute per operator is RATE_LIMITED", async () => {
+    const h = await harness(REAL_JOBS)
+    const { repo } = devStatus(h)
+    repo.queues.add("inbound.sweep")
+    for (let i = 1; i <= 10; i += 1) {
+      expect((await runJob(h, "inbound.sweep")).statusCode, `call ${i}`).toBe(200)
+    }
+    expectError(await runJob(h, "inbound.sweep"), 429, "RATE_LIMITED")
+    expect((await runJob(h, "inbound.sweep", { as: h.secondOperator })).statusCode).toBe(200)
+  })
+
+  it("T40: needs an operator", async () => {
+    const h = await harness(REAL_JOBS)
+    const { jobs, audits } = devStatus(h)
+    expectError(await call(h, "POST", "/v1/admin/dev/jobs/inbound.sweep/run"), 401, "UNAUTHORIZED")
+    expectError(await runJob(h, "inbound.sweep", { as: h.citizen }), 403, "FORBIDDEN")
+    expect(jobs.enqueued).toEqual([])
+    expect(audits).toEqual([])
   })
 })
