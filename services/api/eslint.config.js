@@ -1,13 +1,6 @@
 import { config, typed } from "@civfix/config/eslint"
 
-// The type-aware rules hold the whole src + test program, and one process linting every file outgrows
-// Node's default heap, so the lint script spreads files over worker threads (--concurrency=4), each
-// with its own heap.
-export default config(
-  typed({
-    // scripts/ are tsx-run ops tools outside tsconfig.json's include; they lint against its
-    // compiler options instead of widening what `tsc --noEmit` checks.
-    projectService: { allowDefaultProject: ["scripts/*.ts"] },
-    tsconfigRootDir: import.meta.dirname,
-  }),
-)
+// The type-aware rules hold the whole src + test + scripts program, which outgrows Node's default
+// heap, so the lint script spreads files over worker threads (--concurrency=4) and raises the heap
+// limit through node itself rather than NODE_OPTIONS, which a Windows shell cannot set inline.
+export default config(typed({ projectService: true, tsconfigRootDir: import.meta.dirname }))

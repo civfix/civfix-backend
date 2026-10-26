@@ -76,6 +76,9 @@ jobs:
       - name: Email worker install
         run: pnpm --dir infra/email-worker install --frozen-lockfile --ignore-workspace
 
+      - name: Email worker typecheck
+        run: pnpm --dir infra/email-worker typecheck
+
       - name: Email worker test
         run: pnpm --dir infra/email-worker test
 
