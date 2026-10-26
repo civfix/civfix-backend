@@ -33,7 +33,7 @@ const ORGANIZER_OF_RECORD = "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee"
 const OTHER_REQUESTER = "ffffffff-ffff-4fff-8fff-ffffffffffff"
 
 const CONFIG: BroadcastConfig = {
-  killSwitch: false,
+  killSwitch: () => Promise.resolve(false),
   perEventPerDay: 20,
   recipientsPerDay: 1000,
   cooldownSec: 0,
