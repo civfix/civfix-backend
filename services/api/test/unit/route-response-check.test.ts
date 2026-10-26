@@ -2,7 +2,7 @@ import { describe, it, expect, afterEach, vi } from "vitest"
 import Fastify, { type FastifyInstance, type FastifyReply } from "fastify"
 import { makeErrorHandler } from "../../src/errors/http-mapper.js"
 import { registerRequestId } from "../../src/plugins/request-id.js"
-import { route } from "../../src/versioning/route.js"
+import { route, type RouteOptions } from "../../src/versioning/route.js"
 
 // openUnsubscribeBroadcasts' response is a strict `{}` whose declared input type is `unknown`, so the
 // reply typing accepts any body and only the runtime check can reject one.
@@ -13,17 +13,20 @@ let app: FastifyInstance | undefined
 afterEach(async () => {
   vi.restoreAllMocks()
   vi.unstubAllEnvs()
-  vi.resetModules()
   await app?.close()
   app = undefined
 })
 
-async function serve(send: (reply: FastifyReply) => unknown, register = route) {
+async function serve(
+  send: (reply: FastifyReply) => unknown,
+  register = route,
+  opts: RouteOptions = {},
+) {
   app = Fastify()
   app.setErrorHandler(makeErrorHandler())
   // An app-level async onSend hook is what made a thrown drift error go out as an empty 500.
   await registerRequestId(app)
-  register(app, "openUnsubscribeBroadcasts", async (_request, reply) => {
+  register(app, "openUnsubscribeBroadcasts", opts, async (_request, reply) => {
     await send(reply)
   })
   await app.ready()
@@ -48,13 +51,38 @@ describe("route() contract response check (tests only)", () => {
     expect(stderr).toHaveBeenCalledWith(body.message)
   })
 
-  it("leaves error bodies and redirects alone", async () => {
+  it("fails a success reply with no JSON body, as the typed client would", async () => {
+    const stderr = vi.spyOn(console, "error").mockImplementation(() => undefined)
+    const empty = await serve((reply) => reply.status(200).send())
+    expect(empty.statusCode).toBe(500)
+    expect(empty.json<{ message: string }>().message).toContain("the body is empty")
+    await app?.close()
+
+    const text = await serve((reply) => reply.type("text/plain").send("ok"))
+    expect(text.statusCode).toBe(500)
+    expect(text.json<{ message: string }>().message).toContain("the body is not JSON")
+    expect(stderr).toHaveBeenCalledTimes(2)
+  })
+
+  it("still checks when the route brings its own onSend hook", async () => {
+    vi.spyOn(console, "error").mockImplementation(() => undefined)
+    const ownHook = vi.fn(async (_request: unknown, _reply: unknown, payload: unknown) => payload)
+    const res = await serve((reply) => reply.send({ stray: 1 }), route, { onSend: ownHook })
+    expect(ownHook).toHaveBeenCalledTimes(1)
+    expect(res.statusCode).toBe(500)
+  })
+
+  it("leaves error bodies, redirects and 204s alone", async () => {
     const notFound = await serve((reply) => reply.status(404).send({ stray: 1 }))
     expect(notFound.statusCode).toBe(404)
     await app?.close()
 
-    const redirect = await serve((reply) => reply.redirect("https://civfix.dev/", 302))
+    const redirect = await serve((reply) => reply.status(302).send({ stray: 1 }))
     expect(redirect.statusCode).toBe(302)
+    await app?.close()
+
+    const noContent = await serve((reply) => reply.status(204).send())
+    expect(noContent.statusCode).toBe(204)
   })
 
   it("is not registered outside the test environment", async () => {
