@@ -1,9 +1,10 @@
 import { afterAll, describe, expect, it } from "vitest"
+import { LEGAL_DOCUMENTS } from "@civfix/contract/legal"
 import { applyMigrations } from "../../src/db/migrate.js"
 import { loadLegalDocuments } from "../../src/services/legal-loader.js"
 import { makeLegalDocumentsRepository } from "../../src/services/legal-documents-repository.drizzle.js"
 import { withPg } from "../helpers/pg.js"
-import { NEW_BLOCKS, NEW_TERMS, PRE_EPIC, keyOf } from "../helpers/legal-fixtures.js"
+import { FUTURE_PRIVACY, NEW_BLOCKS, PRE_EPIC, keyOf } from "../helpers/legal-fixtures.js"
 
 const pg = await withPg()
 
@@ -69,7 +70,10 @@ describe.skipIf(!pg)("legal documents migration and loader (Postgres)", () => {
 
     const rows = await allRows()
     const seeded = [...PRE_EPIC, ...RETIRED_SEED]
-    expect(rows).toHaveLength(13)
+    // The harness's migrate also loaded the pinned contract's own new-style versions.
+    const loaded = LEGAL_DOCUMENTS.filter((entry) => entry.title !== undefined)
+    expect(seeded).toHaveLength(13)
+    expect(rows).toHaveLength(seeded.length + loaded.length)
     for (const entry of seeded) {
       const row = rows.find((r) => r.type === entry.type && r.version === entry.version)
       expect(row, keyOf(entry)).toBeDefined()
@@ -83,6 +87,13 @@ describe.skipIf(!pg)("legal documents migration and loader (Postgres)", () => {
       })
       expect(row?.effective_at.getTime()).toBe(Date.parse(entry.effectiveAt))
     }
+    const seededKeys = new Set(seeded.map(keyOf))
+    expect(
+      rows
+        .filter((r) => !seededKeys.has(keyOf(r)))
+        .map(keyOf)
+        .sort(),
+    ).toEqual(loaded.map(keyOf).sort())
   })
 
   it("T9: a second run applies nothing and changes no row", async () => {
@@ -122,13 +133,14 @@ describe.skipIf(!pg)("legal documents migration and loader (Postgres)", () => {
 
   it("T11: loads a new-style version with its blocks through jsonb, once", async () => {
     const repo = makeLegalDocumentsRepository(sql)
-    const versions = [...PRE_EPIC, NEW_TERMS]
-    const texts = { [keyOf(NEW_TERMS)]: NEW_BLOCKS }
+    // F, not N: the table already holds the contract's own terms@2026-10-26, which N would contradict.
+    const versions = [...PRE_EPIC, FUTURE_PRIVACY]
+    const texts = { [keyOf(FUTURE_PRIVACY)]: NEW_BLOCKS }
 
     await loadLegalDocuments(repo, versions, texts)
 
     const [row] = await sql<Row[]>`
-      SELECT * FROM legal_documents WHERE type = 'terms' AND version = ${NEW_TERMS.version}
+      SELECT * FROM legal_documents WHERE type = 'privacy' AND version = ${FUTURE_PRIVACY.version}
     `
     expect(row?.blocks).toEqual(NEW_BLOCKS)
     expect(row?.material).toBe(false)
