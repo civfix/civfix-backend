@@ -8,7 +8,7 @@
 
 import { ErrorCode } from "@civfix/contract"
 import { endpoints } from "@civfix/contract/client"
-import type { onSendAsyncHookHandler } from "fastify"
+import type { FastifyReply, onSendAsyncHookHandler } from "fastify"
 import type { z } from "zod"
 import type { EndpointName } from "./route.js"
 
@@ -43,9 +43,18 @@ function driftIn(schema: z.ZodType, payload: unknown): string | null {
     .join("; ")
 }
 
+/**
+ * An async handler that calls `reply.send(x)` without returning it resolves while the async onSend
+ * chain is still running, so fastify sends a second, empty `undefined` payload that loses the race to the
+ * first. Only the first payload a reply sends reaches the client, so only that one is checked.
+ */
+const checkedReplies = new WeakSet<FastifyReply>()
+
 export function contractResponseCheck(name: EndpointName): onSendAsyncHookHandler {
   const schema = endpoints[name].response
   return async (request, reply, payload) => {
+    if (checkedReplies.has(reply)) return payload
+    checkedReplies.add(reply)
     if (!expectsBody(reply.statusCode)) return payload
     const drift = driftIn(schema, payload)
     if (drift === null) return payload

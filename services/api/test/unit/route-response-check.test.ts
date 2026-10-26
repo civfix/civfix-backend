@@ -40,6 +40,16 @@ describe("route() contract response check (tests only)", () => {
     expect(res.json()).toEqual({})
   })
 
+  it("checks only the body that reaches the client, not fastify's trailing empty re-send", async () => {
+    const stderr = vi.spyOn(console, "error").mockImplementation(() => undefined)
+    const res = await serve(async (reply) => {
+      await new Promise((resolve) => setTimeout(resolve, 1))
+      reply.send({})
+    })
+    expect(res.statusCode).toBe(200)
+    expect(stderr).not.toHaveBeenCalled()
+  })
+
   it("fails a drifted success body with a 500 naming the endpoint and the issue", async () => {
     const stderr = vi.spyOn(console, "error").mockImplementation(() => undefined)
     const res = await serve((reply) => reply.send({ stray: 1 }))
