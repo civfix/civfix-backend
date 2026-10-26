@@ -45,8 +45,13 @@ export function config(...extra) {
       ],
     },
     eslint.configs.recommended,
-    ...tseslint.configs.recommended,
+    ...tseslint.configs.recommendedTypeChecked,
     {
+      files: ["**/*.{js,mjs,cjs}"],
+      ...tseslint.configs.disableTypeChecked,
+    },
+    {
+      linterOptions: { reportUnusedDisableDirectives: "error" },
       languageOptions: {
         ecmaVersion: 2022,
         sourceType: "module",
@@ -69,6 +74,18 @@ export function config(...extra) {
           "error",
           { prefer: "type-imports", disallowTypeAnnotations: false },
         ],
+        // Measured hits are nearly all correct code: async fakes and handlers that satisfy a
+        // Promise-returning interface without awaiting, and methods passed as callbacks that never
+        // touch `this`.
+        "@typescript-eslint/require-await": "off",
+        "@typescript-eslint/unbound-method": "off",
+        // Off for tests by decision. In src they wait on typed shims for the lazily imported push
+        // and SMS SDKs and the ws socket, whose untyped values account for most of the hits.
+        "@typescript-eslint/no-unsafe-argument": "off",
+        "@typescript-eslint/no-unsafe-assignment": "off",
+        "@typescript-eslint/no-unsafe-call": "off",
+        "@typescript-eslint/no-unsafe-member-access": "off",
+        "@typescript-eslint/no-unsafe-return": "off",
       },
     },
     ...extra,
