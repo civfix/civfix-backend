@@ -1,5 +1,5 @@
 import { hash as argonHash, verify as argonVerify } from "@node-rs/argon2"
-import { AppError, HANDLE_MAX_LENGTH } from "@civfix/contract"
+import { AppError, HANDLE_MAX_LENGTH, HANDLE_REGEX } from "@civfix/contract"
 import { constantTimeStringEqual, generateNumericCode } from "./crypto.js"
 import { normalizeIp } from "../abuse/ip-rate-limit.js"
 import type { CacheClient } from "./cache.js"
@@ -375,6 +375,8 @@ export class OtpService {
     for (let n = 1; ; n += 1) {
       const suffix = n === 1 ? "" : `_${n}`
       const handle = base.slice(0, HANDLE_MAX_LENGTH - suffix.length) + suffix
+      // A base too short for a handle counts as taken, so it gets a suffix like any other collision.
+      if (!HANDLE_REGEX.test(handle)) continue
       if (!isReservedHandle(handle) && (await this.users.findByHandle(handle)) === null) {
         return handle
       }
