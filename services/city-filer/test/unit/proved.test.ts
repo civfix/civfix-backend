@@ -374,11 +374,11 @@ export default async () => {
     }
 
     await mkdir(hostDir("entries.example"))
-    for (let i = 0; i < 499; i += 1) {
+    for (let i = 0; i < 500; i += 1) {
       await writeFile(join(hostDir("entries.example"), `f${i}`), "")
     }
     const entries500 = await reject("entries.example")
-    await writeFile(join(hostDir("entries.example"), "f499"), "")
+    await writeFile(join(hostDir("entries.example"), "f500"), "")
     const entries501 = await reject("entries.example")
 
     await mkdir(hostDir("bytes.example"))

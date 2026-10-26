@@ -20,7 +20,7 @@ import type { FilerRunner } from "./filer-process.js"
 import { confineToHost, workspaceHead } from "./git.js"
 import { sendFilingResult } from "./hand-back.js"
 import { collectEvidence, runEnding, type RunEnding } from "./output.js"
-import { forgetProved, readProved, recordProved } from "./proved.js"
+import { fingerprintPortal, forgetProved, readProved, recordProved } from "./proved.js"
 import {
   isPortalHost,
   readPortalScript,
@@ -248,6 +248,16 @@ export function makeFilingRunHandler(deps: FilingRunDeps): JobHandler {
       log("filer: claude left no usable script", { filingId: run.filingId, host })
       return portalError
     }
+    const folder = await fingerprintPortal(config.workspaceDir, host)
+    if (folder.kind !== "ok") {
+      log("filer: the portal folder was rejected", {
+        filingId: run.filingId,
+        host,
+        why: folder.why,
+      })
+      await forgetProved(config.workspaceDir, [host], log, "its folder was rejected")
+      return portalError
+    }
 
     // The proof is the wrapper's own dry run (D8): only the kit's sentinel on this pipe, carrying the
     // sha256 of the bytes read above, counts.
@@ -256,12 +266,26 @@ export function makeFilingRunHandler(deps: FilingRunDeps): JobHandler {
       await forgetProved(config.workspaceDir, [host], log, "its proof failed")
       return portalError
     }
-    await recordProved(config.workspaceDir, host, script.sha256)
+    // What was proved is the folder as it was before the proof; a script that changed it while it ran
+    // proved nothing about what it left.
+    const proved = await fingerprintPortal(config.workspaceDir, host)
+    if (proved.kind !== "ok" || proved.fingerprint !== folder.fingerprint) {
+      log("filer: the script changed after its proof", { filingId: run.filingId, host })
+      await forgetProved(config.workspaceDir, [host], log, "its folder changed during its proof")
+      return portalError
+    }
+    await recordProved(config.workspaceDir, host, folder.fingerprint)
     if (config.dryRun) return withEvidence(run, script, ending)
 
     await freshOut(run, "out-proof")
     const live = await readPortalScript(config.workspaceDir, host)
-    if (live.kind !== "ok" || live.sha256 !== script.sha256) {
+    const liveFolder = await fingerprintPortal(config.workspaceDir, host)
+    if (
+      live.kind !== "ok" ||
+      live.sha256 !== script.sha256 ||
+      liveFolder.kind !== "ok" ||
+      liveFolder.fingerprint !== folder.fingerprint
+    ) {
       log("filer: the script changed after its proof", { filingId: run.filingId, host })
       return portalError
     }
@@ -292,10 +316,20 @@ export function makeFilingRunHandler(deps: FilingRunDeps): JobHandler {
     }
     const portal = { ...run, host }
     if (script.kind === "missing") return withClaude(portal, script, "missing")
-    // Only a script whose exact bytes passed the wrapper's proof runs live without Claude (D7 step 3).
-    if ((await readProved(config.workspaceDir, host)) !== script.sha256) {
+    // Only a script whose folder, byte for byte, passed the wrapper's proof runs live without Claude
+    // (D7 step 3).
+    const record = await readProved(config.workspaceDir, host)
+    if (record === null) return withClaude(portal, script, "unproved")
+    const folder = await fingerprintPortal(config.workspaceDir, host)
+    if (folder.kind !== "ok") {
+      log("filer: the portal folder was rejected", {
+        filingId: run.filingId,
+        host,
+        why: folder.why,
+      })
       return withClaude(portal, script, "unproved")
     }
+    if (folder.fingerprint !== record) return withClaude(portal, script, "unproved")
     const { ending } = await runOnce(portal, script, config.dryRun)
     // Before the marker nothing reached the city, so Claude may repair the script in this attempt (D7).
     if (ending.outcome !== "failed" || ending.reason !== "portal_error") {
