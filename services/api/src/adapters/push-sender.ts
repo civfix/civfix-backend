@@ -64,6 +64,7 @@ export interface ActiveToken {
   token: string
 }
 
+// A type alias, not an interface, so Object.values() on it keeps the dispatcher type.
 export type PushDispatchers = {
   ios?: PlatformDispatcher
   android?: PlatformDispatcher
