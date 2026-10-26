@@ -82,8 +82,8 @@ jobs:
       - name: Email worker typecheck
         run: pnpm --dir infra/email-worker typecheck
 
-      - name: Email worker test
-        run: pnpm --dir infra/email-worker test
+      - name: Email worker test (coverage thresholds)
+        run: pnpm --dir infra/email-worker test:coverage
 
       - name: Unused files, exports and dependencies (knip)
         run: pnpm knip
@@ -94,8 +94,10 @@ jobs:
       - name: Build
         run: pnpm build
 
-      - name: Test (unit)
-        run: pnpm test
+      # Unit and integration suites in one run per package, so the coverage printed here counts both;
+      # the thresholds are the unit-only baseline, which a run without Docker also has to meet.
+      - name: Test (unit + integration, coverage thresholds)
+        run: pnpm test:coverage
 
   media-worker-sandbox:
     name: media-worker image sandbox smoke

@@ -1,6 +1,7 @@
 import eslint from "@eslint/js"
 import tseslint from "typescript-eslint"
 import globals from "globals"
+import vitest from "@vitest/eslint-plugin"
 
 // Type-aware rules need a TypeScript program, which only the consuming service can locate, so each
 // service passes its own parserOptions (projectService + tsconfigRootDir) through `typed()`.
@@ -113,6 +114,18 @@ export function config(...extra) {
         "@typescript-eslint/no-unsafe-member-access": "error",
         "@typescript-eslint/no-unsafe-return": "error",
         "@typescript-eslint/no-non-null-assertion": "error",
+      },
+    },
+    {
+      files: ["test/**/*.ts"],
+      plugins: { vitest },
+      rules: {
+        "vitest/no-focused-tests": "error",
+        // Flags `.skip` and `x*` only; the `skipIf(!pg)` guards on the Postgres suites stay legal.
+        "vitest/no-disabled-tests": "error",
+        "vitest/valid-expect": ["error", { maxArgs: 2 }],
+        // Shared helpers that assert are named expect* (expectAppError, expect404, expectConsoleError).
+        "vitest/expect-expect": ["error", { assertFunctionNames: ["expect", "expect*", "assert"] }],
       },
     },
     ...extra,

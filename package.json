@@ -54,6 +54,7 @@
     "typecheck": "turbo run typecheck",
     "lint": "turbo run lint",
     "test": "turbo run test --continue",
+    "test:coverage": "turbo run test:coverage --continue",
     "check:sql": "node scripts/check-dynamic-sql.mjs",
     "format:check": "prettier --check .",
     "knip": "knip",

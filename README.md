@@ -31,6 +31,7 @@ civfix-backend/
   packages/
     config/                     shared eslint + prettier presets (@civfix/config)
     seams/                      the 11 seam interfaces, their fakes, MailSendError (@civfix/seams)
+    testing/                    shared test support: the console guard every vitest suite runs (@civfix/testing)
   services/
     api/                        Fastify API (@civfix/api)
     media-worker/               pg-boss media worker (@civfix/media-worker)
@@ -97,6 +98,7 @@ pnpm build        # tsup build of api + media-worker
 pnpm typecheck    # tsc --noEmit in both services
 pnpm lint         # eslint in both services
 pnpm test         # vitest in both services: unit + the Docker-gated integration suites
+pnpm test:coverage # the same run with v8 coverage and each package's thresholds (what CI runs)
 pnpm format:check # prettier --check (Markdown is excluded, see .prettierignore)
 pnpm check:sql    # dynamic-SQL guard: unsafe/raw allowlist, Drizzle $client, parameter IS NULL tests
 pnpm knip         # unused files, exports and dependencies (knip.jsonc)
@@ -114,6 +116,10 @@ in isolation:
 pnpm --dir infra/email-worker install --frozen-lockfile --ignore-workspace
 pnpm --dir infra/email-worker test
 ```
+
+Every vitest suite fails a test that logs an unexpected `console.error` or `console.warn`. A test that
+expects one declares it with `expectConsoleError` / `expectConsoleWarn` from `@civfix/testing/console`.
+The coverage thresholds in each `vitest.config.ts` only ever go up.
 
 ## Running the API in dev (offline, no credentials)
 

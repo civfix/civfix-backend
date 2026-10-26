@@ -626,7 +626,9 @@ describe("media.checks orchestration robustness", () => {
   })
 
   describe("a job the worker interrupts on stop is handed back, never judged", () => {
-    afterEach(() => resetSandboxStopped())
+    afterEach(() => {
+      resetSandboxStopped()
+    })
 
     function expectUntouched(env: ReturnType<typeof makeDeps>, id: string, r2Key: string): void {
       expect(env.repo.get(id)!.status).toBe("validating")

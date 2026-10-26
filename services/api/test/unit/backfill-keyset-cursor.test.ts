@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest"
+import { expectConsoleError } from "@civfix/testing/console"
 import { makeFakeSql } from "../helpers/fake-sql.js"
 import { stampReferenceCodes, type ReferenceCodeRow } from "../../src/db/backfill-keyset.js"
 import type { Sql } from "../../src/db/client.js"
@@ -70,6 +71,7 @@ describe("stampReferenceCodes keyset cursor", () => {
       { id: "b", createdAtIso: "2026-01-01T00:00:00.200750Z", referenceCode: null },
     ]
     const fake = keysetTable(rows)
+    expectConsoleError("test: reports b failed: allocator refused")
     const result = await stampReferenceCodes<ReferenceCodeRow>(fake.sql as unknown as Sql, {
       table: "reports",
       batchSize: 1,
