@@ -67,8 +67,9 @@
 #   build   install the FULL workspace, build api(src is inlined) -> worker, then
 #           `pnpm deploy --prod` the worker into a self-contained, dev-pruned /out.
 #   runtime plain Node 22 with no package manager: copy /out + the pinned binaries, provision the
-#           sandbox user, drop privileges in the entrypoint, run the worker. (No port / no HTTP healthcheck: the worker is a queue consumer;
-#           liveness is observed via pg-boss + logs. Docker restarts it on exit.)
+#           sandbox user, drop privileges in the entrypoint, run the worker. (No port / no HTTP
+#           healthcheck: the worker is a queue consumer; liveness is observed via pg-boss + logs.
+#           Docker restarts it on exit.)
 
 # The digest is the multi-arch index (it carries linux/arm64 and linux/amd64), so a rebuild of the same
 # commit gets the same base; the tag only tells a reader which line it is. Move both together.
