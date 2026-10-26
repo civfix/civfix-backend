@@ -75,6 +75,8 @@ jobs:
       contents: read
       # build-images.yml pushes the images to ghcr.io/civfix/*.
       packages: write
+      # build-images.yml signs them keyless with cosign (its publish job only).
+      id-token: write
 
   deploy:
     name: ssh deploy + availability assertion
