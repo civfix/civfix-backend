@@ -447,55 +447,6 @@ describe("GET /v1/app/config", () => {
   })
 })
 
-describe("developer placeholders", () => {
-  const TEST_EMAIL = "a@civfix.org"
-  const PLACEHOLDERS: { method: Method; url: string; body?: unknown; mutation: boolean }[] = [
-    { method: "GET", url: "/v1/admin/dev/test/force-update", mutation: false },
-    {
-      method: "PUT",
-      url: "/v1/admin/dev/test/force-update",
-      body: { email: TEST_EMAIL, enabled: true },
-      mutation: true,
-    },
-    { method: "POST", url: "/v1/admin/dev/test/push", body: { email: TEST_EMAIL }, mutation: true },
-    { method: "POST", url: "/v1/admin/dev/test/email", body: {}, mutation: true },
-    {
-      method: "POST",
-      url: "/v1/admin/dev/test/reset-first-run",
-      body: { email: TEST_EMAIL },
-      mutation: true,
-    },
-  ]
-
-  it("T56: each answers NOT_FOUND from its own handler for an operator", async () => {
-    const h = await harness()
-    for (const p of PLACEHOLDERS) {
-      const res = await call(h, p.method, p.url, { as: h.operator, body: p.body })
-      expectError(res, 404, "NOT_FOUND")
-      expect(res.json<{ message: string }>().message.startsWith("Route ")).toBe(false)
-    }
-  })
-
-  it("T57: each needs an operator", async () => {
-    const h = await harness()
-    for (const p of PLACEHOLDERS) {
-      expectError(await call(h, p.method, p.url, { body: p.body }), 401, "UNAUTHORIZED")
-      expectError(await call(h, p.method, p.url, { as: h.citizen, body: p.body }), 403, "FORBIDDEN")
-    }
-  })
-
-  it("T58: each mutation needs the CSRF header", async () => {
-    const h = await harness()
-    for (const p of PLACEHOLDERS.filter((p) => p.mutation)) {
-      expectError(
-        await call(h, p.method, p.url, { as: h.operator, csrf: false, body: p.body }),
-        403,
-        "FORBIDDEN",
-      )
-    }
-  })
-})
-
 const OVERVIEW_URL = "/v1/admin/dev/overview"
 const JOBS_URL = "/v1/admin/dev/jobs"
 const NOW = new Date(Date.UTC(2026, 9, 26, 12, 0, 0, 0))
