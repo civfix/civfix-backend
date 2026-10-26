@@ -1,4 +1,4 @@
-# syntax=docker/dockerfile:1.7
+# syntax=docker/dockerfile:1.7@sha256:a57df69d0ea827fb7266491f2813635de6f17269be881f696fbfdf2d83dda33e
 #
 # civfix media-worker production image (multi-stage).
 #
@@ -70,7 +70,9 @@
 #           entrypoint, run the worker. (No port / no HTTP healthcheck: the worker is a queue consumer;
 #           liveness is observed via pg-boss + logs. Docker restarts it on exit.)
 
-FROM node:22-bookworm-slim AS base
+# The digest is the multi-arch index (it carries linux/arm64 and linux/amd64), so a rebuild of the same
+# commit gets the same base; the tag only tells a reader which line it is. Move both together.
+FROM node:22-bookworm-slim@sha256:de170b39439eb0e5a3444ad7d60b015614a381e10fecae2e30ec9e735122f38d AS base
 ENV PNPM_HOME="/pnpm" \
     PATH="/pnpm:$PATH" \
     CI=true
@@ -183,4 +185,4 @@ ENV FFMPEG_PATH=/usr/local/bin/ffmpeg \
 # fatal error, so `restart: unless-stopped` in compose recovers it. main.js installs SIGTERM/SIGINT
 # graceful shutdown (drain the queue, then tear down the DB pool + telemetry).
 ENTRYPOINT ["/usr/local/bin/media-worker-entrypoint"]
-CMD ["node", "dist/main.js"]
+CMD ["node", "--enable-source-maps", "dist/main.js"]
