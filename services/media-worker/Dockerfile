@@ -66,8 +66,8 @@
 #   ffmpeg  verify the pinned FFmpeg source release and compile the minimal ffmpeg + ffprobe.
 #   build   install the FULL workspace, build api(src is inlined) -> worker, then
 #           `pnpm deploy --prod` the worker into a self-contained, dev-pruned /out.
-#   runtime copy /out + the pinned binaries, provision the sandbox user, drop privileges in the
-#           entrypoint, run the worker. (No port / no HTTP healthcheck: the worker is a queue consumer;
+#   runtime plain Node 22 with no package manager: copy /out + the pinned binaries, provision the
+#           sandbox user, drop privileges in the entrypoint, run the worker. (No port / no HTTP healthcheck: the worker is a queue consumer;
 #           liveness is observed via pg-boss + logs. Docker restarts it on exit.)
 
 # The digest is the multi-arch index (it carries linux/arm64 and linux/amd64), so a rebuild of the same
@@ -155,19 +155,23 @@ RUN pnpm --filter @civfix/media-worker... build
 RUN --mount=type=cache,id=pnpm-store,target=/pnpm/store \
     pnpm --filter @civfix/media-worker --prod deploy /out
 
-FROM base AS runtime
+# From the plain Node image, not `base`: the runtime needs no package manager, and the corepack-cached
+# pnpm in `base` carries its own bundled dependency tree (tar, glob, minimatch, cross-spawn, ...) that the
+# image scan flags. Same digest as `base`, so both move together.
+FROM node:22-bookworm-slim@sha256:de170b39439eb0e5a3444ad7d60b015614a381e10fecae2e30ec9e735122f38d AS runtime
 # Same contract as the api image: the release identity is a property of the promoted artifact, not of the
 # deploy that placed it. Read by src/seams.ts as the GlitchTip `release`.
 ARG SERVICE_VERSION=0.0.0
 ENV NODE_ENV=production \
     SERVICE_VERSION=${SERVICE_VERSION}
 WORKDIR /app
-# npm is removed as in the api image: nothing runs it, and its bundled dependency tree is where the image
-# scan finds fixable HIGH advisories.
+# No package manager, as in the api image: nothing here runs one, and npm's bundled dependency tree is
+# where the image scan finds fixable HIGH advisories.
+RUN rm -rf /usr/local/bin/corepack /usr/local/lib/node_modules/corepack /usr/local/bin/yarn /usr/local/bin/yarnpkg /opt/yarn-* \
+    /usr/local/bin/npm /usr/local/bin/npx /usr/local/lib/node_modules/npm
 RUN apt-get update \
  && apt-get install -y --no-install-recommends util-linux \
  && rm -rf /var/lib/apt/lists/* \
- && rm -rf /usr/local/bin/npm /usr/local/bin/npx /usr/local/lib/node_modules/npm \
  && groupadd --system --gid 1001 mediatools \
  && useradd --system --uid 1001 --gid 1001 --no-create-home --shell /usr/sbin/nologin mediatools \
  && usermod --append --groups mediatools node \
