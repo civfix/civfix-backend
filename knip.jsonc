@@ -44,6 +44,17 @@
         "https-proxy-agent",
       ],
     },
+    "services/city-filer": {
+      // The kit and the fixture portal's script run under node, loaded by path or through a workspace
+      // script's import, never from src.
+      "entry": ["kit/**/*.mjs", "test/fixtures/**/*.mjs"],
+      "project": ["src/**/*.ts", "kit/**/*.mjs", "test/**/*.ts", "test/fixtures/**"],
+      "ignoreDependencies": [
+        // A workspace script's import, resolved through /workspace/node_modules (the image's link; the
+        // test harness makes the same one).
+        "@civfix/filer-kit",
+      ],
+    },
     "packages/config": {},
     // Outside pnpm-workspace.yaml (it deploys with wrangler from its own lockfile); CI installs it before
     // knip runs so its dependencies resolve.

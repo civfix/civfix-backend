@@ -1,0 +1,8 @@
+{
+  "name": "@civfix/filer-kit",
+  "private": true,
+  "description": "What a portal script imports: the browser, evidence screenshots, the guarded submit and the result file. playwright-core resolves from @civfix/city-filer, the package above this one.",
+  "license": "AGPL-3.0-only",
+  "type": "module",
+  "exports": "./index.mjs"
+}

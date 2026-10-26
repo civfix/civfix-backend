@@ -3712,6 +3712,7 @@ export const cases: TranscriptCase[] = [
       (m51 as any).makeDrizzleFilingRepository(sql).transition("id-1", {
         from: ["submitted"],
         attempts: 3,
+        runId: "runId-1",
         set: {
           method: "operator",
           status: "submitted",
@@ -3752,6 +3753,10 @@ export const cases: TranscriptCase[] = [
   {
     key: "makeFilingsWorker.getFilingSettings",
     run: async (sql: any) => (m52 as any).makeFilingsWorker(sql).getFilingSettings(),
+  },
+  {
+    key: "makeFilingsWorker.isReportFileable",
+    run: async (sql: any) => (m51 as any).makeFilingsWorker(sql).isReportFileable("filingId-1"),
   },
   {
     key: "makeFilingsWorker.listRunningFilings",
