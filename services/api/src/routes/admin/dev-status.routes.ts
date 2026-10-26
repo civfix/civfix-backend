@@ -28,7 +28,7 @@ const CONTRACT_VERSION = (
 
 const API_STARTED_AT = new Date(performance.timeOrigin)
 
-const ADMIN_DEV_RUN_JOB_RATE_LIMIT = perIdentity({
+export const ADMIN_DEV_RUN_JOB_RATE_LIMIT = perIdentity({
   max: 10,
   timeWindow: "1 minute",
   skipOnError: false,
