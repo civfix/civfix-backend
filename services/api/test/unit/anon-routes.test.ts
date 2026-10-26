@@ -575,7 +575,12 @@ describe("F131: the PRODUCTION anon service raises abuse flags and logs", () => 
     await prod.app.inject({
       method: "POST",
       url: "/v1/anon/reports",
-      payload: anonPayload({ anonToken: prod.anonToken, honeypot: "bot" }),
+      payload: anonPayload({
+        anonToken: prod.anonToken,
+        honeypot: "bot",
+        lat: 34.123456,
+        lng: -118.654321,
+      }),
     })
 
     const logs = prod.logs
@@ -584,8 +589,8 @@ describe("F131: the PRODUCTION anon service raises abuse flags and logs", () => 
       .poll(() => logs.some((l) => l.msg === "request completed"), { timeout: 2000 })
       .toBe(true)
     const serialized = JSON.stringify(logs)
-    expect(serialized).not.toContain("34.1")
-    expect(serialized).not.toContain("-118.35")
+    expect(serialized).not.toContain("34.123456")
+    expect(serialized).not.toContain("118.654321")
   })
 
   it("raises NO flag for a clean submit (the honeypot branch is the only producer here)", async () => {
