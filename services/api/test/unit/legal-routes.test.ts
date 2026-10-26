@@ -178,7 +178,7 @@ describe("GET /legal/documents/:type/:version", () => {
       const h = await harness()
       const res = await h.app.inject({ method: "GET", url })
 
-      expect(res.statusCode).toBe(400)
+      expect(res.statusCode).toBe(422)
       expect(res.json<{ code: string }>().code).toBe("VALIDATION")
       expect(res.headers["cache-control"]).not.toBe(PUBLIC_CACHE)
     },
