@@ -1,5 +1,6 @@
 import { describe, it, expect, afterEach, vi } from "vitest"
 import Fastify, { type FastifyInstance, type FastifyReply } from "fastify"
+import { expectConsoleError } from "@civfix/testing/console"
 import { makeErrorHandler } from "../../src/errors/http-mapper.js"
 import { registerRequestId } from "../../src/plugins/request-id.js"
 import { route, type RouteOptions } from "../../src/versioning/route.js"
@@ -75,7 +76,7 @@ describe("route() contract response check (tests only)", () => {
   })
 
   it("still checks when the route brings its own onSend hook", async () => {
-    vi.spyOn(console, "error").mockImplementation(() => undefined)
+    expectConsoleError("openUnsubscribeBroadcasts response does not match the contract")
     const ownHook = vi.fn(async (_request: unknown, _reply: unknown, payload: unknown) => payload)
     const res = await serve((reply) => reply.send({ stray: 1 }), route, { onSend: ownHook })
     expect(ownHook).toHaveBeenCalledTimes(1)

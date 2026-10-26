@@ -8,6 +8,7 @@ import {
   type ActiveToken,
   type PlatformDispatcher,
   type PushDispatchers,
+  type PushLogger,
 } from "../../src/adapters/push-sender.js"
 import { PUSH_MAX_PER_USER_PER_MINUTE, allowedByPushRate } from "../../src/adapters/push-sender.js"
 import { InMemoryCounterStore } from "../../src/abuse/counter-store.js"
@@ -24,6 +25,23 @@ function recordingDispatcher(invalid: string[] = []): {
     return Promise.resolve({ invalidTokens: invalid })
   }
   return { calls, fn }
+}
+
+interface LogEntry {
+  level: "warn" | "error"
+  msg: string | undefined
+  obj: unknown
+}
+
+function recordingLogger(): { entries: LogEntry[]; logger: PushLogger } {
+  const entries: LogEntry[] = []
+  return {
+    entries,
+    logger: {
+      warn: (obj, msg) => entries.push({ level: "warn", msg, obj }),
+      error: (obj, msg) => entries.push({ level: "error", msg, obj }),
+    },
+  }
 }
 
 interface TokenRow {
@@ -121,12 +139,25 @@ describe("MultiPushSender.send routing", () => {
     const web = recordingDispatcher()
     const dispatchers: PushDispatchers = { web: web.fn }
     const prune: PruneCapture = {}
+    const log = recordingLogger()
 
-    const sender = new MultiPushSender({ db: fakeDb(rows, prune), config: {}, dispatchers })
+    const sender = new MultiPushSender({
+      db: fakeDb(rows, prune),
+      config: {},
+      dispatchers,
+      logger: log.logger,
+    })
     await sender.send("u", PAYLOAD)
 
     expect(web.calls).toHaveLength(1)
     expect(web.calls[0]!.tokens).toEqual(["web-tok"])
+    expect(log.entries).toEqual([
+      {
+        level: "warn",
+        msg: "push: platform has tokens but no configured credentials; skipping",
+        obj: { platform: "ios", count: 1 },
+      },
+    ])
   })
 
   it("does nothing when the user has no active tokens", async () => {
@@ -161,10 +192,23 @@ describe("MultiPushSender.send routing", () => {
     const web = recordingDispatcher()
     const dispatchers: PushDispatchers = { ios: throwing, web: web.fn }
     const prune: PruneCapture = {}
+    const log = recordingLogger()
 
-    const sender = new MultiPushSender({ db: fakeDb(rows, prune), config: {}, dispatchers })
+    const sender = new MultiPushSender({
+      db: fakeDb(rows, prune),
+      config: {},
+      dispatchers,
+      logger: log.logger,
+    })
     await expect(sender.send("u", PAYLOAD)).resolves.toBeUndefined()
     expect(web.calls).toHaveLength(1)
+    expect(log.entries).toEqual([
+      {
+        level: "error",
+        msg: "push: platform dispatch failed",
+        obj: { err: new Error("apns down"), platform: "ios" },
+      },
+    ])
   })
 })
 
@@ -303,17 +347,25 @@ describe("per-user push rate cap (H15)", () => {
   it("stops dispatching to a recipient past the per-minute cap and keeps the window per user", async () => {
     const ios = recordingDispatcher()
     const counters = new InMemoryCounterStore(() => 1_000)
+    const log = recordingLogger()
     const sender = new MultiPushSender({
       db: fakeDb(rateRows("victim"), {}),
       config: {},
       dispatchers: { ios: ios.fn },
       counters,
+      logger: log.logger,
     })
 
     for (let i = 0; i < PUSH_MAX_PER_USER_PER_MINUTE + 25; i++) {
       await sender.send("victim", PAYLOAD)
     }
     expect(ios.calls).toHaveLength(PUSH_MAX_PER_USER_PER_MINUTE)
+    expect(log.entries).toHaveLength(25)
+    expect(log.entries[0]).toEqual({
+      level: "warn",
+      msg: "push: per-user rate cap reached; dropping excess device pushes",
+      obj: { dropped: 1, capPerMinute: PUSH_MAX_PER_USER_PER_MINUTE },
+    })
 
     const other = recordingDispatcher()
     const senderB = new MultiPushSender({
