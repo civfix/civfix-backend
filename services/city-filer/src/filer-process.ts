@@ -36,6 +36,8 @@ export interface FilerProcessResult {
   stderrTail: string
   /** Empty unless `stdoutMaxBytes` was given. */
   stdout: string
+  /** The same, as the bytes the child wrote (a git blob is not text). */
+  stdoutBytes: Buffer
 }
 
 const STDERR_TAIL_CHARS = 2000
@@ -121,11 +123,13 @@ export function runAsFiler(
         child.stdout.destroy()
         child.stderr.destroy()
         if (partial !== "") opts.onStdoutLine?.(partial)
+        const stdoutBytes = Buffer.concat(kept)
         resolve({
           exitCode: code,
           timedOut,
           stderrTail: stderr,
-          stdout: Buffer.concat(kept).toString("utf8"),
+          stdout: stdoutBytes.toString("utf8"),
+          stdoutBytes,
         })
       })
     })

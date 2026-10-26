@@ -20,6 +20,7 @@ import type { FilerRunner } from "./filer-process.js"
 import { confineToHost, workspaceHead } from "./git.js"
 import { sendFilingResult } from "./hand-back.js"
 import { collectEvidence, runEnding, type RunEnding } from "./output.js"
+import { forgetProved, readProved, recordProved } from "./proved.js"
 import {
   isPortalHost,
   readPortalScript,
@@ -157,7 +158,7 @@ export function makeFilingRunHandler(deps: FilingRunDeps): JobHandler {
   }
 
   /** Moves out/ aside as `name` and gives the next step a fresh one; nothing filer left there carries on. */
-  async function freshOut(run: Run, name: "out-claude" | "out-proof"): Promise<void> {
+  async function freshOut(run: Run, name: "out-live" | "out-claude" | "out-proof"): Promise<void> {
     await rename(join(run.dir, "out"), join(run.dir, name))
     await mkdir(join(run.dir, "out"))
     await own(join(run.dir, "out"), 0o2770)
@@ -186,7 +187,11 @@ export function makeFilingRunHandler(deps: FilingRunDeps): JobHandler {
    * D7 step 4: Claude writes or repairs the host's script, then the wrapper confines its changes, proves the
    * script with its own dry run and runs it live once. Claude never presses the live submit.
    */
-  async function withClaude(run: PortalRun, before: PortalScript): Promise<Ending> {
+  async function withClaude(
+    run: PortalRun,
+    before: PortalScript,
+    why: "missing" | "unproved" | "failed",
+  ): Promise<Ending> {
     const { host } = run
     const gitDeps = { runner: deps.runner, workspaceDir: config.workspaceDir, log }
     const base = await workspaceHead(gitDeps)
@@ -198,9 +203,11 @@ export function makeFilingRunHandler(deps: FilingRunDeps): JobHandler {
       `Run directory: ${run.dir}`,
       `Packet: ${join(run.dir, "packet.json")}`,
       `Filing id: ${run.filingId}`,
-      before.kind === "ok"
-        ? `portals/${host}/script.mjs failed before its submit; that run's output is in out/. Repair it.`
-        : `There is no script for ${host} yet. Write portals/${host}/script.mjs.`,
+      {
+        missing: `There is no script for ${host} yet. Write portals/${host}/script.mjs.`,
+        unproved: `portals/${host}/script.mjs has not passed the wrapper's dry run as it is. Check it and repair it if needed.`,
+        failed: `portals/${host}/script.mjs failed before its submit; that run's output is in out-live/. Repair it.`,
+      }[why],
     ].join("\n")
     const claude = await runClaude(
       { runner: deps.runner, gate: deps.gate, log },
@@ -223,7 +230,7 @@ export function makeFilingRunHandler(deps: FilingRunDeps): JobHandler {
     await freshOut(run, "out-claude")
     const outDir = join(run.dir, "out-claude")
     const claimed = await runEnding({ outDir, host, dryRun: false, run: CLEAN_EXIT, log })
-    await confineToHost(gitDeps, { base, host, filingId: run.filingId })
+    if (!(await confineToHost(gitDeps, { base, host, filingId: run.filingId }))) return portalError
     if (claude.kind === "failed") return { outcome: "failed", reason: claude.reason }
 
     const script = await readPortalScript(config.workspaceDir, host)
@@ -245,7 +252,11 @@ export function makeFilingRunHandler(deps: FilingRunDeps): JobHandler {
     // The proof is the wrapper's own dry run (D8): only the kit's sentinel on this pipe, carrying the
     // sha256 of the bytes read above, counts.
     const { ran: proof, ending } = await runOnce(run, script, true, "proof")
-    if (proof.timedOut || proof.exitCode !== 0 || !proof.sentinel) return portalError
+    if (proof.timedOut || proof.exitCode !== 0 || !proof.sentinel) {
+      await forgetProved(config.workspaceDir, host, log, "its proof failed")
+      return portalError
+    }
+    await recordProved(config.workspaceDir, host, script.sha256)
     if (config.dryRun) return withEvidence(run, script, ending)
 
     await freshOut(run, "out-proof")
@@ -280,13 +291,18 @@ export function makeFilingRunHandler(deps: FilingRunDeps): JobHandler {
       return portalError
     }
     const portal = { ...run, host }
-    if (script.kind === "missing") return withClaude(portal, script)
+    if (script.kind === "missing") return withClaude(portal, script, "missing")
+    // Only a script whose exact bytes passed the wrapper's proof runs live without Claude (D7 step 3).
+    if ((await readProved(config.workspaceDir, host)) !== script.sha256) {
+      return withClaude(portal, script, "unproved")
+    }
     const { ending } = await runOnce(portal, script, config.dryRun)
     // Before the marker nothing reached the city, so Claude may repair the script in this attempt (D7).
     if (ending.outcome !== "failed" || ending.reason !== "portal_error") {
       return withEvidence(run, script, ending)
     }
-    return withClaude(portal, script)
+    await freshOut(run, "out-live")
+    return withClaude(portal, script, "failed")
   }
 
   return async (job) => {

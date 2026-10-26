@@ -17,6 +17,9 @@ The wrapper works `filing.run` one job at a time:
    report's photos (images of 10 MB or less, at most five) and an empty `out/`.
 5. `portals/<host>/script.mjs` runs live as `filer`, with a 5-minute timeout. With no script, or
    one that fails before the submit marker, Claude Code writes or repairs it in the same attempt.
+   A script runs live without Claude only when its sha256 matches the fingerprint the wrapper
+   recorded in `proved/<host>` when it last passed the wrapper's dry run, so a script reverted with
+   `git revert` goes back through Claude and that dry run before it runs live.
 6. `out/result.json` is checked, the screenshots it lists and a copy of the script are uploaded to R2
    under `filings/<filingId>/`, and the outcome goes back on `filing.result`.
 

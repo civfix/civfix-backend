@@ -1,6 +1,3 @@
-import { chmod, mkdtemp, rm } from "node:fs/promises"
-import { tmpdir } from "node:os"
-import { join } from "node:path"
 import { MS_PER_MINUTE } from "@civfix/api/time"
 import {
   FILING_CITY_UPDATE_JOB,
@@ -20,9 +17,15 @@ export interface ClassifyDeps {
   runner: FilerRunner
   gate: ClaudeGate
   log: FilerLog
+  /** Tests only: the image's directory does not exist outside it. */
   classifyDir?: string
 }
 
+/**
+ * Classify's cwd, made empty by the Dockerfile, node:node 0755. Claude Code reads a CLAUDE.md from its cwd
+ * and every directory above it, so neither may be writable by filer, whose filing runs could plant one
+ * (as anywhere under /tmp, /home/filer or /workspace).
+ */
 export const CLASSIFY_DIR = "/app/classify"
 
 const CLASSIFY_TIMEOUT_MS = 5 * MS_PER_MINUTE
@@ -66,36 +69,30 @@ export function makeClassifyHandler(deps: ClassifyDeps): JobHandler {
       job.retryCount !== undefined &&
       job.retryLimit !== undefined &&
       job.retryCount >= job.retryLimit
-    // An empty node-owned directory: nothing there for Claude to pick up as settings or memory.
-    const cwd = await mkdtemp(join(tmpdir(), "filer-classify-"))
-    try {
-      await chmod(cwd, 0o755)
-      for (let reading = 1; reading <= READINGS_PER_TRY; reading++) {
-        const outcome = await runClaude(
-          { runner: deps.runner, gate: deps.gate, log: deps.log },
-          {
-            args: classifyArgs(deps.config.classifyModel),
-            stdin: `Subject: ${subject}\n\n${text}\n`,
-            cwd,
-            timeoutMs: CLASSIFY_TIMEOUT_MS,
-          },
-        )
-        if (outcome.kind === "failed" && outcome.reason === "ai_unavailable") {
-          deps.log("filer: claude unavailable for a city message", { filingMessageId, lastTry })
-          if (!lastTry) throw new Error(`filing.classify: Claude is unavailable: ${outcome.why}`)
-          await handBack(filingMessageId, unread("Not read: Claude was unavailable."))
-          return
-        }
-        const classification = outcome.kind === "ok" ? parseReading(outcome.result) : null
-        if (classification !== null) {
-          await handBack(filingMessageId, classification)
-          return
-        }
-        deps.log("filer: no valid reading of a city message", { filingMessageId, reading })
+    const cwd = deps.classifyDir ?? CLASSIFY_DIR
+    for (let reading = 1; reading <= READINGS_PER_TRY; reading++) {
+      const outcome = await runClaude(
+        { runner: deps.runner, gate: deps.gate, log: deps.log },
+        {
+          args: classifyArgs(deps.config.classifyModel),
+          stdin: `Subject: ${subject}\n\n${text}\n`,
+          cwd,
+          timeoutMs: CLASSIFY_TIMEOUT_MS,
+        },
+      )
+      if (outcome.kind === "failed" && outcome.reason === "ai_unavailable") {
+        deps.log("filer: claude unavailable for a city message", { filingMessageId, lastTry })
+        if (!lastTry) throw new Error(`filing.classify: Claude is unavailable: ${outcome.why}`)
+        await handBack(filingMessageId, unread("Not read: Claude was unavailable."))
+        return
       }
-      await handBack(filingMessageId, unread("Not read: Claude gave no valid reading."))
-    } finally {
-      await rm(cwd, { recursive: true, force: true })
+      const classification = outcome.kind === "ok" ? parseReading(outcome.result) : null
+      if (classification !== null) {
+        await handBack(filingMessageId, classification)
+        return
+      }
+      deps.log("filer: no valid reading of a city message", { filingMessageId, reading })
     }
+    await handBack(filingMessageId, unread("Not read: Claude gave no valid reading."))
   }
 }

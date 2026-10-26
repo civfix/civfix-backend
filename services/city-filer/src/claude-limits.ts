@@ -34,7 +34,9 @@ function parseOutput(stdout: string): z.infer<typeof ClaudeJsonSchema> | null {
  * The one place a Claude exit is judged (D9): a usage limit or a login problem is `ai_unavailable`, which
  * the API requeues without spending an attempt; anything else that went wrong is `portal_error`.
  */
-export function claudeOutcome(exit: FilerProcessResult): ClaudeOutcome {
+export function claudeOutcome(
+  exit: Pick<FilerProcessResult, "exitCode" | "timedOut" | "stdout" | "stderrTail">,
+): ClaudeOutcome {
   if (exit.timedOut) return { kind: "failed", reason: "portal_error", why: "timed out" }
   const out = parseOutput(exit.stdout)
   if (out !== null && exit.exitCode === 0 && !out.is_error) {

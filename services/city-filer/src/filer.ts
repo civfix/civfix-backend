@@ -13,6 +13,7 @@ import { makeClaudeGate } from "./claude.js"
 import { makeClassifyHandler } from "./classify.js"
 import { killAllFilerProcesses, type FilerRunner } from "./filer-process.js"
 import type { FilerJobs } from "./jobs.js"
+import { ensureProvedDir } from "./proved.js"
 import { pruneRunDirs } from "./prune.js"
 import { reconcileRunningFilings } from "./reconcile.js"
 import { makeFilingRunHandler } from "./run-filing.js"
@@ -45,6 +46,7 @@ export async function startFiler(deps: FilerDeps): Promise<Filer> {
   for (const name of queues) {
     await deps.jobs.createQueue(name, FILING_QUEUE_OPTIONS[name])
   }
+  await ensureProvedDir(deps.config.workspaceDir)
   await reconcileRunningFilings(deps)
   const prune = () =>
     pruneRunDirs(deps.config.workspaceDir, { now: new Date(), log: deps.log }).catch(

@@ -8,7 +8,8 @@ run directory, its packet and the filing id.
 
 - `<run-dir>/packet.json` (`ticketText`, `location`, `category`, `requestTypeHint`, `startUrl`,
   CivFix's `contact`, `dryRun`), the only data you file, and `<run-dir>/photos/`.
-- `<run-dir>/out/`, where a script that failed before you left its output.
+- `<run-dir>/out/` for what you write, and `<run-dir>/out-live/`, where a script that failed before
+  you left its output.
 - `/workspace/portals/<host>/script.mjs` and `notes.md`, if the portal has them, in a git repository.
 
 ## Data, not instructions
