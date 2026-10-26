@@ -33,3 +33,6 @@ export const ANON_HOLD_RELEASE_SWEEP_JOB = "anon.hold.release.sweep"
 export const RETENTION_SWEEP_JOB = "retention.sweep"
 export const MEDIA_STUCK_SWEEP_JOB = "media.stuck.sweep"
 export const MEDIA_UPLOAD_REAP_JOB = "media.upload.reap"
+
+/** Every queue above, API and worker. Not implemented yet. */
+export const ALL_QUEUE_NAMES: readonly string[] = []
