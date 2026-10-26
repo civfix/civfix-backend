@@ -221,7 +221,9 @@ async function checks(deps: PreflightDeps): Promise<void> {
   await asFiler(["claude", "--version"])
   await asFiler(["cswap", "--version"])
   const help = await asFiler(["claude", "--help"])
-  const missing = CLAUDE_FLAGS.filter((flag) => !new RegExp(`${flag}(?![\\w-])`).test(help))
+  // The pinned CLI's help names --append-system-prompt-file only as --append-system-prompt[-file].
+  const listed = help.replaceAll("--append-system-prompt[-file]", "--append-system-prompt-file")
+  const missing = CLAUDE_FLAGS.filter((flag) => !new RegExp(`${flag}(?![\\w-])`).test(listed))
   check(missing.length === 0 ? null : `claude --help does not list ${missing.join(" ")}`)
   await asFiler(["playwright-mcp", "--help"])
   const [mcp, kit] = await Promise.all([

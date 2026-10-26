@@ -84,14 +84,10 @@ and reads the cities' emails (with `FILER_CLASSIFY_MODEL`, `playbook/classify.md
 runs as `filer`, one Claude process at a time. It never presses a live submit: the wrapper proves each
 script with its own dry run, then runs it live once.
 
-Pinned in the Dockerfile; a bump is an edit there plus a run of #178's smoke:
-
-| Tool | Version |
-| --- | --- |
-| Claude Code CLI (`CLAUDE_CODE_VERSION`), `npm install -g` | 2.1.310 |
-| `@playwright/mcp` (`PLAYWRIGHT_MCP_VERSION`), `npm install -g`; its `playwright-core` is the kit's, which the build checks | 0.0.83 |
-| uv (`UV_VERSION`) | 0.13.5 |
-| claude-swap (`CLAUDE_SWAP_VERSION`), a uv tool on Python 3.12 under `/opt/uv` | 0.28.0 |
+Pinned in the Dockerfile: Claude Code (`CLAUDE_CODE_VERSION`) 2.1.310 and `@playwright/mcp`
+(`PLAYWRIGHT_MCP_VERSION`) 0.0.83 with `npm install -g`, the build checking that its `playwright-core`
+is the kit's; uv (`UV_VERSION`) 0.13.5; claude-swap (`CLAUDE_SWAP_VERSION`) 0.28.0 as a uv tool on
+Python 3.12 under `/opt/uv`. A bump is an edit there plus a run of #178's smoke.
 
 `/etc/claude-code/managed-settings.json` turns off the auto-updater, telemetry, error reporting and
 non-essential traffic, and disables all hooks.
