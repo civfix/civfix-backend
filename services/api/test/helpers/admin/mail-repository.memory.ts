@@ -641,7 +641,7 @@ export class InMemoryMailRepository implements MailRepository {
       geoid,
       lastOutreachAt:
         patch.lastOutreachAt !== undefined ? patch.lastOutreachAt : (prev?.lastOutreachAt ?? null),
-      suppressed: patch.suppressed !== undefined ? patch.suppressed : (prev?.suppressed ?? false),
+      suppressed: patch.suppressed ?? prev?.suppressed ?? false,
     }
     this.outreach.set(geoid, record)
     return Promise.resolve({ ...record })

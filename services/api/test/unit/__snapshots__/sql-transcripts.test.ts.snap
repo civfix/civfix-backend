@@ -12,7 +12,7 @@ CASE WHEN c.status = 'cancelled' THEN 'cancelled' WHEN c.ends_at <= now() THEN '
 exports[`sql transcripts > allocateNextSeqIn 1`] = `
 "-- empty
 INSERT INTO reference_counters (scope_key, next_val) VALUES ($1, 1) ON CONFLICT (scope_key) DO UPDATE SET next_val = reference_counters.next_val + 1 RETURNING next_val -- ["scopeKey-1"]
-=> throws TypeError: Cannot read properties of undefined (reading 'next_val')
+=> throws Error: reference counter upsert: expected a row, got none
 -- row
 INSERT INTO reference_counters (scope_key, next_val) VALUES ($1, 1) ON CONFLICT (scope_key) DO UPDATE SET next_val = reference_counters.next_val + 1 RETURNING next_val -- ["scopeKey-1"]
 => null"
@@ -2215,7 +2215,7 @@ exports[`sql transcripts > makeDrizzleAnonReportRepository.createAnonReportTx 1`
 BEGIN tx1
 [tx1] INSERT INTO reference_counters (scope_key, next_val) VALUES ($1, 1) ON CONFLICT (scope_key) DO UPDATE SET next_val = reference_counters.next_val + 1 RETURNING next_val -- ["GR:3"]
 ROLLBACK tx1
-=> throws TypeError: Cannot read properties of undefined (reading 'next_val')
+=> throws Error: reference counter upsert: expected a row, got none
 -- row
 BEGIN tx1
 [tx1] INSERT INTO reference_counters (scope_key, next_val) VALUES ($1, 1) ON CONFLICT (scope_key) DO UPDATE SET next_val = reference_counters.next_val + 1 RETURNING next_val -- ["GR:3"]
@@ -2415,7 +2415,7 @@ SELECT count(*)::int AS n FROM broadcasts WHERE cleanup_id = $1 AND kind = $2 AN
 exports[`sql transcripts > makeDrizzleBroadcastRepository.create 1`] = `
 "-- empty
 INSERT INTO broadcasts ( cleanup_id, created_by, kind, reminder_offset_min, status, subject, body_md, cta_label, cta_url, segment, channels, reply_to, scheduled_at, started_at, chunk_size ) VALUES ( $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11::text[], $12, $13, $14, $15 ) RETURNING id, cleanup_id, created_by, kind, reminder_offset_min, status, subject, body_md, cta_label, cta_url, segment, channels, reply_to, scheduled_at, planned_at, started_at, finished_at, chunk_size, chunk_count, recipient_count, sent_count, failed_count, suppressed_count, content_scrubbed_at, created_at, updated_at -- ["cleanupId-1","createdBy-1","host_broadcast",3,"sent","subject-1","bodyMd-1","ctaLabel-1","ctaUrl-1",{"<json>":{"kind":"all_registered"}},["push"],"replyTo-1","2026-03-04T05:06:07.000Z","2026-03-04T05:06:07.000Z",3]
-=> throws TypeError: Cannot read properties of undefined (reading 'id')
+=> throws Error: broadcast insert: expected a row, got none
 -- row
 INSERT INTO broadcasts ( cleanup_id, created_by, kind, reminder_offset_min, status, subject, body_md, cta_label, cta_url, segment, channels, reply_to, scheduled_at, started_at, chunk_size ) VALUES ( $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11::text[], $12, $13, $14, $15 ) RETURNING id, cleanup_id, created_by, kind, reminder_offset_min, status, subject, body_md, cta_label, cta_url, segment, channels, reply_to, scheduled_at, planned_at, started_at, finished_at, chunk_size, chunk_count, recipient_count, sent_count, failed_count, suppressed_count, content_scrubbed_at, created_at, updated_at -- ["cleanupId-1","createdBy-1","host_broadcast",3,"sent","subject-1","bodyMd-1","ctaLabel-1","ctaUrl-1",{"<json>":{"kind":"all_registered"}},["push"],"replyTo-1","2026-03-04T05:06:07.000Z","2026-03-04T05:06:07.000Z",3]
 => {"id":"id-row","cleanupId":"cleanup_id-row","createdBy":"created_by-row","kind":"kind-row","reminderOffsetMin":"reminder_offset_min-row","status":"status-row","subject":"subject-row","bodyMd":"body_md-row","ctaLabel":"cta_label-row","ctaUrl":"cta_url-row","segment":"segment-row","channels":"channels-row","replyTo":"reply_to-row","scheduledAt":"2026-03-04T05:06:07.000Z","plannedAt":"2026-03-04T05:06:07.000Z","startedAt":"2026-03-04T05:06:07.000Z","finishedAt":"2026-03-04T05:06:07.000Z","chunkSize":"chunk_size-row","chunkCount":2,"recipientCount":2,"sentCount":2,"failedCount":2,"suppressedCount":2,"contentScrubbedAt":"2026-03-04T05:06:07.000Z","createdAt":"2026-03-04T05:06:07.000Z","updatedAt":"2026-03-04T05:06:07.000Z"}"
@@ -2428,7 +2428,7 @@ BEGIN tx1
 [tx1] SELECT count(*)::int AS n FROM broadcasts WHERE cleanup_id = $1 AND kind = $2 AND created_at >= $3 -- ["cleanupId-1","announcement","2026-03-04T05:06:07.000Z"]
 [tx1] INSERT INTO broadcasts ( cleanup_id, created_by, kind, reminder_offset_min, status, subject, body_md, cta_label, cta_url, segment, channels, reply_to, scheduled_at, started_at, chunk_size ) VALUES ( $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11::text[], $12, $13, $14, $15 ) RETURNING id, cleanup_id, created_by, kind, reminder_offset_min, status, subject, body_md, cta_label, cta_url, segment, channels, reply_to, scheduled_at, planned_at, started_at, finished_at, chunk_size, chunk_count, recipient_count, sent_count, failed_count, suppressed_count, content_scrubbed_at, created_at, updated_at -- ["cleanupId-1","createdBy-1","host_broadcast",3,"sent","subject-1","bodyMd-1","ctaLabel-1","ctaUrl-1",{"<json>":{"kind":"all_registered"}},["push"],"replyTo-1","2026-03-04T05:06:07.000Z","2026-03-04T05:06:07.000Z",3]
 ROLLBACK tx1
-=> throws TypeError: Cannot read properties of undefined (reading 'id')
+=> throws Error: broadcast insert: expected a row, got none
 -- row
 BEGIN tx1
 [tx1] SELECT id FROM cleanups WHERE id = $1 LIMIT 1 FOR UPDATE -- ["cleanupId-1"]
@@ -2824,7 +2824,7 @@ SELECT id, user_id, code, locale, holder_name, holder_handle, holder_verified, t
 exports[`sql transcripts > makeDrizzleCertificateRepository.insert 1`] = `
 "-- empty
 INSERT INTO service_hours_certificates ( id, user_id, code, locale, holder_name, holder_handle, holder_verified, total_hours, entry_count, period_start, period_end, ledger_fingerprint, snapshot, r2_key, document_sha256, byte_size, issued_at ) VALUES ( $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17 ) RETURNING id, user_id, code, locale, holder_name, holder_handle, holder_verified, total_hours::float8 AS total_hours, entry_count, period_start, period_end, ledger_fingerprint, r2_key, document_sha256, byte_size, issued_at, regenerated_at, revoked_at, revoked_reason -- ["id-1","userId-1","code-1","locale-1","holderName-1","holderHandle-1",true,3,3,"2026-03-04T05:06:07.000Z","2026-03-04T05:06:07.000Z","ledgerFingerprint-1",{"<json>":{"v":1,"locale":"locale-1","holder":{"userId":"userId-1","displayName":"displayName-1","handle":"handle-1"},"rows":[{"id":"id-1","source":"report","hours":3,"occurredAt":"occurredAt-1","dateLabel":"dateLabel-1","activity":"activity-1","community":"community-1","creditedBy":"creditedBy-1"}],"entryCount":3,"includedCount":3,"truncated":true,"totalHours":3,"periodStart":"periodStart-1","periodEnd":"periodEnd-1","jurisdictions":["jurisdiction-1"]}},"r2Key-1","documentSha256-1",3,"2026-03-04T05:06:07.000Z"]
-=> throws TypeError: Cannot read properties of undefined (reading 'id')
+=> throws Error: certificate insert: expected a row, got none
 -- row
 INSERT INTO service_hours_certificates ( id, user_id, code, locale, holder_name, holder_handle, holder_verified, total_hours, entry_count, period_start, period_end, ledger_fingerprint, snapshot, r2_key, document_sha256, byte_size, issued_at ) VALUES ( $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17 ) RETURNING id, user_id, code, locale, holder_name, holder_handle, holder_verified, total_hours::float8 AS total_hours, entry_count, period_start, period_end, ledger_fingerprint, r2_key, document_sha256, byte_size, issued_at, regenerated_at, revoked_at, revoked_reason -- ["id-1","userId-1","code-1","locale-1","holderName-1","holderHandle-1",true,3,3,"2026-03-04T05:06:07.000Z","2026-03-04T05:06:07.000Z","ledgerFingerprint-1",{"<json>":{"v":1,"locale":"locale-1","holder":{"userId":"userId-1","displayName":"displayName-1","handle":"handle-1"},"rows":[{"id":"id-1","source":"report","hours":3,"occurredAt":"occurredAt-1","dateLabel":"dateLabel-1","activity":"activity-1","community":"community-1","creditedBy":"creditedBy-1"}],"entryCount":3,"includedCount":3,"truncated":true,"totalHours":3,"periodStart":"periodStart-1","periodEnd":"periodEnd-1","jurisdictions":["jurisdiction-1"]}},"r2Key-1","documentSha256-1",3,"2026-03-04T05:06:07.000Z"]
 => {"id":"id-row","userId":"user_id-row","code":"code-row","locale":"locale-row","holderName":"holder_name-row","holderHandle":"holder_handle-row","holderVerified":"holder_verified-row","totalHours":"total_hours-row","entryCount":2,"periodStart":"period_start-row","periodEnd":"period_end-row","ledgerFingerprint":"ledger_fingerprint-row","r2Key":"r2_key-row","documentSha256":"document_sha256-row","byteSize":"byte_size-row","issuedAt":"2026-03-04T05:06:07.000Z","regeneratedAt":"2026-03-04T05:06:07.000Z","revokedAt":"2026-03-04T05:06:07.000Z","revokedReason":"revoked_reason-row"}"
@@ -3207,7 +3207,7 @@ exports[`sql transcripts > makeDrizzleCleanupRepository.createCleanupTx 1`] = `
 BEGIN tx1
 [tx1] INSERT INTO reference_counters (scope_key, next_val) VALUES ($1, 1) ON CONFLICT (scope_key) DO UPDATE SET next_val = reference_counters.next_val + 1 RETURNING next_val -- ["EVENT:3"]
 ROLLBACK tx1
-=> throws TypeError: Cannot read properties of undefined (reading 'next_val')
+=> throws Error: reference counter upsert: expected a row, got none
 -- row
 BEGIN tx1
 [tx1] INSERT INTO reference_counters (scope_key, next_val) VALUES ($1, 1) ON CONFLICT (scope_key) DO UPDATE SET next_val = reference_counters.next_val + 1 RETURNING next_val -- ["EVENT:3"]
@@ -4086,7 +4086,7 @@ exports[`sql transcripts > makeDrizzleDmRepository.openOrCreateThread 1`] = `
 "-- empty
 INSERT INTO dm_threads (user_lo, user_hi) VALUES ($1, $2) ON CONFLICT (user_lo, user_hi) DO NOTHING RETURNING id, created_at -- ["userA-1","userB-1"]
 SELECT id, created_at FROM dm_threads WHERE user_lo = $1 AND user_hi = $2 LIMIT 1 -- ["userA-1","userB-1"]
-=> throws TypeError: Cannot read properties of undefined (reading 'id')
+=> throws Error: dm thread lookup after insert conflict: expected a row, got none
 -- row
 INSERT INTO dm_threads (user_lo, user_hi) VALUES ($1, $2) ON CONFLICT (user_lo, user_hi) DO NOTHING RETURNING id, created_at -- ["userA-1","userB-1"]
 => {"id":"id-row","userLo":"userA-1","userHi":"userB-1","createdAt":"2026-03-04T05:06:07.000Z"}"
@@ -4573,7 +4573,7 @@ exports[`sql transcripts > makeDrizzleHostExportRepository.create 1`] = `
 BEGIN tx1
 [tx1] INSERT INTO host_exports (cleanup_id, organization_id, requested_by, kind, filters) VALUES ($1, $2, $3, $4, $5) RETURNING id, cleanup_id, organization_id, requested_by, kind, filters, status, r2_key, row_count, byte_size, truncated, error_code, run_token, requested_at, started_at, completed_at, expires_at -- ["cleanupId-1","organizationId-1","requestedBy-1","roster",{"<json>":{"filtersKey":"filters-any"}}]
 ROLLBACK tx1
-=> throws TypeError: Cannot read properties of undefined (reading 'id')
+=> throws Error: host export insert: expected a row, got none
 -- row
 BEGIN tx1
 [tx1] INSERT INTO host_exports (cleanup_id, organization_id, requested_by, kind, filters) VALUES ($1, $2, $3, $4, $5) RETURNING id, cleanup_id, organization_id, requested_by, kind, filters, status, r2_key, row_count, byte_size, truncated, error_code, run_token, requested_at, started_at, completed_at, expires_at -- ["cleanupId-1","organizationId-1","requestedBy-1","roster",{"<json>":{"filtersKey":"filters-any"}}]
@@ -5233,7 +5233,7 @@ COMMIT tx1
 BEGIN tx1
 [tx1] SELECT id, capacity FROM cleanups WHERE id = $1 LIMIT 1 FOR NO KEY UPDATE -- [undefined]
 [tx1] SELECT reserved_seats FROM cleanup_ticket_types WHERE id = $1 AND cleanup_id = $2 LIMIT 1 FOR UPDATE -- [undefined,undefined]
-[tx1] UPDATE cleanup_ticket_types SET name = name, description = description, capacity = capacity, sales_opens_at = sales_opens_at, sales_closes_at = sales_closes_at, visibility = visibility, access_code_hash = $1, max_party_size = max_party_size, sort_order = sort_order, waitlist_enabled = waitlist_enabled, updated_at = $2 WHERE id = $3 AND cleanup_id = $4 -- [undefined,undefined,undefined,undefined]
+[tx1] UPDATE cleanup_ticket_types SET name = name, description = description, capacity = capacity, sales_opens_at = sales_opens_at, sales_closes_at = sales_closes_at, visibility = visibility, access_code_hash = access_code_hash, max_party_size = max_party_size, sort_order = sort_order, waitlist_enabled = waitlist_enabled, updated_at = $1 WHERE id = $2 AND cleanup_id = $3 -- [undefined,undefined,undefined]
 ROLLBACK tx1
 => throws TypeError: questionIds is not iterable"
 `;
@@ -6558,7 +6558,7 @@ SELECT id, locale FROM users WHERE id = ANY($1::uuid[]) -- [["userId-1"]]
 exports[`sql transcripts > makeDrizzleNotificationRepository.insertNotification 1`] = `
 "-- empty
 INSERT INTO notifications (user_id, type, title, body, link) VALUES ($1, $2, $3, $4, $5) RETURNING id, user_id, type, title, body, link, read_at, created_at -- ["userId-1","system","title-1","body-1","link-1"]
-=> throws TypeError: Cannot read properties of undefined (reading 'id')
+=> throws Error: notification insert: expected a row, got none
 -- row
 INSERT INTO notifications (user_id, type, title, body, link) VALUES ($1, $2, $3, $4, $5) RETURNING id, user_id, type, title, body, link, read_at, created_at -- ["userId-1","system","title-1","body-1","link-1"]
 => {"id":"id-row","userId":"user_id-row","type":"type-row","title":"title-row","body":"body-row","link":"link-row","readAt":"2026-03-04T05:06:07.000Z","createdAt":"2026-03-04T05:06:07.000Z"}"
@@ -6571,7 +6571,7 @@ BEGIN tx1
 [tx1] SELECT id, user_id, type, title, body, link, read_at, created_at FROM notifications WHERE user_id = $1 AND type = $2 AND link IS NOT DISTINCT FROM $3 AND body IS NOT DISTINCT FROM $4 AND created_at > $5 ORDER BY created_at DESC LIMIT 1 -- [undefined,undefined,null,undefined,undefined]
 [tx1] INSERT INTO notifications (user_id, type, title, body, link) VALUES ($1, $2, $3, $4, $5) RETURNING id, user_id, type, title, body, link, read_at, created_at -- [undefined,undefined,undefined,undefined,null]
 ROLLBACK tx1
-=> throws TypeError: Cannot read properties of undefined (reading 'id')
+=> throws Error: notification insert: expected a row, got none
 -- row
 BEGIN tx1
 [tx1] SELECT pg_advisory_xact_lock( hashtext('notification_dedupe:' || $1 || ':' || $2 || ':' || COALESCE($3::text, '')) ) -- [undefined,undefined,null]
@@ -6623,7 +6623,7 @@ BEGIN tx1
 [tx1] UPDATE notifications SET title = $1, body = $2 WHERE id = ( SELECT id FROM notifications WHERE user_id = $3 AND type = $4 AND link = $5 AND read_at IS NULL AND created_at > $6 ORDER BY created_at DESC LIMIT 1 FOR UPDATE ) RETURNING id, user_id, type, title, body, link, read_at, created_at -- ["title-1","body-1","userId-1","system","link-1","2026-03-04T05:06:07.000Z"]
 [tx1] INSERT INTO notifications (user_id, type, title, body, link) VALUES ($1, $2, $3, $4, $5) RETURNING id, user_id, type, title, body, link, read_at, created_at -- ["userId-1","system","title-1","body-1","link-1"]
 ROLLBACK tx1
-=> throws TypeError: Cannot read properties of undefined (reading 'id')
+=> throws Error: notification insert: expected a row, got none
 -- row
 BEGIN tx1
 [tx1] SELECT pg_advisory_xact_lock( hashtext('notification_coalesce:' || $1 || ':' || $2 || ':' || $3) ) -- ["userId-1","system","link-1"]
@@ -7494,7 +7494,7 @@ exports[`sql transcripts > makeDrizzleReportRepository.createReportTx 1`] = `
 BEGIN tx1
 [tx1] INSERT INTO reference_counters (scope_key, next_val) VALUES ($1, 1) ON CONFLICT (scope_key) DO UPDATE SET next_val = reference_counters.next_val + 1 RETURNING next_val -- ["GR:3"]
 ROLLBACK tx1
-=> throws TypeError: Cannot read properties of undefined (reading 'next_val')
+=> throws Error: reference counter upsert: expected a row, got none
 -- row
 BEGIN tx1
 [tx1] INSERT INTO reference_counters (scope_key, next_val) VALUES ($1, 1) ON CONFLICT (scope_key) DO UPDATE SET next_val = reference_counters.next_val + 1 RETURNING next_val -- ["GR:3"]
@@ -9263,7 +9263,7 @@ COMMIT tx1
 BEGIN tx1
 [tx1] SELECT id, capacity FROM cleanups WHERE id = $1 LIMIT 1 FOR NO KEY UPDATE -- [undefined]
 [tx1] SELECT reserved_seats FROM cleanup_ticket_types WHERE id = $1 AND cleanup_id = $2 LIMIT 1 FOR UPDATE -- [undefined,undefined]
-[tx1] UPDATE cleanup_ticket_types SET name = name, description = description, capacity = capacity, sales_opens_at = sales_opens_at, sales_closes_at = sales_closes_at, visibility = visibility, access_code_hash = $1, max_party_size = max_party_size, sort_order = sort_order, waitlist_enabled = waitlist_enabled, updated_at = $2 WHERE id = $3 AND cleanup_id = $4 -- [undefined,undefined,undefined,undefined]
+[tx1] UPDATE cleanup_ticket_types SET name = name, description = description, capacity = capacity, sales_opens_at = sales_opens_at, sales_closes_at = sales_closes_at, visibility = visibility, access_code_hash = access_code_hash, max_party_size = max_party_size, sort_order = sort_order, waitlist_enabled = waitlist_enabled, updated_at = $1 WHERE id = $2 AND cleanup_id = $3 -- [undefined,undefined,undefined]
 ROLLBACK tx1
 => throws TypeError: questionIds is not iterable"
 `;

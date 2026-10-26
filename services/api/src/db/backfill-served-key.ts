@@ -27,7 +27,8 @@ export async function backfillServedKeys(
       ORDER BY id
       LIMIT ${batchSize}
     `
-    if (page.length === 0) break
+    const last = page.at(-1)
+    if (last === undefined) break
 
     const updated = await sql<{ id: string }[]>`
       UPDATE media_assets
@@ -39,7 +40,7 @@ export async function backfillServedKeys(
       RETURNING id
     `
     adopted += updated.length
-    cursor = page[page.length - 1]!.id
+    cursor = last.id
     console.log(
       `backfill-served-key: page of ${page.length} (adopted ${updated.length}); running total ${adopted}`,
     )

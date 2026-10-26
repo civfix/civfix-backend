@@ -56,24 +56,22 @@ export function makeFcmDispatcher(
   let initPromise: Promise<{ messaging: Messaging; deleteApp: () => Promise<void> }> | null = null
 
   async function getMessaging() {
-    if (!initPromise) {
-      initPromise = (async () => {
-        const admin = await import("firebase-admin/app")
-        const messaging = await import("firebase-admin/messaging")
-        const serviceAccount = JSON.parse(fcm.serviceAccountJson) as Record<string, unknown>
-        const existing = admin.getApps().find((a) => a.name === FCM_APP_NAME)
-        const app =
-          existing ??
-          admin.initializeApp(
-            {
-              credential: admin.cert(serviceAccount),
-              ...(fcm.projectId !== undefined ? { projectId: fcm.projectId } : {}),
-            },
-            FCM_APP_NAME,
-          )
-        return { messaging: messaging.getMessaging(app), deleteApp: () => admin.deleteApp(app) }
-      })()
-    }
+    initPromise ??= (async () => {
+      const admin = await import("firebase-admin/app")
+      const messaging = await import("firebase-admin/messaging")
+      const serviceAccount = JSON.parse(fcm.serviceAccountJson) as Record<string, unknown>
+      const existing = admin.getApps().find((a) => a.name === FCM_APP_NAME)
+      const app =
+        existing ??
+        admin.initializeApp(
+          {
+            credential: admin.cert(serviceAccount),
+            ...(fcm.projectId !== undefined ? { projectId: fcm.projectId } : {}),
+          },
+          FCM_APP_NAME,
+        )
+      return { messaging: messaging.getMessaging(app), deleteApp: () => admin.deleteApp(app) }
+    })()
     return (await initPromise).messaging
   }
 

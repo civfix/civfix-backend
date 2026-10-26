@@ -22,15 +22,11 @@ const fx = await import("../fixtures/make.js")
 
 const limits = loadLimits({})
 
-let saved: NodeJS.ProcessEnv
 beforeEach(() => {
-  saved = { ...process.env }
   processImageLaneMock.mockReset()
   resetSandboxIdentity()
 })
 afterEach(() => {
-  for (const key of Object.keys(process.env)) if (!(key in saved)) delete process.env[key]
-  Object.assign(process.env, saved)
   resetSandboxIdentity()
 })
 

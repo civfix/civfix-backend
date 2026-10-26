@@ -361,7 +361,8 @@ function fill(template: string, user: SeedUser, extra?: Record<string, string>):
   const streets = user.hood.streets
   const s1 = pick(streets)
   let s2 = pick(streets)
-  if (s2 === s1 && streets.length > 1) s2 = streets[(streets.indexOf(s1) + 1) % streets.length]!
+  const nextStreet = streets[(streets.indexOf(s1) + 1) % streets.length]
+  if (s2 === s1 && nextStreet !== undefined) s2 = nextStreet
   return template
     .replaceAll("{street}", extra?.street ?? s1)
     .replaceAll("{street2}", extra?.street2 ?? s2)
@@ -520,8 +521,11 @@ function makeFollows(users: SeedUser[], now: Date): SeedFollow[] {
   const list = [...edges.values()]
   const byId = new Map(users.map((u) => [u.id, u]))
   for (const e of list) {
-    byId.get(e.followeeId)!.followerCount++
-    byId.get(e.followerId)!.followingCount++
+    const followee = byId.get(e.followeeId)
+    const follower = byId.get(e.followerId)
+    if (!followee || !follower) throw new Error("seed: a follow edge names an unknown user")
+    followee.followerCount++
+    follower.followingCount++
   }
   return list
 }
@@ -624,8 +628,9 @@ function makeEvents(users: SeedUser[], now: Date): SeedEvent[] {
   const events: SeedEvent[] = []
   const parkPool = shuffle([...PARKS])
   for (let i = 0; i < EVENT_COUNT; i++) {
-    const organizer = organizers[i % organizers.length]!
-    const park = parkPool[i % parkPool.length]!
+    const organizer = organizers[i % organizers.length]
+    const park = parkPool[i % parkPool.length]
+    if (!organizer || !park) throw new Error("seed: events need at least one organizer and park")
     const hood = hoodByName(park.hood)
     const kind: SeedEvent["status"] =
       i < PAST_EVENT_COUNT ? "done" : i === PAST_EVENT_COUNT ? "cancelled" : "upcoming"
@@ -786,8 +791,10 @@ function followersIndex(users: SeedUser[], follows: SeedFollow[]): Map<string, S
   const byId = new Map(users.map((u) => [u.id, u]))
   const followersOf = new Map<string, SeedUser[]>()
   for (const f of follows) {
+    const follower = byId.get(f.followerId)
+    if (!follower) throw new Error("seed: a follow edge names an unknown user")
     const arr = followersOf.get(f.followeeId) ?? []
-    arr.push(byId.get(f.followerId)!)
+    arr.push(follower)
     followersOf.set(f.followeeId, arr)
   }
   return followersOf
@@ -906,7 +913,7 @@ function addReportPosts(reports: SeedReport[], now: Date, addTop: AddTopPost): v
     addTop(
       r.reporter,
       fill(bilingual(r.reporter, REPORT_POST_EN, REPORT_POST_ES), r.reporter, {
-        street: r.hood.streets[0]!,
+        street: r.hood.streets[0],
       }),
       at,
       null,
@@ -941,10 +948,11 @@ function addThreadReplies(
   const threadBodies = new Set<string>()
   let parent: SeedPost = root
   for (let i = 0; i < n; i++) {
+    const latest = posts.at(-1)
     parent = chance(0.75)
       ? root
-      : posts[posts.length - 1]!.depth > 0 && chance(0.5)
-        ? posts[posts.length - 1]!
+      : latest !== undefined && latest.depth > 0 && chance(0.5)
+        ? latest
         : root
     if (parent.depth >= MAX_REPLY_DEPTH) parent = root
     const followerPool = followersOf.get(parent.author.id) ?? []
@@ -1217,10 +1225,13 @@ function validatePosts(
       }
     }
     if (p.kind === "repost") {
-      const k = `${p.author.id}:${p.repostOf!.id}`
-      if (repostKeys.has(k)) errors.push("duplicate repost")
-      repostKeys.add(k)
-      repostAgg.set(p.repostOf!.id, (repostAgg.get(p.repostOf!.id) ?? 0) + 1)
+      if (!p.repostOf) errors.push("repost missing target")
+      else {
+        const k = `${p.author.id}:${p.repostOf.id}`
+        if (repostKeys.has(k)) errors.push("duplicate repost")
+        repostKeys.add(k)
+        repostAgg.set(p.repostOf.id, (repostAgg.get(p.repostOf.id) ?? 0) + 1)
+      }
     }
     if (p.createdAt.getTime() < p.author.createdAt.getTime())
       errors.push("post predates its author")
@@ -1257,8 +1268,9 @@ function validateEvents(events: SeedEvent[], errors: string[]): void {
 
 function validateReports(reports: SeedReport[], errors: string[]): void {
   for (const r of reports) {
-    for (let i = 1; i < r.timeline.length; i++) {
-      if (r.timeline[i]!.createdAt.getTime() < r.timeline[i - 1]!.createdAt.getTime())
+    for (const [i, entry] of r.timeline.entries()) {
+      const previous = r.timeline[i - 1]
+      if (previous && entry.createdAt.getTime() < previous.createdAt.getTime())
         errors.push("timeline out of order")
     }
     if (r.description.includes(EM_DASH) || r.title.includes(EM_DASH))
@@ -1523,8 +1535,8 @@ async function writePosts(tx: TransactionSql, posts: SeedPost[]): Promise<void> 
     arr.push(p)
     waves.set(p.depth, arr)
   }
-  for (const depth of [...waves.keys()].sort((a, b) => a - b)) {
-    for (const rows of chunk(waves.get(depth)!, INSERT_CHUNK.posts)) {
+  for (const [, wave] of [...waves.entries()].sort(([a], [b]) => a - b)) {
+    for (const rows of chunk(wave, INSERT_CHUNK.posts)) {
       await tx`INSERT INTO posts ${tx(
         rows.map((p) => ({
           id: p.id,
@@ -1944,9 +1956,10 @@ async function runSeed(
       const [existing] = await tx<{ n: number }[]>`
           SELECT count(*)::int AS n FROM users WHERE email LIKE ${DEMO_EMAIL_PATTERN}
         `
-      if (Number(existing?.n ?? 0) > 0) {
+      const existingCount = Number(existing?.n ?? 0)
+      if (existingCount > 0) {
         throw new Error(
-          `found ${existing!.n} existing demo users (@${DEMO_EMAIL_DOMAIN}); run --purge --yes first`,
+          `found ${existingCount} existing demo users (@${DEMO_EMAIL_DOMAIN}); run --purge --yes first`,
         )
       }
       console.log("writing...")

@@ -48,6 +48,16 @@ function outbound(overrides: Partial<OutboundEmail> = {}): OutboundEmail {
   }
 }
 
+async function rejectionOf(send: Promise<unknown>): Promise<AppError> {
+  const err = await send.then(
+    () => expect.unreachable("send should reject"),
+    (e: unknown) => e,
+  )
+  if (!(err instanceof AppError))
+    throw new Error("send rejected with something other than an AppError")
+  return err
+}
+
 beforeEach(() => {
   sendMail.mockReset()
   sendMail.mockResolvedValue({ accepted: ["x"] })
@@ -125,13 +135,12 @@ describe("OciMailer error classification", () => {
     await expect(mailer.sendOutbound(outbound())).rejects.toMatchObject({
       code: ErrorCode.CONFLICT,
     })
-    await mailer.sendOutbound(outbound()).catch((err: AppError) => {
-      expect(err.message).toBe(
-        "Email not sent: the sending address is not an approved sender. In OCI Email Delivery, " +
-          "add an Approved Sender for the whole domain (@civfix.org) once DKIM is active. That covers " +
-          "every per-thread reply address. (550 5.7.1 relay access denied)",
-      )
-    })
+    const err = await rejectionOf(mailer.sendOutbound(outbound()))
+    expect(err.message).toBe(
+      "Email not sent: the sending address is not an approved sender. In OCI Email Delivery, " +
+        "add an Approved Sender for the whole domain (@civfix.org) once DKIM is active. That covers " +
+        "every per-thread reply address. (550 5.7.1 relay access denied)",
+    )
   })
 
   it("keeps a relay refusal reported on RCPT TO on the sender side, not the recipient's", async () => {
@@ -143,14 +152,10 @@ describe("OciMailer error classification", () => {
         response: "550 5.7.1 relay access denied",
       }),
     )
-    await new OciMailer(CONFIG).sendOutbound(outbound()).then(
-      () => expect.unreachable("send should reject"),
-      (err: AppError) => {
-        expect(err.code).toBe(ErrorCode.CONFLICT)
-        expect(err.message).toContain("Approved Sender")
-        expect(mailFailure(err).kind).toBe("auth")
-      },
-    )
+    const err = await rejectionOf(new OciMailer(CONFIG).sendOutbound(outbound()))
+    expect(err.code).toBe(ErrorCode.CONFLICT)
+    expect(err.message).toContain("Approved Sender")
+    expect(mailFailure(err).kind).toBe("auth")
   })
 
   it("keeps an approved-sender rejection reported on RCPT TO on the sender side", async () => {
@@ -162,14 +167,10 @@ describe("OciMailer error classification", () => {
         response: "550 Sender address rejected: not an approved sender",
       }),
     )
-    await new OciMailer(CONFIG).sendOutbound(outbound()).then(
-      () => expect.unreachable("send should reject"),
-      (err: AppError) => {
-        expect(err.code).toBe(ErrorCode.CONFLICT)
-        expect(mailFailure(err).kind).toBe("auth")
-        expect(mailFailure(err).senderRejected).toBe(true)
-      },
-    )
+    const err = await rejectionOf(new OciMailer(CONFIG).sendOutbound(outbound()))
+    expect(err.code).toBe(ErrorCode.CONFLICT)
+    expect(mailFailure(err).kind).toBe("auth")
+    expect(mailFailure(err).senderRejected).toBe(true)
   })
 
   it("maps a RECIPIENT 5xx to CONFLICT about the recipient, not the sending address", async () => {
@@ -182,18 +183,14 @@ describe("OciMailer error classification", () => {
       }),
     )
     const mailer = new OciMailer(CONFIG)
-    await mailer.sendOutbound(outbound()).then(
-      () => expect.unreachable("send should reject"),
-      (err: AppError) => {
-        expect(err.code).toBe(ErrorCode.CONFLICT)
-        expect(err.message).toContain("recipient address")
-        expect(err.message).not.toContain("Approved Sender")
-        expect(err.message).toBe(
-          "Email not sent: the recipient address was permanently rejected by its mail server. (SMTP 550)",
-        )
-        expect(err.message).not.toContain("no such user here")
-      },
+    const err = await rejectionOf(mailer.sendOutbound(outbound()))
+    expect(err.code).toBe(ErrorCode.CONFLICT)
+    expect(err.message).toContain("recipient address")
+    expect(err.message).not.toContain("Approved Sender")
+    expect(err.message).toBe(
+      "Email not sent: the recipient address was permanently rejected by its mail server. (SMTP 550)",
     )
+    expect(err.message).not.toContain("no such user here")
   })
 
   it("maps a size rejection (552 / 'message too large') to CONFLICT about size, not approved-sender", async () => {
@@ -204,22 +201,17 @@ describe("OciMailer error classification", () => {
       }),
     )
     const mailer = new OciMailer(CONFIG)
-    await mailer.sendOutbound(outbound()).then(
-      () => expect.unreachable("send should reject"),
-      (err: AppError) => {
-        expect(err.code).toBe(ErrorCode.CONFLICT)
-        expect(err.message).toContain("too large")
-        expect(err.message).not.toContain("Approved Sender")
-      },
-    )
+    const err = await rejectionOf(mailer.sendOutbound(outbound()))
+    expect(err.code).toBe(ErrorCode.CONFLICT)
+    expect(err.message).toContain("too large")
+    expect(err.message).not.toContain("Approved Sender")
 
     sendMail.mockRejectedValue(
       Object.assign(new Error("x"), { responseCode: 550, response: "550 message too large" }),
     )
-    await mailer.sendOutbound(outbound()).catch((err: AppError) => {
-      expect(err.code).toBe(ErrorCode.CONFLICT)
-      expect(err.message).toContain("too large")
-    })
+    const plainTooLarge = await rejectionOf(mailer.sendOutbound(outbound()))
+    expect(plainTooLarge.code).toBe(ErrorCode.CONFLICT)
+    expect(plainTooLarge.message).toContain("too large")
   })
 
   it("maps EAUTH to INTERNAL with a CREDENTIALS message, not the approved-sender one", async () => {
@@ -231,14 +223,10 @@ describe("OciMailer error classification", () => {
       }),
     )
     const mailer = new OciMailer(CONFIG)
-    await mailer.sendOutbound(outbound()).then(
-      () => expect.unreachable("send should reject"),
-      (err: AppError) => {
-        expect(err.code).toBe(ErrorCode.INTERNAL)
-        expect(err.message).toContain("OCI_EMAIL_SMTP_USER")
-        expect(err.message).not.toContain("approved sender")
-      },
-    )
+    const err = await rejectionOf(mailer.sendOutbound(outbound()))
+    expect(err.code).toBe(ErrorCode.INTERNAL)
+    expect(err.message).toContain("OCI_EMAIL_SMTP_USER")
+    expect(err.message).not.toContain("approved sender")
   })
 
   it("maps anything else (transient / codeless) to a generic INTERNAL", async () => {

@@ -65,8 +65,7 @@ function fieldsFromValidation(err: FastifyError): Record<string, string> {
   for (const v of validation) {
     // instancePath looks like "/body/email"; reduce to the last path segment.
     const path = (v.instancePath || "").split("/").filter(Boolean)
-    const key =
-      path.length > 0 ? path[path.length - 1]! : (v.params?.missingProperty ?? ROOT_FIELD_KEY)
+    const key = path.at(-1) ?? v.params?.missingProperty ?? ROOT_FIELD_KEY
     // eslint-disable-next-line @typescript-eslint/no-base-to-string -- ajv sets missingProperty to a string; String() only covers the unknown-typed params bag
     out[String(key)] = v.message ?? FIELD_INVALID_FALLBACK_MESSAGE
   }

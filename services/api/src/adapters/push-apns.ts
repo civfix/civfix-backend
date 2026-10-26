@@ -22,16 +22,14 @@ export function makeApnsDispatcher(
   }> | null = null
 
   async function getProvider() {
-    if (!providerPromise) {
-      providerPromise = (async () => {
-        const apn = await import("node-apn")
-        const provider = new apn.Provider({
-          token: { key: apns.privateKey, keyId: apns.keyId, teamId: apns.teamId },
-          production: apns.production,
-        })
-        return { provider, Notification: apn.Notification }
-      })()
-    }
+    providerPromise ??= (async () => {
+      const apn = await import("node-apn")
+      const provider = new apn.Provider({
+        token: { key: apns.privateKey, keyId: apns.keyId, teamId: apns.teamId },
+        production: apns.production,
+      })
+      return { provider, Notification: apn.Notification }
+    })()
     return providerPromise
   }
 

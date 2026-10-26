@@ -111,7 +111,7 @@ export function makeAnonService(deps: AnonServiceDeps): AnonService {
       ? verifyAnonTokenSignature(input.anonToken, deps.anonTokenSigningKey)
       : null
     if (presentedId) {
-      await raiseAbuseFlag("anon_token", presentedId, "honeypot").catch((err) => {
+      await raiseAbuseFlag("anon_token", presentedId, "honeypot").catch((err: unknown) => {
         log("anon-submit: honeypot raiseAbuseFlag failed (non-fatal)", { err: String(err) })
       })
     }
