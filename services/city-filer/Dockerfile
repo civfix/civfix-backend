@@ -21,6 +21,15 @@
 #   .gitignore            node       0644  runs/ and node_modules/ stay out of that history
 #   node_modules/@civfix/filer-kit -> /app/kit   node's link, the kit a script imports (ESM ignores NODE_PATH)
 # dist/preflight.js checks all of it; #178's smoke runs it.
+#
+# CLAUDE CODE (D9) is installed here, never as a workspace dependency: the CLI and @playwright/mcp with
+# npm -g, claude-swap as a uv tool on a uv-managed Python. Each is pinned below; a bump is an edit here plus
+# a #178 smoke run. @playwright/mcp drives the Chromium the kit's playwright-core installed: the build
+# fails unless both use the same playwright-core, so there is one browser in /ms-playwright.
+
+ARG UV_VERSION=0.13.5
+
+FROM ghcr.io/astral-sh/uv:${UV_VERSION} AS uv
 
 FROM node:22-bookworm-slim AS base
 ENV PNPM_HOME="/pnpm" \
@@ -39,6 +48,9 @@ RUN --mount=type=cache,id=pnpm-store,target=/pnpm/store \
 
 FROM base AS runtime
 ARG SERVICE_VERSION=0.0.0
+ARG CLAUDE_CODE_VERSION=2.1.310
+ARG PLAYWRIGHT_MCP_VERSION=0.0.83
+ARG CLAUDE_SWAP_VERSION=0.28.0
 ENV NODE_ENV=production \
     SERVICE_VERSION=${SERVICE_VERSION} \
     PLAYWRIGHT_BROWSERS_PATH=/ms-playwright
@@ -55,10 +67,24 @@ RUN apt-get update \
  && chmod 0700 /home/filer \
  && usermod --append --groups filer node \
  && command -v setpriv >/dev/null
+COPY --from=uv /uv /usr/local/bin/uv
+RUN PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1 npm install --global --no-fund --no-audit \
+      @anthropic-ai/claude-code@${CLAUDE_CODE_VERSION} @playwright/mcp@${PLAYWRIGHT_MCP_VERSION} \
+ && npm cache clean --force \
+ && UV_PYTHON_PREFERENCE=only-managed UV_PYTHON_INSTALL_DIR=/opt/uv/python UV_TOOL_DIR=/opt/uv/tools \
+    UV_TOOL_BIN_DIR=/usr/local/bin UV_CACHE_DIR=/tmp/uv-cache \
+    uv tool install --python 3.12 claude-swap==${CLAUDE_SWAP_VERSION} \
+ && rm -rf /tmp/uv-cache \
+ && node -e ' \
+      const { createRequire } = require("node:module"); \
+      const core = (dir) => createRequire(dir + "/package.json")("playwright-core/package.json").version; \
+      const mcp = core("/usr/local/lib/node_modules/@playwright/mcp"), kit = core("/app"); \
+      if (mcp !== kit) { console.error("@playwright/mcp uses playwright-core " + mcp + ", the kit " + kit); process.exit(1) }'
+COPY services/city-filer/managed-settings.json /etc/claude-code/managed-settings.json
 COPY services/city-filer/gitconfig /etc/gitconfig
 COPY services/city-filer/bin/filer-shell /usr/local/bin/filer-shell
 COPY services/city-filer/docker-entrypoint.sh /usr/local/bin/city-filer-entrypoint
-RUN chmod 0644 /etc/gitconfig \
+RUN chmod 0644 /etc/gitconfig /etc/claude-code/managed-settings.json \
  && chmod 0755 /usr/local/bin/filer-shell /usr/local/bin/city-filer-entrypoint \
  && install -d -o node -g filer -m 0755 /workspace \
  && install -d -o node -g filer -m 0750 /workspace/runs \

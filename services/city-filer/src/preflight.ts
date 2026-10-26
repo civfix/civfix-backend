@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto"
-import { chmod, chown, mkdir, rm, writeFile } from "node:fs/promises"
+import { chmod, chown, mkdir, readFile, rm, writeFile } from "node:fs/promises"
+import { createRequire } from "node:module"
 import { join } from "node:path"
 import { fileURLToPath } from "node:url"
 import { FILER_GROUP, lookupGid } from "./config.js"
@@ -35,6 +36,34 @@ console.log(JSON.stringify({
   replaceOut: attempt(() => fs.renameSync(run + "/out", run + "/out-old")),
   writeIntoOut: attempt(() => fs.writeFileSync(run + "/out/probe.txt", "x")),
 }))`
+
+// Every process running as filer, the cswap loop's included, and the keys of its environment. Run as
+// filer, which may read only its own processes' environ.
+const ENVIRON_CHECK = `const fs = require("node:fs")
+const uid = process.getuid()
+const found = []
+for (const pid of fs.readdirSync("/proc").filter((n) => /^\\d+$/.test(n))) {
+  let status, environ
+  try {
+    status = fs.readFileSync("/proc/" + pid + "/status", "utf8")
+    environ = fs.readFileSync("/proc/" + pid + "/environ", "utf8")
+  } catch {
+    continue
+  }
+  if (Number(/^Uid:\\s+(\\d+)/m.exec(status)?.[1]) !== uid) continue
+  found.push({ pid: Number(pid), keys: environ.split("\\0").filter(Boolean).map((e) => e.split("=")[0]) })
+}
+console.log(JSON.stringify(found))`
+
+// The pinned CLI's flag names the wrapper builds its argv from (D9).
+const CLAUDE_FLAGS = [
+  "--tools",
+  "--strict-mcp-config",
+  "--mcp-config",
+  "--append-system-prompt-file",
+  "--output-format",
+  "--dangerously-skip-permissions",
+] as const
 
 function statusIds(status: string, label: string): number[] {
   const line = status.split("\n").find((l) => l.startsWith(`${label}:`))
@@ -95,6 +124,24 @@ export function envOutputFailure(output: string, expected: readonly string[]): s
   return same ? null : `filer-shell env printed [${keys.join(" ")}], not [${expected.join(" ")}]`
 }
 
+/** Null when every filer process's environment holds only filer-shell's keys. */
+function environFailure(output: string): string | null {
+  const allowed = new Set<string>([...FILER_ENV_KEYS, ...RUN_ENV_KEYS])
+  const found = JSON.parse(output) as { pid: number; keys: string[] }[]
+  for (const { pid, keys } of found) {
+    const extra = keys.filter((k) => !allowed.has(k))
+    if (extra.length > 0) return `filer process ${pid} has ${extra.join(" ")} in its environment`
+  }
+  return null
+}
+
+async function playwrightCoreVersion(packageDir: string): Promise<string> {
+  const path = createRequire(join(packageDir, "package.json")).resolve(
+    "playwright-core/package.json",
+  )
+  return (JSON.parse(await readFile(path, "utf8")) as { version: string }).version
+}
+
 export interface PreflightDeps {
   runner: FilerRunner
   workspaceDir: string
@@ -104,6 +151,8 @@ export interface PreflightDeps {
   nodeUid: number
   /** What filer-shell is spawned with: the preflight's own variables, as docker exec passes them. */
   env: NodeJS.ProcessEnv
+  /** The globally installed @playwright/mcp, whose playwright-core must be the kit's (D9). */
+  mcpDir: string
   log: (line: string) => void
 }
 
@@ -125,7 +174,9 @@ async function checks(deps: PreflightDeps): Promise<void> {
       ...opts,
     })
     if (out.exitCode !== 0)
-      throw new Error(`filer-shell ${args[0]} exited ${out.exitCode}: ${out.stderrTail}`)
+      throw new Error(
+        `filer-shell ${args.slice(0, 2).join(" ")} exited ${out.exitCode}: ${out.stderrTail}`,
+      )
     return lines.join("\n")
   }
   check(nodeStatusFailure(await deps.ownStatus(), deps.nodeUid))
@@ -166,6 +217,19 @@ async function checks(deps: PreflightDeps): Promise<void> {
   } finally {
     await rm(run, { recursive: true, force: true })
   }
+
+  await asFiler(["claude", "--version"])
+  await asFiler(["cswap", "--version"])
+  const help = await asFiler(["claude", "--help"])
+  const missing = CLAUDE_FLAGS.filter((flag) => !new RegExp(`${flag}(?![\\w-])`).test(help))
+  check(missing.length === 0 ? null : `claude --help does not list ${missing.join(" ")}`)
+  await asFiler(["playwright-mcp", "--help"])
+  const [mcp, kit] = await Promise.all([
+    playwrightCoreVersion(deps.mcpDir),
+    playwrightCoreVersion(PACKAGE_DIR),
+  ])
+  check(mcp === kit ? null : `@playwright/mcp uses playwright-core ${mcp}, the kit ${kit}`)
+  check(environFailure(await asFiler([deps.runner.nodeBinary, "-e", ENVIRON_CHECK])))
 }
 
 /** The exit code: 0 when every check passed, 1 at the first failure. */

@@ -23,13 +23,19 @@ export interface FilerProcessOptions {
   /** Empty unless given, so the wrapper's DATABASE_URL and R2 keys never reach filer-shell. */
   env?: NodeJS.ProcessEnv
   cwd?: string
+  /** Written to the child's stdin, which is closed after it; without it stdin is closed at once. */
+  stdin?: string
   onStdoutLine?: (line: string) => void
+  /** Keeps stdout whole, up to this many bytes, in the result's `stdout`. */
+  stdoutMaxBytes?: number
 }
 
 export interface FilerProcessResult {
   exitCode: number | null
   timedOut: boolean
   stderrTail: string
+  /** Empty unless `stdoutMaxBytes` was given. */
+  stdout: string
 }
 
 const STDERR_TAIL_CHARS = 2000
@@ -65,12 +71,22 @@ export function runAsFiler(
     env: opts.env ?? {},
     ...(opts.cwd !== undefined ? { cwd: opts.cwd } : {}),
     detached: true,
-    stdio: ["ignore", "pipe", "pipe"],
+    stdio: ["pipe", "pipe", "pipe"],
   })
+  // A child that exits without reading its input closes the pipe under the write (EPIPE).
+  child.stdin.on("error", () => {})
+  child.stdin.end(opts.stdin ?? "")
   let stderr = ""
   let partial = ""
   const decoder = new StringDecoder("utf8")
+  const kept: Buffer[] = []
+  let keptBytes = 0
   child.stdout.on("data", (chunk: Buffer) => {
+    if (opts.stdoutMaxBytes !== undefined && keptBytes < opts.stdoutMaxBytes) {
+      const part = chunk.subarray(0, opts.stdoutMaxBytes - keptBytes)
+      kept.push(part)
+      keptBytes += part.length
+    }
     const lines = (partial + decoder.write(chunk)).split("\n")
     partial = (lines.pop() ?? "").slice(-LINE_MAX_CHARS)
     for (const line of lines) opts.onStdoutLine?.(line)
@@ -105,7 +121,12 @@ export function runAsFiler(
         child.stdout.destroy()
         child.stderr.destroy()
         if (partial !== "") opts.onStdoutLine?.(partial)
-        resolve({ exitCode: code, timedOut, stderrTail: stderr })
+        resolve({
+          exitCode: code,
+          timedOut,
+          stderrTail: stderr,
+          stdout: Buffer.concat(kept).toString("utf8"),
+        })
       })
     })
   })
