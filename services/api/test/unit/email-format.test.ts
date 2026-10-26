@@ -52,7 +52,8 @@ function reportRecord(overrides: Partial<AdminReportRecord> = {}): AdminReportRe
 
 const NO_TEMPLATES = { subject: null, body: null }
 
-const photos = (...urls: string[]) => urls.map((url) => ({ kind: "image" as const, url }))
+const photos = (...urls: string[]) =>
+  urls.map((url, i) => ({ id: `m-${i + 1}`, kind: "image" as const, url }))
 
 const defaultSubjectUses = (token: string): boolean =>
   templateUsesToken(DEFAULT_FORWARD_SUBJECT_TEMPLATE, token)
@@ -416,9 +417,9 @@ describe("buildReportPacket", () => {
 
 describe("{photoLinks} and the appended media list", () => {
   const mixed = [
-    { kind: "image" as const, url: "https://cdn.test/a.jpg" },
-    { kind: "video" as const, url: "https://cdn.test/v.mp4" },
-    { kind: "image" as const, url: "https://cdn.test/b.jpg?X-Amz-Signature=s&x=1" },
+    { id: "m-1", kind: "image" as const, url: "https://cdn.test/a.jpg" },
+    { id: "m-2", kind: "video" as const, url: "https://cdn.test/v.mp4" },
+    { id: "m-3", kind: "image" as const, url: "https://cdn.test/b.jpg?X-Amz-Signature=s&x=1" },
   ]
 
   it("renders one '- <Kind> <n>: <link>' line per item, numbered per kind in media order", () => {

@@ -23,18 +23,7 @@ const MOUNTED_ELSEWHERE: Readonly<Record<string, string>> = {}
 // Contract endpoints the server does not serve yet, skipped by name with the reason (route-coverage's
 // convention). Its three forward-template entries are stale: mail.routes.ts serves them, so they are gated
 // here like every other admin route.
-const NOT_YET_ROUTED: Readonly<Record<string, string>> = {
-  fileReport: "#171",
-  listFilings: "#171",
-  getFiling: "#171",
-  retryFiling: "#171",
-  cancelFiling: "#171",
-  recordManualFiling: "#171",
-  getFilingSettings: "#171",
-  setFilingSettings: "#171",
-  listFilingRoutes: "#171",
-  saveFilingRoutes: "#171",
-}
+const NOT_YET_ROUTED: Readonly<Record<string, string>> = {}
 
 const ADMIN_AUTH_ENDPOINTS = ["adminAccessExchange", "adminLogout", "adminSession"]
 

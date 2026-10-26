@@ -1,7 +1,7 @@
 import type { FastifyBaseLogger } from "fastify"
 import type { Container } from "../../di.js"
-import { FILING_SWEEP_JOB } from "../../lib/queue-names.js"
-import { makeContainerFilingService } from "./filing-wiring.js"
+import { FILING_EMAIL_JOB, FILING_SWEEP_JOB } from "../../lib/queue-names.js"
+import { makeContainerFilingEmailHandler, makeContainerFilingService } from "./filing-wiring.js"
 
 const FILING_SWEEP_CRON = "*/10 * * * *"
 
@@ -17,4 +17,7 @@ export async function registerFilingJobs(
   await container.jobs.work(FILING_SWEEP_JOB, async () => {
     await makeContainerFilingService(container, logger).runSweepPass()
   })
+  await container.jobs.work(FILING_EMAIL_JOB, (job) =>
+    makeContainerFilingEmailHandler(container, logger)(job),
+  )
 }

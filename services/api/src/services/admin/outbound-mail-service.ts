@@ -1,5 +1,5 @@
 import { AppError, ErrorCode } from "@civfix/contract"
-import type { Mailer, SentMail } from "@civfix/seams"
+import type { Mailer, OutboundAttachment, SentMail } from "@civfix/seams"
 import type { DbHandle } from "../../db/client.js"
 import type { Env } from "../../env/types.js"
 import {
@@ -13,6 +13,7 @@ import {
 import type { MailStatus } from "@civfix/contract"
 import { domainOf } from "../../adapters/mail-text.js"
 import {
+  base64Bytes,
   outboundSendDeadlineMs,
   phaseBudgetFor,
   OUTBOUND_SEND_MIN_THROUGHPUT_BPS,
@@ -73,6 +74,14 @@ export interface SendReportInput {
   html?: string
   kind?: MailMessageKind
   audit?: MailAuditInput
+  attachments?: readonly OutboundAttachment[]
+}
+
+export interface RedeliverReportInput {
+  threadId: string
+  /** An outbound packet row on that thread that has no `sent` event. */
+  messageId: string
+  attachments?: readonly OutboundAttachment[]
 }
 
 export interface SendEventInput {
@@ -100,6 +109,11 @@ export interface OutboundMailService {
   prepareReportToJurisdiction(input: SendReportInput): Promise<PreparedReportOutbound>
   sendReportToJurisdiction(
     input: SendReportInput,
+  ): Promise<{ thread: MailThreadRecord; messageId: string }>
+  /** Sends an already-recorded packet again on its own row, so a retry never inserts a second one. */
+  redeliverReportPacket(
+    input: RedeliverReportInput,
+    opts?: DeliverOptions,
   ): Promise<{ thread: MailThreadRecord; messageId: string }>
   sendEventToJurisdiction(
     input: SendEventInput,
@@ -145,9 +159,14 @@ export function isOutboundSendDeadlineError(err: unknown): boolean {
   return (err as { outboundSendDeadline?: unknown }).outboundSendDeadline === true
 }
 
-export function outboundPayloadBytes(input: { body: string; html?: string | undefined }): number {
+export function outboundPayloadBytes(input: {
+  body: string
+  html?: string | undefined
+  attachments?: readonly OutboundAttachment[] | undefined
+}): number {
   let bytes = Buffer.byteLength(input.body, "utf8")
   if (input.html !== undefined) bytes += Buffer.byteLength(input.html, "utf8")
+  for (const a of input.attachments ?? []) bytes += base64Bytes(a.content.byteLength)
   return bytes
 }
 
@@ -166,6 +185,7 @@ interface DeliveryArgs {
   subject: string
   body: string
   html?: string
+  attachments?: readonly OutboundAttachment[] | undefined
   eventMeta?: Record<string, unknown>
   onLateSuccess?: (() => Promise<void>) | undefined
 }
@@ -335,7 +355,11 @@ export function makeOutboundMailService(deps: OutboundMailServiceDeps): Outbound
         return []
       })
     const { inReplyTo, references } = threadingHeaders(priorIds)
-    const bytes = outboundPayloadBytes({ body: args.body, html: args.html })
+    const bytes = outboundPayloadBytes({
+      body: args.body,
+      html: args.html,
+      attachments: args.attachments,
+    })
     const deadlineMs =
       deps.sendDeadlineMs ??
       outboundSendDeadlineMs({
@@ -350,6 +374,9 @@ export function makeOutboundMailService(deps: OutboundMailServiceDeps): Outbound
       subject: args.subject,
       text: args.body,
       ...(args.html !== undefined ? { html: args.html } : {}),
+      ...(args.attachments !== undefined && args.attachments.length > 0
+        ? { attachments: [...args.attachments] }
+        : {}),
       messageId: rfcMessageId,
       ...(inReplyTo !== undefined ? { inReplyTo } : {}),
       ...(references.length > 0 ? { references } : {}),
@@ -456,6 +483,7 @@ export function makeOutboundMailService(deps: OutboundMailServiceDeps): Outbound
           subject: input.subject,
           body: input.text,
           ...(input.html !== undefined ? { html: input.html } : {}),
+          attachments: input.attachments,
           eventMeta: {
             reportId: input.reportId,
             ...(input.geoid != null ? { geoid: input.geoid } : {}),
@@ -480,6 +508,38 @@ export function makeOutboundMailService(deps: OutboundMailServiceDeps): Outbound
     ): Promise<{ thread: MailThreadRecord; messageId: string }> {
       const prepared = await prepareReport(input)
       return prepared.deliver()
+    },
+
+    async redeliverReportPacket(
+      input: RedeliverReportInput,
+      opts?: DeliverOptions,
+    ): Promise<{ thread: MailThreadRecord; messageId: string }> {
+      const [thread, packet] = await Promise.all([
+        repo.getThreadRecord(input.threadId),
+        repo.getOutboundMessageForResend(input.messageId),
+      ])
+      if (thread === null || thread.reportId === null) {
+        throw new Error(`redeliverReportPacket: thread ${input.threadId} is not a report thread`)
+      }
+      if (packet === null || packet.toAddr === null || packet.toAddr === "") {
+        throw new Error(`redeliverReportPacket: message ${input.messageId} has no recipient`)
+      }
+      const messageId = await deliverAndRecord({
+        ...(opts?.onLateSuccess !== undefined ? { onLateSuccess: opts.onLateSuccess } : {}),
+        threadId: thread.id,
+        messageId: packet.id,
+        fromHeader: fromHeaderForThread(thread),
+        toAddr: packet.toAddr,
+        subject: packet.subject ?? thread.subject ?? "",
+        body: packet.body,
+        ...(packet.html !== null ? { html: packet.html } : {}),
+        attachments: input.attachments,
+        eventMeta: {
+          reportId: thread.reportId,
+          ...(thread.jurisdictionGeoid != null ? { geoid: thread.jurisdictionGeoid } : {}),
+        },
+      })
+      return { thread: await freshThread(thread), messageId }
     },
 
     async sendEventToJurisdiction(

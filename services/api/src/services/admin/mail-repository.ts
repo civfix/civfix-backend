@@ -162,6 +162,8 @@ export interface MailRepository {
   recordSendFailure(input: RecordSendFailureInput): Promise<void>
   setThreadSubject(id: string, subject: string): Promise<void>
   latestOutboundMessageId(threadId: string): Promise<string | null>
+  /** The thread's newest outbound packet created at or after `since`, when it has no `sent` event. */
+  latestUnsentPacketId(threadId: string, since: Date): Promise<string | null>
   getOutboundMessageForResend(messageId: string): Promise<OutboundMessageSnapshot | null>
   stats7d(): Promise<MailStatsResponse>
   getOutreachState(geoid: string): Promise<OutreachStateRecord | null>

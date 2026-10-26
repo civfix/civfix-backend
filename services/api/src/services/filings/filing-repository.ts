@@ -13,6 +13,7 @@ import type {
   InsertFilingMessageInput,
   LatestSuccessfulFiling,
   ListDueQueuedArgs,
+  ListStaleRunningArgs,
   ListFilingsArgs,
   ListFilingsResult,
   RecordSuccessInput,
@@ -41,6 +42,9 @@ export interface FilingRepository {
   list(args: ListFilingsArgs): Promise<ListFilingsResult>
   countGroups(): Promise<FilingGroupCounts>
   listDueQueued(args: ListDueQueuedArgs): Promise<FilingRecord[]>
+  /** Running email filings last written before `updatedBefore`, oldest first; at most 100. */
+  listStaleRunningEmail(args: ListStaleRunningArgs): Promise<FilingRecord[]>
+  /** Running portal filings: the filer reconciles these at startup (D6). */
   listRunningFilings(): Promise<RunningFiling[]>
   getLatestByMailThread(threadId: string): Promise<FilingRecord | null>
   listEvidence(filingId: string): Promise<FilingEvidenceRecord[]>
