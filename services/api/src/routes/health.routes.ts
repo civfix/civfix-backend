@@ -43,15 +43,22 @@ export async function registerHealthRoutes(
   app: FastifyInstance,
   container: Container,
 ): Promise<void> {
-  route(app, "health", async (_request, reply) => {
-    reply.header("cache-control", NO_STORE)
-    if (app.lifecycle.isDraining()) {
-      reply.header(DRAINING_HEADER, "1")
-      reply.status(HTTP_SERVICE_UNAVAILABLE)
-      return { ok: false }
-    }
-    return { ok: true, service: SERVICE_NAME }
-  })
+  route(
+    app,
+    "health",
+    {
+      // The draining 503 is a gate in front of the endpoint, not its contract response, so it answers
+      // from a hook and the handler only ever sends the healthy body.
+      onRequest: async (_request, reply) => {
+        reply.header("cache-control", NO_STORE)
+        if (app.lifecycle.isDraining()) {
+          reply.header(DRAINING_HEADER, "1")
+          return reply.status(HTTP_SERVICE_UNAVAILABLE).send({ ok: false })
+        }
+      },
+    },
+    async () => ({ ok: true as const, service: SERVICE_NAME }),
+  )
 
   let cached: { at: number; body: ReadyBody } | undefined
   let inFlight: Promise<ReadyBody> | undefined
