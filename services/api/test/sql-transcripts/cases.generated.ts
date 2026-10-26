@@ -121,6 +121,8 @@ import * as m117 from "../../src/services/user-search-repository.drizzle.js"
 import * as m118 from "../../src/services/users-repository.drizzle.js"
 import * as m119 from "../../src/services/volunteer-hours-credit.drizzle.js"
 import * as m120 from "../../src/services/volunteer-hours-repository.drizzle.js"
+import * as m121 from "../../src/services/legal-documents-repository.drizzle.js"
+import * as m122 from "../../src/services/legal-acceptance-repository.drizzle.js"
 
 export interface TranscriptCase {
   key: string
@@ -2839,6 +2841,11 @@ export const cases: TranscriptCase[] = [
       (m45 as any).makeDrizzleDataExportRepository(sql).cleanupsOrganized("userId-1", 3),
   },
   {
+    key: "makeDrizzleDataExportRepository.consentRecords",
+    run: async (sql: any) =>
+      (m45 as any).makeDrizzleDataExportRepository(sql).consentRecords("userId-1", 3),
+  },
+  {
     key: "makeDrizzleDataExportRepository.dmMessages",
     run: async (sql: any) =>
       (m45 as any).makeDrizzleDataExportRepository(sql).dmMessages("userId-1", 3),
@@ -4330,25 +4337,6 @@ export const cases: TranscriptCase[] = [
     key: "makeDrizzleEventAnalyticsRepository.reportStatuses",
     run: async (sql: any) =>
       (m58 as any).makeDrizzleEventAnalyticsRepository(sql).reportStatuses("cleanupId-1"),
-  },
-  {
-    key: "insertConsent",
-    run: async (sql: any) =>
-      (m59 as any).insertConsent(sql, {
-        cleanupId: "cleanupId-1",
-        subjectType: "user",
-        userId: "userId-1",
-        guestId: "guestId-1",
-        registrationId: "registrationId-1",
-        consent: {
-          termsVersion: "termsVersion-1",
-          disclosureVersion: "disclosureVersion-1",
-          hostContactOptIn: true,
-          smsOptIn: true,
-          surface: "web_register",
-        },
-        now: new Date("2026-03-04T05:06:07.000Z"),
-      }),
   },
   {
     key: "listConsentsForUser",
@@ -5898,6 +5886,7 @@ export const cases: TranscriptCase[] = [
             hostContactOptIn: true,
             smsOptIn: true,
             surface: "web_register",
+            documents: [{ type: "terms", version: "version-1", sha256: "sha256-1" }],
           },
           slotId: "slotId-1",
           source: "self",
@@ -5929,6 +5918,7 @@ export const cases: TranscriptCase[] = [
             hostContactOptIn: true,
             smsOptIn: true,
             surface: "web_register",
+            documents: [{ type: "terms", version: "version-1", sha256: "sha256-1" }],
           },
           slotId: "slotId-1",
           source: "self",
@@ -5960,6 +5950,7 @@ export const cases: TranscriptCase[] = [
             hostContactOptIn: true,
             smsOptIn: true,
             surface: "web_register",
+            documents: [{ type: "terms", version: "version-1", sha256: "sha256-1" }],
           },
           slotId: "slotId-1",
           source: "self",
@@ -6600,6 +6591,7 @@ export const cases: TranscriptCase[] = [
             hostContactOptIn: true,
             smsOptIn: true,
             surface: "web_register",
+            documents: [{ type: "terms", version: "version-1", sha256: "sha256-1" }],
           },
           slotId: "slotId-1",
           source: "self",
@@ -6875,6 +6867,80 @@ export const cases: TranscriptCase[] = [
           now: () => new Date("2026-03-04T05:06:07.000Z"),
         })
         .resolveForPoint(3, 3),
+  },
+  {
+    key: "insertConsentRecords",
+    run: async (sql: any) =>
+      (m122 as any).insertConsentRecords(
+        sql,
+        "userId-1",
+        [
+          {
+            action: "acknowledged",
+            surface: "signup",
+            type: "terms",
+            version: "version-1",
+            sha256: "sha256-1",
+          },
+        ],
+        new Date("2026-03-04T05:06:07.000Z"),
+      ),
+  },
+  {
+    key: "makeLegalAcceptanceRepository.acceptanceCounts",
+    run: async (sql: any) =>
+      (m122 as any)
+        .makeLegalAcceptanceRepository(sql)
+        .acceptanceCounts([{ type: "terms", version: "version-1" }]),
+  },
+  {
+    key: "makeLegalAcceptanceRepository.versionsFor",
+    run: async (sql: any) =>
+      (m122 as any)
+        .makeLegalAcceptanceRepository(sql)
+        .versionsFor("userId-1", new Date("2026-03-04T05:06:07.000Z")),
+  },
+  {
+    key: "makeLegalAcceptanceRepository.withUserLock",
+    run: async (sql: any) =>
+      (m122 as any)
+        .makeLegalAcceptanceRepository(sql)
+        .withUserLock("userId-1", () => Promise.resolve("fnResult-unsupported")),
+  },
+  {
+    key: "makeLegalDocumentsRepository.current",
+    run: async (sql: any) =>
+      (m121 as any).makeLegalDocumentsRepository(sql).current(new Date("2026-03-04T05:06:07.000Z")),
+  },
+  {
+    key: "makeLegalDocumentsRepository.find",
+    run: async (sql: any) =>
+      (m121 as any).makeLegalDocumentsRepository(sql).find("terms", "version-1"),
+  },
+  {
+    key: "makeLegalDocumentsRepository.insert",
+    run: async (sql: any) =>
+      (m121 as any).makeLegalDocumentsRepository(sql).insert([
+        {
+          type: "terms",
+          version: "version-1",
+          sha256: "sha256-1",
+          effectiveAt: new Date("2026-03-04T05:06:07.000Z"),
+          url: "url-1",
+          title: "title-1",
+          summary: "summary-1",
+          material: true,
+          blocks: [{ kind: "heading", level: 2, text: "text-1" }],
+        },
+      ]),
+  },
+  {
+    key: "makeLegalDocumentsRepository.listAll",
+    run: async (sql: any) => (m121 as any).makeLegalDocumentsRepository(sql).listAll(),
+  },
+  {
+    key: "makeLegalDocumentsRepository.listVersions",
+    run: async (sql: any) => (m121 as any).makeLegalDocumentsRepository(sql).listVersions(),
   },
   {
     key: "makeDrizzleMediaAuthorizationRepository.activeUserExists",

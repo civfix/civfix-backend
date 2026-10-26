@@ -89,6 +89,7 @@ response can be answered truthfully. It is the source of record for the
 | Organization invitations they sent or received | Pending ones **revoked** (`org.invite_revoked` audit row per invite, `meta.reason = 'account_deleted'`), so an admin's invite cannot seat anyone after the admin is gone. An invite addressed only by email to the departing user's former address is not matched and expires on its own TTL. |
 | Posts published under an organization (`posts.organization_id`, 0.43.0) | **Kept**, exactly like every other post: the FK names the organization, not the person, and the author de-links the same way. Nothing about the org link identifies the departing account. |
 | `event_consents` | **Kept, untouched by every lane.** It carries no contact detail of its own (the subject is a foreign key) and it is the artifact THAT consent existed; the account row it points at is tombstoned rather than deleted. |
+| `consent_records` (the legal document versions the account accepted or acknowledged, 0231) | **Kept, untouched by every lane, `user_id` intact**: like `event_consents`, it is the legal record of what the person agreed to and when, it carries no contact detail (document, version, hash, action, surface, server time; never an IP or device), and the account row it points at is tombstoned rather than deleted. The FK declares `ON DELETE SET NULL`, but civfix erasure is a SOFT delete, so that action never fires. |
 | `cleanup_registrations`, `cleanup_registration_seats`, check-ins | **Kept**: they are the roster record of someone else's event. Only the departing person's own free text (`cleanup_answers` values, `attendee_name`, `host_note`) is scrubbed in the same transaction. |
 | `cleanup_waitlist` | Live entries (`waiting`/`offered`) **cancelled**, and the seats an `offered` entry reserved are released back to the ticket type. |
 | `broadcast_deliveries`, `cleanup_broadcast_mutes`, `broadcast_unsubscribes`, `host_exports` | **Kept, with the FK intact**, exactly like reports, posts and chat. These tables carry no contact detail of their own (only a reference), and the identity behind the reference is the tombstoned account. Their DDL declares `ON DELETE SET NULL` / `ON DELETE CASCADE`, but civfix erasure is a SOFT delete: the `users` row is never deleted, so **those FK actions never fire.** Do not describe the outcome as a cascade. A guest contact scrub separately NULLs the address the broadcast pipeline would have re-read at send time, so a delivery planned before the scrub is marked `suppressed(contact_scrubbed)` and never sent. |
@@ -155,9 +156,9 @@ Two rungs of that scrub exist for a reason:
   step-down writes an `event.team_role_changed` audit row with a **null actor**:
   nobody performed it; the erasure did.
 
-`event_consents` is deliberately untouched: it is the artifact THAT consent
-existed, it carries no contact detail of its own, and the account row it points at
-is tombstoned rather than deleted.
+`event_consents` and `consent_records` are deliberately untouched: they are the
+artifact THAT consent existed, they carry no contact detail of their own, and the
+account row they point at is tombstoned rather than deleted.
 
 ### ⚖️ DECISION: a deleted account's donation record survives, and so does the donor's email, for seven years
 

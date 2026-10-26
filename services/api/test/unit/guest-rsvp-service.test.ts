@@ -18,6 +18,9 @@ import { InMemoryHostRegistrationRepository } from "../helpers/host/registration
 import { smsFailure } from "../../src/errors/sms-failure.js"
 import { formatEventWhen } from "../../src/services/host/broadcast-render.js"
 import { generateToken } from "../../src/auth/crypto.js"
+import { makeRegistrationService } from "../../src/services/host/registration-service.js"
+import { makeTicketTokenSigner } from "../../src/services/host/ticket-token.js"
+import { C, V, outdatedDetails } from "../helpers/legal-acceptance-fixtures.js"
 import { OTP_VERIFY_IP_FAIL_MAX } from "../../src/auth/otp.js"
 import { renderTemplate } from "../../src/adapters/mailer.oci.js"
 import {
@@ -1381,5 +1384,78 @@ describe("guest rsvp: the SMS half of the cancel/update notice", () => {
     h.sms.send = () => Promise.reject(smsFailure("opted_out", "recipient opted out"))
     await expect(h.service.notifyGuestsBySms(EVENT_ID, "cancelled")).resolves.toBe(0)
     expect(h.repo.optOuts.has("+15552223333")).toBe(true)
+  })
+})
+
+describe("guest rsvp: event consent against the server (DECISIONS D7)", () => {
+  // The real registration service behind the bridge, checking consent against V at clock C.
+  function withRegistrations(): { h: Harness; registrations: InMemoryHostRegistrationRepository } {
+    const registrations = new InMemoryHostRegistrationRepository()
+    registrations.seedEvent({
+      cleanupId: EVENT_ID,
+      scheduledAt: new Date(C.getTime() + 7 * 86_400_000),
+      endsAt: new Date(C.getTime() + 7 * 86_400_000 + 3_600_000),
+    })
+    const service = makeRegistrationService({
+      repo: registrations,
+      tokens: makeTicketTokenSigner("guest-consent-test-secret-long-enough-value"),
+      now: () => C,
+      legalVersions: V,
+    })
+    const h = build({
+      registrations: {
+        register: (input, subject) => service.register(input, subject),
+        assertInputValid: (cleanupId, fields) =>
+          service.assertInputValid({
+            id: cleanupId,
+            ...(fields.consent !== undefined ? { consent: fields.consent } : {}),
+          }),
+      },
+    })
+    h.repo.registrations = registrations
+    return { h, registrations }
+  }
+
+  const consentOf = (termsVersion: string, disclosureVersion: string) => ({
+    termsVersion,
+    disclosureVersion,
+    hostContactOptIn: true,
+  })
+
+  it("T36: outdated versions are refused before a code is sent and before the guest is stored", async () => {
+    const { h, registrations } = withRegistrations()
+    const stale = consentOf("2026-10-26", "2026-10-26")
+
+    const request = h.service.requestCode(emailRequest({ consent: stale }), ctx)
+    await expect(request).rejects.toMatchObject({
+      code: "CONFLICT",
+      details: outdatedDetails(["terms", "privacy"]),
+    })
+    expect(h.mailer.sent).toHaveLength(0)
+    expect(h.repo.otps).toHaveLength(0)
+
+    await h.service.requestCode(emailRequest(), ctx)
+    const verify = h.service.verifyCode(emailVerify({ consent: stale }), ctx)
+    await expect(verify).rejects.toMatchObject({
+      code: "CONFLICT",
+      details: outdatedDetails(["terms", "privacy"]),
+    })
+    expect(h.repo.guests).toHaveLength(0)
+    expect(registrations.eventConsents).toEqual([])
+  })
+
+  it("T37: the versions before the current minor ones seat the guest, with no account record", async () => {
+    const { h, registrations } = withRegistrations()
+    const consent = consentOf("2026-11-02", "2026-09-21")
+
+    await h.service.requestCode(emailRequest({ consent }), ctx)
+    const result = await h.service.verifyCode(emailVerify({ consent }), ctx)
+
+    expect(result.joined).toBe(true)
+    expect(h.repo.guests).toHaveLength(1)
+    expect(registrations.registrations.size).toBe(1)
+    expect(registrations.eventConsents).toHaveLength(1)
+    expect(registrations.eventConsents[0]?.subject.kind).toBe("guest")
+    expect(registrations.consentRecords).toEqual([])
   })
 })

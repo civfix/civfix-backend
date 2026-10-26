@@ -773,9 +773,10 @@ const MIRRORED_CHECKS: readonly MirroredCheck[] = [
   {
     table: "consent_records",
     column: "surface",
-    mirror: schema.CONSENT_SURFACE_VALUES,
+    mirror: schema.CONSENT_RECORD_SURFACE_VALUES,
     retired: ["web_donate", "web_org_settings"],
   },
+  { table: "consent_records", column: "action", mirror: schema.CONSENT_ACTION_VALUES },
   { table: "chat_groups", column: "kind", mirror: ["group", "channel"] },
   { table: "chat_groups", column: "visibility", mirror: ["private", "public"] },
   { table: "volunteer_hours", column: "source", mirror: ["report", "event", "manual"] },

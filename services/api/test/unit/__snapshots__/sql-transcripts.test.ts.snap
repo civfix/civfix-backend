@@ -525,13 +525,13 @@ INSERT INTO audit_log (actor_id, action, target, meta) VALUES ($1, $2, $3, $4) R
 => "id-row""
 `;
 
-exports[`sql transcripts > insertConsent 1`] = `
+exports[`sql transcripts > insertConsentRecords 1`] = `
 "-- empty
-
-=> throws AppError: Validation failed
+INSERT INTO consent_records <helper [[{"subject_kind":"user","user_id":"userId-1","document_type":"terms","document_version":"version-1","document_sha256":"sha256-1","action":"acknowledged","surface":"signup","accepted_at":"2026-03-04T05:06:07.000Z"}],"subject_kind","user_id","document_type","document_version","document_sha256","action","surface","accepted_at"]> -- []
+=> undefined
 -- row
-
-=> throws AppError: Validation failed"
+INSERT INTO consent_records <helper [[{"subject_kind":"user","user_id":"userId-1","document_type":"terms","document_version":"version-1","document_sha256":"sha256-1","action":"acknowledged","surface":"signup","accepted_at":"2026-03-04T05:06:07.000Z"}],"subject_kind","user_id","document_type","document_version","document_sha256","action","surface","accepted_at"]> -- []
+=> undefined"
 `;
 
 exports[`sql transcripts > insertModerationItem 1`] = `
@@ -1200,6 +1200,7 @@ SELECT cleanup_id, terms_version, disclosure_version, host_contact_opt_in, sms_o
 SELECT r.id, r.cleanup_id, t.name AS ticket_type_name, r.party_size, r.status, r.source, r.registered_at, r.cancelled_at FROM cleanup_registrations r LEFT JOIN cleanup_ticket_types t ON t.id = r.ticket_type_id WHERE r.user_id = $1 ORDER BY r.registered_at DESC LIMIT $2 -- ["userId-1",50001]
 SELECT a.cleanup_id, q.prompt, COALESCE(a.value_text, a.value_json::text) AS value FROM cleanup_answers a JOIN cleanup_questions q ON q.id = a.question_id JOIN cleanup_registrations r ON r.id = a.registration_id WHERE r.user_id = $1 AND a.scrubbed_at IS NULL ORDER BY a.created_at DESC LIMIT $2 -- ["userId-1",5001]
 SELECT s.cleanup_id, s.seat_index, s.checked_in_at, s.checkin_method FROM cleanup_registration_seats s JOIN cleanup_registrations r ON r.id = s.registration_id WHERE r.user_id = $1 AND s.checked_in_at IS NOT NULL ORDER BY s.checked_in_at DESC LIMIT $2 -- ["userId-1",50001]
+SELECT document_type, document_version, document_sha256, action, surface, accepted_at FROM consent_records WHERE user_id = $1 AND subject_kind = 'user' ORDER BY accepted_at DESC LIMIT $2 -- ["userId-1",50001]
 => {"ok":true,"email":null}
 -- row
 SELECT id, display_name, handle, email, email_verified, bio, avatar_url, donation_url, created_at, deleted_at FROM users WHERE id = $1 LIMIT 1 -- ["userId-1"]
@@ -1224,6 +1225,7 @@ SELECT cleanup_id, terms_version, disclosure_version, host_contact_opt_in, sms_o
 SELECT r.id, r.cleanup_id, t.name AS ticket_type_name, r.party_size, r.status, r.source, r.registered_at, r.cancelled_at FROM cleanup_registrations r LEFT JOIN cleanup_ticket_types t ON t.id = r.ticket_type_id WHERE r.user_id = $1 ORDER BY r.registered_at DESC LIMIT $2 -- ["userId-1",50001]
 SELECT a.cleanup_id, q.prompt, COALESCE(a.value_text, a.value_json::text) AS value FROM cleanup_answers a JOIN cleanup_questions q ON q.id = a.question_id JOIN cleanup_registrations r ON r.id = a.registration_id WHERE r.user_id = $1 AND a.scrubbed_at IS NULL ORDER BY a.created_at DESC LIMIT $2 -- ["userId-1",5001]
 SELECT s.cleanup_id, s.seat_index, s.checked_in_at, s.checkin_method FROM cleanup_registration_seats s JOIN cleanup_registrations r ON r.id = s.registration_id WHERE r.user_id = $1 AND s.checked_in_at IS NOT NULL ORDER BY s.checked_in_at DESC LIMIT $2 -- ["userId-1",50001]
+SELECT document_type, document_version, document_sha256, action, surface, accepted_at FROM consent_records WHERE user_id = $1 AND subject_kind = 'user' ORDER BY accepted_at DESC LIMIT $2 -- ["userId-1",50001]
 => {"ok":true,"email":"email-row"}"
 `;
 
@@ -3677,6 +3679,15 @@ SELECT id, title, created_at FROM cleanups WHERE organizer_user_id = $1 ORDER BY
 => []
 -- row
 SELECT id, title, created_at FROM cleanups WHERE organizer_user_id = $1 ORDER BY created_at DESC LIMIT $2 -- ["userId-1",4]
+=> [{}]"
+`;
+
+exports[`sql transcripts > makeDrizzleDataExportRepository.consentRecords 1`] = `
+"-- empty
+SELECT document_type, document_version, document_sha256, action, surface, accepted_at FROM consent_records WHERE user_id = $1 AND subject_kind = 'user' ORDER BY accepted_at DESC LIMIT $2 -- ["userId-1",4]
+=> []
+-- row
+SELECT document_type, document_version, document_sha256, action, surface, accepted_at FROM consent_records WHERE user_id = $1 AND subject_kind = 'user' ORDER BY accepted_at DESC LIMIT $2 -- ["userId-1",4]
 => [{}]"
 `;
 
@@ -8122,6 +8133,82 @@ INSERT INTO jurisdictions (geoid, name, layer, priority, geom, contact_emails, c
 UNSAFE SELECT geoid, name, layer FROM jurisdictions WHERE ST_Contains(geom, ST_SetSRID(ST_MakePoint($1, $2), 4326)) ORDER BY CASE layer WHEN 'federal' THEN 0 WHEN 'tribal' THEN 1 WHEN 'place' THEN 2 WHEN 'county' THEN 3 ELSE 4 END, priority, geoid LIMIT 1 -- [3,3]
 SELECT j.geoid, -- Only legacy addresses that have not bounced since the last contact save make the -- jurisdiction routable, so a bounce re-triggers discovery here as it does in the job. ARRAY( SELECT e FROM unnest(j.contact_emails) AS e WHERE NOT EXISTS ( SELECT 1 FROM jurisdiction_contacts bc WHERE bc.geoid = j.geoid AND bc.bounced_at IS NOT NULL AND lower(bc.email) = lower(e) ) AND NOT EXISTS ( SELECT 1 FROM mail_events me JOIN mail_threads mt ON mt.id = me.thread_id WHERE mt.jurisdiction_geoid = j.geoid AND me.type = 'bounced' AND lower(me.meta->>'failedRecipient') = lower(e) AND me.created_at > COALESCE(j.contact_updated_at, '-infinity'::timestamptz) ) ) AS contact_emails, j.contact_updated_at, j.population, EXISTS ( SELECT 1 FROM jurisdiction_contacts jc WHERE jc.geoid = j.geoid AND jc.email IS NOT NULL AND jc.email <> '' AND jc.bounced_at IS NULL ) AS has_routing_contact FROM jurisdictions j WHERE j.geoid = $1 LIMIT 1 -- ["geoid-row"]
 => {"geoid":"geoid-row","name":"name-row","layer":"layer-row","cityStateLabel":"cityStateLabelResult-1","routable":true}"
+`;
+
+exports[`sql transcripts > makeLegalAcceptanceRepository.acceptanceCounts 1`] = `
+"-- empty
+SELECT v.type, v.version, count(DISTINCT u.id)::int AS accepted, (SELECT count(*)::int FROM users WHERE deleted_at IS NULL) AS active_accounts FROM unnest($1::text[], $2::text[]) AS v(type, version) LEFT JOIN consent_records r ON r.subject_kind = 'user' AND r.action = $3 AND r.document_type = v.type AND r.document_version = v.version LEFT JOIN users u ON u.id = r.user_id AND u.deleted_at IS NULL GROUP BY v.type, v.version -- [["terms"],["version-1"],"accepted"]
+=> {"accepted":{"<map>":[]},"activeAccounts":0}
+-- row
+SELECT v.type, v.version, count(DISTINCT u.id)::int AS accepted, (SELECT count(*)::int FROM users WHERE deleted_at IS NULL) AS active_accounts FROM unnest($1::text[], $2::text[]) AS v(type, version) LEFT JOIN consent_records r ON r.subject_kind = 'user' AND r.action = $3 AND r.document_type = v.type AND r.document_version = v.version LEFT JOIN users u ON u.id = r.user_id AND u.deleted_at IS NULL GROUP BY v.type, v.version -- [["terms"],["version-1"],"accepted"]
+=> {"accepted":{"<map>":[["type-row@version-row","accepted-row"]]},"activeAccounts":"active_accounts-row"}"
+`;
+
+exports[`sql transcripts > makeLegalAcceptanceRepository.versionsFor 1`] = `
+"-- empty
+SELECT d.type, d.version, d.sha256, d.effective_at, d.url, d.title, d.summary, d.material, max(r.accepted_at) FILTER (WHERE r.action = $1) AS accepted_at, max(r.accepted_at) FILTER (WHERE r.action = $2) AS acknowledged_at FROM legal_documents d LEFT JOIN consent_records r ON r.subject_kind = 'user' AND r.user_id = $3 AND r.document_type = d.type AND r.document_version = d.version WHERE d.type = ANY($4::text[]) AND d.effective_at <= $5 GROUP BY d.type, d.version ORDER BY array_position($6::text[], d.type), d.effective_at, length(d.version), d.version -- ["accepted","acknowledged","userId-1",["terms","privacy","cookies","subprocessors"],"2026-03-04T05:06:07.000Z",["terms","privacy","cookies","subprocessors"]]
+=> []
+-- row
+SELECT d.type, d.version, d.sha256, d.effective_at, d.url, d.title, d.summary, d.material, max(r.accepted_at) FILTER (WHERE r.action = $1) AS accepted_at, max(r.accepted_at) FILTER (WHERE r.action = $2) AS acknowledged_at FROM legal_documents d LEFT JOIN consent_records r ON r.subject_kind = 'user' AND r.user_id = $3 AND r.document_type = d.type AND r.document_version = d.version WHERE d.type = ANY($4::text[]) AND d.effective_at <= $5 GROUP BY d.type, d.version ORDER BY array_position($6::text[], d.type), d.effective_at, length(d.version), d.version -- ["accepted","acknowledged","userId-1",["terms","privacy","cookies","subprocessors"],"2026-03-04T05:06:07.000Z",["terms","privacy","cookies","subprocessors"]]
+=> [{"type":"type-row","version":"version-row","sha256":"sha256-row","effectiveAt":"2026-03-04T05:06:07.000Z","url":"url-row","title":"title-row","summary":"summary-row","material":"material-row","acceptedAt":"2026-03-04T05:06:07.000Z","acknowledgedAt":"2026-03-04T05:06:07.000Z"}]"
+`;
+
+exports[`sql transcripts > makeLegalAcceptanceRepository.withUserLock 1`] = `
+"-- empty
+BEGIN tx1
+[tx1] SELECT pg_advisory_xact_lock(hashtext('legal_accept:' || $1)) -- ["userId-1"]
+COMMIT tx1
+=> "fnResult-unsupported"
+-- row
+BEGIN tx1
+[tx1] SELECT pg_advisory_xact_lock(hashtext('legal_accept:' || $1)) -- ["userId-1"]
+COMMIT tx1
+=> "fnResult-unsupported""
+`;
+
+exports[`sql transcripts > makeLegalDocumentsRepository.current 1`] = `
+"-- empty
+SELECT d.type, d.version, d.sha256, d.effective_at, d.url, d.title, d.summary, d.material, d.blocks FROM ( SELECT DISTINCT ON (type) type, version, sha256, effective_at, url, title, summary, material, blocks FROM legal_documents WHERE type = ANY($1::text[]) AND effective_at <= $2 ORDER BY type, effective_at DESC, length(version) DESC, version DESC ) d ORDER BY array_position($3::text[], d.type) -- [["terms","privacy","cookies","subprocessors"],"2026-03-04T05:06:07.000Z",["terms","privacy","cookies","subprocessors"]]
+=> []
+-- row
+SELECT d.type, d.version, d.sha256, d.effective_at, d.url, d.title, d.summary, d.material, d.blocks FROM ( SELECT DISTINCT ON (type) type, version, sha256, effective_at, url, title, summary, material, blocks FROM legal_documents WHERE type = ANY($1::text[]) AND effective_at <= $2 ORDER BY type, effective_at DESC, length(version) DESC, version DESC ) d ORDER BY array_position($3::text[], d.type) -- [["terms","privacy","cookies","subprocessors"],"2026-03-04T05:06:07.000Z",["terms","privacy","cookies","subprocessors"]]
+=> [{"type":"type-row","version":"version-row","sha256":"sha256-row","effectiveAt":"2026-03-04T05:06:07.000Z","url":"url-row","title":"title-row","summary":"summary-row","material":"material-row","blocks":"blocks-row"}]"
+`;
+
+exports[`sql transcripts > makeLegalDocumentsRepository.find 1`] = `
+"-- empty
+SELECT type, version, sha256, effective_at, url, title, summary, material, blocks FROM legal_documents WHERE type = $1 AND version = $2 -- ["terms","version-1"]
+=> null
+-- row
+SELECT type, version, sha256, effective_at, url, title, summary, material, blocks FROM legal_documents WHERE type = $1 AND version = $2 -- ["terms","version-1"]
+=> {"type":"type-row","version":"version-row","sha256":"sha256-row","effectiveAt":"2026-03-04T05:06:07.000Z","url":"url-row","title":"title-row","summary":"summary-row","material":"material-row","blocks":"blocks-row"}"
+`;
+
+exports[`sql transcripts > makeLegalDocumentsRepository.insert 1`] = `
+"-- empty
+INSERT INTO legal_documents (type, version, sha256, effective_at, url, title, summary, material, blocks) VALUES ( $1, $2, $3, $4, $5, $6, $7, $8, $9 ) -- ["terms","version-1","sha256-1","2026-03-04T05:06:07.000Z","url-1","title-1","summary-1",true,{"<json>":[{"kind":"heading","level":2,"text":"text-1"}]}]
+=> undefined
+-- row
+INSERT INTO legal_documents (type, version, sha256, effective_at, url, title, summary, material, blocks) VALUES ( $1, $2, $3, $4, $5, $6, $7, $8, $9 ) -- ["terms","version-1","sha256-1","2026-03-04T05:06:07.000Z","url-1","title-1","summary-1",true,{"<json>":[{"kind":"heading","level":2,"text":"text-1"}]}]
+=> undefined"
+`;
+
+exports[`sql transcripts > makeLegalDocumentsRepository.listAll 1`] = `
+"-- empty
+SELECT type, version, sha256, effective_at, url, title, summary, material, blocks FROM legal_documents WHERE type = ANY($1::text[]) -- [["terms","privacy","cookies","subprocessors"]]
+=> []
+-- row
+SELECT type, version, sha256, effective_at, url, title, summary, material, blocks FROM legal_documents WHERE type = ANY($1::text[]) -- [["terms","privacy","cookies","subprocessors"]]
+=> [{"type":"type-row","version":"version-row","sha256":"sha256-row","effectiveAt":"2026-03-04T05:06:07.000Z","url":"url-row","title":"title-row","summary":"summary-row","material":"material-row","blocks":"blocks-row"}]"
+`;
+
+exports[`sql transcripts > makeLegalDocumentsRepository.listVersions 1`] = `
+"-- empty
+SELECT type, version, sha256, effective_at, url, title, summary, material FROM legal_documents WHERE type = ANY($1::text[]) ORDER BY effective_at DESC, array_position($2::text[], type), length(version) DESC, version DESC -- [["terms","privacy","cookies","subprocessors"],["terms","privacy","cookies","subprocessors"]]
+=> []
+-- row
+SELECT type, version, sha256, effective_at, url, title, summary, material FROM legal_documents WHERE type = ANY($1::text[]) ORDER BY effective_at DESC, array_position($2::text[], type), length(version) DESC, version DESC -- [["terms","privacy","cookies","subprocessors"],["terms","privacy","cookies","subprocessors"]]
+=> [{"type":"type-row","version":"version-row","sha256":"sha256-row","effectiveAt":"2026-03-04T05:06:07.000Z","url":"url-row","title":"title-row","summary":"summary-row","material":"material-row"}]"
 `;
 
 exports[`sql transcripts > makeMessageMentionRepository.loadFor 1`] = `
