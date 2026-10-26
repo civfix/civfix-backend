@@ -156,6 +156,7 @@ export default async () => {
 
     await h.run(h.filings.add().id, 1)
     await h.installScript(FAILING_SCRIPT)
+    await h.prove()
     await h.run(h.filings.add().id, 1)
     await h.run(h.filings.add().id, 1)
 
@@ -168,6 +169,7 @@ export default async () => {
     h = await filerHarness()
     await h.claude("")
     await h.installScript(FAILING_SCRIPT)
+    await h.prove()
     await h.run(h.filings.add().id, 1)
     const afterFirst = (await h.claudeCalls()).length
 
@@ -177,6 +179,7 @@ export default async () => {
   throw new Error("the confirmation never came")
 }
 `)
+    await h.prove()
     await h.run(h.filings.add().id, 1)
 
     expect(afterFirst).toBe(1)

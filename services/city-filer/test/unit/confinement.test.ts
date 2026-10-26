@@ -125,3 +125,124 @@ describe("confinement and the wrapper's git", () => {
     )
   })
 })
+
+/** The revert commit's message: its subject, then each reverted path. */
+const revertMessage = () => testGit(h.workspace, "log", "-1", "--format=%B")
+
+const OTHER_SCRIPT = "portals/other.example/script.mjs"
+
+describe("confinement that nothing in .git can fool", () => {
+  it("T36: an edit hidden by skip-worktree, then one hidden by assume-unchanged, is put back to base's bytes and logged in the revert commit", async () => {
+    const outcomes = []
+    for (const flag of ["--skip-worktree", "--assume-unchanged"]) {
+      h = await filerHarness()
+      const other = await otherHostCommitted()
+      await h.claude(`${writes(PROVABLE_SCRIPT)}
+      git("update-index", "${flag}", "${OTHER_SCRIPT}")
+      fs.writeFileSync(join(workspace, "${OTHER_SCRIPT}"), "export default async () => { /* hijacked */ }\\n")`)
+      const f = h.filings.add()
+
+      await h.run(f.id, 1)
+      outcomes.push({
+        flag,
+        bytes: await readFile(join(other, "script.mjs"), "utf8"),
+        logged: reverted(),
+        message: revertMessage(),
+      })
+      await h.close()
+    }
+
+    expect(outcomes).toEqual(
+      ["--skip-worktree", "--assume-unchanged"].map((flag) => ({
+        flag,
+        bytes: ORIGINAL,
+        logged: [OTHER_SCRIPT],
+        message: expect.stringMatching(
+          /^Revert out-of-scope changes \(filing [^)]+\)\n\n.*portals\/other\.example\/script\.mjs\n/s,
+        ),
+      })),
+    )
+  })
+
+  it("T37: a core.worktree pointing at a copy of portals/ as it was at base hides nothing; every wrapper git call names the workspace's git dir and work tree", async () => {
+    h = await filerHarness()
+    const other = await otherHostCommitted()
+    const shadow = join(h.dir, "shadow")
+    await mkdir(join(shadow, "portals", "other.example"), { recursive: true })
+    await writeFile(join(shadow, OTHER_SCRIPT), ORIGINAL)
+    await h.claude(`${writes(PROVABLE_SCRIPT)}
+      git("config", "core.worktree", ${JSON.stringify(shadow)})
+      fs.writeFileSync(join(workspace, "${OTHER_SCRIPT}"), "export default async () => { /* hijacked */ }\\n")`)
+    const f = h.filings.add()
+
+    await h.run(f.id, 1)
+    expect(await readFile(join(other, "script.mjs"), "utf8")).toBe(ORIGINAL)
+    expect(reverted()).toEqual([OTHER_SCRIPT])
+    expect(revertMessage()).toContain(OTHER_SCRIPT)
+    const gitSpawns = h.spawns.filter((s) => s.args.includes("git"))
+    expect(gitSpawns.length).toBeGreaterThan(3)
+    for (const s of gitSpawns) {
+      expect(s.args).toEqual(
+        expect.arrayContaining([
+          `--git-dir=${join(h.workspace, ".git")}`,
+          `--work-tree=${h.workspace}`,
+        ]),
+      )
+    }
+  })
+
+  it("T38: a committed edit with a stale .git/index.lock left behind is put back to base's bytes and logged in the revert commit", async () => {
+    h = await filerHarness()
+    const other = await otherHostCommitted()
+    await h.claude(`${writes(PROVABLE_SCRIPT)}
+      fs.writeFileSync(join(workspace, "${OTHER_SCRIPT}"), "export default async () => { /* hijacked */ }\\n")
+      git("add", "-A")
+      git("commit", "--quiet", "-m", "claude")
+      fs.writeFileSync(join(workspace, ".git", "index.lock"), "")`)
+    const f = h.filings.add()
+
+    await h.run(f.id, 1)
+    expect(await readFile(join(other, "script.mjs"), "utf8")).toBe(ORIGINAL)
+    expect(reverted()).toEqual([OTHER_SCRIPT])
+    expect(revertMessage()).toMatch(/^Revert out-of-scope changes/)
+    expect(revertMessage()).toContain(OTHER_SCRIPT)
+    expect(testGit(h.workspace, "show", `HEAD:${OTHER_SCRIPT}`)).toBe(ORIGINAL)
+  })
+
+  it("T39: a clean filter set through .git/info/attributes that prints base's bytes hides nothing", async () => {
+    h = await filerHarness()
+    const other = await otherHostCommitted()
+    const baseCopy = join(h.dir, "base-copy.mjs")
+    await writeFile(baseCopy, ORIGINAL)
+    await h.claude(`${writes(PROVABLE_SCRIPT)}
+      fs.mkdirSync(join(workspace, ".git", "info"), { recursive: true })
+      fs.writeFileSync(join(workspace, ".git", "info", "attributes"), "* filter=x\\n")
+      git("config", "filter.x.clean", "cat ${baseCopy}")
+      fs.writeFileSync(join(workspace, "${OTHER_SCRIPT}"), "export default async () => { /* hijacked */ }\\n")`)
+    const f = h.filings.add()
+
+    await h.run(f.id, 1)
+    expect(await readFile(join(other, "script.mjs"), "utf8")).toBe(ORIGINAL)
+    expect(reverted()).toEqual([OTHER_SCRIPT])
+  })
+
+  it("T40: when the restoring git call fails, other.example loses its proved record, logged; failed / portal_error and no live run", async () => {
+    h = await filerHarness()
+    await otherHostCommitted()
+    await h.prove(ORIGINAL, "other.example")
+    await h.claude(`${writes(PROVABLE_SCRIPT)}
+      fs.writeFileSync(join(workspace, "${OTHER_SCRIPT}"), "export default async () => { /* hijacked */ }\\n")`)
+    h.failing.when = (args) => args.includes("cat-file")
+    const f = h.filings.add()
+
+    await h.run(f.id, 1)
+    expect(await h.proved("other.example")).toBeNull()
+    expect(
+      h.logs.filter(
+        (l) => l.line === "filer: proved record deleted" && l.fields?.host === "other.example",
+      ),
+    ).toHaveLength(1)
+    expect(h.endings()).toEqual(["failed/portal_error"])
+    expect(h.steps()).not.toContain("live")
+  })
+})

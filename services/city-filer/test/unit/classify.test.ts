@@ -1,7 +1,8 @@
-import { writeFile } from "node:fs/promises"
+import { readFile, writeFile } from "node:fs/promises"
 import { join } from "node:path"
 import { FilingClassificationSchema } from "@civfix/api/filings-worker"
 import { afterEach, describe, expect, it, vi } from "vitest"
+import { CLASSIFY_DIR, makeClassifyHandler } from "../../src/classify.js"
 import { errorResult } from "../helpers/claude-acts.js"
 import { filerHarness, type FilerHarness } from "../helpers/filer-harness.js"
 
@@ -130,5 +131,35 @@ describe("the filing.classify handler", () => {
     ).rejects.toThrow(/unavailable/)
     expect(await h.classify(MESSAGE)).toBe("failed")
     expect(h.cityUpdates()).toEqual([])
+  })
+})
+
+describe("classify's working directory", () => {
+  it("T41: claude reads a city message from the code's classify directory, which the image makes node:node 0755 outside /tmp, /home/filer and /workspace", async () => {
+    h = await filerHarness()
+    await h.claude(reply(READING))
+    expect(await h.classify(MESSAGE)).toBe("completed")
+    expect((await h.claudeCalls()).map((c) => c.cwd)).toEqual([h.classifyDir])
+
+    // Built as src/filer.ts builds it, the handler hands claude the constant (absent outside the image).
+    const { jobs, config, runner, gate, log } = h
+    const asShipped = makeClassifyHandler({ jobs, config, runner, gate, log })
+    await asShipped({ id: "j1", data: MESSAGE }).catch(() => {})
+    const claudeCwds = h.spawns.flatMap((s, i) =>
+      s.args[s.args.indexOf("--") + 1] === "claude" ? [h.spawnCwds[i]] : [],
+    )
+    expect(claudeCwds).toEqual([h.classifyDir, CLASSIFY_DIR])
+
+    const dockerfile = await readFile(new URL("../../Dockerfile", import.meta.url), "utf8")
+    const runtime = dockerfile.slice(dockerfile.indexOf("FROM base AS runtime"))
+    const made = runtime
+      .split("\n")
+      .filter((l) => /install -d -o node -g node -m 0755 /.test(l))
+      .flatMap((l) => l.trim().split(/\s+/))
+    expect(made).toContain(CLASSIFY_DIR)
+    expect(CLASSIFY_DIR).toMatch(/^\//)
+    for (const dir of ["/tmp", "/home/filer", "/workspace"]) {
+      expect(`${CLASSIFY_DIR}/`.startsWith(`${dir}/`)).toBe(false)
+    }
   })
 })

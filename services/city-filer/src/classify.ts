@@ -20,7 +20,10 @@ export interface ClassifyDeps {
   runner: FilerRunner
   gate: ClaudeGate
   log: FilerLog
+  classifyDir?: string
 }
+
+export const CLASSIFY_DIR = "/app/classify"
 
 const CLASSIFY_TIMEOUT_MS = 5 * MS_PER_MINUTE
 const READINGS_PER_TRY = 2

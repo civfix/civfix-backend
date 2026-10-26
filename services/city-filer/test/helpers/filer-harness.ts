@@ -1,4 +1,5 @@
 import { execFileSync, spawn } from "node:child_process"
+import { createHash } from "node:crypto"
 import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
@@ -67,11 +68,12 @@ async function fakeFilerShell(dir: string): Promise<string> {
   return join(dir, "filer-shell")
 }
 
-/** D7's /workspace layout: runs/, portals/ and the kit link a script's import resolves through. */
+/** D7's /workspace layout: runs/, portals/, proved/ and the kit link a script's import resolves through. */
 export async function makeWorkspace(dir: string): Promise<string> {
   const workspace = join(dir, "workspace")
   await mkdir(join(workspace, "runs"), { recursive: true })
   await mkdir(join(workspace, "portals"))
+  await mkdir(join(workspace, "proved"))
   await mkdir(join(workspace, "node_modules", "@civfix"), { recursive: true })
   await symlink(KIT_DIR, join(workspace, "node_modules", "@civfix", "filer-kit"))
   return workspace
@@ -88,19 +90,28 @@ export async function filerHarness(
 ) {
   const dir = await mkdtemp(join(tmpdir(), "city-filer-"))
   const workspace = await makeWorkspace(dir)
-  // D7's repository: runs/ and node_modules/ ignored, one empty commit.
-  await writeFile(join(workspace, ".gitignore"), "runs/\nnode_modules/\n")
+  // D7's repository: runs/, proved/ and node_modules/ ignored, one empty commit.
+  await writeFile(join(workspace, ".gitignore"), "runs/\nproved/\nnode_modules/\n")
   testGit(workspace, "init", "--quiet", "-b", "main")
   testGit(workspace, "commit", "--quiet", "--allow-empty", "-m", "workspace")
   const spawnEnvs: (NodeJS.ProcessEnv | undefined)[] = []
   const spawns: Spawned[] = []
+  /** Each spawn's cwd, in the order of `spawns`. */
+  const spawnCwds: (string | undefined)[] = []
+  /** When it matches a spawn's argv, that process is replaced by one that exits 1. */
+  const failing: { when: ((args: string[]) => boolean) | null } = { when: null }
+  type Options = { env?: NodeJS.ProcessEnv; cwd?: string }
   const runner: FilerRunner = {
     filerShell: await fakeFilerShell(dir),
     nodeBinary: process.execPath,
     kitRunScript: join(KIT_DIR, "run-script.mjs"),
-    spawn: ((command: string, args: string[], options: { env?: NodeJS.ProcessEnv }) => {
+    spawn: ((command: string, args: string[], options: Options) => {
       spawnEnvs.push(options.env)
       spawns.push({ command, args, env: options.env })
+      spawnCwds.push(options.cwd)
+      if (failing.when?.(args) === true) {
+        return spawn(process.execPath, ["-e", "process.exit(1)"], options)
+      }
       return spawn(command, args, options)
     }) as typeof spawn,
   }
@@ -117,7 +128,10 @@ export async function filerHarness(
   const gate = makeClaudeGate()
   const deps = { filings, jobs, storage, config, runner, gate, log, report: () => {} }
   await jobs.work(FILING_RUN_JOB, makeFilingRunHandler(deps))
-  const classifyHandler = makeClassifyHandler(deps)
+  // The image's /app/classify does not exist here; this one is as empty and as unwritable to filer.
+  const classifyDir = join(dir, "classify")
+  await mkdir(classifyDir, { mode: 0o755 })
+  const classifyHandler = makeClassifyHandler({ ...deps, classifyDir })
   await jobs.work(FILING_CLASSIFY_JOB, classifyHandler)
 
   async function installScript(source: string | Buffer, host = PORTAL_HOST): Promise<Buffer> {
@@ -132,14 +146,41 @@ export async function filerHarness(
       .filter((s) => s.args.includes(runner.kitRunScript))
       .map((s) => (s.args.includes("--dry-run") ? "dry-run" : "live"))
 
+  /** Each claude, proof and live run spawned, in order. */
+  const steps = () =>
+    spawns.flatMap((s) => {
+      const command = s.args[s.args.indexOf("--") + 1]
+      if (command === "claude") return ["claude"]
+      if (!s.args.includes(runner.kitRunScript)) return []
+      return [s.args.includes("--dry-run") ? "dry-run" : "live"]
+    })
+
   return {
     ...deps,
     dir,
+    classifyDir,
+    failing,
+    steps,
+    /**
+     * As the wrapper records a proof that passed: the sha256 of `source`, by default the host's installed
+     * script, in proved/<host>.
+     */
+    async prove(source?: string | Buffer, host = PORTAL_HOST) {
+      const bytes = source ?? (await readFile(join(workspace, "portals", host, "script.mjs")))
+      const sha256 = createHash("sha256").update(bytes).digest("hex")
+      await writeFile(join(workspace, "proved", host), `${sha256}\n`)
+    },
+    proved: (host = PORTAL_HOST) =>
+      readFile(join(workspace, "proved", host), "utf8").then(
+        (t) => t.trim(),
+        () => null,
+      ),
     workspace,
     home: join(dir, "home"),
     logs,
     spawnEnvs,
     spawns,
+    spawnCwds,
     scriptRuns,
     classifyHandler,
     /** Puts a fake `claude` on filer-shell's PATH that acts as `act` says (test/helpers/fake-claude.ts). */

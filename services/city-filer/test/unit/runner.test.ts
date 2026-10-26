@@ -29,10 +29,10 @@ function startSleep() {
 
 /**
  * Gone, or a zombie nobody has reaped yet: either way it no longer runs. The script fails before the
- * marker, so its out/ was moved to out-claude/ when Claude took over (#177).
+ * marker, so its out/ was moved to out-live/ before Claude started (#177).
  */
 async function processGone(runDir: string): Promise<boolean> {
-  const pid = Number(await readFile(join(runDir, "out-claude", "sleep.pid"), "utf8"))
+  const pid = Number(await readFile(join(runDir, "out-live", "sleep.pid"), "utf8"))
   for (let i = 0; i < 30; i++) {
     const stat = await readFile(`/proc/${pid}/stat`, "utf8").catch(() => null)
     if (stat === null || stat.slice(stat.lastIndexOf(")") + 2).startsWith("Z")) return true
@@ -85,6 +85,7 @@ describe("the script runner", () => {
     await h.installScript(`import { execFileSync } from "node:child_process"
       import { writeFileSync } from "node:fs"
       export default async () => writeFileSync(process.env.FILER_RUN_DIR + "/out/env.txt", execFileSync("/usr/bin/env"))`)
+    await h.prove()
     const f = h.filings.add()
     try {
       await h.run(f.id, 1)
@@ -93,9 +94,9 @@ describe("the script runner", () => {
     }
 
     // The script writes no result, so Claude takes over (#177): every spawn's env is empty, and the
-    // script's out/ is now out-claude/.
+    // script's out/ was moved to out-live/ before Claude started.
     expect(new Set(h.spawnEnvs.map((e) => JSON.stringify(e)))).toEqual(new Set(["{}"]))
-    const env = await readFile(join(h.runDir(f.id, f.runId), "out-claude", "env.txt"), "utf8")
+    const env = await readFile(join(h.runDir(f.id, f.runId), "out-live", "env.txt"), "utf8")
     expect(
       env
         .trim()
@@ -108,6 +109,7 @@ describe("the script runner", () => {
   it("T22: a background sleep 600 left by a script that exits is killed with its process group", async () => {
     h = await filerHarness()
     await h.installScript(`${BACKGROUND_SLEEP}export default async () => startSleep()`)
+    await h.prove()
     const f = h.filings.add()
 
     await h.run(f.id, 1)
@@ -121,6 +123,7 @@ describe("the script runner", () => {
       setInterval(() => {}, 1000)
       await new Promise(() => {})
     }`)
+    await h.prove()
     const f = h.filings.add()
 
     await h.run(f.id, 1)
