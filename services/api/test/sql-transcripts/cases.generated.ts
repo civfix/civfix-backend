@@ -3756,7 +3756,7 @@ export const cases: TranscriptCase[] = [
   },
   {
     key: "makeFilingsWorker.isReportFileable",
-    run: async (sql: any) => (m51 as any).makeFilingsWorker(sql).isReportFileable("filingId-1"),
+    run: async (sql: any) => (m52 as any).makeFilingsWorker(sql).isReportFileable("filingId-1"),
   },
   {
     key: "makeFilingsWorker.listRunningFilings",
