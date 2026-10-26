@@ -2,6 +2,7 @@ import { afterAll, beforeAll, describe, expect, it, vi } from "vitest"
 import { endpoints } from "@civfix/contract/client"
 import type { EndpointName, RouteOptions } from "../../src/versioning/route.js"
 import { makeAuthHarness, type AuthHarness } from "../helpers/auth.js"
+import { PENDING_IN_EPIC } from "../helpers/pending-in-epic.js"
 
 // The registry's `csrf: true` flag does not wire the preHandler (route() copies only method and path), so
 // the pairing is a hand-kept convention. This pins it: every cookie-authenticated mutation must run
@@ -76,8 +77,13 @@ function preHandlersOf(name: string): unknown[] {
 
 describe("CSRF pairing: every mutation runs csrfProtect or is a reviewed exception", () => {
   const mutations = Object.entries(endpoints)
-    .filter(([, ep]) => MUTATING.has(ep.method))
+    .filter(([name, ep]) => MUTATING.has(ep.method) && !(name in PENDING_IN_EPIC))
     .map(([name]) => name)
+
+  it("T25: names the routes a later PR of the epic registers, with that PR", () => {
+    expect(PENDING_IN_EPIC).toEqual({ getMyLegalStatus: "#239", acceptLegal: "#239" })
+    expect(Object.keys(PENDING_IN_EPIC).filter((name) => registered.has(name))).toEqual([])
+  })
 
   it("sees every mutation in the registry registered", () => {
     const missing = mutations.filter((name) => !registered.has(name))
