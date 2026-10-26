@@ -150,6 +150,32 @@ describe("POST /forms/home-turf", () => {
     })
     expect(res.statusCode).toBe(422)
     expect(res.json().code).toBe("VALIDATION")
+    expect(res.json().fields).toEqual({ email: "Invalid email address" })
+    expect(mailer.sent).toHaveLength(0)
+  })
+
+  it("trims the email before validating it and mails the trimmed address", async () => {
+    const { app, mailer } = await makeHarness()
+    const res = await app.inject({
+      method: "POST",
+      url: "/forms/home-turf",
+      payload: formPayload({ email: "  coach@example.org\t" }),
+    })
+    expect(res.statusCode).toBe(200)
+    expect(outbounds(mailer)[1]?.to).toBe("coach@example.org")
+  })
+
+  it("422s an over-long email on its length before its format", async () => {
+    const { app, mailer } = await makeHarness()
+    const res = await app.inject({
+      method: "POST",
+      url: "/forms/home-turf",
+      payload: formPayload({ email: `${"a".repeat(250)}@x.co` }),
+    })
+    expect(res.statusCode).toBe(422)
+    expect(res.json().fields).toEqual({
+      email: "Too big: expected string to have <=254 characters",
+    })
     expect(mailer.sent).toHaveLength(0)
   })
 

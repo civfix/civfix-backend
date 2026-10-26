@@ -31,7 +31,7 @@ const MUTATING_METHODS = new Set(["POST", "PUT", "PATCH", "DELETE"])
 
 function methodIsMutating(method: string | readonly string[] | undefined): boolean {
   if (method === undefined) return false
-  const methods = Array.isArray(method) ? method : [method as string]
+  const methods = typeof method === "string" ? [method] : method
   return methods.some((m) => MUTATING_METHODS.has(m.toUpperCase()))
 }
 

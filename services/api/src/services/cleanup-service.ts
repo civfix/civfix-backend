@@ -444,7 +444,9 @@ export function makeCleanupService(deps: CleanupServiceDeps): CleanupService {
     cleanupIds: string[],
     userId: string | null,
   ): Promise<Map<string, HostStanding>> {
-    if (userId === null || cleanupIds.length === 0) return Promise.resolve(new Map())
+    if (userId === null || cleanupIds.length === 0) {
+      return Promise.resolve(new Map<string, HostStanding>())
+    }
     return deps.repo.standingsOf(cleanupIds, userId)
   }
 

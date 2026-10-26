@@ -71,15 +71,19 @@ function firstNonEmptyCookie(request: FastifyRequest, ...names: string[]): strin
 
 export type ClientKind = "web" | "mobile"
 
+// Node types `authorization` and `origin` as one string; the array guard holds for them anyway, so a
+// repeated header can never reach a caller as an array.
+export function firstHeaderValue(raw: string | string[] | undefined): string | undefined {
+  return Array.isArray(raw) ? raw[0] : raw
+}
+
 export function clientKind(request: FastifyRequest): ClientKind {
-  const raw = request.headers[CLIENT_HEADER]
-  const value = (Array.isArray(raw) ? raw[0] : raw)?.trim().toLowerCase()
+  const value = firstHeaderValue(request.headers[CLIENT_HEADER])?.trim().toLowerCase()
   return value === MOBILE_CLIENT ? "mobile" : "web"
 }
 
 export function bearerToken(request: FastifyRequest): string | null {
-  const raw = request.headers.authorization
-  const header = Array.isArray(raw) ? raw[0] : raw
+  const header = firstHeaderValue(request.headers.authorization)
   if (!header) return null
   const match = BEARER_RE.exec(header.trim())
   return match ? match[1]!.trim() : null
