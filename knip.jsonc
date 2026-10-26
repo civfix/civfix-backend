@@ -44,6 +44,15 @@
         "https-proxy-agent",
       ],
     },
+    "services/city-filer": {
+      // The kit runs under node, loaded by path or through a workspace script's import, never from src.
+      "entry": ["kit/**/*.mjs"],
+      "project": ["src/**/*.ts", "kit/**/*.mjs", "test/**/*.ts"],
+      "ignoreDependencies": [
+        // The kit's launch(), its browser half, imports it; the pin is here so CI's Chromium matches it.
+        "playwright-core",
+      ],
+    },
     "packages/config": {},
     // Outside pnpm-workspace.yaml (it deploys with wrangler from its own lockfile); CI installs it before
     // knip runs so its dependencies resolve.
