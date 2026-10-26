@@ -23,8 +23,8 @@ export default defineConfig({
       provider: "v8",
       include: ["src/**/*.ts"],
       reporter: ["text-summary"],
-      // The unit-only baseline rounded down. CI also runs the integration suite, so its numbers come
-      // out higher; raise these as coverage grows, never lower them.
+      // The unit-only baseline rounded down. CI also runs the integration suite, so its numbers are
+      // never lower; raise these as coverage grows, never lower them.
       thresholds: { lines: 88, functions: 86, branches: 81, statements: 87 },
     },
   },
