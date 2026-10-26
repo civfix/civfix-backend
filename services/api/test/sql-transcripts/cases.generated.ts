@@ -121,6 +121,7 @@ import * as m117 from "../../src/services/user-search-repository.drizzle.js"
 import * as m118 from "../../src/services/users-repository.drizzle.js"
 import * as m119 from "../../src/services/volunteer-hours-credit.drizzle.js"
 import * as m120 from "../../src/services/volunteer-hours-repository.drizzle.js"
+import * as m121 from "../../src/services/legal-documents-repository.drizzle.js"
 
 export interface TranscriptCase {
   key: string
@@ -6875,6 +6876,41 @@ export const cases: TranscriptCase[] = [
           now: () => new Date("2026-03-04T05:06:07.000Z"),
         })
         .resolveForPoint(3, 3),
+  },
+  {
+    key: "makeLegalDocumentsRepository.current",
+    run: async (sql: any) =>
+      (m121 as any).makeLegalDocumentsRepository(sql).current(new Date("2026-03-04T05:06:07.000Z")),
+  },
+  {
+    key: "makeLegalDocumentsRepository.find",
+    run: async (sql: any) =>
+      (m121 as any).makeLegalDocumentsRepository(sql).find("terms", "version-1"),
+  },
+  {
+    key: "makeLegalDocumentsRepository.insert",
+    run: async (sql: any) =>
+      (m121 as any).makeLegalDocumentsRepository(sql).insert([
+        {
+          type: "terms",
+          version: "version-1",
+          sha256: "sha256-1",
+          effectiveAt: new Date("2026-03-04T05:06:07.000Z"),
+          url: "url-1",
+          title: "title-1",
+          summary: "summary-1",
+          material: true,
+          blocks: [{ kind: "heading", level: 2, text: "text-1" }],
+        },
+      ]),
+  },
+  {
+    key: "makeLegalDocumentsRepository.listAll",
+    run: async (sql: any) => (m121 as any).makeLegalDocumentsRepository(sql).listAll(),
+  },
+  {
+    key: "makeLegalDocumentsRepository.listVersions",
+    run: async (sql: any) => (m121 as any).makeLegalDocumentsRepository(sql).listVersions(),
   },
   {
     key: "makeDrizzleMediaAuthorizationRepository.activeUserExists",

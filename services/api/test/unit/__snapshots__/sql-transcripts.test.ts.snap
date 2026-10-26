@@ -528,10 +528,10 @@ INSERT INTO audit_log (actor_id, action, target, meta) VALUES ($1, $2, $3, $4) R
 exports[`sql transcripts > insertConsent 1`] = `
 "-- empty
 
-=> throws AppError: Validation failed
+=> throws RangeError: no "terms" legal document is in effect at 2026-03-04T05:06:07.000Z
 -- row
 
-=> throws AppError: Validation failed"
+=> throws RangeError: no "terms" legal document is in effect at 2026-03-04T05:06:07.000Z"
 `;
 
 exports[`sql transcripts > insertModerationItem 1`] = `
@@ -8122,6 +8122,51 @@ INSERT INTO jurisdictions (geoid, name, layer, priority, geom, contact_emails, c
 UNSAFE SELECT geoid, name, layer FROM jurisdictions WHERE ST_Contains(geom, ST_SetSRID(ST_MakePoint($1, $2), 4326)) ORDER BY CASE layer WHEN 'federal' THEN 0 WHEN 'tribal' THEN 1 WHEN 'place' THEN 2 WHEN 'county' THEN 3 ELSE 4 END, priority, geoid LIMIT 1 -- [3,3]
 SELECT j.geoid, -- Only legacy addresses that have not bounced since the last contact save make the -- jurisdiction routable, so a bounce re-triggers discovery here as it does in the job. ARRAY( SELECT e FROM unnest(j.contact_emails) AS e WHERE NOT EXISTS ( SELECT 1 FROM jurisdiction_contacts bc WHERE bc.geoid = j.geoid AND bc.bounced_at IS NOT NULL AND lower(bc.email) = lower(e) ) AND NOT EXISTS ( SELECT 1 FROM mail_events me JOIN mail_threads mt ON mt.id = me.thread_id WHERE mt.jurisdiction_geoid = j.geoid AND me.type = 'bounced' AND lower(me.meta->>'failedRecipient') = lower(e) AND me.created_at > COALESCE(j.contact_updated_at, '-infinity'::timestamptz) ) ) AS contact_emails, j.contact_updated_at, j.population, EXISTS ( SELECT 1 FROM jurisdiction_contacts jc WHERE jc.geoid = j.geoid AND jc.email IS NOT NULL AND jc.email <> '' AND jc.bounced_at IS NULL ) AS has_routing_contact FROM jurisdictions j WHERE j.geoid = $1 LIMIT 1 -- ["geoid-row"]
 => {"geoid":"geoid-row","name":"name-row","layer":"layer-row","cityStateLabel":"cityStateLabelResult-1","routable":true}"
+`;
+
+exports[`sql transcripts > makeLegalDocumentsRepository.current 1`] = `
+"-- empty
+SELECT d.type, d.version, d.sha256, d.effective_at, d.url, d.title, d.summary, d.material, d.blocks FROM ( SELECT DISTINCT ON (type) type, version, sha256, effective_at, url, title, summary, material, blocks FROM legal_documents WHERE type = ANY($1::text[]) AND effective_at <= $2 ORDER BY type, effective_at DESC, length(version) DESC, version DESC ) d ORDER BY array_position($3::text[], d.type) -- [["terms","privacy","cookies","subprocessors"],"2026-03-04T05:06:07.000Z",["terms","privacy","cookies","subprocessors"]]
+=> []
+-- row
+SELECT d.type, d.version, d.sha256, d.effective_at, d.url, d.title, d.summary, d.material, d.blocks FROM ( SELECT DISTINCT ON (type) type, version, sha256, effective_at, url, title, summary, material, blocks FROM legal_documents WHERE type = ANY($1::text[]) AND effective_at <= $2 ORDER BY type, effective_at DESC, length(version) DESC, version DESC ) d ORDER BY array_position($3::text[], d.type) -- [["terms","privacy","cookies","subprocessors"],"2026-03-04T05:06:07.000Z",["terms","privacy","cookies","subprocessors"]]
+=> [{"type":"type-row","version":"version-row","sha256":"sha256-row","effectiveAt":"2026-03-04T05:06:07.000Z","url":"url-row","title":"title-row","summary":"summary-row","material":"material-row","blocks":"blocks-row"}]"
+`;
+
+exports[`sql transcripts > makeLegalDocumentsRepository.find 1`] = `
+"-- empty
+SELECT type, version, sha256, effective_at, url, title, summary, material, blocks FROM legal_documents WHERE type = $1 AND version = $2 -- ["terms","version-1"]
+=> null
+-- row
+SELECT type, version, sha256, effective_at, url, title, summary, material, blocks FROM legal_documents WHERE type = $1 AND version = $2 -- ["terms","version-1"]
+=> {"type":"type-row","version":"version-row","sha256":"sha256-row","effectiveAt":"2026-03-04T05:06:07.000Z","url":"url-row","title":"title-row","summary":"summary-row","material":"material-row","blocks":"blocks-row"}"
+`;
+
+exports[`sql transcripts > makeLegalDocumentsRepository.insert 1`] = `
+"-- empty
+INSERT INTO legal_documents (type, version, sha256, effective_at, url, title, summary, material, blocks) VALUES ( $1, $2, $3, $4, $5, $6, $7, $8, $9 ) -- ["terms","version-1","sha256-1","2026-03-04T05:06:07.000Z","url-1","title-1","summary-1",true,{"<json>":[{"kind":"heading","level":2,"text":"text-1"}]}]
+=> undefined
+-- row
+INSERT INTO legal_documents (type, version, sha256, effective_at, url, title, summary, material, blocks) VALUES ( $1, $2, $3, $4, $5, $6, $7, $8, $9 ) -- ["terms","version-1","sha256-1","2026-03-04T05:06:07.000Z","url-1","title-1","summary-1",true,{"<json>":[{"kind":"heading","level":2,"text":"text-1"}]}]
+=> undefined"
+`;
+
+exports[`sql transcripts > makeLegalDocumentsRepository.listAll 1`] = `
+"-- empty
+SELECT type, version, sha256, effective_at, url, title, summary, material, blocks FROM legal_documents WHERE type = ANY($1::text[]) -- [["terms","privacy","cookies","subprocessors"]]
+=> []
+-- row
+SELECT type, version, sha256, effective_at, url, title, summary, material, blocks FROM legal_documents WHERE type = ANY($1::text[]) -- [["terms","privacy","cookies","subprocessors"]]
+=> [{"type":"type-row","version":"version-row","sha256":"sha256-row","effectiveAt":"2026-03-04T05:06:07.000Z","url":"url-row","title":"title-row","summary":"summary-row","material":"material-row","blocks":"blocks-row"}]"
+`;
+
+exports[`sql transcripts > makeLegalDocumentsRepository.listVersions 1`] = `
+"-- empty
+SELECT type, version, sha256, effective_at, url, title, summary, material FROM legal_documents WHERE type = ANY($1::text[]) ORDER BY effective_at DESC, array_position($2::text[], type), length(version) DESC, version DESC -- [["terms","privacy","cookies","subprocessors"],["terms","privacy","cookies","subprocessors"]]
+=> []
+-- row
+SELECT type, version, sha256, effective_at, url, title, summary, material FROM legal_documents WHERE type = ANY($1::text[]) ORDER BY effective_at DESC, array_position($2::text[], type), length(version) DESC, version DESC -- [["terms","privacy","cookies","subprocessors"],["terms","privacy","cookies","subprocessors"]]
+=> [{"type":"type-row","version":"version-row","sha256":"sha256-row","effectiveAt":"2026-03-04T05:06:07.000Z","url":"url-row","title":"title-row","summary":"summary-row","material":"material-row"}]"
 `;
 
 exports[`sql transcripts > makeMessageMentionRepository.loadFor 1`] = `
