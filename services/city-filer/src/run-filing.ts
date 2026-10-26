@@ -205,7 +205,7 @@ export function makeFilingRunHandler(deps: FilingRunDeps): JobHandler {
       `Filing id: ${run.filingId}`,
       {
         missing: `There is no script for ${host} yet. Write portals/${host}/script.mjs.`,
-        unproved: `portals/${host}/script.mjs has not passed the wrapper's dry run as it is. Check it and repair it if needed.`,
+        unproved: `portals/${host}/ has changed since its last passing dry run, or has never had one. Check every file in it and repair what needs it.`,
         failed: `portals/${host}/script.mjs failed before its submit; that run's output is in out-live/. Repair it.`,
       }[why],
     ].join("\n")

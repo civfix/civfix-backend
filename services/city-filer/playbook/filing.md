@@ -47,8 +47,9 @@ the script live once. Nothing you write to a file proves the script.
 
 ## Writing the script
 
-`script.mjs` is an ES module whose default export takes the packet. It imports what it needs from
-`@civfix/filer-kit` (`/app/kit/index.mjs`):
+`script.mjs` is an ES module whose default export takes the packet. The script may import only
+`@civfix/filer-kit`, Node builtins and files in its own `portals/<host>/` folder; any other import
+fails its run. It imports what it needs from `@civfix/filer-kit` (`/app/kit/index.mjs`):
 
 - `launch()` opens the kit's headless Chromium; use it, never a browser of your own.
 - `screenshot(label)` saves evidence of each step.

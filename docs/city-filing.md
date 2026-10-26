@@ -21,6 +21,7 @@ The wrapper works `filing.run` one job at a time:
    recorded in `proved/<host>` when it last passed the wrapper's dry run. The fingerprint covers
    everything in `portals/<host>/`, not only `script.mjs`, so a change to any file there (Claude's, or
    a commit reverted with `git revert`) goes back through Claude and that dry run before it runs live.
+   A script loads code only from its own folder and the image; any other import fails its run.
 6. `out/result.json` is checked, the screenshots it lists and a copy of the script are uploaded to R2
    under `filings/<filingId>/`, and the outcome goes back on `filing.result`.
 
