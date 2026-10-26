@@ -352,7 +352,7 @@ export async function startBackgroundJobs(app: FastifyInstance, env: Env): Promi
   await registerInboundJobs(app.container)
   await app.container.jobs.enqueue(INBOUND_SWEEP_JOB, {})
   await registerDiscoveryJobs(app.container)
-  if (env.REPORT_AUTOFORWARD_ENABLED) await registerAutoForwardJobs(app.container, app.log)
+  await registerAutoForwardJobs(app.container, app.log)
   await registerDataExportJobs(app.container, { logger: app.log })
   await registerCleanupCancelFanoutJob(app.container, app.log)
   await registerGuestJobs(app.container, app.log)

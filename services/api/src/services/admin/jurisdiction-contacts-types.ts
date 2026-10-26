@@ -32,7 +32,7 @@ export interface JurisdictionContactsServiceDeps {
   repo: JurisdictionContactsRepository
   jobs: OutreachEnqueuer
   throttleDays: number
-  outreachDigestEnabled: boolean
+  outreachDigestEnabled: () => Promise<boolean>
   now?: () => Date
 }
 
