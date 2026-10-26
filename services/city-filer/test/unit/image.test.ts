@@ -94,4 +94,11 @@ describe("the image, its entrypoint and the playbook", () => {
     ]
     expect(schema.filter((s) => !classify.includes(s))).toEqual([])
   })
+
+  it("T53: filing.md holds the import rule, one of T24's sentences", async () => {
+    const filing = await prose("../../playbook/filing.md")
+    expect(filing).toContain(
+      "The script may import only `@civfix/filer-kit`, Node builtins and files in its own `portals/<host>/` folder; any other import fails its run.",
+    )
+  })
 })

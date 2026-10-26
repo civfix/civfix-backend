@@ -99,6 +99,8 @@ export async function filerHarness(
   const spawns: Spawned[] = []
   /** Each spawn's cwd, in the order of `spawns`. */
   const spawnCwds: (string | undefined)[] = []
+  /** Everything each spawn has written to stderr so far, in the order of `spawns`. */
+  const spawnStderrs: string[] = []
   /** When it matches a spawn's argv, that process is replaced by one that exits 1. */
   const failing: { when: ((args: string[]) => boolean) | null } = { when: null }
   type Options = { env?: NodeJS.ProcessEnv; cwd?: string }
@@ -110,10 +112,15 @@ export async function filerHarness(
       spawnEnvs.push(options.env)
       spawns.push({ command, args, env: options.env })
       spawnCwds.push(options.cwd)
-      if (failing.when?.(args) === true) {
-        return spawn(process.execPath, ["-e", "process.exit(1)"], options)
-      }
-      return spawn(command, args, options)
+      const n = spawnStderrs.push("") - 1
+      const child =
+        failing.when?.(args) === true
+          ? spawn(process.execPath, ["-e", "process.exit(1)"], options)
+          : spawn(command, args, options)
+      child.stderr?.on("data", (chunk: Buffer) => {
+        spawnStderrs[n] += chunk.toString("utf8")
+      })
+      return child
     }) as typeof spawn,
   }
   const config: FilerConfig = {
@@ -189,6 +196,7 @@ export async function filerHarness(
     spawnEnvs,
     spawns,
     spawnCwds,
+    spawnStderrs,
     scriptRuns,
     classifyHandler,
     /** Puts a fake `claude` on filer-shell's PATH that acts as `act` says (test/helpers/fake-claude.ts). */
