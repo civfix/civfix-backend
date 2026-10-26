@@ -21,6 +21,7 @@ async function setUp(dryRun = false) {
   h = await filerHarness({ dryRun })
   portal = await startFixturePortal()
   const script = await h.installFixtureScript()
+  await h.prove()
   const f = h.filings.add({ packet: { formUrl: portal.formUrl } })
   return { f, script, sha256: createHash("sha256").update(script).digest("hex") }
 }

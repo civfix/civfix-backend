@@ -16,6 +16,7 @@ process.exit(
     ownStatus: () => readFile("/proc/self/status", "utf8"),
     nodeUid,
     env: process.env,
+    mcpDir: "/usr/local/lib/node_modules/@playwright/mcp",
     log: (line) => console.log(line),
   }),
 )

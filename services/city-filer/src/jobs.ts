@@ -56,10 +56,18 @@ export class PgBossFilerJobs implements FilerJobs {
   }
 
   // pg-boss completes the job when the callback resolves and fails it when it throws; with batchSize 1
-  // that verdict is this one job's.
+  // that verdict is this one job's. The retry count tells a handler whether this try is its last.
   async work(name: string, handler: JobHandler, settings: FilerWorkSettings): Promise<void> {
-    await this.requireBoss().work(name, { batchSize: settings.batchSize }, async (jobs) => {
-      for (const job of jobs) await handler({ id: job.id, data: job.data })
+    const options = { batchSize: settings.batchSize, includeMetadata: true as const }
+    await this.requireBoss().work(name, options, async (jobs: PgBoss.JobWithMetadata[]) => {
+      for (const job of jobs) {
+        await handler({
+          id: job.id,
+          data: job.data,
+          retryCount: job.retryCount,
+          retryLimit: job.retryLimit,
+        })
+      }
     })
   }
 }

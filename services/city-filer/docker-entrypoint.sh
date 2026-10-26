@@ -6,6 +6,10 @@
 # every mode.
 set -eu
 umask 0007
+# claude-swap moves Claude Code to the other account before one hits its usage limit (D9). It runs as filer
+# through filer-shell, so with filer-shell's environment and HOME=/home/filer, and restarts whenever it exits;
+# compose's init reaps it. set +e: a cswap that exits non-zero must not end the loop.
+(set +e; while :; do filer-shell cswap auto; sleep 30; done) &
 exec setpriv \
   --reuid=node \
   --regid=node \

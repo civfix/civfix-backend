@@ -22,6 +22,10 @@ export interface FilerConfig {
   /** The `filer` group every run entry belongs to; null where the group does not exist (tests). */
   filerGid: number | null
   scriptTimeoutMs: number
+  /** FILER_RUN_MODEL: the model a filing run's Claude Code writes and repairs scripts with (D9). */
+  runModel: string
+  /** FILER_CLASSIFY_MODEL: the model that reads a city's email (D11). */
+  classifyModel: string
 }
 
 export const WORKSPACE_DIR = "/workspace"
@@ -73,5 +77,7 @@ export function loadConfig(source: NodeJS.ProcessEnv = process.env): FilerConfig
     },
     filerGid,
     scriptTimeoutMs: SCRIPT_TIMEOUT_MS,
+    runModel: required(source, "FILER_RUN_MODEL"),
+    classifyModel: required(source, "FILER_CLASSIFY_MODEL"),
   }
 }
