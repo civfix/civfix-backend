@@ -158,6 +158,7 @@ export interface FilingsWorker {
   getFilingSettings(): Promise<FilingSettingsRecord>
   /** The atomic queued -> running claim for that attempt; null when the job is stale. */
   claimFiling(filingId: string, attempt: number): Promise<{ runId: string } | null>
+  /** Running portal filings: an email filing's try is the API's, never the filer's to settle. */
   listRunningFilings(): Promise<RunningFiling[]>
 }
 

@@ -41,18 +41,7 @@ const SIGNING_KEY = "test-anon-signing-key"
 const PARAM_VALUE = "11111111-1111-1111-1111-111111111111"
 
 // Contract endpoints the server does not serve yet, skipped by name with the reason.
-const NOT_YET_ROUTED: Readonly<Record<string, string>> = {
-  fileReport: "#171",
-  listFilings: "#171",
-  getFiling: "#171",
-  retryFiling: "#171",
-  cancelFiling: "#171",
-  recordManualFiling: "#171",
-  getFilingSettings: "#171",
-  setFilingSettings: "#171",
-  listFilingRoutes: "#171",
-  saveFilingRoutes: "#171",
-}
+const NOT_YET_ROUTED: Readonly<Record<string, string>> = {}
 
 async function buildFullFakeServer(): Promise<FastifyInstance> {
   const env = loadEnv({ NODE_ENV: "test" })

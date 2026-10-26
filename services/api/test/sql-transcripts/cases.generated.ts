@@ -1064,6 +1064,13 @@ export const cases: TranscriptCase[] = [
       (m18 as any).makeDrizzleMailRepository(sql).latestOutboundMessageId("threadId-1"),
   },
   {
+    key: "makeDrizzleMailRepository.latestUnsentPacketId",
+    run: async (sql: any) =>
+      (m18 as any)
+        .makeDrizzleMailRepository(sql)
+        .latestUnsentPacketId("threadId-1", new Date("2026-03-04T05:06:07.000Z")),
+  },
+  {
     key: "makeDrizzleMailRepository.listThreads",
     run: async (sql: any) =>
       (m18 as any).makeDrizzleMailRepository(sql).listThreads({
@@ -3648,6 +3655,13 @@ export const cases: TranscriptCase[] = [
   {
     key: "makeDrizzleFilingRepository.listRunningFilings",
     run: async (sql: any) => (m51 as any).makeDrizzleFilingRepository(sql).listRunningFilings(),
+  },
+  {
+    key: "makeDrizzleFilingRepository.listStaleRunningEmail",
+    run: async (sql: any) =>
+      (m50 as any)
+        .makeDrizzleFilingRepository(sql)
+        .listStaleRunningEmail({ updatedBefore: new Date("2026-03-04T05:06:07.000Z"), limit: 3 }),
   },
   {
     key: "makeDrizzleFilingRepository.recordSuccess",

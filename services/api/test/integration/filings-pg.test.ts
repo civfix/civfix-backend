@@ -1,6 +1,7 @@
 /**
  * City filing on PostGIS: routeReport recording its filing and the Reject / Remove / moderation cancels
- * through the real Fastify app with the container's own wiring (FakeMailer, FakeJobs), the 0211
+ * through the real Fastify app with the container's own wiring (FakeMailer, FakeJobs), Approve and the
+ * filing.email worker, the 0211
  * backfill applied as the migration runner does, getOutreach's packetsSince, and the filer's run packet.
  */
 
@@ -9,7 +10,8 @@ import { fileURLToPath } from "node:url"
 import { randomUUID } from "node:crypto"
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest"
 import type { FastifyInstance, LightMyRequestResponse } from "fastify"
-import type { FakeJobs, FakeMailer, OutboundEmail } from "@civfix/seams"
+import { ErrorCode } from "@civfix/contract"
+import { MailSendError, type FakeJobs, type FakeMailer, type OutboundEmail } from "@civfix/seams"
 import { withPg, testHandle, type PgHarness } from "../helpers/pg.js"
 import { makeServer } from "../../src/server.js"
 import { makeContainer, type Container } from "../../src/di.js"
@@ -19,6 +21,8 @@ import { PgAuthStores } from "../../src/auth/pg-stores.js"
 import { makeAuthServices, type AuthServices } from "../../src/auth/auth-services.js"
 import { makeDrizzleAdminReportRepository } from "../../src/services/admin/admin-report-repository.drizzle.js"
 import { makeFilingsWorker } from "../../src/services/filings/filings-worker.js"
+import { registerFilingJobs } from "../../src/services/filings/filing-jobs.js"
+import { makeContainerFilingEmailHandler } from "../../src/services/filings/filing-wiring.js"
 
 const pg = await withPg()
 
@@ -379,16 +383,56 @@ describe.skipIf(!pg)("city filing (integration)", () => {
     })
   })
 
-  it("C41: an Approve verdict still only records the verdict: no filing, no job", async () => {
-    const j = await jurisdiction("approve@city.test")
-    const id = await report(j.geoid)
-    const jobs = main.container.jobs as FakeJobs
-    const before = jobs.enqueued.length
-    const res = await post(main, `/v1/admin/reports/${id}/verdict`, { verdict: "approved" })
-    expect(res.statusCode).toBe(200)
-    expect(res.json()).toEqual({ ok: true })
-    expect(await filingsOf(id)).toEqual([])
-    expect(jobs.enqueued.length).toBe(before)
+  it("Approve files the report, a failed first send is retried on its one packet, and Approve again sends nothing", async () => {
+    const server = await build()
+    try {
+      // The test container's FakeJobs runs a job inside enqueue once a worker is registered for it.
+      await registerFilingJobs(server.container)
+      const j = await jurisdiction("approve@city.test")
+      const id = await report(j.geoid)
+      const fake = mailer(server)
+      const send = fake.sendOutbound.bind(fake)
+      let failNext = true
+      fake.sendOutbound = (email: OutboundEmail) => {
+        if (!failNext) return send(email)
+        failNext = false
+        return Promise.reject(new MailSendError(ErrorCode.CONFLICT, "Email not sent", {}))
+      }
+
+      const res = await post(server, `/v1/admin/reports/${id}/verdict`, { verdict: "approved" })
+      expect(res.statusCode).toBe(200)
+      expect(res.json()).toEqual({ ok: true })
+      const [queued] = await filingsOf(id)
+      expect(queued).toMatchObject({ status: "queued", channel: "email" })
+      const jobs = server.container.jobs as FakeJobs
+      expect(jobs.jobsFor("filing.email").map((job) => job.state)).toEqual(["failed"])
+
+      await makeContainerFilingEmailHandler(server.container)({
+        id: "retry",
+        data: { filingId: queued!.id },
+        retryCount: 1,
+        retryLimit: 2,
+      })
+
+      const [filed] = await filingsOf(id)
+      expect(filed).toMatchObject({ status: "submitted", method: "email" })
+      const packets = await h.sql<{ to_addr: string }[]>`
+        SELECT to_addr FROM mail_messages
+        WHERE thread_id = ${filed!.mail_thread_id} AND direction = 'out' AND kind = 'packet'
+      `
+      expect(packets.map((p) => p.to_addr)).toEqual(["approve@city.test"])
+      expect(outboundCount(server)).toBe(1)
+      expect(fake.lastOutbound()?.text).toContain("Reported by a resident via CivFix")
+      expect(await routeEntries(id)).toEqual([`Filed with ${j.name}`])
+      expect(await reportStatus(id)).toBe("acknowledged")
+
+      const again = await post(server, `/v1/admin/reports/${id}/verdict`, { verdict: "approved" })
+      expect(again.json()).toEqual({ ok: true })
+      expect(await filingsOf(id)).toHaveLength(1)
+      expect(outboundCount(server)).toBe(1)
+    } finally {
+      await server.app.close()
+    }
   })
 
   describe("0211 backfill", () => {
