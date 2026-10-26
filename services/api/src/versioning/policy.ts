@@ -27,9 +27,9 @@ const VERSION_STATUS: Record<ApiVersion, VersionStatus> = {
 const VERSION_SEGMENT_RE = /^v(\d+)$/
 
 function majorOf(seg: string): number | null {
-  const match = VERSION_SEGMENT_RE.exec(seg)
-  if (!match) return null
-  return Number.parseInt(match[1]!, 10)
+  const digits = VERSION_SEGMENT_RE.exec(seg)?.[1]
+  if (digits === undefined) return null
+  return Number.parseInt(digits, 10)
 }
 
 export function isVersionSegment(seg: string): boolean {

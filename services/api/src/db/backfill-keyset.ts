@@ -52,7 +52,8 @@ export async function resolveGeomJurisdictions(
       ORDER BY id
       LIMIT ${opts.batchSize}
     `
-    if (batch.length === 0) break
+    const last = batch.at(-1)
+    if (last === undefined) break
 
     const batchIds = batch.map((b) => b.id)
     const updated = await sql<{ id: string }[]>`
@@ -81,7 +82,7 @@ export async function resolveGeomJurisdictions(
     resolved += updated.length
     stayedNull += batch.length - updated.length
     // Advance past the whole batch, including rows that stayed NULL, so they are never revisited.
-    cursor = batch[batch.length - 1]!.id
+    cursor = last.id
 
     console.log(
       `${opts.label}: batch of ${batch.length} (resolved ${updated.length}, ` +
@@ -141,7 +142,8 @@ export async function stampReferenceCodes<Row extends ReferenceCodeRow>(
       ORDER BY t.created_at, t.id
       LIMIT ${spec.batchSize}
     `
-    if (batch.length === 0) break
+    const last = batch.at(-1)
+    if (last === undefined) break
 
     for (const row of batch) {
       const jurCode = row.jur_code ?? UNKNOWN_JURCODE
@@ -161,7 +163,6 @@ export async function stampReferenceCodes<Row extends ReferenceCodeRow>(
       }
     }
 
-    const last = batch[batch.length - 1]!
     cursor = { at: last.cursor_at, id: last.id }
     console.log(
       `${spec.label}: ${spec.table} batch of ${batch.length} (running stamped=${stamped}, failed=${failed})`,

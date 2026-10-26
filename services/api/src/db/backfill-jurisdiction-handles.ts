@@ -40,7 +40,8 @@ async function backfillHandles(sql: Sql): Promise<{ assigned: number; skipped: n
       ORDER BY geoid
       LIMIT ${BATCH_SIZE}
     `
-    if (batch.length === 0) break
+    const last = batch.at(-1)
+    if (last === undefined) break
 
     for (const row of batch) {
       const base = jurisdictionHandle(row.name)
@@ -52,7 +53,7 @@ async function backfillHandles(sql: Sql): Promise<{ assigned: number; skipped: n
       else skipped += 1
     }
 
-    cursor = batch[batch.length - 1]!.geoid
+    cursor = last.geoid
     console.log(
       `backfill-handles: batch of ${batch.length}; running total assigned=${assigned}, skipped=${skipped}`,
     )

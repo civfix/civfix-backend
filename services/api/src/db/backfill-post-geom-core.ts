@@ -23,7 +23,8 @@ export async function backfillPostGeom(
       ORDER BY id
       LIMIT ${batchSize}
     `
-    if (page.length === 0) break
+    const last = page.at(-1)
+    if (last === undefined) break
     const ids = page.map((r) => r.id)
 
     const updated = await sql<{ id: string }[]>`
@@ -46,7 +47,7 @@ export async function backfillPostGeom(
 
     scanned += page.length
     filled += updated.length
-    cursor = page[page.length - 1]!.id
+    cursor = last.id
     log(
       `page of ${page.length} (filled ${updated.length}); running scanned=${scanned}, filled=${filled}`,
     )

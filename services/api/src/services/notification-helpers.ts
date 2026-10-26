@@ -132,7 +132,7 @@ export function pushGateAllows(
 }
 
 export function toPrefsDTO(row: NotificationPrefsRecord): NotificationPrefsDTO {
-  const hasQuiet = row.quietStart !== null && row.quietEnd !== null
+  const { quietStart, quietEnd } = row
   return {
     push: row.push,
     cleanupChat: row.cleanupChat,
@@ -141,11 +141,11 @@ export function toPrefsDTO(row: NotificationPrefsRecord): NotificationPrefsDTO {
     mentions: row.mentions,
     postInteractions: row.postInteractions,
     hostBroadcasts: row.hostBroadcasts,
-    ...(hasQuiet
+    ...(quietStart !== null && quietEnd !== null
       ? {
           quietHours: {
-            start: row.quietStart!,
-            end: row.quietEnd!,
+            start: quietStart,
+            end: quietEnd,
             ...(row.tz !== null ? { tz: row.tz } : {}),
           },
         }

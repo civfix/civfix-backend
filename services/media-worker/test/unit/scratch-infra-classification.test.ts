@@ -66,11 +66,9 @@ const VALID_PROBE = {
   isVideo: true,
 }
 
-let saved: NodeJS.ProcessEnv
 let root: string
 
 beforeEach(async () => {
-  saved = { ...process.env }
   root = await mkdtemp(join(tmpdir(), "civfix-scratch-infra-"))
   lane.impl = null
   video.probe = null
@@ -81,21 +79,20 @@ beforeEach(async () => {
 })
 
 afterEach(async () => {
-  for (const key of Object.keys(process.env)) if (!(key in saved)) delete process.env[key]
-  Object.assign(process.env, saved)
+  vi.unstubAllEnvs()
   resetSandboxIdentity()
   resetMediaToolPaths()
   await rm(root, { recursive: true, force: true })
 })
 
 function breakScratchRoot(): void {
-  process.env.TMPDIR = join(root, "does-not-exist")
+  vi.stubEnv("TMPDIR", join(root, "does-not-exist"))
 }
 
 function withSandboxIdentity(): void {
-  process.env.MEDIA_SANDBOX_UID = String(process.getuid?.() ?? 1001)
-  process.env.MEDIA_SANDBOX_GID = String(process.getgid?.() ?? 1001)
-  process.env.MEDIA_IMAGE_LANE_ENTRY = fileURLToPath(import.meta.url)
+  vi.stubEnv("MEDIA_SANDBOX_UID", String(process.getuid?.() ?? 1001))
+  vi.stubEnv("MEDIA_SANDBOX_GID", String(process.getgid?.() ?? 1001))
+  vi.stubEnv("MEDIA_IMAGE_LANE_ENTRY", fileURLToPath(import.meta.url))
   resetSandboxIdentity()
 }
 
@@ -169,9 +166,9 @@ describe("scratch setup failures are infrastructure, not a verdict on the bytes"
   })
 
   it("a media tool that cannot be resolved is a spawn failure, not a rejection", async () => {
-    process.env.NODE_ENV = "production"
-    delete process.env.FFPROBE_PATH
-    delete process.env.FFMPEG_PATH
+    vi.stubEnv("NODE_ENV", "production")
+    vi.stubEnv("FFPROBE_PATH", undefined)
+    vi.stubEnv("FFMPEG_PATH", undefined)
 
     await expect(mediaToolPath("ffprobe")).rejects.toBeInstanceOf(SandboxSpawnError)
   })

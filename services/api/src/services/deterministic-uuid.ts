@@ -20,5 +20,5 @@ export function deterministicUuid(parts: readonly string[]): string {
   const hex = bytes.toString("hex")
   const groups = UUID_V5_SHAPE.exec(hex)
   if (groups === null) throw new Error("deterministic uuid: unexpected digest shape")
-  return groups[1] + "-" + groups[2] + "-" + groups[3] + "-" + groups[4] + "-" + groups[5]
+  return groups.slice(1).join("-")
 }

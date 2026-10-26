@@ -136,7 +136,7 @@ export async function runMediaChecksJobDetailed(
   let asset: MediaWorkerAsset | null = null
   try {
     asset = await deps.repo.findById(payload.mediaId)
-    if (!asset) asset = await deps.repo.findByUploadId(payload.uploadId)
+    asset ??= await deps.repo.findByUploadId(payload.uploadId)
   } catch (err) {
     throw retryableFailure(obs, err, {
       phase: "load",

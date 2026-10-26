@@ -72,7 +72,8 @@ export class FakeStorage implements Storage {
    */
   list(prefix: string, opts?: StorageListOptions): Promise<StorageListResult> {
     const all = [...this.objects.keys()].filter((k) => k.startsWith(prefix)).sort()
-    const start = opts?.cursor ? all.findIndex((k) => k > opts.cursor!) : 0
+    const cursor = opts?.cursor
+    const start = cursor ? all.findIndex((k) => k > cursor) : 0
     const from = start < 0 ? all.length : start
     const limit = opts?.limit && opts.limit > 0 ? opts.limit : 1000
     const page = all.slice(from, from + limit)

@@ -169,8 +169,8 @@ export function makeDrizzleRoomMessagesRepository<Row extends RoomScopeRow, Ctx>
     const items = await spec.hydratePage(rows, viewerUserId, ctx)
     return {
       items,
-      nextCursor: hasOlder ? rows[rows.length - 1]!.id : null,
-      prevCursor: hasNewer ? rows[0]!.id : null,
+      nextCursor: hasOlder ? (rows.at(-1)?.id ?? null) : null,
+      prevCursor: hasNewer ? (rows[0]?.id ?? null) : null,
     }
   }
 
