@@ -142,6 +142,14 @@ jobs:
       - name: Build the media-worker image
         run: docker build -f services/media-worker/Dockerfile -t civfix/media-worker:ci .
 
+      # The same gate build-images.yml holds the release images to, so a fixable HIGH or CRITICAL in the
+      # base image or the worker's dependencies fails the PR rather than the post-merge release build.
+      - name: Set up Trivy
+        uses: ./.github/actions/setup-trivy
+
+      - name: Scan the media-worker image (fixable HIGH and CRITICAL)
+        run: trivy image civfix/media-worker:ci
+
       - name: Sandbox preflight under the production capability set
         run: |
           set -uo pipefail

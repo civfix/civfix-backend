@@ -44,10 +44,12 @@ RUN --mount=type=cache,id=pnpm-store,target=/pnpm/store \
     pnpm --filter @civfix/api --prod deploy /out
 
 FROM node:22-bookworm-slim@sha256:de170b39439eb0e5a3444ad7d60b015614a381e10fecae2e30ec9e735122f38d AS runtime
-# No pnpm or corepack shims here: pnpm would reinstall /app/node_modules in place and empty it, which
-# took down the dependency tree of a live prod container on 2026-09-23. Run db scripts with
-# `node dist/db/<script>.js`.
-RUN rm -rf /usr/local/bin/corepack /usr/local/lib/node_modules/corepack /usr/local/bin/yarn /usr/local/bin/yarnpkg /opt/yarn-*
+# No package manager here: pnpm would reinstall /app/node_modules in place and empty it, which took down
+# the dependency tree of a live prod container on 2026-09-23. npm goes too: nothing runs it, and its
+# bundled dependency tree is where the image scan finds fixable HIGH advisories (pacote, sigstore,
+# ip-address, brace-expansion, picomatch). Run db scripts with `node dist/db/<script>.js`.
+RUN rm -rf /usr/local/bin/corepack /usr/local/lib/node_modules/corepack /usr/local/bin/yarn /usr/local/bin/yarnpkg /opt/yarn-* \
+    /usr/local/bin/npm /usr/local/bin/npx /usr/local/lib/node_modules/npm
 # SERVICE_VERSION is the RELEASE IDENTITY and it is baked in at BUILD time on purpose. It is the
 # GlitchTip `release` (src/server.ts), so without it every production error report is tagged "0.0.0" and
 # cannot be attributed to a build. It belongs to the IMAGE rather than to the deploy because the image is
