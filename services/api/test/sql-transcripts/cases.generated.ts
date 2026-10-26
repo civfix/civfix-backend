@@ -3654,7 +3654,7 @@ export const cases: TranscriptCase[] = [
   {
     key: "makeDrizzleFilingRepository.listStaleRunningEmail",
     run: async (sql: any) =>
-      (m49 as any)
+      (m50 as any)
         .makeDrizzleFilingRepository(sql)
         .listStaleRunningEmail({ updatedBefore: new Date("2026-03-04T05:06:07.000Z"), limit: 3 }),
   },
