@@ -45,14 +45,16 @@
       ],
     },
     "services/city-filer": {
-      // The kit runs under node, loaded by path or through a workspace script's import, never from src.
-      "entry": ["kit/**/*.mjs"],
-      "project": ["src/**/*.ts", "kit/**/*.mjs", "test/**/*.ts"],
-      // tsup inlines @civfix/api (noExternal) but keeps these external, so the bundled api code
-      // resolves them from the filer's own node_modules at runtime.
+      // The kit and the fixture portal's script run under node, loaded by path or through a workspace
+      // script's import, never from src.
+      "entry": ["kit/**/*.mjs", "test/fixtures/**/*.mjs"],
+      "project": ["src/**/*.ts", "kit/**/*.mjs", "test/**/*.ts", "test/fixtures/**"],
       "ignoreDependencies": [
-        // The kit's launch(), its browser half, imports it; the pin is here so CI's Chromium matches it.
-        "playwright-core",
+        // A workspace script's import, resolved through /workspace/node_modules (the image's link; the
+        // test harness makes the same one).
+        "@civfix/filer-kit",
+        // tsup inlines @civfix/api (noExternal) but keeps these external, so the bundled api code
+        // resolves them from the filer's own node_modules at runtime.
         // @civfix/api/adapters/storage (R2 client)
         "@aws-sdk/client-s3",
         // @civfix/api/adapters/storage (presigned URLs)
