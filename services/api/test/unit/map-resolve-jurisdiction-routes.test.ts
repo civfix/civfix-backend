@@ -47,7 +47,7 @@ describe("POST /map/resolve-jurisdiction", () => {
     expect(resolveForPoint).toHaveBeenCalledWith(34.05, -118.25)
   })
 
-  // The clients map NOT_FOUND to "no jurisdiction here"; a 200 null broke the non-nullable contract.
+  // The clients map NOT_FOUND to "no jurisdiction here".
   it("answers 404 NOT_FOUND when no jurisdiction covers the point", async () => {
     resolveForPoint.mockResolvedValue(null)
     app = await makeServer({ env: loadEnv() })
