@@ -67,8 +67,6 @@ const ENVIRONMENT_INDEPENDENT_DEFAULTS = {
   MAIL_REPLY_DOMAIN: "civfix.org",
   OUTREACH_THROTTLE_DAYS: 7,
   OUTREACH_DIGEST_CRON: "0 14 * * *",
-  OUTREACH_DIGEST_ENABLED: false,
-  REPORT_AUTOFORWARD_ENABLED: false,
   INBOUND_SWEEP_CRON: "*/5 * * * *",
   GUEST_RETENTION_CRON: "15 4 * * *",
   SMS_GUEST_ENABLED: false,
@@ -96,7 +94,6 @@ const ENVIRONMENT_INDEPENDENT_DEFAULTS = {
   BROADCAST_EMAIL_CONCURRENCY: 4,
   BROADCAST_EMAIL_RATE_PER_SEC: 10,
   BROADCAST_LINK_ALLOWED_HOSTS: [],
-  HOST_MESSAGING_KILL_SWITCH: false,
   HOST_ANALYTICS_CACHE_TTL_SEC: 120,
   PAGE_VIEW_DEDUPE_SEC: 0,
   METRICS_ROLLUP_LOOKBACK_DAYS: 3,
@@ -105,6 +102,10 @@ const ENVIRONMENT_INDEPENDENT_DEFAULTS = {
   SMS_HOST_BROADCAST_ENABLED: false,
   WAITLIST_EXPIRE_CRON: "*/10 * * * *",
   CHECKIN_NOSHOW_CRON: "*/30 * * * *",
+  devToolsEnabled: false,
+  DEV_TEST_EMAILS: [],
+  devTestEmailsDropped: 0,
+  runtimeFlagEnvFallbacks: {},
 }
 
 function fakeFlags(value: boolean): Record<string, boolean> {
@@ -126,6 +127,7 @@ function nonProductionDefaults(nodeEnv: "development" | "test"): Record<string, 
     ...ENVIRONMENT_INDEPENDENT_DEFAULTS,
     ...fakeFlags(true),
     NODE_ENV: nodeEnv,
+    environment: "local",
     PUBLIC_API_URL: "",
     WEB_ORIGINS: [],
     DATABASE_URL: "",
@@ -184,6 +186,7 @@ describe("loadEnv characterization: resolved Env", () => {
       ...ENVIRONMENT_INDEPENDENT_DEFAULTS,
       ...fakeFlags(false),
       NODE_ENV: "production",
+      environment: "unknown",
       PUBLIC_API_URL: "https://api.civfix.org",
       WEB_ORIGINS: ["https://civfix.org", "https://app.civfix.org"],
       DATABASE_URL: "postgres://user:pass@db:5432/civfix?sslmode=require",
@@ -235,6 +238,23 @@ describe("loadEnv characterization: resolved Env", () => {
       APNS_PRODUCTION: true,
       LOCAL_STORAGE_DIR: "/var/tmp/civfix",
       LOCAL_STORAGE_SIGNING_KEY: "local-key",
+    })
+  })
+
+  it("keeps the three runtime-flag switches only as their flags' env fallbacks", () => {
+    const env = loadEnv({
+      NODE_ENV: "test",
+      HOST_MESSAGING_KILL_SWITCH: "1",
+      OUTREACH_DIGEST_ENABLED: "true",
+      REPORT_AUTOFORWARD_ENABLED: "off",
+    })
+    expect(env).toStrictEqual({
+      ...nonProductionDefaults("test"),
+      runtimeFlagEnvFallbacks: {
+        host_messaging_kill_switch: true,
+        outreach_digest_enabled: true,
+        report_autoforward_enabled: false,
+      },
     })
   })
 

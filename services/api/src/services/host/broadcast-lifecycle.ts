@@ -27,7 +27,7 @@ export function makeBroadcastLifecycle(deps: BroadcastLifecycleDeps) {
   const { repo, config, insights } = deps
 
   async function killed(record: BroadcastRecord): Promise<boolean> {
-    if (config.killSwitch) return true
+    if (await config.killSwitch()) return true
     if (record.createdBy === null) return false
     try {
       const state = await repo.hostMessagingState(record.createdBy)

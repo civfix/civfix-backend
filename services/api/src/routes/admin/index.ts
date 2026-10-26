@@ -23,6 +23,7 @@ import { registerAdminBroadcastRoutes } from "./broadcasts.routes.js"
 import { registerAdminEventPageRoutes } from "./pages.routes.js"
 import { registerAdminMediaRoutes } from "./media.routes.js"
 import { registerAdminLegalRoutes } from "./legal.routes.js"
+import { registerAdminDevRoutes } from "./dev.routes.js"
 
 export async function registerAdminRoutes(
   app: FastifyInstance,
@@ -54,5 +55,6 @@ export async function registerAdminRoutes(
     await registerAdminEventPageRoutes(operator, container)
     await registerAdminMediaRoutes(operator, container)
     await registerAdminLegalRoutes(operator, container)
+    await registerAdminDevRoutes(operator, container)
   })
 }

@@ -1,5 +1,5 @@
 import type { FastifyInstance } from "fastify"
-import { describe, expect, it, vi } from "vitest"
+import { beforeEach, describe, expect, it, vi } from "vitest"
 
 const stubRegistration = vi.hoisted(
   () => (exportName: string) => async (importOriginal: () => Promise<Record<string, unknown>>) => ({
@@ -24,6 +24,7 @@ vi.mock("../../src/services/host/comms-jobs.js", stubRegistration("registerComms
 
 const { startBackgroundJobs } = await import("../../src/server.js")
 const { registerOutreachJobs } = await import("../../src/services/admin/outreach-jobs.js")
+const { registerAutoForwardJobs } = await import("../../src/services/admin/autoforward-jobs.js")
 const { loadEnv } = await import("../../src/env.js")
 
 function fakeApp() {
@@ -35,6 +36,10 @@ function fakeApp() {
 }
 
 describe("startBackgroundJobs", () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+  })
+
   it("hands the app logger to the outreach job registration so a failed claim release is logged", async () => {
     const { app, container, log } = fakeApp()
     const env = loadEnv({ NODE_ENV: "test", DATABASE_URL: "postgres://u:p@localhost/db" })
@@ -43,4 +48,24 @@ describe("startBackgroundJobs", () => {
 
     expect(registerOutreachJobs).toHaveBeenCalledWith(container, log)
   })
+
+  it.each([
+    { label: "unset", source: {} },
+    { label: "1", source: { REPORT_AUTOFORWARD_ENABLED: "1" } },
+  ])(
+    "T11: always registers the auto-forward worker (REPORT_AUTOFORWARD_ENABLED $label)",
+    async ({ source }) => {
+      const { app, container, log } = fakeApp()
+      const env = loadEnv({
+        NODE_ENV: "test",
+        DATABASE_URL: "postgres://u:p@localhost/db",
+        ...source,
+      })
+
+      await startBackgroundJobs(app, env)
+
+      expect(registerAutoForwardJobs).toHaveBeenCalledTimes(1)
+      expect(registerAutoForwardJobs).toHaveBeenCalledWith(container, log)
+    },
+  )
 })
