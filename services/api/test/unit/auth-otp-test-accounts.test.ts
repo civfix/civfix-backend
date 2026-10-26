@@ -142,6 +142,19 @@ describe("test-account sign-in: verifyOtp", () => {
     expect((await h.users.findById(id))?.handle).toBe("support_2")
   })
 
+  it("T45: a base shorter than 3 counts as taken", async () => {
+    const h = await harness({
+      testAccounts: {
+        emails: [...TEST_ACCOUNTS.emails, "qa@civfix.org", "q@civfix.org"],
+        code: CODE,
+      },
+    })
+    const qa = await h.service.verifyOtp("qa@civfix.org", CODE, IP)
+    const q = await h.service.verifyOtp("q@civfix.org", CODE, IP)
+    expect((await h.users.findById(qa))?.handle).toBe("qa_2")
+    expect((await h.users.findById(q))?.handle).toBe("q_2")
+  })
+
   it("T36: an existing citizen signs in unchanged", async () => {
     const h = await harness()
     const create = vi.spyOn(h.users, "create")

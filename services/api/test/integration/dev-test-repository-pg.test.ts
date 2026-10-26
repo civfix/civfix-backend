@@ -3,11 +3,14 @@
  */
 import { afterAll, beforeAll, describe, expect, it } from "vitest"
 import { randomUUID } from "node:crypto"
-import type { FakeMailer } from "@civfix/seams"
+import { FakeMailer } from "@civfix/seams"
 import { withPg, testHandle, type PgHarness } from "../helpers/pg.js"
 import { makeDrizzleDevTestRepository } from "../../src/services/admin/dev-test-repository.drizzle.js"
 import type { DevTestRepository } from "../../src/services/admin/dev-test-repository.js"
 import { makeContainer } from "../../src/di.js"
+import { PgAuthStores } from "../../src/auth/pg-stores.js"
+import { InMemoryCacheClient } from "../../src/auth/cache.js"
+import { OtpService } from "../../src/auth/otp.js"
 import { loadEnv } from "../../src/env.js"
 
 const pg = await withPg()
@@ -114,6 +117,28 @@ describe.skipIf(!pg)("dev test tools repository (integration)", () => {
     } finally {
       await container.close()
     }
+  })
+
+  it("T45: short test addresses sign in on Postgres with a valid handle", async () => {
+    const stores = new PgAuthStores(h.db)
+    const code = "Qm7vT2xRk9LpW4sZc8NbY3hD"
+    const otp = new OtpService({
+      store: stores.otps,
+      users: stores.users,
+      identities: stores.oauth,
+      cache: new InMemoryCacheClient(),
+      mailer: new FakeMailer(),
+      testAccounts: { emails: ["qa@civfix.org", "q@civfix.org"], code },
+    })
+    const qa = await otp.verifyOtp("qa@civfix.org", code, "203.0.113.9")
+    const q = await otp.verifyOtp("q@civfix.org", code, "203.0.113.9")
+    const rows = await h.sql<{ id: string; handle: string }[]>`
+      SELECT id, handle FROM users WHERE id IN (${qa}, ${q})
+    `
+    expect(Object.fromEntries(rows.map((r) => [r.id, r.handle]))).toEqual({
+      [qa]: "qa_2",
+      [q]: "q_2",
+    })
   })
 
   it("finds a live account by its address and an address by its account", async () => {
