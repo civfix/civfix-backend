@@ -122,6 +122,7 @@ import * as m118 from "../../src/services/users-repository.drizzle.js"
 import * as m119 from "../../src/services/volunteer-hours-credit.drizzle.js"
 import * as m120 from "../../src/services/volunteer-hours-repository.drizzle.js"
 import * as m121 from "../../src/services/admin/runtime-flag-repository.drizzle.js"
+import * as m122 from "../../src/services/admin/dev-jobs-repository.drizzle.js"
 
 export interface TranscriptCase {
   key: string
@@ -557,6 +558,14 @@ export const cases: TranscriptCase[] = [
   {
     key: "categoryCountsProjection",
     run: async (sql: any) => (m9 as any).categoryCountsProjection(sql, "alias-1"),
+  },
+  {
+    key: "makeDrizzleDevJobsRepository.runState",
+    run: async (sql: any) => (m122 as any).makeDrizzleDevJobsRepository(sql).runState("name-1"),
+  },
+  {
+    key: "makeDrizzleDevJobsRepository.snapshot",
+    run: async (sql: any) => (m122 as any).makeDrizzleDevJobsRepository(sql).snapshot(["name-1"]),
   },
   {
     key: "makeDrizzleDiscoveryRepository.addNote",
@@ -1393,9 +1402,9 @@ export const cases: TranscriptCase[] = [
       (m22 as any).makeDrizzleSystemHealthRepository(sql).countJurisdictions(),
   },
   {
-    key: "makeDrizzleSystemHealthRepository.countMailEventsLast7Days",
+    key: "makeDrizzleSystemHealthRepository.countSentMailLast7Days",
     run: async (sql: any) =>
-      (m22 as any).makeDrizzleSystemHealthRepository(sql).countMailEventsLast7Days(),
+      (m22 as any).makeDrizzleSystemHealthRepository(sql).countSentMailLast7Days(),
   },
   {
     key: "makeDrizzleAffiliationRepository.primaryAffiliationRows",
