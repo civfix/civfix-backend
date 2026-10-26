@@ -304,6 +304,12 @@ J is the jurisdiction's name, or "The city". The notes are fixed copy: no city o
 the timeline or the chat. The push (`notifyReporterOfStatus`, shared with an operator's status change)
 and the chat event go out after commit.
 
+**Reopen (D12).** When a report leaves `resolved` (the reporter's reopen, or an operator's status change)
+and its latest successful filing has `city_closed_at`, the same transaction inserts a `needs_human`
+filing, reason `reopened_after_city_closed`, so a failed insert rolls the status change back. A report
+that already has an active filing gets none: the operator's audit row records `reopenSkipped`, and the
+reporter's reopen logs a warning.
+
 ---
 
 # The outbound send triad: deadline, in-flight window, stale claim
