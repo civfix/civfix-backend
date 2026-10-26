@@ -13,9 +13,8 @@ export default defineConfig({
   platform: "node",
   dts: false,
   sourcemap: true,
-  // The images run with --enable-source-maps, and Node keeps every loaded map in memory for the life of
-  // the process. Stack remapping needs only the mappings; embedding the sources would add about 45 MB of
-  // heap to the api.
+  // The image runs with --enable-source-maps, and Node keeps every loaded map in memory for the life of
+  // the process. Stack remapping needs only the mappings, so the sources are not embedded.
   esbuildOptions(options) {
     options.sourcesContent = false
   },
