@@ -20,7 +20,7 @@ const USER = "00000000-0000-0000-0000-0000000000aa"
 const KEY = "unsubscribe-signing-key-for-tests-0123456789"
 
 const CONFIG: BroadcastConfig = {
-  killSwitch: false,
+  killSwitch: () => Promise.resolve(false),
   perEventPerDay: 3,
   recipientsPerDay: 2000,
   cooldownSec: 900,
