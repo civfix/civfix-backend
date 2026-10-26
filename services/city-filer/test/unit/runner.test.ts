@@ -27,9 +27,12 @@ function startSleep() {
 }
 `
 
-/** Gone, or a zombie nobody has reaped yet: either way it no longer runs. */
+/**
+ * Gone, or a zombie nobody has reaped yet: either way it no longer runs. The script fails before the
+ * marker, so its out/ was moved to out-claude/ when Claude took over (#177).
+ */
 async function processGone(runDir: string): Promise<boolean> {
-  const pid = Number(await readFile(join(runDir, "out", "sleep.pid"), "utf8"))
+  const pid = Number(await readFile(join(runDir, "out-claude", "sleep.pid"), "utf8"))
   for (let i = 0; i < 30; i++) {
     const stat = await readFile(`/proc/${pid}/stat`, "utf8").catch(() => null)
     if (stat === null || stat.slice(stat.lastIndexOf(")") + 2).startsWith("Z")) return true
@@ -89,8 +92,10 @@ describe("the script runner", () => {
       process.env = saved
     }
 
-    expect(h.spawnEnvs).toEqual([{}])
-    const env = await readFile(join(h.runDir(f.id, f.runId), "out", "env.txt"), "utf8")
+    // The script writes no result, so Claude takes over (#177): every spawn's env is empty, and the
+    // script's out/ is now out-claude/.
+    expect(new Set(h.spawnEnvs.map((e) => JSON.stringify(e)))).toEqual(new Set(["{}"]))
+    const env = await readFile(join(h.runDir(f.id, f.runId), "out-claude", "env.txt"), "utf8")
     expect(
       env
         .trim()

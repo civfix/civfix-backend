@@ -55,6 +55,8 @@ describe("starting the filer", () => {
         contact: { ...CONTACT },
         filerGid: null,
         scriptTimeoutMs: 1000,
+        runModel: "test-run-model",
+        classifyModel: "test-classify-model",
       },
       runner: { filerShell: "/nonexistent", nodeBinary: "node", kitRunScript: "/nonexistent" },
       log: () => {},
@@ -65,6 +67,9 @@ describe("starting the filer", () => {
     expect(run).toHaveLength(1)
     expect(run[0]?.options).toStrictEqual(FILING_QUEUE_OPTIONS["filing.run"])
     expect(run[0]?.options).toStrictEqual({ policy: "short", retryLimit: 0, expireInSeconds: 3600 })
-    expect(jobs.workers).toEqual([{ name: "filing.run", settings: { batchSize: 1 } }])
+    expect(jobs.workers).toEqual([
+      { name: "filing.run", settings: { batchSize: 1 } },
+      { name: "filing.classify", settings: { batchSize: 1 } },
+    ])
   })
 })

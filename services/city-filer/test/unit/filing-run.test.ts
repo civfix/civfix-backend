@@ -1,6 +1,7 @@
 import { mkdir, readdir, readFile, stat, symlink } from "node:fs/promises"
 import { join } from "node:path"
 import { afterEach, describe, expect, it } from "vitest"
+import { errorResult } from "../helpers/claude-acts.js"
 import { PORTAL_HOST } from "../helpers/fake-filings-worker.js"
 import { CONTACT, filerHarness, type FilerHarness } from "../helpers/filer-harness.js"
 import { exists, jpegOfSize, MB, mode } from "../helpers/files.js"
@@ -151,6 +152,8 @@ describe("the filing.run job handler", () => {
 
   it("T20: with no script it is failed / ai_unavailable, and the requeued job's new run gets a fresh directory", async () => {
     h = await filerHarness()
+    // No script goes to Claude (#177); here both accounts are out of usage.
+    await h.claude(errorResult("usage limit reached"))
     const f = h.filings.add()
     await h.run(f.id, 1)
     const first = f.runId
