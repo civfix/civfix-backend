@@ -151,6 +151,15 @@ export interface EventConsentExportRow {
   accepted_at: Date
 }
 
+export interface ConsentRecordExportRow {
+  document_type: string
+  document_version: string
+  document_sha256: string
+  action: string
+  surface: string
+  accepted_at: Date
+}
+
 export interface EventRegistrationExportRow {
   id: string
   cleanup_id: string
@@ -205,4 +214,5 @@ export interface DataExportRepository {
   eventRegistrations(userId: string, rowCap: number): Promise<EventRegistrationExportRow[]>
   eventAnswers(userId: string, rowCap: number): Promise<EventAnswerExportRow[]>
   eventCheckins(userId: string, rowCap: number): Promise<EventCheckinExportRow[]>
+  consentRecords(userId: string, rowCap: number): Promise<ConsentRecordExportRow[]>
 }

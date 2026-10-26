@@ -1,4 +1,4 @@
-import { AppError, isCurrent, type ConsentSurface, type EventConsentInput } from "@civfix/contract"
+import type { ConsentSurface } from "@civfix/contract"
 import type { Queryable } from "../../db/client.js"
 
 export interface EventConsentRow {
@@ -14,59 +14,6 @@ export interface EventConsentRow {
   smsOptIn: boolean
   surface: ConsentSurface | null
   acceptedAt: Date
-}
-
-export interface InsertConsentInput {
-  cleanupId: string
-  subjectType: "user" | "guest"
-  userId: string | null
-  guestId: string | null
-  registrationId: string | null
-  consent: EventConsentInput
-  now: Date
-}
-
-export function assertCurrentConsentVersions(consent: EventConsentInput): void {
-  const fields: Record<string, string> = {}
-  if (!isCurrent("terms", consent.termsVersion)) {
-    fields.termsVersion = "is out of date, so reload and accept the current terms"
-  }
-  if (!isCurrent("privacy", consent.disclosureVersion)) {
-    fields.disclosureVersion = "is out of date, so reload and accept the current privacy notice"
-  }
-  if (Object.keys(fields).length > 0) throw AppError.validation(fields)
-}
-
-export async function insertConsent(tx: Queryable, input: InsertConsentInput): Promise<string> {
-  assertCurrentConsentVersions(input.consent)
-  if (input.subjectType === "user" && input.userId === null) {
-    throw AppError.internal("event consent for a member needs a user id")
-  }
-  if (input.subjectType === "guest" && input.guestId === null) {
-    throw AppError.internal("event consent for a guest needs a guest id")
-  }
-  const rows = await tx<{ id: string }[]>`
-    INSERT INTO event_consents (
-      cleanup_id, subject_type, user_id, guest_id, registration_id,
-      terms_version, disclosure_version, host_contact_opt_in, sms_opt_in, surface, accepted_at
-    ) VALUES (
-      ${input.cleanupId},
-      ${input.subjectType},
-      ${input.subjectType === "user" ? input.userId : null},
-      ${input.subjectType === "guest" ? input.guestId : null},
-      ${input.registrationId},
-      ${input.consent.termsVersion},
-      ${input.consent.disclosureVersion},
-      ${input.consent.hostContactOptIn},
-      ${input.consent.smsOptIn ?? false},
-      ${input.consent.surface ?? null},
-      ${input.now}
-    )
-    RETURNING id
-  `
-  const row = rows[0]
-  if (row === undefined) throw AppError.internal()
-  return row.id
 }
 
 export async function listConsentsForUser(

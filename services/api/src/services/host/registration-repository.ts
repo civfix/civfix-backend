@@ -1,3 +1,4 @@
+import type { LegalDocumentRef } from "../legal-acceptance-repository.js"
 import type {
   CheckinMethod,
   CheckinOutcome,
@@ -200,6 +201,8 @@ export interface ConsentWrite {
   hostContactOptIn: boolean
   smsOptIn: boolean | null
   surface: ConsentSurface | null
+  /** The Terms and Privacy versions consented to; a signed-in registrant's are also consent records. */
+  documents: readonly LegalDocumentRef[]
 }
 
 export interface SeatDraft {

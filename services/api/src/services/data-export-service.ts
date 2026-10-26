@@ -137,6 +137,7 @@ const DATA_EXPORT_BODY_ORDER = [
   "eventRegistrations",
   "eventAnswers",
   "eventCheckins",
+  "consentRecords",
 ] as const
 
 type BodyKey = (typeof DATA_EXPORT_BODY_ORDER)[number]
@@ -153,6 +154,7 @@ const DATA_EXPORT_FIT_ORDER = [
   "pushTokens",
   "certificates",
   "organizations",
+  "consentRecords",
   "eventConsents",
   "eventRegistrations",
   "eventCheckins",
@@ -350,6 +352,12 @@ const DATA_EXPORT_BODY: BodyParts = {
     kind: "section",
     rowCap: DATA_EXPORT_MAX_ROWS,
     load: (repo, userId, rowCap) => repo.eventCheckins(userId, rowCap),
+  },
+
+  consentRecords: {
+    kind: "section",
+    rowCap: DATA_EXPORT_MAX_ROWS,
+    load: (repo, userId, rowCap) => repo.consentRecords(userId, rowCap),
   },
 }
 
