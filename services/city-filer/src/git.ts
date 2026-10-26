@@ -3,8 +3,9 @@ import { lstat, readdir, readlink, realpath } from "node:fs/promises"
 import { join } from "node:path"
 import type { FilerLog } from "./config.js"
 import { runAsFiler, type FilerRunner } from "./filer-process.js"
-import { forgetAllProved, forgetProved } from "./proved.js"
+import { forgetProved } from "./proved.js"
 import { readContainedFile } from "./safe-file.js"
+import { isPortalHost } from "./script.js"
 
 export interface GitDeps {
   runner: FilerRunner
@@ -266,20 +267,43 @@ async function commitRevert(
   await git(deps, ["update-ref", "-m", message[0] ?? "", "HEAD", commit, head])
 }
 
-const hostOf = (path: string): string => path.split("/")[1] ?? ""
-
-async function forgetHosts(deps: GitDeps, paths: readonly string[], why: string): Promise<void> {
-  for (const host of new Set(paths.map(hostOf))) {
-    await forgetProved(deps.workspaceDir, host, deps.log, why)
+/**
+ * The proved records a changed path can make stale: its host's, for a path inside one host's folder, and
+ * every record for anything else (portals/ itself, a file directly in it, or portals/node_modules/, which
+ * node's module resolution searches for every host's imports).
+ */
+function affectedHosts(paths: readonly string[]): string[] | "all" {
+  const hosts = new Set<string>()
+  for (const path of paths) {
+    const [, host = "", ...rest] = path.split("/")
+    if (rest.length === 0 || host === "node_modules" || !isPortalHost(host)) return "all"
+    hosts.add(host)
   }
+  return [...hosts]
+}
+
+/** Deletes the records `hosts` names, then rethrows `err`; a record that can't be deleted is in the error. */
+async function failClosed(
+  deps: GitDeps,
+  hosts: readonly string[] | "all",
+  why: string,
+  err: unknown,
+): Promise<never> {
+  try {
+    await forgetProved(deps.workspaceDir, hosts, deps.log, why)
+  } catch (forgetErr) {
+    throw new AggregateError([err, forgetErr], `confinement failed (${why})`)
+  }
+  throw err
 }
 
 /**
  * D8's confinement, after Claude exits. A change is found by comparing the bytes on disk under portals/
  * with `base`'s blobs (the HEAD before Claude ran), so nothing filer controls in .git (the index and its
  * flags, the stat cache, attributes, filters, core.worktree) can hide one. Every path outside
- * portals/<host>/ that differs goes back to base, in one revert commit, and is logged. Fails closed: a host
- * whose files could not be put back loses its proved record, so its script cannot run live unproved.
+ * portals/<host>/ that differs goes back to base, in one revert commit, and is logged. Fails closed: every
+ * record a change that could not be put back may have made stale is deleted (`affectedHosts`), so no
+ * script runs live unproved.
  * False when a path still differs after the revert.
  */
 export async function confineToHost(
@@ -296,16 +320,14 @@ export async function confineToHost(
     base = await baseTree(deps, opts.base)
     changed = await compare(base)
   } catch (err) {
-    await forgetAllProved(deps.workspaceDir, deps.log, "the confinement check failed")
-    throw err
+    return failClosed(deps, "all", "the confinement check failed", err)
   }
   if (changed.length === 0) return true
   try {
     await restore(deps, base, changed)
     await commitRevert(deps, base, changed, opts.filingId)
   } catch (err) {
-    await forgetHosts(deps, changed, "an out-of-scope change could not be reverted")
-    throw err
+    return failClosed(deps, affectedHosts(changed), "an out-of-scope change was not reverted", err)
   }
   for (const path of changed) {
     deps.log("filer: reverted an out-of-scope change", { filingId: opts.filingId, path })
@@ -314,12 +336,17 @@ export async function confineToHost(
   try {
     still = await compare(base)
   } catch (err) {
-    await forgetAllProved(deps.workspaceDir, deps.log, "the confinement check failed")
-    throw err
+    return failClosed(deps, "all", "the confinement check failed", err)
   }
   for (const path of still) {
     deps.log("filer: an out-of-scope change survived the revert", { filingId: opts.filingId, path })
   }
-  await forgetHosts(deps, still, "an out-of-scope change survived the revert")
-  return still.length === 0
+  if (still.length === 0) return true
+  await forgetProved(
+    deps.workspaceDir,
+    affectedHosts(still),
+    deps.log,
+    "an out-of-scope change survived",
+  )
+  return false
 }

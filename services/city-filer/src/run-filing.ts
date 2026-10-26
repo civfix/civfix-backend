@@ -253,7 +253,7 @@ export function makeFilingRunHandler(deps: FilingRunDeps): JobHandler {
     // sha256 of the bytes read above, counts.
     const { ran: proof, ending } = await runOnce(run, script, true, "proof")
     if (proof.timedOut || proof.exitCode !== 0 || !proof.sentinel) {
-      await forgetProved(config.workspaceDir, host, log, "its proof failed")
+      await forgetProved(config.workspaceDir, [host], log, "its proof failed")
       return portalError
     }
     await recordProved(config.workspaceDir, host, script.sha256)

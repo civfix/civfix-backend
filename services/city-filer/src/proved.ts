@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto"
 import { chmod, mkdir, readdir, readFile, rename, rm, writeFile } from "node:fs/promises"
 import { join } from "node:path"
 import type { FilerLog } from "./config.js"
+import { isPortalHost } from "./script.js"
 
 /**
  * Per host, the sha256 of the script bytes that last passed the wrapper's own proof (D7 step 3: only a
@@ -51,18 +52,30 @@ export async function recordProved(
   await rename(tmp, recordPath(workspaceDir, host))
 }
 
+/**
+ * Deletes the records of `hosts`, or every record, trying each before it throws, so a record that can't be
+ * deleted never keeps the others in place. A name that isn't a portal host is refused, never joined into
+ * a path (an empty one would name proved/ itself).
+ */
 export async function forgetProved(
   workspaceDir: string,
-  host: string,
+  hosts: readonly string[] | "all",
   log: FilerLog,
   why: string,
 ): Promise<void> {
-  await rm(recordPath(workspaceDir, host), { force: true })
-  log("filer: proved record deleted", { host, why })
-}
-
-export async function forgetAllProved(workspaceDir: string, log: FilerLog, why: string) {
-  for (const host of await readdir(join(workspaceDir, PROVED_DIR))) {
-    await forgetProved(workspaceDir, host, log, why)
+  const dir = join(workspaceDir, PROVED_DIR)
+  const names = hosts === "all" ? await readdir(dir) : hosts
+  const failures: unknown[] = []
+  for (const name of new Set(names)) {
+    try {
+      if (hosts !== "all" && !isPortalHost(name)) {
+        throw new Error(`not a portal host: ${JSON.stringify(name)}`)
+      }
+      await rm(join(dir, name), { force: true })
+      log("filer: proved record deleted", { host: name, why })
+    } catch (err) {
+      failures.push(err)
+    }
   }
+  if (failures.length > 0) throw new AggregateError(failures, "a proved record was not deleted")
 }
