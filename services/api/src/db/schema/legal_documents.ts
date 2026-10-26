@@ -1,4 +1,5 @@
-import { index, pgTable, primaryKey, text, timestamp } from "drizzle-orm/pg-core"
+import { boolean, index, jsonb, pgTable, primaryKey, text, timestamp } from "drizzle-orm/pg-core"
+import type { LegalBlock } from "@civfix/contract/legal"
 import type { LegalDocumentTypeValue } from "./types-legal.js"
 
 export const legalDocuments = pgTable(
@@ -9,6 +10,10 @@ export const legalDocuments = pgTable(
     sha256: text("sha256").notNull(),
     effectiveAt: timestamp("effective_at", { withTimezone: true }).notNull(),
     url: text("url").notNull(),
+    title: text("title"),
+    summary: text("summary"),
+    material: boolean("material"),
+    blocks: jsonb("blocks").$type<LegalBlock[]>(),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   },
   (t) => [

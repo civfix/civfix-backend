@@ -7,7 +7,7 @@ import { NEW_BLOCKS, NEW_TERMS, PRE_EPIC, keyOf } from "../helpers/legal-fixture
 
 const pg = await withPg()
 
-const MIGRATE_ADVISORY_LOCK_KEY = 4747120626n
+const MIGRATE_ADVISORY_LOCK_KEY = 4747120626
 
 // The retired rows 0151 seeded, which no contract entry describes.
 const RETIRED_SEED = [
@@ -109,7 +109,7 @@ describe.skipIf(!pg)("legal documents migration and loader (Postgres)", () => {
 
     const held = await sql<{ n: number }[]>`
       SELECT count(*)::int AS n FROM pg_locks
-      WHERE locktype = 'advisory' AND ((classid::bigint << 32) | objid::bigint) = ${MIGRATE_ADVISORY_LOCK_KEY}
+      WHERE locktype = 'advisory' AND ((classid::bigint << 32) | objid::bigint) = ${MIGRATE_ADVISORY_LOCK_KEY}::bigint
     `
     expect(held[0]?.n).toBe(0)
 

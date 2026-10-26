@@ -10,9 +10,13 @@
 import { readdir, readFile } from "node:fs/promises"
 import { dirname, join } from "node:path"
 import { fileURLToPath } from "node:url"
+import { LEGAL_DOCUMENTS } from "@civfix/contract/legal"
+import { LEGAL_TEXTS } from "@civfix/contract/legal-texts"
 import type { Sql } from "./client.js"
 import { runDbCli, runIfMain } from "./cli.js"
 import { orderMigrationFiles } from "./migrate-files.js"
+import { loadLegalDocuments } from "../services/legal-loader.js"
+import { makeLegalDocumentsRepository } from "../services/legal-documents-repository.drizzle.js"
 
 const MIGRATIONS_DIR = join(dirname(fileURLToPath(import.meta.url)), "..", "..", "drizzle")
 
@@ -37,9 +41,10 @@ async function appliedSet(sql: Sql): Promise<Set<string>> {
 }
 
 /**
- * Exported so the Testcontainers harness applies exactly the SQL the runner does. The session-level
- * advisory lock and every per-file transaction run on one reserved connection, so the whole
- * read-applied -> apply-pending sequence is serialized.
+ * Exported so the Testcontainers harness applies exactly the SQL the runner does, and loads the legal
+ * documents the same way. Returns the migration files applied; loaded documents are only logged. The
+ * session-level advisory lock and every per-file transaction run on one reserved connection, so the
+ * whole read-applied -> apply-pending -> load sequence is serialized.
  *
  * GOTCHA: CREATE INDEX CONCURRENTLY cannot run in a transaction, so a plain CREATE INDEX here takes a
  * SHARE lock that blocks writes on a big table during the deploy. Build such an index out-of-band with
@@ -59,26 +64,39 @@ export async function applyMigrations(sql: Sql, dir: string = MIGRATIONS_DIR): P
     const entries = await readdir(dir)
     const ordered = orderMigrationFiles(entries)
 
+    // A reserved connection has no `.begin()` in postgres 3.4 (only the pool does), so BEGIN/COMMIT
+    // are driven explicitly on the pinned connection.
+    const inTransaction = async <T>(label: string, work: () => Promise<T>): Promise<T> => {
+      await reserved.unsafe("begin")
+      try {
+        const result = await work()
+        await reserved.unsafe("commit")
+        return result
+      } catch (err) {
+        await reserved.unsafe("rollback").catch((rollbackErr: unknown) => {
+          sessionClean = false
+          console.error(`migrate: rollback after ${label} failed`, rollbackErr)
+        })
+        throw err
+      }
+    }
+
     const applied: string[] = []
     for (const name of ordered) {
       if (already.has(name)) continue
       const text = await readFile(join(dir, name), "utf8")
-      // A reserved connection has no `.begin()` in postgres 3.4 (only the pool does), so BEGIN/COMMIT
-      // are driven explicitly on the pinned connection.
-      await reserved.unsafe("begin")
-      try {
+      await inTransaction(name, async () => {
         await reserved.unsafe(text)
         await reserved`INSERT INTO _civfix_migrations (name) VALUES (${name})`
-        await reserved.unsafe("commit")
-      } catch (err) {
-        await reserved.unsafe("rollback").catch((rollbackErr: unknown) => {
-          sessionClean = false
-          console.error(`migrate: rollback after ${name} failed`, rollbackErr)
-        })
-        throw err
-      }
+      })
       applied.push(name)
     }
+
+    // Under the same lock, so two deploys never both insert a version (DECISIONS §66, D9).
+    const loaded = await inTransaction("the legal document load", () =>
+      loadLegalDocuments(makeLegalDocumentsRepository(reserved), LEGAL_DOCUMENTS, LEGAL_TEXTS),
+    )
+    if (loaded.length > 0) console.log(`migrate: loaded legal document(s) ${loaded.join(", ")}`)
     return applied
   } finally {
     await reserved`SELECT pg_advisory_unlock(${MIGRATE_ADVISORY_LOCK_KEY})`.catch(

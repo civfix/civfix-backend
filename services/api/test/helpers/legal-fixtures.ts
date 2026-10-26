@@ -2,14 +2,14 @@ import { LEGAL_DOCUMENTS, type LegalBlock, type LegalDocumentVersion } from "@ci
 import { legalRecordSha256 } from "@civfix/contract/legal-texts"
 import type { StoredLegalDocument } from "./legal-documents-repository.memory.js"
 
-// The test cases' fixtures (CIV-467): P, R, N and F.
+// The fixtures of issue #236's test cases: P, R, N and F.
 
 /** P: the pre-§66 versions in the contract, exactly as 0151/0171/0172 seed them. */
 export const PRE_EPIC: readonly LegalDocumentVersion[] = LEGAL_DOCUMENTS.filter(
   (entry) => entry.title === undefined,
 )
 
-export const SEEDED_AT = new Date("2026-09-30T08:00:00.000Z")
+const SEEDED_AT = new Date("2026-09-30T08:00:00.000Z")
 
 /** R: a retired type's row from 0151, which the contract no longer has. */
 export const RETIRED: StoredLegalDocument = {
@@ -55,7 +55,7 @@ export const FUTURE_PRIVACY: LegalDocumentVersion = withRecordHash({
 
 export const TEST_NOW = new Date("2026-10-26T12:00:00.000Z")
 
-export function keyOf(entry: Pick<LegalDocumentVersion, "type" | "version">): string {
+export function keyOf(entry: { type: string; version: string }): string {
   return `${entry.type}@${entry.version}`
 }
 
