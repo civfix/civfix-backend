@@ -1,10 +1,12 @@
 const LOCAL_WEB_PORT = 3000
 export const DEFAULT_API_PORT = 8080
 
-const TRAILING_SLASHES_RE = /\/+$/
-
+// A scan from the end, not /\/+$/: that regex retries from every slash in a run that is not trailing,
+// which is quadratic on a configured value full of slashes.
 export function stripTrailingSlashes(value: string): string {
-  return value.replace(TRAILING_SLASHES_RE, "")
+  let end = value.length
+  while (end > 0 && value[end - 1] === "/") end--
+  return value.slice(0, end)
 }
 
 export interface BaseUrlEnv {
