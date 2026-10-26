@@ -27,6 +27,7 @@ export function typed(parserOptions) {
         { considerDefaultExhaustiveForUnions: true },
       ],
       "@typescript-eslint/no-unnecessary-type-assertion": "error",
+      "@typescript-eslint/no-deprecated": "error",
     },
   }
 }
@@ -79,13 +80,23 @@ export function config(...extra) {
         // touch `this`.
         "@typescript-eslint/require-await": "off",
         "@typescript-eslint/unbound-method": "off",
-        // Off for tests by decision. In src they wait on typed shims for the lazily imported push
-        // and SMS SDKs and the ws socket, whose untyped values account for most of the hits.
+        // Relaxed outside src by decision: test doubles and fixtures lean on loose casts.
         "@typescript-eslint/no-unsafe-argument": "off",
         "@typescript-eslint/no-unsafe-assignment": "off",
         "@typescript-eslint/no-unsafe-call": "off",
         "@typescript-eslint/no-unsafe-member-access": "off",
         "@typescript-eslint/no-unsafe-return": "off",
+      },
+    },
+    {
+      files: ["src/**/*.ts"],
+      rules: {
+        "@typescript-eslint/no-explicit-any": "error",
+        "@typescript-eslint/no-unsafe-argument": "error",
+        "@typescript-eslint/no-unsafe-assignment": "error",
+        "@typescript-eslint/no-unsafe-call": "error",
+        "@typescript-eslint/no-unsafe-member-access": "error",
+        "@typescript-eslint/no-unsafe-return": "error",
       },
     },
     ...extra,

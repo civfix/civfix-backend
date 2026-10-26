@@ -14,7 +14,7 @@ import { InMemoryChatPubSub } from "../../src/adapters/chat-pubsub.js"
 import { InMemoryChatPresence } from "../../src/adapters/chat-presence.js"
 import { InMemoryChatRepository, MockConnection } from "../helpers/chat.js"
 import type { FastifyInstance, FastifyRequest } from "fastify"
-import type { WebSocket } from "@fastify/websocket"
+import type { GatewaySocket } from "../../src/ws/types.js"
 
 /**
  * The per-user signal channel woven into the WS gateway, exercised offline with the FakeUserChannel:
@@ -271,6 +271,7 @@ describe("registerChatGateway (subscribe-on-handshake / unsubscribe-on-close wir
    */
   class MockSocket {
     readyState = WS_OPEN
+    bufferedAmount = 0
     readonly listeners = new Map<string, Array<(...args: unknown[]) => void>>()
     on(event: string, cb: (...args: unknown[]) => void): this {
       const list = this.listeners.get(event) ?? []
@@ -304,13 +305,13 @@ describe("registerChatGateway (subscribe-on-handshake / unsubscribe-on-close wir
    */
   function captureGatewayHandler(
     opts: Parameters<typeof registerChatGateway>[1],
-  ): (socket: WebSocket, request: FastifyRequest) => void {
-    let captured: ((socket: WebSocket, request: FastifyRequest) => void) | undefined
+  ): (socket: GatewaySocket, request: FastifyRequest) => void {
+    let captured: ((socket: GatewaySocket, request: FastifyRequest) => void) | undefined
     const app = {
       get(
         _path: string,
         _opts: unknown,
-        handler: (socket: WebSocket, request: FastifyRequest) => void,
+        handler: (socket: GatewaySocket, request: FastifyRequest) => void,
       ): void {
         captured = handler
       },

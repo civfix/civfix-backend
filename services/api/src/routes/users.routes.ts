@@ -49,7 +49,7 @@ const SettingsLocaleSchema = z
   .object({
     locale: z.enum([...SUPPORTED_LOCALES] as [string, ...string[]]).optional(),
   })
-  .passthrough()
+  .loose()
 
 const USER_SEARCH_DEFAULT_LIMIT = 10
 

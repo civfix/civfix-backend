@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it } from "vitest"
 import { AppError, type ChatMessageDTO } from "@civfix/contract"
 import { randomUUID } from "node:crypto"
-import type { ZodTypeAny } from "zod"
+import type { ZodType } from "zod"
 import { parse } from "../../src/routes/_validate.js"
 import { handleClientFrame, type GatewayDeps, type GatewaySession } from "../../src/ws/gateway.js"
 import { WsChatService } from "../../src/adapters/chat-service.ws.js"
@@ -49,7 +49,7 @@ const WHITESPACE = "   "
 const ROOM_ID = "11111111-1111-4111-8111-111111111111"
 const NEXT_WEEK = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString()
 
-function rejects(schema: ZodTypeAny, data: unknown, field: string): void {
+function rejects(schema: ZodType, data: unknown, field: string): void {
   try {
     parse(schema, data)
   } catch (err) {

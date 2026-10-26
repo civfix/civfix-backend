@@ -64,7 +64,8 @@ export interface ActiveToken {
   token: string
 }
 
-export interface PushDispatchers {
+// A type alias, not an interface, so Object.values() on it keeps the dispatcher type.
+export type PushDispatchers = {
   ios?: PlatformDispatcher
   android?: PlatformDispatcher
   web?: PlatformDispatcher
@@ -157,7 +158,11 @@ export class MultiPushSender implements PushSender {
 
   async close(): Promise<void> {
     if (!this.dispatchers) return
-    await Promise.all(Object.values(this.dispatchers).map((d) => d?.close?.()))
+    await Promise.all(
+      Object.values(this.dispatchers).map(async (d) => {
+        await d?.close?.()
+      }),
+    )
   }
 
   private async deliver(recipientIds: string[], payload: PushPayload): Promise<void> {

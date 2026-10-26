@@ -131,7 +131,7 @@ function scrubExceptionValues(exception: unknown): unknown {
   if (!Array.isArray(values)) return exception
   return {
     ...(exception as Record<string, unknown>),
-    values: values.map((v) =>
+    values: values.map((v: unknown) =>
       v && typeof v === "object" && typeof (v as Record<string, unknown>).value === "string"
         ? {
             ...(v as Record<string, unknown>),

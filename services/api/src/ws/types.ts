@@ -13,6 +13,22 @@ export const WS_ROUTE = "/ws"
 
 export const WS_HEARTBEAT_MS = 30_000
 
+/**
+ * The ws socket members the gateway touches. Narrower than `WebSocket`, so a test double can drive the
+ * lifecycle; the real socket satisfies it structurally.
+ */
+export interface GatewaySocket {
+  readonly readyState: number
+  readonly bufferedAmount: number
+  send(data: string): void
+  close(code?: number, reason?: string): void
+  terminate(): void
+  ping(): void
+  on(event: "message", listener: (data: unknown) => void): unknown
+  on(event: "pong" | "close", listener: () => void): unknown
+  on(event: "error", listener: (err: unknown) => void): unknown
+}
+
 export type ReportVisibleFn = (reportId: string, userId: string | null) => Promise<boolean>
 
 export const WS_CLOSE_POLICY_VIOLATION = 1008

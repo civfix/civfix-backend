@@ -283,6 +283,16 @@ describe("B3': the parent trusts nothing the child says", () => {
     await expect(processImageLane(await fx.makeValidPng(), limits)).rejects.toThrow(
       /invalid result/,
     )
+
+    // JSON.stringify cannot emit Infinity, but a child can print 1e999, which JSON.parse reads as one.
+    const finiteChild = childReturning({ exifGps: { lat: 0, lng: 1 } })
+    runToolMock.mockImplementation(async (name: string, bin: string, args: string[]) => {
+      const res = await finiteChild(name, bin, args)
+      return { ...res, stdout: res.stdout.replace('"lat":0', '"lat":1e999') }
+    })
+    await expect(processImageLane(await fx.makeValidPng(), limits)).rejects.toThrow(
+      /invalid result/,
+    )
   })
 
   it("refuses a SYMLINK at the fixed name (it never resolves the path twice)", async () => {

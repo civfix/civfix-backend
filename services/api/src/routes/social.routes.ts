@@ -103,7 +103,7 @@ export async function registerSocialRoutes(
     })
   }
 
-  function mergeIdParam<S extends z.ZodTypeAny>(schema: S, request: FastifyRequest): z.infer<S> {
+  function mergeIdParam<S extends z.ZodType>(schema: S, request: FastifyRequest): z.infer<S> {
     return parse(schema, {
       ...(request.query as object),
       id: (request.params as { id?: unknown }).id,
