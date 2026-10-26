@@ -18,7 +18,7 @@ const MEMBER_COUNT = 3
 const STALE_SENDING_AGE_MS = 60 * 60 * 1000
 
 const CONFIG: BroadcastConfig = {
-  killSwitch: false,
+  killSwitch: () => Promise.resolve(false),
   perEventPerDay: 3,
   recipientsPerDay: 2000,
   cooldownSec: 900,

@@ -1,4 +1,4 @@
-import { describe, it, expect } from "vitest"
+import { describe, it, expect, expectTypeOf } from "vitest"
 import {
   makeSystemHealthService,
   MEDIA_WORKER_BACKLOG_WARN,
@@ -8,7 +8,6 @@ import {
 
 const FULL_ENV: SystemHealthEnv = {
   glitchTipConfigured: true,
-  tileCdnConfigured: true,
   mailerIsFake: false,
   jobsIsFake: false,
 }
@@ -18,12 +17,12 @@ function row(services: { name: string; status: string; val: string }[], name: st
 }
 
 describe("system health assembly", () => {
-  it("reports ok rows when every probe resolves", async () => {
+  it("T41: reports only rows that say something when every probe resolves", async () => {
     const probes: SystemHealthProbes = {
       postgres: async () => ({ val: "5 jurisdictions", status: "ok" }),
       redis: async () => ({ val: "PONG", status: "ok" }),
       mediaWorker: async () => ({ val: "depth 3", status: "ok" }),
-      ociEmail: async () => ({ val: "12 events 7d", status: "ok" }),
+      ociEmail: async () => ({ val: "12 sent in the last 7 days", status: "ok" }),
     }
     const svc = makeSystemHealthService({ probes, env: FULL_ENV })
     const { services } = await svc.health()
@@ -32,16 +31,31 @@ describe("system health assembly", () => {
     expect(row(services, "Postgres")).toMatchObject({ status: "ok", val: "5 jurisdictions" })
     expect(row(services, "Redis")).toMatchObject({ status: "ok", val: "PONG" })
     expect(row(services, "Media worker")).toMatchObject({ status: "ok", val: "depth 3" })
-    expect(row(services, "OCI Email")).toMatchObject({ status: "ok", val: "12 events 7d" })
-    expect(row(services, "GlitchTip")).toMatchObject({ status: "ok" })
-    expect(row(services, "Basemap")).toMatchObject({
+    expect(row(services, "OCI Email")).toMatchObject({
       status: "ok",
-      val: "CARTO raster (client default)",
+      val: "12 sent in the last 7 days",
     })
-    expect(row(services, "Routing (VRP)")).toEqual({
-      name: "Routing (VRP)",
-      status: "not_deployed",
-      val: "Phase 3",
+    expect(row(services, "GlitchTip")).toMatchObject({ status: "ok" })
+    expect(services.map((s) => s.name)).toEqual([
+      "API",
+      "Postgres",
+      "Redis",
+      "Media worker",
+      "OCI Email",
+      "GlitchTip",
+    ])
+    expectTypeOf<SystemHealthEnv>().not.toHaveProperty("tileCdnConfigured")
+  })
+
+  it("T42: the email row passes the sent count through under the real mailer", async () => {
+    const svc = makeSystemHealthService({
+      probes: { ociEmail: async () => ({ val: "3 sent in the last 7 days", status: "ok" }) },
+      env: FULL_ENV,
+    })
+    expect(row((await svc.health()).services, "OCI Email")).toEqual({
+      name: "OCI Email",
+      status: "ok",
+      val: "3 sent in the last 7 days",
     })
   })
 
@@ -52,7 +66,7 @@ describe("system health assembly", () => {
       },
       redis: async () => ({ val: "PONG" }),
       mediaWorker: async () => ({ val: "depth 0" }),
-      ociEmail: async () => ({ val: "0 events 7d" }),
+      ociEmail: async () => ({ val: "0 sent in the last 7 days" }),
     }
     const svc = makeSystemHealthService({ probes, env: FULL_ENV })
     const { services } = await svc.health()
@@ -154,32 +168,28 @@ describe("system health assembly", () => {
     expect(row(services, "Media worker")?.status).toBe("warn")
   })
 
-  it("OCI Email warns under the fake mailer even when the probe is ok", async () => {
+  it("T43: OCI Email warns under the fake mailer even when the probe is ok", async () => {
     const probes: SystemHealthProbes = {
-      ociEmail: async () => ({ val: "3 events 7d", status: "ok" }),
+      ociEmail: async () => ({ val: "3 sent in the last 7 days", status: "ok" }),
     }
     const svc = makeSystemHealthService({
       probes,
       env: { ...FULL_ENV, mailerIsFake: true },
     })
     const { services } = await svc.health()
-    const oci = row(services, "OCI Email")!
-    expect(oci.status).toBe("warn")
-    expect(oci.val).toContain("fake relay")
+    expect(row(services, "OCI Email")).toEqual({
+      name: "OCI Email",
+      status: "warn",
+      val: "3 sent in the last 7 days (fake relay)",
+    })
   })
 
-  it("GlitchTip / Basemap reflect configuration", async () => {
+  it("GlitchTip reflects configuration", async () => {
     const svc = makeSystemHealthService({
       probes: {},
-      env: {
-        glitchTipConfigured: false,
-        tileCdnConfigured: false,
-        mailerIsFake: false,
-        jobsIsFake: false,
-      },
+      env: { glitchTipConfigured: false, mailerIsFake: false, jobsIsFake: false },
     })
     const { services } = await svc.health()
     expect(row(services, "GlitchTip")).toMatchObject({ status: "warn", val: "Not configured" })
-    expect(row(services, "Basemap")).toMatchObject({ status: "warn", val: "No basemap source" })
   })
 })

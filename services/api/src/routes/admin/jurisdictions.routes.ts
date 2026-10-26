@@ -47,6 +47,7 @@ export async function registerAdminJurisdictionsRoutes(
   container: Container,
 ): Promise<void> {
   const csrfProtect = container.csrf.protect
+  const outreachDigestEnabled = () => container.getRuntimeFlags().get("outreach_digest_enabled")
 
   const service = overridableService(
     app,
@@ -56,7 +57,7 @@ export async function registerAdminJurisdictionsRoutes(
         repo: overrides.repo,
         jobs: overrides.jobs ?? container.jobs,
         throttleDays: overrides.throttleDays ?? container.env.OUTREACH_THROTTLE_DAYS,
-        outreachDigestEnabled: container.env.OUTREACH_DIGEST_ENABLED,
+        outreachDigestEnabled,
         ...spreadNow(overrides),
       }),
     () => {
@@ -67,7 +68,7 @@ export async function registerAdminJurisdictionsRoutes(
         repo,
         jobs: container.jobs,
         throttleDays: container.env.OUTREACH_THROTTLE_DAYS,
-        outreachDigestEnabled: container.env.OUTREACH_DIGEST_ENABLED,
+        outreachDigestEnabled,
       })
     },
   )
