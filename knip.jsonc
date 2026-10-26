@@ -48,9 +48,24 @@
       // The kit runs under node, loaded by path or through a workspace script's import, never from src.
       "entry": ["kit/**/*.mjs"],
       "project": ["src/**/*.ts", "kit/**/*.mjs", "test/**/*.ts"],
+      // tsup inlines @civfix/api (noExternal) but keeps these external, so the bundled api code
+      // resolves them from the filer's own node_modules at runtime.
       "ignoreDependencies": [
         // The kit's launch(), its browser half, imports it; the pin is here so CI's Chromium matches it.
         "playwright-core",
+        // @civfix/api/adapters/storage (R2 client)
+        "@aws-sdk/client-s3",
+        // @civfix/api/adapters/storage (presigned URLs)
+        "@aws-sdk/s3-request-presigner",
+        // @civfix/api/errors (GlitchTip reporting)
+        "@sentry/node",
+        // @civfix/api/adapters/storage (R2 request timeouts and egress proxy)
+        "@smithy/node-http-handler",
+        // @civfix/api/adapters/storage (egress proxy agent)
+        "https-proxy-agent",
+        // @civfix/api/db (the Drizzle client over postgres-js)
+        "drizzle-orm",
+        "postgres",
       ],
     },
     "packages/config": {},

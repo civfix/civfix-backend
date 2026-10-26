@@ -4,6 +4,8 @@ import { MS_PER_MINUTE } from "@civfix/api/time"
 
 export type FilerLog = (line: string, fields?: Record<string, unknown>) => void
 
+export const consoleLog: FilerLog = (line, fields) => console.log(line, fields ?? {})
+
 /** D2's org contact block: every filing is made as CivFix, never as the resident. */
 export interface FilingContact {
   firstName: string
@@ -22,15 +24,15 @@ export interface FilerConfig {
   scriptTimeoutMs: number
 }
 
-const WORKSPACE_DIR = "/workspace"
-const FILER_GROUP = "filer"
+export const WORKSPACE_DIR = "/workspace"
+export const FILER_GROUP = "filer"
 const SCRIPT_TIMEOUT_MS = 5 * MS_PER_MINUTE
 
-/** A group's id from /etc/group; null when it is not there. */
-function lookupGid(name: string): number | null {
+/** An id from /etc/passwd or /etc/group; null when the name is not there. */
+function lookupId(file: "/etc/passwd" | "/etc/group", name: string): number | null {
   let text: string
   try {
-    text = readFileSync("/etc/group", "utf8")
+    text = readFileSync(file, "utf8")
   } catch {
     return null
   }
@@ -41,7 +43,15 @@ function lookupGid(name: string): number | null {
   return null
 }
 
-function required(source: NodeJS.ProcessEnv, key: string): string {
+export function lookupUid(name: string): number | null {
+  return lookupId("/etc/passwd", name)
+}
+
+export function lookupGid(name: string): number | null {
+  return lookupId("/etc/group", name)
+}
+
+export function required(source: NodeJS.ProcessEnv, key: string): string {
   const value = (source[key] ?? "").trim()
   if (value === "") throw new Error(`city-filer: ${key} is required`)
   return value

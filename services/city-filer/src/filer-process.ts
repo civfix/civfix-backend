@@ -10,23 +10,35 @@ export interface FilerRunner {
   spawn?: typeof nodeSpawn
 }
 
+export const IMAGE_RUNNER: FilerRunner = {
+  filerShell: "/usr/local/bin/filer-shell",
+  nodeBinary: "node",
+  kitRunScript: "/app/kit/run-script.mjs",
+}
+
 export interface FilerProcessOptions {
   args: readonly string[]
-  run: { dir: string; host: string }
+  run?: { dir: string; host: string }
   timeoutMs: number
-  cwd: string
-  onStdoutLine: (line: string) => void
+  /** Empty unless given, so the wrapper's DATABASE_URL and R2 keys never reach filer-shell. */
+  env?: NodeJS.ProcessEnv
+  cwd?: string
+  onStdoutLine?: (line: string) => void
 }
 
 export interface FilerProcessResult {
   exitCode: number | null
   timedOut: boolean
+  stderrTail: string
 }
 
+const STDERR_TAIL_CHARS = 2000
 const LINE_MAX_CHARS = 4096
-// After the leader exits and its group is killed, the pipe closes at once unless a process left the
-// group holding it; the run does not wait on that one.
+// After the leader exits and its group is killed, the pipes close at once unless a process left the
+// group holding them; the run does not wait on that one.
 const PIPE_CLOSE_GRACE_MS = 2000
+
+const liveGroups = new Set<number>()
 
 function killGroup(pid: number): void {
   try {
@@ -37,30 +49,40 @@ function killGroup(pid: number): void {
   }
 }
 
+/** On shutdown: a run killed here ends as a failed attempt its handler still reports. */
+export function killAllFilerProcesses(): void {
+  for (const pid of liveGroups) killGroup(pid)
+}
+
 export function runAsFiler(
   runner: FilerRunner,
   opts: FilerProcessOptions,
 ): Promise<FilerProcessResult> {
-  const runArgs = ["--run-dir", opts.run.dir, "--host", opts.run.host]
-  // An empty env, so the wrapper's DATABASE_URL and R2 keys never reach filer-shell, which passes on
-  // only what it sets itself.
+  const runArgs = opts.run === undefined ? [] : ["--run-dir", opts.run.dir, "--host", opts.run.host]
+  // filer-shell passes on only what it sets itself; the env is empty unless a caller (the preflight)
+  // hands it its own on purpose.
   const child = (runner.spawn ?? nodeSpawn)(runner.filerShell, [...runArgs, "--", ...opts.args], {
-    env: {},
-    cwd: opts.cwd,
+    env: opts.env ?? {},
+    ...(opts.cwd !== undefined ? { cwd: opts.cwd } : {}),
     detached: true,
-    stdio: ["ignore", "pipe", "ignore"],
+    stdio: ["ignore", "pipe", "pipe"],
   })
+  let stderr = ""
   let partial = ""
   const decoder = new StringDecoder("utf8")
   child.stdout.on("data", (chunk: Buffer) => {
     const lines = (partial + decoder.write(chunk)).split("\n")
     partial = (lines.pop() ?? "").slice(-LINE_MAX_CHARS)
-    for (const line of lines) opts.onStdoutLine(line)
+    for (const line of lines) opts.onStdoutLine?.(line)
+  })
+  child.stderr.on("data", (chunk: Buffer) => {
+    stderr = (stderr + chunk.toString("utf8")).slice(-STDERR_TAIL_CHARS)
   })
 
   return new Promise((resolve, reject) => {
     let timedOut = false
     const pid = child.pid
+    if (pid !== undefined) liveGroups.add(pid)
     const timer = setTimeout(() => {
       timedOut = true
       if (pid !== undefined) killGroup(pid)
@@ -68,17 +90,22 @@ export function runAsFiler(
     const closed = new Promise<void>((done) => child.once("close", () => done()))
     child.once("error", (err) => {
       clearTimeout(timer)
+      if (pid !== undefined) liveGroups.delete(pid)
       reject(err)
     })
     child.once("exit", (code) => {
       clearTimeout(timer)
       // Whatever the script left running in its group goes with it.
-      if (pid !== undefined) killGroup(pid)
+      if (pid !== undefined) {
+        killGroup(pid)
+        liveGroups.delete(pid)
+      }
       const grace = new Promise<void>((done) => setTimeout(done, PIPE_CLOSE_GRACE_MS).unref())
       void Promise.race([closed, grace]).then(() => {
         child.stdout.destroy()
-        if (partial !== "") opts.onStdoutLine(partial)
-        resolve({ exitCode: code, timedOut })
+        child.stderr.destroy()
+        if (partial !== "") opts.onStdoutLine?.(partial)
+        resolve({ exitCode: code, timedOut, stderrTail: stderr })
       })
     })
   })
