@@ -7,6 +7,7 @@
   "type": "module",
   "packageManager": "pnpm@9.12.0",
   "pnpm": {
+    "//onlyBuiltDependencies": "The only packages allowed to run install scripts; any other dependency that ships one is skipped. esbuild (tsup, tsx, vitest) verifies and if needed fetches its platform binary; ffmpeg-static downloads the ffmpeg binary the media-worker runs outside its image (dev and tests). Skipped on purpose: ssh2 and cpu-features (optional native speedups under testcontainers, which fall back to pure JS) and protobufjs (a version notice). Add a package here only after reading its script.",
     "onlyBuiltDependencies": [
       "esbuild",
       "ffmpeg-static"
@@ -56,6 +57,8 @@
     "test": "turbo run test --continue",
     "test:coverage": "turbo run test:coverage --continue",
     "check:sql": "node scripts/check-dynamic-sql.mjs",
+    "check:licenses": "node scripts/check-licenses.mjs",
+    "test:scripts": "node --test scripts/*.test.mjs",
     "format:check": "prettier --check .",
     "knip": "knip",
     "dup:check": "jscpd",
