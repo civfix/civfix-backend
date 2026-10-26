@@ -189,14 +189,12 @@ export function makeWebPushDispatcher(
   const resolveAddresses: PushAddressResolver = webPush.resolveAddresses ?? boundedAddressResolver
 
   async function getWebPush() {
-    if (!webpushPromise) {
-      webpushPromise = (async () => {
-        const mod: unknown = await (webPush.loadModule ? webPush.loadModule() : import("web-push"))
-        const wp = toWebPushSdk(mod)
-        wp.setVapidDetails(webPush.subject, webPush.publicKey, webPush.privateKey)
-        return wp
-      })()
-    }
+    webpushPromise ??= (async () => {
+      const mod: unknown = await (webPush.loadModule ? webPush.loadModule() : import("web-push"))
+      const wp = toWebPushSdk(mod)
+      wp.setVapidDetails(webPush.subject, webPush.publicKey, webPush.privateKey)
+      return wp
+    })()
     return webpushPromise
   }
 

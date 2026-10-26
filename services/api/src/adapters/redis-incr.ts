@@ -21,9 +21,9 @@ type IncrByExpire = (key: string, by: number, ttlSeconds: number) => Promise<num
 
 type DecrFloor = (key: string, by: number) => Promise<number>
 
-type WithIncrExpire = RedisClient & {
-  [INCRBY_COMMAND_NAME]?: (key: string, by: string, ttlMs: number) => Promise<unknown>
-  [DECRBY_COMMAND_NAME]?: (key: string, by: string) => Promise<unknown>
+type CustomCommands = {
+  [INCRBY_COMMAND_NAME]: (key: string, by: string, ttlMs: number) => Promise<unknown>
+  [DECRBY_COMMAND_NAME]: (key: string, by: string) => Promise<unknown>
 }
 
 export function attachAtomicIncr(redis: RedisClient): IncrExpire {
@@ -33,14 +33,18 @@ export function attachAtomicIncr(redis: RedisClient): IncrExpire {
 
 function defineOnce(
   redis: RedisClient,
-  name: typeof INCRBY_COMMAND_NAME | typeof DECRBY_COMMAND_NAME,
+  name: keyof CustomCommands,
   lua: string,
-): WithIncrExpire {
-  const client = redis as WithIncrExpire
+): RedisClient & Partial<CustomCommands> {
+  const client = redis as RedisClient & Partial<CustomCommands>
   if (typeof client[name] !== "function") {
     redis.defineCommand(name, { numberOfKeys: 1, lua })
   }
   return client
+}
+
+function commandMissing(name: keyof CustomCommands): Error {
+  return new Error(`redis: defineCommand did not attach ${name}`)
 }
 
 function wholeAmount(by: number): string {
@@ -49,17 +53,21 @@ function wholeAmount(by: number): string {
 
 export function attachAtomicIncrBy(redis: RedisClient): IncrByExpire {
   const client = defineOnce(redis, INCRBY_COMMAND_NAME, INCRBY_EXPIRE_LUA)
+  const incrByWindow = client[INCRBY_COMMAND_NAME]?.bind(client)
+  if (incrByWindow === undefined) throw commandMissing(INCRBY_COMMAND_NAME)
   return async (key: string, by: number, ttlSeconds: number): Promise<number> => {
     const ttlMs = Math.max(1, Math.ceil(ttlSeconds)) * MS_PER_SECOND
-    const result = await client[INCRBY_COMMAND_NAME]!(key, wholeAmount(by), ttlMs)
+    const result = await incrByWindow(key, wholeAmount(by), ttlMs)
     return Number(result)
   }
 }
 
 export function attachAtomicDecrBy(redis: RedisClient): DecrFloor {
   const client = defineOnce(redis, DECRBY_COMMAND_NAME, DECRBY_FLOOR_LUA)
+  const decrByFloor = client[DECRBY_COMMAND_NAME]?.bind(client)
+  if (decrByFloor === undefined) throw commandMissing(DECRBY_COMMAND_NAME)
   return async (key: string, by: number): Promise<number> => {
-    const result = await client[DECRBY_COMMAND_NAME]!(key, wholeAmount(by))
+    const result = await decrByFloor(key, wholeAmount(by))
     return Number(result)
   }
 }

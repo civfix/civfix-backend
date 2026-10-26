@@ -1,3 +1,4 @@
+import { requireRow } from "../db/rows.js"
 import type { Queryable } from "../db/client.js"
 
 /**
@@ -20,5 +21,5 @@ export async function allocateNextSeqIn(q: Queryable, scopeKey: string): Promise
       SET next_val = reference_counters.next_val + 1
     RETURNING next_val
   `
-  return Number(rows[0]!.next_val)
+  return Number(requireRow(rows, "reference counter upsert").next_val)
 }

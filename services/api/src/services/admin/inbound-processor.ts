@@ -1,3 +1,4 @@
+import { firstNonEmpty } from "../../lib/text.js"
 import type { Container } from "../../di.js"
 import type { InboundMail, ParsedMail, Storage } from "@civfix/seams"
 import type { MailAttachment } from "@civfix/contract"
@@ -367,7 +368,8 @@ async function routeInbox(
       .map((a) => a.address)
       .filter((a) => a.length > 0)
       .join(", ") || null
-  const claimedFrom = mail.headers["from"]?.slice(0, INBOUND_HEADER_VALUE_MAX_CHARS) || null
+  const claimedFrom =
+    firstNonEmpty(mail.headers["from"]?.slice(0, INBOUND_HEADER_VALUE_MAX_CHARS)) ?? null
   const { id, inserted } = await inboundRepo.insertIdempotent({
     messageId,
     fromAddr: mail.from?.address ?? claimedFrom,

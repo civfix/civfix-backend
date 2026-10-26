@@ -28,6 +28,21 @@ export function typed(parserOptions) {
       ],
       "@typescript-eslint/no-unnecessary-type-assertion": "error",
       "@typescript-eslint/no-deprecated": "error",
+      "@typescript-eslint/no-unsafe-enum-comparison": "error",
+      "@typescript-eslint/no-misused-spread": "error",
+      "@typescript-eslint/no-dynamic-delete": "error",
+      "@typescript-eslint/prefer-nullish-coalescing": "error",
+      "@typescript-eslint/restrict-plus-operands": [
+        "error",
+        {
+          allowAny: false,
+          allowBoolean: false,
+          allowNullish: false,
+          allowNumberAndString: false,
+          allowRegExp: false,
+        },
+      ],
+      "@typescript-eslint/use-unknown-in-catch-callback-variable": "error",
     },
   }
 }
@@ -97,6 +112,7 @@ export function config(...extra) {
         "@typescript-eslint/no-unsafe-call": "error",
         "@typescript-eslint/no-unsafe-member-access": "error",
         "@typescript-eslint/no-unsafe-return": "error",
+        "@typescript-eslint/no-non-null-assertion": "error",
       },
     },
     ...extra,

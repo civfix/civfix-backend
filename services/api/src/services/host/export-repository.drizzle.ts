@@ -1,3 +1,4 @@
+import { requireRow } from "../../db/rows.js"
 import type { HostExportKind, HostExportStatus } from "@civfix/contract"
 import type { Sql } from "../../db/client.js"
 import { insertAuditRow } from "../admin/audit-repository.drizzle.js"
@@ -65,7 +66,7 @@ export function makeDrizzleHostExportRepository(sql: Sql): HostExportRepository 
           RETURNING id, cleanup_id, organization_id, requested_by, kind, filters, status, r2_key,
                     row_count, byte_size, truncated, error_code, run_token, requested_at,
                     started_at, completed_at, expires_at`
-        const record = toRecord(rows[0]!)
+        const record = toRecord(requireRow(rows, "host export insert"))
         if (audit !== undefined) await insertAuditRow(tx, audit(record.id))
         return record
       })

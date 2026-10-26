@@ -31,14 +31,7 @@ function resolvedSubprocess(result: Record<string, unknown>, pid?: number): unkn
 
 const SECRET_KEYS = ["DATABASE_URL", "R2_SECRET_ACCESS_KEY", "CF_TURNSTILE_SECRET", "GLITCHTIP_DSN"]
 
-function envSnapshot(): NodeJS.ProcessEnv {
-  return { ...process.env }
-}
-
-let saved: NodeJS.ProcessEnv
-
 beforeEach(() => {
-  saved = envSnapshot()
   execaMock.mockReset()
   execaMock.mockResolvedValue({
     stdout: "",
@@ -52,8 +45,7 @@ beforeEach(() => {
 })
 
 afterEach(() => {
-  for (const key of Object.keys(process.env)) if (!(key in saved)) delete process.env[key]
-  Object.assign(process.env, saved)
+  vi.unstubAllEnvs()
   resetSandboxIdentity()
   resetMediaToolPaths()
 })
@@ -73,10 +65,10 @@ async function spawnOptions(): Promise<Record<string, unknown>> {
 
 describe("H7: the decoder child inherits nothing", () => {
   it("spawns with extendEnv:false and an env carrying no credentials", async () => {
-    process.env.DATABASE_URL = "postgres://user:pw@db/civfix"
+    vi.stubEnv("DATABASE_URL", "postgres://user:pw@db/civfix")
     process.env.R2_SECRET_ACCESS_KEY = "super-secret"
-    process.env.CF_TURNSTILE_SECRET = "turnstile"
-    process.env.GLITCHTIP_DSN = "https://dsn"
+    vi.stubEnv("CF_TURNSTILE_SECRET", "turnstile")
+    vi.stubEnv("GLITCHTIP_DSN", "https://dsn")
 
     const opts = await spawnOptions()
 
@@ -97,8 +89,8 @@ describe("H7: the decoder child inherits nothing", () => {
   })
 
   it("B1: launches the decoder through setpriv, never through spawn's uid/gid", async () => {
-    process.env.MEDIA_SANDBOX_UID = "1001"
-    process.env.MEDIA_SANDBOX_GID = "1001"
+    vi.stubEnv("MEDIA_SANDBOX_UID", "1001")
+    vi.stubEnv("MEDIA_SANDBOX_GID", "1001")
     resetSandboxIdentity()
 
     const [command, argv, opts] = await spawnCall()
@@ -123,8 +115,8 @@ describe("H7: the decoder child inherits nothing", () => {
   })
 
   it("spawns the binary directly when no sandbox identity is configured (dev/darwin)", async () => {
-    delete process.env.MEDIA_SANDBOX_UID
-    delete process.env.MEDIA_SANDBOX_GID
+    vi.stubEnv("MEDIA_SANDBOX_UID", undefined)
+    vi.stubEnv("MEDIA_SANDBOX_GID", undefined)
     resetSandboxIdentity()
 
     const [command, argv, opts] = await spawnCall()

@@ -1,3 +1,4 @@
+import { requireRow } from "../db/rows.js"
 import { AppError, avatarGradient } from "@civfix/contract"
 import type {
   LinkedEventRef,
@@ -302,8 +303,9 @@ function assemblePost(r: PostRowSelect, lookups: PostLookups): PostDTO | null {
   const author = lookups.authors.get(r.author_id)
   if (!author) return null
   const { refs, counts: refCounts } = lookups.loadedRefs
-  const isRepost = r.kind === "repost" && r.repost_of_id !== null
-  const targetId = isRepost ? r.repost_of_id! : r.id
+  const repostTargetId = r.kind === "repost" ? r.repost_of_id : null
+  const isRepost = repostTargetId !== null
+  const targetId = repostTargetId ?? r.id
   const editedAt =
     r.updated_at.getTime() > r.created_at.getTime() ? r.updated_at.toISOString() : null
   const eventBase = r.event_id !== null ? lookups.events.get(r.event_id) : undefined
@@ -1041,7 +1043,7 @@ export function makeDrizzlePostRepository(sql: Sql, deps: PostRepoDeps): PostRep
           )
           RETURNING id
         `
-        const postId = inserted[0]!.id
+        const postId = requireRow(inserted, "post insert").id
 
         if (args.mediaUploadIds.length > 0) {
           await lockUploadsForClaimIn(tx, args.mediaUploadIds)

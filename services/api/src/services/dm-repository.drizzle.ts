@@ -1,3 +1,4 @@
+import { requireRow } from "../db/rows.js"
 import type { Queryable, Sql } from "../db/client.js"
 import { publicAuthorIdentity } from "./public-author.js"
 import type {
@@ -207,7 +208,7 @@ export function makeDrizzleDmRepository(
       const existing = await sql<{ id: string; created_at: Date }[]>`
         SELECT id, created_at FROM dm_threads WHERE user_lo = ${lo} AND user_hi = ${hi} LIMIT 1
       `
-      const row = existing[0]!
+      const row = requireRow(existing, "dm thread lookup after insert conflict")
       return { id: row.id, userLo: lo, userHi: hi, createdAt: row.created_at }
     },
 
@@ -268,23 +269,19 @@ export function makeDrizzleDmRepository(
       const rows = wantsMedia
         ? await sql.begin(async (tx) => {
             const inserted = await run(tx)
-            await attachChatMedia(
-              tx,
-              inserted[0]!.id,
-              uploadIds,
-              inserted[0]!.created_at,
-              input.senderId,
-            )
+            const message = requireRow(inserted, "dm message insert")
+            await attachChatMedia(tx, message.id, uploadIds, message.created_at, input.senderId)
             return inserted
           })
         : await run(sql)
-      const messageId = rows[0]!.id
+      const row = requireRow(rows, "dm message insert")
+      const messageId = row.id
       const attachments = wantsMedia
         ? ((await loadChatAttachments(sql, [messageId], presign, input.senderId)).get(messageId) ??
           [])
         : []
       await withSenderAvatars(rows)
-      return toMessageDTO(rows[0]!, {
+      return toMessageDTO(row, {
         viewerUserId: input.senderId,
         clientId: input.clientId,
         attachments,
@@ -530,8 +527,8 @@ export function makeDrizzleDmRepository(
             deleted: identity.deleted,
           },
           last:
-            r.last_created_at !== null
-              ? { body: r.last_body, createdAt: r.last_created_at, senderId: r.last_sender_id! }
+            r.last_created_at !== null && r.last_sender_id !== null
+              ? { body: r.last_body, createdAt: r.last_created_at, senderId: r.last_sender_id }
               : null,
           unread: Number(r.unread),
         }

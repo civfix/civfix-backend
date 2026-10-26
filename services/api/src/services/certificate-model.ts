@@ -1,3 +1,4 @@
+import { firstNonEmpty } from "../lib/text.js"
 import { MAX_CERTIFICATE_ENTRIES } from "@civfix/contract"
 import type { VolunteerHoursSource } from "@civfix/contract"
 import { resolveLocale } from "../i18n/locales.js"
@@ -128,13 +129,13 @@ function activityLabel(row: TranscriptLedgerRow, t: CertificateTranslator): stri
     case "manual":
       return t("certificate.activity.manual")
     case "event":
-      return row.eventTitle?.trim() || row.eventReferenceCode?.trim() || EMPTY_VALUE
+      return firstNonEmpty(row.eventTitle?.trim(), row.eventReferenceCode?.trim()) ?? EMPTY_VALUE
   }
 }
 
 function creditedByLabel(row: TranscriptLedgerRow, t: CertificateTranslator): string {
   if (row.source === "report") return t("certificate.credited_by.automatic")
-  return row.creditedByName?.trim() || t("certificate.credited_by.automatic")
+  return firstNonEmpty(row.creditedByName?.trim()) ?? t("certificate.credited_by.automatic")
 }
 
 export function buildTranscriptModel(input: BuildTranscriptModelInput): TranscriptModel {
@@ -153,7 +154,7 @@ export function buildTranscriptModel(input: BuildTranscriptModelInput): Transcri
 
   const rows: TranscriptModelRow[] = included.map((row) => {
     const occurredAt = toIso(row.occurredAt)
-    const community = row.jurisdictionName?.trim() || EMPTY_VALUE
+    const community = firstNonEmpty(row.jurisdictionName?.trim()) ?? EMPTY_VALUE
     return {
       id: row.id,
       source: row.source,

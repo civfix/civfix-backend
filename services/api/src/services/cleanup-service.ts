@@ -750,7 +750,7 @@ export function makeCleanupService(deps: CleanupServiceDeps): CleanupService {
         patch.scheduledAt !== undefined
           ? new Date(patch.scheduledAt)
           : (current?.scheduledAt ?? new Date(0)),
-      endsAt: write.endsAt !== undefined ? write.endsAt : (current?.endsAt ?? null),
+      endsAt: write.endsAt ?? current?.endsAt ?? null,
       registrationOpensAt:
         write.registrationOpensAt !== undefined
           ? write.registrationOpensAt

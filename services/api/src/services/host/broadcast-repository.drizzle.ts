@@ -1,3 +1,4 @@
+import { requireRow } from "../../db/rows.js"
 import { ANNOUNCEMENT_BROADCAST_KIND } from "@civfix/contract"
 import type {
   BroadcastChannel,
@@ -202,7 +203,7 @@ export function makeDrizzleBroadcastRepository(sql: Sql): BroadcastRepository {
           ${input.startedAt ?? null}, ${input.chunkSize ?? DEFAULT_BROADCAST_CHUNK_SIZE}
         )
         RETURNING ${broadcastColumns(sql)}`
-    return toRecord(rows[0]!)
+    return toRecord(requireRow(rows, "broadcast insert"))
   }
 
   return {
