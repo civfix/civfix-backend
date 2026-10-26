@@ -69,8 +69,8 @@ importers:
   packages/seams:
     dependencies:
       '@civfix/contract':
-        specifier: 0.68.0-b-feat-legal-contract-api.gda06526
-        version: 0.68.0-b-feat-legal-contract-api.gda06526
+        specifier: 0.68.0-b-integration-legal-versions.gfd6ad6b
+        version: 0.68.0-b-integration-legal-versions.gfd6ad6b
     devDependencies:
       '@civfix/config':
         specifier: workspace:*
@@ -100,8 +100,8 @@ importers:
         specifier: ^3.1147.0
         version: 3.1147.0
       '@civfix/contract':
-        specifier: 0.68.0-b-feat-legal-contract-api.gda06526
-        version: 0.68.0-b-feat-legal-contract-api.gda06526
+        specifier: 0.68.0-b-integration-legal-versions.gfd6ad6b
+        version: 0.68.0-b-integration-legal-versions.gfd6ad6b
       '@civfix/tokens':
         specifier: ^0.1.0
         version: 0.1.0
@@ -251,8 +251,8 @@ importers:
         specifier: workspace:*
         version: link:../api
       '@civfix/contract':
-        specifier: 0.68.0-b-feat-legal-contract-api.gda06526
-        version: 0.68.0-b-feat-legal-contract-api.gda06526
+        specifier: 0.68.0-b-integration-legal-versions.gfd6ad6b
+        version: 0.68.0-b-integration-legal-versions.gfd6ad6b
       '@sentry/node':
         specifier: ^10.76.1
         version: 10.76.1(@opentelemetry/core@2.12.0(@opentelemetry/api@1.9.1))
@@ -408,8 +408,8 @@ packages:
   '@balena/dockerignore@1.0.2':
     resolution: {integrity: sha512-wMue2Sy4GAVTk6Ic4tJVcnfdau+gx2EnG7S+uAEe+TWJFqE4YoWN4/H8MSLj4eYJKxGg26lZwboEniNiNwZQ6Q==}
 
-  '@civfix/contract@0.68.0-b-feat-legal-contract-api.gda06526':
-    resolution: {integrity: sha512-oIu6oquwQcE1scM3Se/9SRq4OKxWxNexnQ1KGGXUfaA4lDYOlcEpptyEKdhrsuQyMLE96FFxXpxD3FReMajPrQ==}
+  '@civfix/contract@0.68.0-b-integration-legal-versions.gfd6ad6b':
+    resolution: {integrity: sha512-G5etx4Xg878gzkQochVAa/EY1a+dEWt3Tj70cBiqqQshUovVWy9ZVWHTylYHq6G1jxi9cFZm50bxSFvkXxeRPQ==}
     engines: {node: '>=20'}
 
   '@civfix/tokens@0.1.0':
@@ -4508,7 +4508,7 @@ snapshots:
 
   '@balena/dockerignore@1.0.2': {}
 
-  '@civfix/contract@0.68.0-b-feat-legal-contract-api.gda06526':
+  '@civfix/contract@0.68.0-b-integration-legal-versions.gfd6ad6b':
     dependencies:
       zod: 4.6.7
 
