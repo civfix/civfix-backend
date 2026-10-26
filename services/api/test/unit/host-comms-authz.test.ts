@@ -1,6 +1,13 @@
 import { afterEach, describe, expect, it } from "vitest"
 import { randomUUID } from "node:crypto"
-import type { CleanupMemberRole, EventVisibility, OrganizationMemberRole } from "@civfix/contract"
+import type {
+  CleanupMemberRole,
+  EventInsights,
+  EventVisibility,
+  HostAnalyticsSummaryResponse,
+  HostedEventsAnalyticsResponse,
+  OrganizationMemberRole,
+} from "@civfix/contract"
 import { endpoints, versionedPath } from "@civfix/contract/client"
 import { FakeMailer } from "@civfix/seams"
 import { InMemoryCounterStore } from "../../src/abuse/counter-store.js"
@@ -149,16 +156,85 @@ function exportService(records: Map<string, HostExportRecord>): HostExportServic
   }
 }
 
-// Only the methods the routes under test reach; the refusals under test happen before any of them.
+const GENERATED_AT = "2026-09-01T00:00:00.000Z"
+const NO_RATE = { value: null, numerator: null, denominator: null, suppressed: false }
+const EMPTY_PANEL = { panelSuppressed: false, rows: [] }
+
+const INSIGHTS: EventInsights = {
+  generatedAt: GENERATED_AT,
+  phase: "upcoming",
+  clock: {
+    status: "upcoming",
+    startsAt: GENERATED_AT,
+    endsAt: null,
+    completedAt: null,
+    registrationClosesAt: null,
+    timezone: "America/Los_Angeles",
+  },
+  seats: {
+    registered: 0,
+    capacity: null,
+    waitlisted: 0,
+    cancelled: 0,
+    checkedIn: 0,
+    noShow: 0,
+    unmarked: 0,
+  },
+  registrationTrend: [],
+  byTicketType: [],
+  bySource: [],
+  broadcasts: [],
+  arrivals: [],
+  hours: { credited: 0, attendeesCredited: 0, attendeesCheckedIn: 0 },
+  topVolunteers: [],
+  returning: null,
+}
+
+const PORTFOLIO: HostedEventsAnalyticsResponse = {
+  generatedAt: GENERATED_AT,
+  range: "30d",
+  k: 5,
+  totals: { events: 0, registrations: 0, checkIns: 0, uniqueAttendees: 0 },
+  series: [],
+  byEvent: EMPTY_PANEL,
+  repeatAttendance: NO_RATE,
+  averageCheckInRate: NO_RATE,
+  bestDayTime: null,
+  topVolunteers: [],
+}
+
+const SUMMARY: HostAnalyticsSummaryResponse = {
+  generatedAt: GENERATED_AT,
+  range: "30d",
+  k: 5,
+  window: { from: "2026-08-02", to: "2026-09-01" },
+  activity: {
+    signups: 0,
+    cancellations: 0,
+    hoursTotal: 0,
+    hoursVolunteers: 0,
+    reportsLinked: 0,
+    reportsResolved: 0,
+    postsCreated: 0,
+    donationClicks: 0,
+  },
+  eventsHeld: { count: 0, registered: 0, checkIns: 0, noShows: 0, checkInRate: NO_RATE },
+  totals: { events: 0 },
+  signupsDaily: [],
+  byEvent: EMPTY_PANEL,
+  hoursByEvent: EMPTY_PANEL,
+}
+
+// Only the methods the routes under test reach. The event-analytics reads are only ever refused here.
 function analyticsOverrides(): HostAnalyticsOverrides {
   return {
     analytics: {
-      overview: () => Promise.resolve({ stub: "overview" }),
-      portfolio: () => Promise.resolve({ stub: "portfolio" }),
-      summary: () => Promise.resolve({ stub: "summary" }),
+      overview: () => Promise.reject(new Error("unused")),
+      portfolio: () => Promise.resolve(PORTFOLIO),
+      summary: () => Promise.resolve(SUMMARY),
     },
-    eventAnalytics: { analytics: () => Promise.resolve({ stub: "analytics" }) },
-    insights: { insights: () => Promise.resolve({ stub: "insights" }) },
+    eventAnalytics: { analytics: () => Promise.reject(new Error("unused")) },
+    insights: { insights: () => Promise.resolve(INSIGHTS) },
   } as unknown as HostAnalyticsOverrides
 }
 

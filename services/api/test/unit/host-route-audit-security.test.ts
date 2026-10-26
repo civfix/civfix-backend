@@ -231,13 +231,20 @@ describe("host export request and its audit row", () => {
 
 describe("host broadcast send when the audit write fails", () => {
   it("still answers the send and logs the lost audit row at warn", async () => {
-    const sent = {
+    const sent: BroadcastDTO = {
       id: BROADCAST_ID,
       cleanupId: EVENT,
+      kind: "host_broadcast",
+      status: "sending",
       segment: { kind: "all_registered" },
       channels: ["email"],
       subject: "Bring gloves",
-    } as unknown as BroadcastDTO
+      recipientCount: 0,
+      sentCount: 0,
+      failedCount: 0,
+      suppressedCount: 0,
+      createdAt: "2026-09-01T00:00:00.000Z",
+    }
     const runtime = {
       broadcasts: { send: () => Promise.resolve(sent) },
     } as unknown as CommsRuntime
