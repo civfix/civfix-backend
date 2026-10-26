@@ -596,4 +596,28 @@ describe.skipIf(!pg)("city filing (integration)", () => {
       photos: [0, 1, 2, 5, 6].map((i, n) => ({ servedKey: images[n], byteSize: 1000 + i })),
     })
   })
+
+  it("T34: isReportFileable is true for a published report and false once it is rejected, deleted or verdict-rejected, or for an unknown filing", async () => {
+    const j = await jurisdiction()
+    const id = await report(j.geoid)
+    const [f] = await h.sql<{ id: string }[]>`
+      INSERT INTO report_filings (report_id, geoid, category, route_category, channel, portal_host,
+                                  form_url, status, ticket_text)
+      VALUES (${id}, ${j.geoid}, 'graffiti', NULL, 'portal', 'myla311.lacity.gov',
+              'https://myla311.lacity.gov/s/', 'running', 'Tagged wall ticket')
+      RETURNING id
+    `
+    const worker = makeFilingsWorker(h.sql)
+    const fileable = () => worker.isReportFileable(f!.id)
+    const answers = [await fileable()]
+    await h.sql`UPDATE reports SET status = 'rejected' WHERE id = ${id}`
+    answers.push(await fileable())
+    await h.sql`UPDATE reports SET status = 'published', deleted_at = now() WHERE id = ${id}`
+    answers.push(await fileable())
+    await h.sql`UPDATE reports SET deleted_at = NULL, verification_verdict = 'rejected' WHERE id = ${id}`
+    answers.push(await fileable())
+    answers.push(await worker.isReportFileable(randomUUID()))
+
+    expect(answers).toEqual([true, false, false, false, false])
+  })
 })

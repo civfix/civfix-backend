@@ -56,7 +56,7 @@ describe("startBackgroundJobs", () => {
     expect(registerOutreachJobs).toHaveBeenCalledWith(container, log)
   })
 
-  it("C35: schedules filing.sweep every 10 minutes and works it with one sweep pass; filing.email is worked by its handler and no other filing queue has a worker", async () => {
+  it("C35: schedules filing.sweep every 10 minutes and works it with one sweep pass; filing.email is worked by its handler, filing.result has a worker and no other filing queue does", async () => {
     const jobs = Object.assign(new FakeJobs(), { start: vi.fn(() => Promise.resolve()) })
     const log = { info: vi.fn(), warn: vi.fn(), error: vi.fn() }
     const app = { container: { jobs }, log } as unknown as FastifyInstance
@@ -74,7 +74,7 @@ describe("startBackgroundJobs", () => {
     expect(jobs.jobsFor("filing.email")[0]?.state).toBe("completed")
     expect(filingEmail).toHaveBeenCalledWith(expect.objectContaining({ data: { filingId: "f-1" } }))
 
-    for (const name of ["filing.run", "filing.result", "filing.classify", "filing.city_update"]) {
+    for (const name of ["filing.run", "filing.classify", "filing.city_update"]) {
       await jobs.enqueue(name, {})
       expect(jobs.jobsFor(name)[0]?.state, name).toBe("created")
     }

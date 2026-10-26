@@ -310,6 +310,7 @@ async function updateToSuccess(
   const attempts =
     input.from.attempts === undefined ? tx`` : tx`AND attempts = ${input.from.attempts}`
   const reason = input.from.reason === undefined ? tx`` : tx`AND reason = ${input.from.reason}`
+  const runId = input.from.runId === undefined ? tx`` : tx`AND run_id = ${input.from.runId}`
   const [row] = await tx<FilingRow[]>`
     WITH f AS (
       UPDATE report_filings
@@ -317,6 +318,7 @@ async function updateToSuccess(
       WHERE id = ${input.filingId}
         AND status = ANY(${[...input.from.status]}::text[])
         ${attempts}
+        ${runId}
         ${reason}
       RETURNING *
     )
@@ -415,10 +417,11 @@ export function makeDrizzleFilingRepository(sql: Sql): FilingRepository {
     async transition(id, input) {
       return sql.begin(async (tx) => {
         const attempts = input.attempts === undefined ? tx`` : tx`AND attempts = ${input.attempts}`
+        const runId = input.runId === undefined ? tx`` : tx`AND run_id = ${input.runId}`
         const [row] = await tx<FilingRow[]>`
           WITH f AS (
             UPDATE report_filings SET ${setList(tx, input.set)}
-            WHERE id = ${id} AND status = ANY(${[...input.from]}::text[]) ${attempts}
+            WHERE id = ${id} AND status = ANY(${[...input.from]}::text[]) ${attempts} ${runId}
             RETURNING *
           )
           ${selectFilings(tx, tx`f`)}

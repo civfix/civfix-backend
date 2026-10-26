@@ -10,7 +10,7 @@
 //      under drizzle-orm) do NOT trip the guard -- those are optional peers, never resolved here. This
 //      makes Check 1 the lockfile equivalent of `pnpm why react react-native react-native-web -> not
 //      found`.
-//   2. services/api and services/media-worker package.json must not list react / react-dom /
+//   2. services/api, services/media-worker and services/city-filer package.json must not list react / react-dom /
 //      react-native in dependencies or devDependencies.
 //
 // Run: node scripts/assert-no-frontend.mjs  (exit 0 = clean, exit 1 = leak found).
@@ -67,7 +67,11 @@ for (const { name, re } of BANNED_LOCKFILE_PACKAGES) {
 }
 
 const BANNED_MANIFEST_DEPS = ["react", "react-dom", "react-native"]
-const SERVICE_MANIFESTS = ["services/api/package.json", "services/media-worker/package.json"]
+const SERVICE_MANIFESTS = [
+  "services/api/package.json",
+  "services/media-worker/package.json",
+  "services/city-filer/package.json",
+]
 
 for (const rel of SERVICE_MANIFESTS) {
   const manifestPath = join(repoRoot, rel)
