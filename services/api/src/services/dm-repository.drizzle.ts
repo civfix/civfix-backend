@@ -1,4 +1,3 @@
-import { requireRow } from "../db/rows.js"
 import type { Queryable, Sql } from "../db/client.js"
 import { publicAuthorIdentity } from "./public-author.js"
 import type {
@@ -43,6 +42,7 @@ import type {
   DmThread,
   DmThreadAggregate,
 } from "./dm-repository.js"
+import { requireRow } from "../db/rows.js"
 
 // dm_messages is range-partitioned on created_at and an ack carries only the message id, so the bound
 // lets the planner prune the lookup to recent partitions instead of probing every month ever created.

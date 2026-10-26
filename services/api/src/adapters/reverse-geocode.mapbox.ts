@@ -9,10 +9,10 @@
  * returned; anything coarser goes to the next provider.
  */
 
-import { firstNonEmpty } from "../lib/text.js"
 import type { AddressPrecision } from "@civfix/contract"
 import type { ReverseGeocode, ReverseResult } from "./reverse-geocode.chain.js"
 import { fetchJsonOrNull } from "./http-fetch.js"
+import { firstNonEmpty } from "../lib/text.js"
 
 const MAPBOX_REVERSE_URL = "https://api.mapbox.com/search/geocode/v6/reverse"
 const DEFAULT_TIMEOUT_MS = 4000

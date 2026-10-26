@@ -1,4 +1,3 @@
-import { requireRow } from "../db/rows.js"
 import type { Sql } from "../db/client.js"
 import {
   ReportStatusSchema,
@@ -16,6 +15,7 @@ import type {
   ReportChatRepository,
   ReportChatRole,
 } from "./report-chat-repository.js"
+import { requireRow } from "../db/rows.js"
 
 type ChatSystemPayload = NonNullable<NonNullable<ChatMessageDTO["system"]>>
 type ReportSystemStatus = ChatSystemPayload["status"]

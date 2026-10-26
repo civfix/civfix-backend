@@ -1,9 +1,9 @@
-import { firstNonEmpty } from "../lib/text.js"
 import { MAX_CERTIFICATE_ENTRIES } from "@civfix/contract"
 import type { VolunteerHoursSource } from "@civfix/contract"
 import { resolveLocale } from "../i18n/locales.js"
 import { sha256HexSync } from "../lib/hash.js"
 import { renderMessage } from "../i18n/renderMessage.js"
+import { firstNonEmpty } from "../lib/text.js"
 
 export const CERTIFICATE_TIME_ZONE = "America/Los_Angeles"
 

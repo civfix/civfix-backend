@@ -1,4 +1,3 @@
-import { requireRow } from "../db/rows.js"
 import { AppError, avatarGradient } from "@civfix/contract"
 import type {
   LinkedEventRef,
@@ -62,6 +61,7 @@ import type {
   RepliesPage,
   ReplyListArgs,
 } from "./post-repository.js"
+import { requireRow } from "../db/rows.js"
 
 export const POSTS_DEFAULT_LIMIT = 20
 

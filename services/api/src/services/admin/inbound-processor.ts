@@ -1,4 +1,3 @@
-import { firstNonEmpty } from "../../lib/text.js"
 import type { Container } from "../../di.js"
 import type { InboundMail, ParsedMail, Storage } from "@civfix/seams"
 import type { MailAttachment } from "@civfix/contract"
@@ -38,6 +37,7 @@ import { htmlToText } from "./mail-preview.js"
 import { ATTACHMENT_FILENAME_MAX_CHARS, safeFilenameChars } from "../../lib/filename.js"
 import { sha256HexSync } from "../../lib/hash.js"
 import { passThroughRejection, settleWithin } from "../../lib/timeout.js"
+import { firstNonEmpty } from "../../lib/text.js"
 
 export { detectBounce, resolveMessageId }
 

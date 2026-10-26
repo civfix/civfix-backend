@@ -1,4 +1,3 @@
-import { requireRow } from "../db/rows.js"
 import type { Sql, SqlFragment } from "../db/client.js"
 import {
   keysetInstant,
@@ -18,6 +17,7 @@ import type {
 import { DEFAULT_PREFS, FEED_HIDDEN_NOTIFICATION_TYPES } from "./notification-service.js"
 import { AppError } from "@civfix/contract"
 import type { NotificationType, PushPlatform } from "@civfix/contract"
+import { requireRow } from "../db/rows.js"
 
 const QUIET_TIME_RE = /^([01]\d|2[0-3]):[0-5]\d(:[0-5]\d)?$/
 

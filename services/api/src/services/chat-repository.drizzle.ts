@@ -1,4 +1,3 @@
-import { requireRow } from "../db/rows.js"
 import type { Queryable, Sql } from "../db/client.js"
 import type {
   ChatMessageDTO,
@@ -39,6 +38,7 @@ import type {
   InsertMessageOptions,
   SoftDeleteOpts,
 } from "./chat-repository.js"
+import { requireRow } from "../db/rows.js"
 
 export interface ReportCityContext {
   geoid: string

@@ -1,4 +1,3 @@
-import { requireRow } from "../db/rows.js"
 import type postgres from "postgres"
 import { AppError, OPEN_REPORT_STATUSES } from "@civfix/contract"
 import type {
@@ -60,6 +59,7 @@ import {
 } from "./report-sql.js"
 import { touchUserActivity } from "../db/sql/user-activity.js"
 import { isUniqueViolation } from "../db/pg-errors.js"
+import { requireRow } from "../db/rows.js"
 
 const REPORT_SEARCH_MIN_QUERY_LENGTH = 3
 

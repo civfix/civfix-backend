@@ -1,4 +1,3 @@
-import { requireRow } from "../../db/rows.js"
 import { ANNOUNCEMENT_BROADCAST_KIND } from "@civfix/contract"
 import type {
   BroadcastChannel,
@@ -45,6 +44,7 @@ import type {
   MemberContact,
 } from "./broadcast-types.js"
 import { ANNOUNCEMENT_VISIBLE_STATUSES, DEFAULT_BROADCAST_CHUNK_SIZE } from "./broadcast-types.js"
+import { requireRow } from "../../db/rows.js"
 
 interface BroadcastRowSelect {
   id: string

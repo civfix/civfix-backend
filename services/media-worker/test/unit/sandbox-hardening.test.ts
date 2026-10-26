@@ -66,7 +66,7 @@ async function spawnOptions(): Promise<Record<string, unknown>> {
 describe("H7: the decoder child inherits nothing", () => {
   it("spawns with extendEnv:false and an env carrying no credentials", async () => {
     vi.stubEnv("DATABASE_URL", "postgres://user:pw@db/civfix")
-    process.env.R2_SECRET_ACCESS_KEY = "super-secret"
+    vi.stubEnv("R2_SECRET_ACCESS_KEY", "super-secret")
     vi.stubEnv("CF_TURNSTILE_SECRET", "turnstile")
     vi.stubEnv("GLITCHTIP_DSN", "https://dsn")
 

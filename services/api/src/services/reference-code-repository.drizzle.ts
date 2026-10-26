@@ -1,5 +1,5 @@
-import { requireRow } from "../db/rows.js"
 import type { Queryable } from "../db/client.js"
+import { requireRow } from "../db/rows.js"
 
 /**
  * A plain SELECT that takes no row lock, so it cannot disturb the allocator's lock order wherever it is

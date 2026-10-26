@@ -1,4 +1,3 @@
-import { requireRow } from "../db/rows.js"
 import type { Sql } from "../db/client.js"
 import type { MediaDTO, MediaKind, MediaStatus } from "@civfix/contract"
 import type { ChatGroupKind, ChatGroupVisibility } from "../db/schema/chat_groups.js"
@@ -20,6 +19,7 @@ import type {
   GroupRoomAccess,
   UpdateChatGroupPatch,
 } from "./chat-group-repository.js"
+import { requireRow } from "../db/rows.js"
 
 export const GROUP_MEMBER_SCAN_CAP = 2000
 

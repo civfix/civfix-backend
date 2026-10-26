@@ -1,4 +1,3 @@
-import { requireRow } from "../../db/rows.js"
 import type { HostExportKind, HostExportStatus } from "@civfix/contract"
 import type { Sql } from "../../db/client.js"
 import { insertAuditRow } from "../admin/audit-repository.drizzle.js"
@@ -10,6 +9,7 @@ import type {
   HostExportRosterRow,
   HostExportRowsRepository,
 } from "./export-repository.js"
+import { requireRow } from "../../db/rows.js"
 
 interface RowSelect {
   id: string

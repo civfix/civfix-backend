@@ -16,7 +16,6 @@
  * winner's document must be returned.
  */
 
-import { requireRow } from "../db/rows.js"
 import type { Sql } from "../db/client.js"
 import { CertificateConflictError, type CertificateConflictKind } from "./certificate-service.js"
 import type {
@@ -28,6 +27,7 @@ import type {
   CertificateVerifyRow,
 } from "./certificate-repository.js"
 import { PG_UNIQUE_VIOLATION } from "../db/pg-errors.js"
+import { requireRow } from "../db/rows.js"
 
 /** The partial `(user_id, ledger_fingerprint) WHERE revoked_at IS NULL` index (0064). */
 const FINGERPRINT_INDEX = "service_hours_certificates_live_fp_uidx"

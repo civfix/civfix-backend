@@ -20,10 +20,10 @@
  * loss the reader can even perceive.
  */
 
-import { firstNonEmpty } from "../lib/text.js"
 import type { AddressPrecision } from "@civfix/contract"
 import type { ReverseGeocode, ReverseResult } from "./reverse-geocode.chain.js"
 import { fetchJsonOrNull } from "./http-fetch.js"
+import { firstNonEmpty } from "../lib/text.js"
 
 const PHOTON_REVERSE_URL = "https://photon.komoot.io/reverse"
 const DEFAULT_TIMEOUT_MS = 4000

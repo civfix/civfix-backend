@@ -89,10 +89,12 @@ const OUTLOOK_HEADER_FOLLOW_RE = /^(?:Sent|Date|To):\s/
 const OUTLOOK_HEADER_LOOKAHEAD = 2
 
 function hasReplyTextBefore(lines: string[], index: number): boolean {
-  return lines.slice(0, index).some((raw) => {
-    const line = raw.trim()
-    return line !== "" && !line.startsWith(">")
-  })
+  for (let i = 0; i < index; i++) {
+    const line = lines[i]?.trim()
+    if (line === undefined) break
+    if (line !== "" && !line.startsWith(">")) return true
+  }
+  return false
 }
 
 function isQuotedAttributionAt(lines: string[], index: number, nested = false): boolean {
