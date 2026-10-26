@@ -65,7 +65,6 @@ export function emailAllowed(setting: NotificationCategorySetting): boolean {
 /**
  * Whether a path that sends its own email may mail this account holder (D1): only with the category on
  * and Email checked. Without a reader every account is at its default; a failed read mails nothing.
- * @public The team-invite, org-invite and verification-decision sites (GH#224's second slice) call it.
  */
 export async function ownEmailAllowed(
   repo: Pick<NotificationSettingsRepository, "getSettings"> | undefined,

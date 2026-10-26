@@ -52,6 +52,7 @@ import { makeDrizzleOrganizationRepository } from "../../services/host/organizat
 import type { OrganizationRepository } from "../../services/host/organization-repository.js"
 import { webBaseUrlOf } from "../../lib/base-url.js"
 import { avatarPresigner } from "../../services/user-avatar.js"
+import { makeDrizzleNotificationSettingsRepository } from "../../services/notification-settings-repository.drizzle.js"
 
 const ONE_MINUTE = "1 minute"
 const ONE_HOUR = "1 hour"
@@ -145,6 +146,7 @@ export function makeContainerOrganizationService(
     presignLogo: (key: string) => container.storage.presignGet(key, MEDIA_GET_URL_TTL_SEC),
     affiliations: container.getAffiliationLoader(),
     mailer: container.mailer,
+    notificationSettings: makeDrizzleNotificationSettingsRepository(sql),
     // Lazy so the notification service is only built on the admin decide path that needs it.
     notifier: {
       createNotification: (userId, input) =>

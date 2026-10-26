@@ -4,6 +4,12 @@ import { InMemoryCounterStore } from "../../../src/abuse/counter-store.js"
 import { InMemoryOrganizationRepository } from "../../helpers/host/organization-repository.memory.js"
 import { makeDrizzleOrganizationRepository } from "../../../src/services/host/organization-repository.drizzle.js"
 import { makeFakeSql, type SqlHandler } from "../../helpers/fake-sql.js"
+import {
+  captureNotifications,
+  categoryOfInput,
+  OFF,
+  type NotificationCapture,
+} from "../../helpers/notification-capture.js"
 import type { Sql } from "../../../src/db/client.js"
 import {
   makeOrganizationService,
@@ -804,6 +810,120 @@ describe("verification", () => {
     expect(await service.scrubDecidedEins(100)).toBe(1)
     expect(repo.verifications[0]?.einNumber).toBeNull()
     expect(repo.verifications).toHaveLength(1)
+  })
+})
+
+describe("organization notices by category (GH#224)", () => {
+  let mails: string[]
+  let n: NotificationCapture
+  let svc: OrganizationService
+
+  beforeEach(() => {
+    mails = []
+    n = captureNotifications(() => clock)
+    svc = makeOrganizationService({
+      repo,
+      counters: new InMemoryCounterStore(() => clock.getTime()),
+      now: () => clock,
+      newId: () => randomUUID(),
+      webOrigin: "https://civfix.test/",
+      mailer: {
+        sendTransactional: (to) => {
+          mails.push(to)
+          return Promise.resolve()
+        },
+      },
+      notifier: n.service,
+      notificationSettings: n.settings,
+    })
+  })
+
+  async function inviteByEmail(address: string): Promise<void> {
+    const dto = await svc.createOrganization(base(), OWNER)
+    await svc.inviteMember(dto.id, OWNER, {
+      identifierKind: "email",
+      identifier: address,
+      role: "member",
+    })
+  }
+
+  async function decide(decision: "verified" | "rejected"): Promise<void> {
+    const dto = await svc.createOrganization(base(), OWNER)
+    await svc.applyVerification(dto.id, OWNER, { kind: "nonprofit", documents: [] })
+    await svc.adminDecideVerification(dto.id, OPERATOR, {
+      decision,
+      ...(decision === "rejected" ? { reason: "Missing documents" } : {}),
+    })
+  }
+
+  it("T37: an invited account at the default gets the email and the row", async () => {
+    await inviteByEmail("mel@x.org")
+    expect(mails).toEqual(["mel@x.org"])
+    expect(n.rows(MEMBER).map((r) => r.type)).toEqual(["org_invite"])
+    expect(n.inputs[0]?.input.email).toBe("never")
+  })
+
+  it("T38: an invited account with Email unchecked gets only the row", async () => {
+    await n.set(MEMBER, "organizations", [true, false, false])
+    await inviteByEmail("mel@x.org")
+    expect(mails).toEqual([])
+    expect(n.rows(MEMBER)).toHaveLength(1)
+  })
+
+  it("T39: an invited account with Organizations Off gets neither", async () => {
+    await n.set(MEMBER, "organizations", OFF)
+    await inviteByEmail("mel@x.org")
+    expect(mails).toEqual([])
+    expect(n.rows(MEMBER)).toEqual([])
+  })
+
+  it("T40: an address with no account is always mailed, with no row", async () => {
+    await inviteByEmail("newcomer@example.com")
+    expect(mails).toEqual(["newcomer@example.com"])
+    expect(n.repo.notifications).toEqual([])
+  })
+
+  it("T41: an approval mails the owner and stores an Organizations system row", async () => {
+    await decide("verified")
+    expect(mails).toEqual(["olive@x.org"])
+    expect(n.inputs[0]?.input).toMatchObject({
+      type: "system",
+      category: "organizations",
+      email: "never",
+    })
+    expect(n.rows(OWNER)).toHaveLength(1)
+  })
+
+  it("T42: a rejection reaches no owner with Organizations Off", async () => {
+    await n.set(OWNER, "organizations", OFF)
+    await decide("rejected")
+    expect(mails).toEqual([])
+    expect(n.rows(OWNER)).toEqual([])
+  })
+
+  it("T43: an approval with Email unchecked stores the row without mailing", async () => {
+    await n.set(OWNER, "organizations", [true, false, false])
+    await decide("verified")
+    expect(mails).toEqual([])
+    expect(n.rows(OWNER)).toHaveLength(1)
+  })
+
+  it("T54: an added member and an invited account are both Organizations", async () => {
+    const dto = await svc.createOrganization(base(), OWNER)
+    await svc.inviteMember(dto.id, OWNER, {
+      identifierKind: "handle",
+      identifier: "adam",
+      role: "admin",
+    })
+    await svc.inviteMember(dto.id, OWNER, {
+      identifierKind: "email",
+      identifier: "mel@x.org",
+      role: "member",
+    })
+    expect(n.inputs.map((c) => [c.input.type, categoryOfInput(c.input)])).toEqual([
+      ["org_invite", "organizations"],
+      ["org_invite", "organizations"],
+    ])
   })
 })
 

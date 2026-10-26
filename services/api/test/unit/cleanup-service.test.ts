@@ -1,4 +1,5 @@
 import { TEST_TICKET_SIGNER } from "../helpers/ticket-signer.js"
+import { captureNotifications, categoryOfInput } from "../helpers/notification-capture.js"
 import { describe, it, expect, beforeEach } from "vitest"
 import { FakeJobs } from "@civfix/seams"
 import {
@@ -1486,6 +1487,36 @@ describe("L23: the unbounded `bring` array is clamped", () => {
 })
 
 describe("L24: the cancellation fan-out rides the notification pipeline", () => {
+  it("T50: the direct cleanup_cancelled notice is Events you're going to", async () => {
+    repo.seedUser({ id: ALICE, displayName: "Alice" })
+    const n = captureNotifications()
+    const svc = makeCleanupService({
+      tickets: TEST_TICKET_SIGNER,
+      repo,
+      counters: new InMemoryCounterStore(),
+      notifier: n.service,
+    })
+    const created = await svc.createCleanup(baseInput(), ORG)
+    await svc.joinCleanup(created.id, ALICE)
+    await svc.cancelCleanup(created.id, "Storm warning", ORG)
+    expect(n.inputs.map((c) => categoryOfInput(c.input))).toEqual(["events"])
+  })
+
+  it("T51: a cleanup_role bell is Event team and hours", async () => {
+    repo.seedUser({ id: ALICE, displayName: "Alice" })
+    const n = captureNotifications()
+    const svc = makeCleanupService({
+      tickets: TEST_TICKET_SIGNER,
+      repo,
+      counters: new InMemoryCounterStore(),
+      notifier: n.service,
+    })
+    const created = await svc.createCleanup(baseInput(), ORG)
+    await svc.joinCleanup(created.id, ALICE)
+    await svc.setMemberRole(created.id, ORG, ALICE, "cohost")
+    expect(n.inputs.map((c) => categoryOfInput(c.input))).toEqual(["eventTeam"])
+  })
+
   it("emits one cleanup_cancelled notification per OTHER member, through the service (not raw SQL)", async () => {
     repo.seedUser({ id: ALICE, displayName: "Alice" })
     repo.seedUser({ id: BOB, displayName: "Bob" })

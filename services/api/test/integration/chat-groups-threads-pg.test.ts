@@ -449,7 +449,7 @@ describe.skipIf(!pg)("chat groups: threads inbox + group_chat bells (integration
       const finalBells = await bellsFor(target)
       expect(finalBells).toHaveLength(1)
       expect(finalBells[0]).toMatchObject({
-        type: "group_chat",
+        type: "chat_mention",
         title: "Group Reply Actor replied to you",
         body: "replying anyway",
         link: `/messages/group/${groupId}`,
@@ -492,7 +492,7 @@ describe.skipIf(!pg)("chat groups: threads inbox + group_chat bells (integration
       const mentionedFinal = await bellsFor(mentioned)
       expect(mentionedFinal).toHaveLength(1)
       expect(mentionedFinal[0]).toMatchObject({
-        type: "group_chat",
+        type: "chat_mention",
         title: "Group Mention Author mentioned you",
         link: `/messages/group/${groupId}`,
       })

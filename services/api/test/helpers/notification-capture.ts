@@ -75,10 +75,7 @@ export function captureNotifications(now: () => Date = () => new Date()) {
 
 export type NotificationCapture = ReturnType<typeof captureNotifications>
 
-/**
- * The category a captured input is gated by, the rule createNotification applies.
- * @public The per-path category tests (GH#224's second slice) read it.
- */
+/** The category a captured input is gated by, the rule createNotification applies. */
 export function categoryOfInput(input: CreateNotificationInput): NotificationCategory | null {
   return input.category ?? categoryForType(input.type)
 }

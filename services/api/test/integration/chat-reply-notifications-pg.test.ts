@@ -5,10 +5,10 @@
  * (conversation_mutes, notification_prefs, cleanup/report members, notifications):
  *
  *   - a reply bells the replied-to user EVEN when they muted the room (replies pierce mutes);
- *   - prefs.mentions=false suppresses the reply bell (reply urgency is mention-class);
+ *   - Mentions and replies Off (set through the old mentions pref) suppresses the reply bell;
  *   - report-room member fan-out EXCLUDES the reply target: they get exactly ONE bell (the reply);
  *   - @mention of a NON-member in a report room resolves empty (no row, no bell); a member resolves,
- *     records the chat_message_mentions row, and bells as report_chat;
+ *     records the chat_message_mentions row, and bells as chat_mention;
  *   - a MUTED dm thread still bells on a reply to the recipient; an unmuted dm reply produces exactly
  *     one dm bell.
  *
@@ -171,7 +171,7 @@ describe.skipIf(!pg)("reply notifications + report @mentions (integration)", () 
     const bells = await bellsFor(target)
     expect(bells).toHaveLength(1)
     expect(bells[0]).toMatchObject({
-      type: "cleanup_chat",
+      type: "chat_mention",
       title: "Reply Actor replied to you",
       body: "replying anyway",
       link: `/cleanups/${cleanupId}`,
@@ -188,7 +188,6 @@ describe.skipIf(!pg)("reply notifications + report @mentions (integration)", () 
     }).joinCleanup(cleanupId, actor)
 
     const deps = makeBellDeps()
-    await deps.notificationService.getPrefs(target) // materialize defaults
     await makeNotificationService({
       repo: makeDrizzleNotificationRepository(h.sql),
       settingsRepo: makeDrizzleNotificationSettingsRepository(h.sql),
@@ -269,7 +268,7 @@ describe.skipIf(!pg)("reply notifications + report @mentions (integration)", () 
     const targetBells = await bellsFor(target)
     expect(targetBells).toHaveLength(1)
     expect(targetBells[0]).toMatchObject({
-      type: "report_chat",
+      type: "chat_mention",
       title: "Fanout Actor replied to you",
       link: `/messages/report/${reportId}`,
     })
@@ -346,7 +345,7 @@ describe.skipIf(!pg)("reply notifications + report @mentions (integration)", () 
     const bells = await bellsFor(member)
     expect(bells).toHaveLength(1)
     expect(bells[0]).toMatchObject({
-      type: "report_chat",
+      type: "chat_mention",
       title: "Mention Author mentioned you",
       link: `/messages/report/${reportId}`,
     })

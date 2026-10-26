@@ -13,6 +13,7 @@ import {
   type ApplyOrganizationVerificationRequest,
   type CreateOrganizationRequest,
   type InviteOrganizationMemberRequest,
+  type NotificationCategory,
   type NotificationType,
   type OrganizationDTO,
   type OrganizationInviteDTO,
@@ -50,6 +51,8 @@ import type {
   OrgVerificationRecord,
   UpdateOrganizationPatch,
 } from "./organization-repository.js"
+import type { NotificationSettingsRepository } from "../notification-settings-repository.js"
+import { ownEmailAllowed } from "../notification-categories.js"
 
 export const ORGS_CREATED_PER_DAY = 5
 const ORG_CREATE_WINDOW_SEC = SECONDS_PER_DAY
@@ -125,7 +128,14 @@ export interface OrganizationMailer {
 export interface OrganizationNotifier {
   createNotification(
     userId: string,
-    input: { type: NotificationType; title: string; body?: string; link?: string },
+    input: {
+      type: NotificationType
+      title: string
+      body?: string
+      link?: string
+      category?: NotificationCategory
+      email?: "never"
+    },
   ): Promise<unknown>
 }
 
@@ -139,6 +149,7 @@ export interface OrganizationServiceDeps {
   affiliations?: AffiliationLoader
   mailer?: OrganizationMailer
   notifier?: OrganizationNotifier
+  notificationSettings?: Pick<NotificationSettingsRepository, "getSettings">
   webOrigin: string
   logger?: {
     error: (obj: unknown, msg?: string) => void
@@ -636,6 +647,7 @@ export function makeOrganizationService(deps: OrganizationServiceDeps): Organiza
         title: `You've been invited to join ${org.name}`,
         body: `Open your event dashboard to accept or decline joining as ${memberRoleArticle(role)}. It expires in ${ORG_INVITE_TTL_DAYS} days.`,
         link: ORG_INVITE_INBOX_PATH,
+        email: "never",
       })
     } catch (err) {
       deps.logger?.warn?.(
@@ -646,9 +658,10 @@ export function makeOrganizationService(deps: OrganizationServiceDeps): Organiza
   }
 
   /**
-   * Tell the org OWNER how their verification application was decided: a transactional email (when the
-   * owner has an address) plus an in-app `system` notification. BEST-EFFORT: the decision is already
-   * committed and audited, so a mail/notification failure is logged, never raised.
+   * Tell the org OWNER how their verification application was decided: an email (when the owner has an
+   * address and Organizations on with Email checked) plus an in-app notification in Organizations.
+   * BEST-EFFORT: the decision is already committed and audited, so a mail/notification failure is
+   * logged, never raised.
    */
   async function notifyOwnerOfDecision(
     org: AdminOrgDTO,
@@ -672,7 +685,10 @@ export function makeOrganizationService(deps: OrganizationServiceDeps): Organiza
     const verifyPath = orgVerificationPath(org.id)
     const kindLabel = verificationKindLabel(org.verifiedKind ?? null)
     const approved = decision === "verified"
-    if (deps.mailer !== undefined && owner.email !== null) {
+    const mayEmail =
+      owner.email !== null &&
+      (await ownEmailAllowed(deps.notificationSettings, owner.userId, "organizations", deps.logger))
+    if (deps.mailer !== undefined && owner.email !== null && mayEmail) {
       try {
         await deps.mailer.sendTransactional(
           owner.email,
@@ -704,6 +720,9 @@ export function makeOrganizationService(deps: OrganizationServiceDeps): Organiza
             ? `Verified as a ${kindLabel}.`
             : `Reason: ${reason}. You can re-apply from the organization's verification page.`,
           link: approved ? orgPath : verifyPath,
+          // A system row, so it would be Always on without this.
+          category: "organizations",
+          email: "never",
         })
       } catch (err) {
         deps.logger?.warn?.(
@@ -748,7 +767,12 @@ export function makeOrganizationService(deps: OrganizationServiceDeps): Organiza
       throw AppError.forbidden(hostForbiddenCopy("manage_org_members"))
     }
     if (outcome.kind === "created") {
-      await sendInviteEmail(outcome.invite.email ?? email, org, actorId, input.role, token)
+      const mayEmail =
+        userId === null ||
+        (await ownEmailAllowed(deps.notificationSettings, userId, "organizations", deps.logger))
+      if (mayEmail) {
+        await sendInviteEmail(outcome.invite.email ?? email, org, actorId, input.role, token)
+      }
       if (userId !== null) await notifyInvitedUser(userId, org, input.role)
     }
     return { ok: true, member: null, invited: true, invite: toInviteDTO(outcome.invite) }
