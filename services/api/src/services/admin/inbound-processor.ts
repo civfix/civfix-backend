@@ -32,6 +32,16 @@ import {
   readMailAuthVerdict,
   type MailAuthVerdict,
 } from "../../adapters/inbound-mail.cf.js"
+import {
+  addressedToFilingsInbox,
+  correlateFilingsInboxMessage,
+} from "../filings/filing-correlator.js"
+import {
+  makeDrizzleFilingIngestSql,
+  type FilingIngestSql,
+} from "../filings/filing-ingest-sql.drizzle.js"
+import { makeDrizzleFilingRepository } from "../filings/filing-repository.drizzle.js"
+import type { FilingRepository } from "../filings/filing-repository.js"
 import { sanitizeInboundHtml } from "./inbound-html-sanitizer.js"
 import { htmlToText } from "./mail-preview.js"
 import { ATTACHMENT_FILENAME_MAX_CHARS, safeFilenameChars } from "../../lib/filename.js"
@@ -95,6 +105,8 @@ export interface InboundProcessorDeps {
   cleanupRepo?: CleanupRepository
   notifications?: ReporterNotifier
   chatEmitter?: ReportChatSystemEmitter
+  filings?: FilingRepository
+  filingIngest?: FilingIngestSql
 }
 
 export async function processInboundObject(
@@ -186,10 +198,43 @@ export async function processInboundObject(
           logger,
         )
 
+  if (resolvedThread === null && result.id !== undefined) {
+    // A failure keeps the pending object, and the sweep's replay links the stored row idempotently.
+    await correlateFilingsInbox(container, deps, mailRepo, mail, result.id, authVerdict)
+  }
+
   if (result.outcome === "threaded" || result.outcome === "inbox" || result.outcome === "replay") {
     await storage.delete(key)
   }
   return result
+}
+
+async function correlateFilingsInbox(
+  container: Container,
+  deps: InboundProcessorDeps,
+  mailRepo: MailRepository,
+  mail: ParsedMail,
+  inboundEmailId: string,
+  authVerdict: MailAuthVerdict,
+): Promise<void> {
+  const inbox = container.env.FILING_INBOX_ADDRESS
+  if (!inbox || !addressedToFilingsInbox(inbox, mail.to, mail.headers["cc"])) return
+  await correlateFilingsInboxMessage(
+    {
+      filings: deps.filings ?? makeDrizzleFilingRepository(container.getDb().sql),
+      ingest: deps.filingIngest ?? makeDrizzleFilingIngestSql(container.getDb().sql),
+      mailRepo,
+      jobs: container.jobs,
+      automaticFiling: container.env.FILING_AUTOMATIC_ENABLED,
+    },
+    {
+      inboundEmailId,
+      from: mail.from?.address ?? null,
+      authVerdict,
+      subject: mail.subject ?? "",
+      text: plainTextBody(mail) ?? "",
+    },
+  )
 }
 
 async function correlateThread(

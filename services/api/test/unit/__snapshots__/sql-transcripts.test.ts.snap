@@ -4168,6 +4168,29 @@ SELECT rep.status AS key, count(*)::int AS n FROM cleanup_reports cr JOIN report
 => [{"key":"key-row","count":2}]"
 `;
 
+exports[`sql transcripts > makeDrizzleFilingIngestSql.applyCityUpdate 1`] = `
+"-- empty
+BEGIN tx1
+[tx1] UPDATE filing_messages SET applied_at = now(), classification = $1, summary = $2 WHERE id = $3 AND applied_at IS NULL AND trusted AND NOT flagged RETURNING filing_id -- [{"<json>":{"caseId":"caseId-1","status":"in_progress","summary":"summary-1","confidence":3}},"summary-1","messageId-1"]
+COMMIT tx1
+=> {"claimed":false}
+-- row
+BEGIN tx1
+[tx1] UPDATE filing_messages SET applied_at = now(), classification = $1, summary = $2 WHERE id = $3 AND applied_at IS NULL AND trusted AND NOT flagged RETURNING filing_id -- [{"<json>":{"caseId":"caseId-1","status":"in_progress","summary":"summary-1","confidence":3}},"summary-1","messageId-1"]
+[tx1] SELECT f.id, f.report_id, f.channel, f.status, f.case_id, j.name AS jurisdiction_name FROM report_filings f LEFT JOIN jurisdictions j ON j.geoid = f.geoid WHERE f.id = $1 FOR UPDATE OF f -- ["filing_id-row"]
+COMMIT tx1
+=> {"claimed":true,"filing":{"id":"id-row","reportId":"report_id-row","channel":"channel-row","status":"status-row","caseId":"case_id-row","jurisdictionName":"jurisdiction_name-row"},"effect":{"kind":"none"},"applied":false}"
+`;
+
+exports[`sql transcripts > makeDrizzleFilingIngestSql.reportIdByReferenceCode 1`] = `
+"-- empty
+SELECT id FROM reports WHERE reference_code = $1 LIMIT 1 -- ["code-1"]
+=> null
+-- row
+SELECT id FROM reports WHERE reference_code = $1 LIMIT 1 -- ["code-1"]
+=> "id-row""
+`;
+
 exports[`sql transcripts > makeDrizzleFilingRepository.claim 1`] = `
 "-- empty
 UPDATE report_filings SET status = 'running', attempts = $1, run_id = gen_random_uuid(), updated_at = now() WHERE id = $2 AND status = 'queued' AND attempts = $3 RETURNING run_id -- [3,"id-1",2]

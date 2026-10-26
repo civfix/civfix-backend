@@ -96,6 +96,43 @@ export const FilingResultPayloadSchema = z
   })
 export type FilingResultPayload = z.infer<typeof FilingResultPayloadSchema>
 
+export const FILING_CLASSIFICATION_STATUSES = [
+  "received",
+  "in_progress",
+  "closed",
+  "needs_info",
+  "other",
+] as const
+
+const CLASSIFICATION_SUMMARY_MAX = 280
+
+/**
+ * Claude's reading of a city message (D11). The filer produces it and the API re-validates it on
+ * `filing.city_update`, since Claude reads the city's text with the open web in reach.
+ */
+export const FilingClassificationSchema = z
+  .object({
+    caseId: z.string().nullable(),
+    status: z.enum(FILING_CLASSIFICATION_STATUSES),
+    summary: z.string().max(CLASSIFICATION_SUMMARY_MAX),
+    confidence: z.number().min(0).max(1),
+  })
+  .strict()
+export type FilingClassification = z.infer<typeof FilingClassificationSchema>
+
+/** `filing.classify`: a trusted city message for Claude to read; `text` is at most 20,000 characters. */
+export interface FilingClassifyJobData {
+  filingMessageId: string
+  subject: string
+  text: string
+}
+
+/** `filing.city_update`: the classification the API applies to the message's filing. */
+export interface FilingCityUpdateJobData {
+  filingMessageId: string
+  classification: FilingClassification
+}
+
 export interface FilingRunPhoto {
   servedKey: string
   byteSize: number | null
