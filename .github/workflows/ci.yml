@@ -129,7 +129,7 @@ jobs:
             -e NODE_ENV=production \
             -e MEDIA_SANDBOX_UID=1001 \
             -e MEDIA_SANDBOX_GID=1001 \
-            civfix/media-worker:ci node dist/preflight-only.js 2>&1 | tee preflight.log
+            civfix/media-worker:ci node --enable-source-maps dist/preflight-only.js 2>&1 | tee preflight.log
           status=${PIPESTATUS[0]}
           if [ "$status" -ne 0 ]; then
             echo "media-worker sandbox preflight exited $status"
