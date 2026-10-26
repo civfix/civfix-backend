@@ -71,6 +71,12 @@ export interface ReviewerOtpConfig {
   code: string
 }
 
+/** The staging test accounts: lowercased addresses that sign in with one shared code. */
+export interface DevTestOtpConfig {
+  emails: readonly string[]
+  code: string
+}
+
 export interface OtpLogger {
   warn(obj: unknown, msg?: string): void
 }
@@ -92,6 +98,7 @@ export interface OtpServiceOptions {
   now?: () => number
   logger?: OtpLogger
   reviewer?: ReviewerOtpConfig
+  testAccounts?: DevTestOtpConfig
   supportEmail?: string
   audit?: OtpAuditSink
 }

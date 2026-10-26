@@ -432,26 +432,10 @@ describe("GET /v1/app/config", () => {
 })
 
 describe("developer placeholders", () => {
-  const TEST_EMAIL = "a@civfix.org"
   const PLACEHOLDERS: { method: Method; url: string; body?: unknown; mutation: boolean }[] = [
     { method: "GET", url: "/v1/admin/dev/overview", mutation: false },
     { method: "GET", url: "/v1/admin/dev/jobs", mutation: false },
     { method: "POST", url: "/v1/admin/dev/jobs/inbound.sweep/run", mutation: true },
-    { method: "GET", url: "/v1/admin/dev/test/force-update", mutation: false },
-    {
-      method: "PUT",
-      url: "/v1/admin/dev/test/force-update",
-      body: { email: TEST_EMAIL, enabled: true },
-      mutation: true,
-    },
-    { method: "POST", url: "/v1/admin/dev/test/push", body: { email: TEST_EMAIL }, mutation: true },
-    { method: "POST", url: "/v1/admin/dev/test/email", body: {}, mutation: true },
-    {
-      method: "POST",
-      url: "/v1/admin/dev/test/reset-first-run",
-      body: { email: TEST_EMAIL },
-      mutation: true,
-    },
   ]
 
   it("T56: each answers NOT_FOUND from its own handler for an operator", async () => {

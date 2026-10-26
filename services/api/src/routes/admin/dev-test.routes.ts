@@ -2,6 +2,13 @@ import { AppError } from "@civfix/contract"
 import type { FastifyInstance } from "fastify"
 import type { Container } from "../../di.js"
 import { route } from "../../versioning/route.js"
+import { perIdentity } from "../../plugins/rate-limit.js"
+
+export const ADMIN_DEV_TEST_RATE_LIMIT = perIdentity({
+  max: 10,
+  timeWindow: "1 minute",
+  skipOnError: false,
+})
 
 /**
  * The staging test tools. Registered so every registry endpoint has a route; each answers NOT_FOUND

@@ -88,6 +88,8 @@ import {
   makeRuntimeFlagService,
   type RuntimeFlagService,
 } from "./services/admin/runtime-flag-service.js"
+import { makeDrizzleDevTestRepository } from "./services/admin/dev-test-repository.drizzle.js"
+import { makeDevTestTools, type DevTestTools } from "./services/admin/dev-test-tools.js"
 
 export interface Container {
   readonly env: Env
@@ -133,6 +135,7 @@ export interface Container {
   getTicketTokenSigner(): TicketTokenSigner
   /** One per process, so a write through this process's API refreshes every reader at once. */
   getRuntimeFlags(): RuntimeFlagService
+  getDevTestTools(): DevTestTools
 
   close(): Promise<void>
 }
@@ -470,6 +473,16 @@ export function makeContainer(env: Env): Container {
           logger: adapterLogger,
         }),
   )
+  const devTestTools = lazy(() =>
+    makeDevTestTools({
+      repo: makeDrizzleDevTestRepository(getDb().sql),
+      cache: cacheClient.get(),
+      pushSender: pushSender.get(),
+      mailer: seams.mailer,
+      mailFrom: env.MAIL_FROM_NOREPLY,
+      testEmails: env.DEV_TEST_EMAILS,
+    }),
+  )
 
   let notificationService: NotificationService | undefined
   let notificationLoggerWired = false
@@ -527,6 +540,7 @@ export function makeContainer(env: Env): Container {
     userChannel,
     pushSender,
     runtimeFlags,
+    devTestTools,
   ]
 
   async function close(): Promise<void> {
@@ -593,6 +607,7 @@ export function makeContainer(env: Env): Container {
     getByteMeter: () => lazyByteMeter,
     getTicketTokenSigner: ticketTokenSigner.get,
     getRuntimeFlags: runtimeFlags.get,
+    getDevTestTools: devTestTools.get,
     close,
   }
 }

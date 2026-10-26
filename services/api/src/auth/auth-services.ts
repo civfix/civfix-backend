@@ -9,6 +9,7 @@ import {
   type OtpAuditSink,
   type OtpLogger,
   type ReviewerOtpConfig,
+  type DevTestOtpConfig,
 } from "./otp.js"
 import { OAuthService, type OAuthConfig } from "./oauth.js"
 import type { JwksVerifier } from "./jwks.js"
@@ -127,6 +128,10 @@ export function reviewerOtpConfigFromEnv(env: Container["env"]): ReviewerOtpConf
   const trimmed = code.trim()
   if (trimmed.length < REVIEWER_OTP_CODE_MIN_LENGTH) return null
   return { email: REVIEWER_OTP_EMAIL, code: trimmed }
+}
+
+export function devTestOtpConfigFromEnv(_env: Container["env"]): DevTestOtpConfig | null {
+  throw new Error("not implemented")
 }
 
 export function oauthConfigFromEnv(env: Container["env"]): OAuthConfig {
