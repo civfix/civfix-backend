@@ -16,6 +16,7 @@ import { makeBroadcastLanes } from "../../src/services/host/broadcast-lanes.js"
 import type { NotificationService } from "../../src/services/notification-service.js"
 import type { Sql } from "../../src/db/client.js"
 import { makeFakeSql } from "../helpers/fake-sql.js"
+import { AllOnSettingsRepository } from "../helpers/notification-capture.js"
 
 const EVENT = "00000000-0000-0000-0000-0000000000ee"
 const HOST = "00000000-0000-0000-0000-0000000000aa"
@@ -251,6 +252,7 @@ describe("hard-bounce suppression write failure", () => {
     const pipeline = makeBroadcastPipeline({
       repo,
       service,
+      settingsRepo: new AllOnSettingsRepository(["hostAnnouncements"]),
       notifications: {
         createNotifications: () => Promise.resolve(),
         createNotificationsReportingFailures: () => Promise.resolve({ failed: [] }),

@@ -14,6 +14,7 @@ import {
   type MemoryMember,
 } from "../helpers/host/broadcast-repository.memory.js"
 import { makeSqlRecorder } from "../helpers/sql-recorder.js"
+import { InMemoryNotificationSettingsRepository } from "../helpers/notifications.js"
 
 const EVENT = "00000000-0000-0000-0000-0000000000ee"
 const TYPE_A = "00000000-0000-0000-0000-00000000aaaa"
@@ -33,8 +34,11 @@ function seed(): InMemoryBroadcastRepository {
     { userId: u(4), ticketTypeId: TYPE_A, banned: true },
     { userId: u(5), ticketTypeId: TYPE_A, deleted: true },
     { userId: u(6), ticketTypeId: TYPE_A, suspended: true },
-    { userId: u(7), ticketTypeId: TYPE_A, hostBroadcastsPref: false },
+    { userId: u(7), ticketTypeId: TYPE_A },
   ])
+  const settings = new InMemoryNotificationSettingsRepository()
+  void settings.upsertSettings(u(7), { hostAnnouncements: { enabled: false } })
+  repo.notificationSettings = settings
   repo.seedGuests(EVENT, [
     { guestId: u(11), ticketTypeId: TYPE_A },
     { guestId: u(12), cancelled: true },
@@ -81,7 +85,7 @@ describe("broadcast audience", () => {
     expect(result.guests).not.toContain(u(13))
   })
 
-  it("applies the host_broadcasts opt-out to HOST-COMPOSED kinds only", async () => {
+  it("applies Announcements from hosts Off to HOST-COMPOSED kinds only", async () => {
     const repo = seed()
     for (const kind of ["host_broadcast", "thank_you"] as const) {
       const result = await resolve(repo, { kind: "all_registered" }, kind)
@@ -99,7 +103,7 @@ describe("broadcast audience", () => {
     }
   })
 
-  it("still applies unsubscribes and mutes to the service kinds the host_broadcasts toggle does not gate", async () => {
+  it("still applies unsubscribes and mutes to the service kinds Announcements from hosts does not gate", async () => {
     const repo = seed()
     await repo.setEventMute(EVENT, u(1), true)
     await repo.recordUnsubscribe({
@@ -113,7 +117,7 @@ describe("broadcast audience", () => {
     expect(reminders.members).not.toContain(u(2))
   })
 
-  it("honours an event unsubscribe for bulk and bypasses it for critical", async () => {
+  it("honours a member's event unsubscribe for every kind, critical ones included", async () => {
     const repo = seed()
     await repo.recordUnsubscribe({
       scope: "event",
@@ -122,9 +126,9 @@ describe("broadcast audience", () => {
       subjectId: u(1),
     })
     expect((await resolve(repo, { kind: "all_registered" })).members).not.toContain(u(1))
-    expect((await resolve(repo, { kind: "all_registered" }, "event_cancelled")).members).toContain(
-      u(1),
-    )
+    expect(
+      (await resolve(repo, { kind: "all_registered" }, "event_cancelled")).members,
+    ).not.toContain(u(1))
   })
 
   it("honours a global unsubscribe for bulk", async () => {
@@ -138,13 +142,13 @@ describe("broadcast audience", () => {
     expect((await resolve(repo, { kind: "all_registered" })).members).not.toContain(u(2))
   })
 
-  it("honours a per-event mute for bulk and bypasses it for critical", async () => {
+  it("honours a member's per-event mute for every kind, critical ones included", async () => {
     const repo = seed()
     await repo.setEventMute(EVENT, u(2), true)
     expect((await resolve(repo, { kind: "all_registered" })).members).not.toContain(u(2))
-    expect((await resolve(repo, { kind: "all_registered" }, "event_cancelled")).members).toContain(
-      u(2),
-    )
+    expect(
+      (await resolve(repo, { kind: "all_registered" }, "event_cancelled")).members,
+    ).not.toContain(u(2))
   })
 
   it("honours a guest unsubscribe for bulk", async () => {
@@ -207,7 +211,7 @@ describe("broadcast audience", () => {
     }
   })
 
-  it("keeps a guest unsubscribe OFF the critical lanes, exactly like a member's", async () => {
+  it("keeps a guest unsubscribe OFF the critical lanes", async () => {
     const repo = seed()
     await repo.recordUnsubscribe({
       scope: "event",
