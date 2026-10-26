@@ -19,7 +19,7 @@
 import { readFile, readdir } from "node:fs/promises"
 import { join, sep } from "node:path"
 import { fileURLToPath } from "node:url"
-import type { GlobalSetupContext } from "vitest/node"
+import type { TestProject } from "vitest/node"
 import { startSharedPg, type SharedPg } from "./helpers/pg-container.js"
 import { cliFileFilters, selectSharedPgStart } from "./helpers/pg-selection.js"
 
@@ -61,7 +61,7 @@ async function usesPgHarness(file: string): Promise<boolean> {
   return PG_HARNESS_IMPORT.test(source)
 }
 
-export async function setup({ provide }: GlobalSetupContext): Promise<void> {
+export async function setup({ provide }: TestProject): Promise<void> {
   const files = await listTestFiles()
   // Pre-resolve the predicate (selectSharedPgStart is sync/pure so it can be unit-tested).
   const pgFiles = new Set<string>()

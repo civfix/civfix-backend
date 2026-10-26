@@ -1,8 +1,9 @@
-import { describe, it, expect, vi } from "vitest"
+import { describe, it, expect, vi, type Mock } from "vitest"
 import type { ChatMessageDTO } from "@civfix/contract"
 import { makeReportChatNotifier } from "../../src/services/report-chat-notifier.js"
 import { makeGroupChatNotifier } from "../../src/services/group-chat-notifier.js"
 import { makeChatPowersResolver } from "../../src/services/chat-room-roles.js"
+import type { NotificationService } from "../../src/services/notification-service.js"
 
 /**
  * Block-bypass regressions:
@@ -36,17 +37,20 @@ function message(): ChatMessageDTO {
   } as unknown as ChatMessageDTO
 }
 
+type CreateNotificationsReportingFailures =
+  NotificationService["createNotificationsReportingFailures"]
+
 function notificationSpy(): {
-  createNotificationsReportingFailures: ReturnType<typeof vi.fn>
+  createNotificationsReportingFailures: Mock<CreateNotificationsReportingFailures>
   recipients: () => string[]
 } {
-  const createNotificationsReportingFailures = vi.fn(() => Promise.resolve({ failed: [] }))
+  const createNotificationsReportingFailures = vi.fn<CreateNotificationsReportingFailures>(() =>
+    Promise.resolve({ failed: [] }),
+  )
   return {
     createNotificationsReportingFailures,
     recipients: () =>
-      createNotificationsReportingFailures.mock.calls.flatMap(
-        (c) => (c as unknown as [string[]])[0],
-      ),
+      createNotificationsReportingFailures.mock.calls.flatMap(([userIds]) => userIds),
   }
 }
 

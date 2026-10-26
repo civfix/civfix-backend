@@ -1,4 +1,4 @@
-import { describe, it, expect, vi } from "vitest"
+import { describe, it, expect, vi, type Mock } from "vitest"
 import { AppError, ErrorCode } from "@civfix/contract"
 import { MailSendError, FakeJobs } from "@civfix/seams"
 import type { Container } from "../../src/di.js"
@@ -20,11 +20,11 @@ function serviceThat(exportData: DataExportService["exportData"]): DataExportSer
   return { exportData: vi.fn(exportData), recordUndeliverable: vi.fn(async () => {}) }
 }
 
-function recordingLogger(): DataExportJobLogger & {
-  info: ReturnType<typeof vi.fn>
-  warn: ReturnType<typeof vi.fn>
+function recordingLogger(): {
+  info: Mock<DataExportJobLogger["info"]>
+  warn: Mock<DataExportJobLogger["warn"]>
 } {
-  return { info: vi.fn(), warn: vi.fn() }
+  return { info: vi.fn<DataExportJobLogger["info"]>(), warn: vi.fn<DataExportJobLogger["warn"]>() }
 }
 
 describe("runDataExport (BE-TEST-049)", () => {
@@ -117,12 +117,15 @@ describe("runDataExport (BE-TEST-049)", () => {
 describe("registerDataExportJobs (BE-TEST-049)", () => {
   function harness(): {
     jobs: FakeJobs
-    makeService: ReturnType<typeof vi.fn>
-    exportData: ReturnType<typeof vi.fn>
+    makeService: Mock<(container: Container) => DataExportService>
+    exportData: Mock<DataExportService["exportData"]>
     container: Container
   } {
     const jobs = new FakeJobs()
-    const exportData = vi.fn(async () => ({ ok: true as const, email: "jane@example.com" }))
+    const exportData = vi.fn<DataExportService["exportData"]>(async () => ({
+      ok: true as const,
+      email: "jane@example.com",
+    }))
     const makeService = vi.fn((): DataExportService => ({
       exportData,
       recordUndeliverable: vi.fn(async () => {}),
