@@ -37,9 +37,9 @@ civfix-backend/
     media-worker/               pg-boss media worker (@civfix/media-worker)
   infra/
     email-worker/               Cloudflare Email Worker for inbound mail (standalone, own wrangler toolchain)
-  scripts/                      the CI no-frontend guard + the dynamic-SQL check (pnpm check:sql, a CI gate)
+  scripts/                      CI guards: no-frontend, dynamic SQL (pnpm check:sql), licenses (pnpm check:licenses)
   docs/                         engineering notes (retention, erasure, migrations, operator runbook, ...)
-  .github/workflows/            ci.yml (PR checks: lint, format, typecheck, static checks, build, test), build-images.yml, deploy-staging.yml, deploy.yml
+  .github/workflows/            ci.yml (PR checks: audit, licenses, zizmor, lint, format, typecheck, static checks, build, test), audit.yml (weekly), build-images.yml, deploy-staging.yml, deploy.yml
   tsconfig.base.json            strict base TS config
   turbo.json                    turborepo task graph
   pnpm-workspace.yaml
@@ -103,9 +103,10 @@ pnpm format:check # prettier --check (Markdown is excluded, see .prettierignore)
 pnpm check:sql    # dynamic-SQL guard: unsafe/raw allowlist, Drizzle $client, parameter IS NULL tests
 pnpm knip         # unused files, exports and dependencies (knip.jsonc)
 pnpm dup:check    # copy-paste duplication over the service sources (.jscpd.json threshold)
+pnpm check:licenses # fails on a production dependency whose license is AGPL-incompatible or unknown
+pnpm audit --audit-level high && pnpm audit --prod --audit-level moderate   # the CI audit gates
 pnpm dev          # run both services in watch mode (persistent)
 pnpm clean        # remove build artifacts
-pnpm check:sql    # dynamic-SQL guard (manual; not run by CI)
 ```
 
 CI runs every command above except `dev` and `clean`. The Cloudflare email worker in

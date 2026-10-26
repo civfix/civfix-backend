@@ -1,0 +1,48 @@
+version: 2
+registries:
+  civfix:
+    type: npm-registry
+    url: https://repo.civfix.org
+    replaces-base: false
+updates:
+  - package-ecosystem: npm
+    directory: "/"
+    registries: [civfix]
+    schedule: { interval: weekly, day: monday, time: "06:00", timezone: America/Los_Angeles }
+    cooldown: { default-days: 3 }
+    open-pull-requests-limit: 5
+    groups:
+      non-major: { update-types: [minor, patch] }
+    ignore:
+      - dependency-name: "@civfix/*"
+      - dependency-name: "*"
+        update-types: ["version-update:semver-major"]
+  # The email worker deploys with wrangler from its own lockfile, outside the pnpm workspace.
+  - package-ecosystem: npm
+    directory: "/infra/email-worker"
+    schedule: { interval: weekly, day: monday, time: "06:00", timezone: America/Los_Angeles }
+    cooldown: { default-days: 3 }
+    open-pull-requests-limit: 5
+    groups:
+      non-major: { update-types: [minor, patch] }
+    ignore:
+      - dependency-name: "@civfix/*"
+      - dependency-name: "*"
+        update-types: ["version-update:semver-major"]
+  # One entry for both Dockerfiles: they share the node base digest, which has to move in one PR.
+  - package-ecosystem: docker
+    directories: ["/services/api", "/services/media-worker"]
+    schedule: { interval: weekly, day: monday }
+    cooldown: { default-days: 3 }
+    groups:
+      images: { patterns: ["*"] }
+    ignore:
+      # A Node major moves with .nvmrc, engines and CI together, which is agent work (D10).
+      - dependency-name: "*"
+        update-types: ["version-update:semver-major"]
+  - package-ecosystem: github-actions
+    directory: "/"
+    schedule: { interval: weekly, day: monday }
+    cooldown: { default-days: 3 }
+    groups:
+      actions: { patterns: ["*"] }

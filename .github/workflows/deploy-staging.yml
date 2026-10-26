@@ -73,6 +73,7 @@ jobs:
     uses: ./.github/workflows/build-images.yml
     permissions:
       contents: read
+      # build-images.yml pushes the images to ghcr.io/civfix/*.
       packages: write
 
   deploy:
@@ -82,6 +83,8 @@ jobs:
     environment: staging
     runs-on: ubuntu-latest
     timeout-minutes: 20
+    # Only SSH and curl: the GITHUB_TOKEN is never used, so it gets no scope at all.
+    permissions: {}
     concurrency:
       group: deploy-staging
       cancel-in-progress: false
