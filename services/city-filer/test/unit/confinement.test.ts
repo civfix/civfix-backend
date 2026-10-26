@@ -1,4 +1,4 @@
-import { mkdir, readdir, readFile, writeFile } from "node:fs/promises"
+import { chmod, mkdir, readdir, readFile, writeFile } from "node:fs/promises"
 import { join } from "node:path"
 import { afterEach, describe, expect, it, vi } from "vitest"
 import { PROVABLE_SCRIPT, writes } from "../helpers/claude-acts.js"
@@ -242,6 +242,29 @@ describe("confinement that nothing in .git can fool", () => {
         (l) => l.line === "filer: proved record deleted" && l.fields?.host === "other.example",
       ),
     ).toHaveLength(1)
+    expect(h.endings()).toEqual(["failed/portal_error"])
+    expect(h.steps()).not.toContain("live")
+  })
+
+  it("a portals/ node can't list, with a shadow kit planted in other.example's folder, deletes every proved record; failed / portal_error", async () => {
+    h = await filerHarness()
+    await otherHostCommitted()
+    await h.prove(ORIGINAL, "other.example")
+    await h.prove("export default async () => {}\n", "third.example")
+    await h.claude(`${writes(PROVABLE_SCRIPT)}
+      const kit = join(workspace, "portals", "other.example", "node_modules", "@civfix", "filer-kit")
+      fs.mkdirSync(kit, { recursive: true })
+      fs.writeFileSync(join(kit, "index.js"), 'export const marker = "PLANTED KIT"\\n')
+      fs.chmodSync(join(workspace, "portals"), 0o300)`)
+    const f = h.filings.add()
+
+    try {
+      await h.run(f.id, 1)
+    } finally {
+      await chmod(join(h.workspace, "portals"), 0o770)
+    }
+    expect(await h.proved("other.example")).toBeNull()
+    expect(await h.proved("third.example")).toBeNull()
     expect(h.endings()).toEqual(["failed/portal_error"])
     expect(h.steps()).not.toContain("live")
   })

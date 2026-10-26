@@ -1,8 +1,9 @@
 import { createHash } from "node:crypto"
-import { readFile } from "node:fs/promises"
+import { readdir, readFile } from "node:fs/promises"
 import { join } from "node:path"
 import { afterEach, describe, expect, it, vi } from "vitest"
 import { MS_PER_MINUTE } from "@civfix/api/time"
+import { forgetProved } from "../../src/proved.js"
 import { startFixturePortal, type FixturePortal } from "../fixtures/portal.js"
 import { errorResult, fixtureScript, writes } from "../helpers/claude-acts.js"
 import { filerHarness, type FilerHarness } from "../helpers/filer-harness.js"
@@ -158,5 +159,19 @@ export default async () => {
     expect(h.steps()).toEqual(["live", "claude", "dry-run"])
     expect(await exists(join(runDir, "out-live", "result.json"))).toBe(true)
     expect(await exists(join(runDir, "out-claude", "result.json"))).toBe(false)
+  })
+})
+
+describe("forgetting proved records", () => {
+  it("never takes an empty or unsafe name for a host, and one that fails doesn't stop the rest", async () => {
+    h = await filerHarness()
+    await h.prove("a", "a.example")
+    await h.prove("b", "b.example")
+
+    await expect(
+      forgetProved(h.workspace, ["", "a.example", "../proved", "b.example"], h.log, "test"),
+    ).rejects.toBeInstanceOf(AggregateError)
+    expect(await readdir(join(h.workspace, "proved"))).toEqual([])
+    expect(await readdir(h.workspace)).toContain("proved")
   })
 })
