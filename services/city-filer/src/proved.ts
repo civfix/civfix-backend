@@ -42,6 +42,19 @@ export async function readProved(workspaceDir: string, host: string): Promise<st
   return SHA256_HEX.test(sha256) ? sha256 : null
 }
 
+export type PortalFingerprint =
+  { kind: "ok"; fingerprint: string } | { kind: "rejected"; why: string }
+
+/** The fingerprint of everything in `portals/<host>/`, which `filer` writes, read as `node`. */
+export async function fingerprintPortal(
+  workspaceDir: string,
+  host: string,
+): Promise<PortalFingerprint> {
+  void workspaceDir
+  void host
+  throw new Error("not implemented")
+}
+
 export async function recordProved(
   workspaceDir: string,
   host: string,

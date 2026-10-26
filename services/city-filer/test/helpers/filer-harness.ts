@@ -17,6 +17,7 @@ import { makeClaudeGate } from "../../src/claude.js"
 import { makeClassifyHandler } from "../../src/classify.js"
 import { loadConfig, type FilerConfig } from "../../src/config.js"
 import type { FilerRunner } from "../../src/filer-process.js"
+import { fingerprintPortal } from "../../src/proved.js"
 import { makeFilingRunHandler } from "../../src/run-filing.js"
 import { FakeFilingsWorker, PORTAL_HOST } from "./fake-filings-worker.js"
 import { claudeCalls, installFakeClaude } from "./fake-claude.js"
@@ -162,13 +163,20 @@ export async function filerHarness(
     failing,
     steps,
     /**
-     * As the wrapper records a proof that passed: the sha256 of `source`, by default the host's installed
-     * script, in proved/<host>.
+     * As the wrapper records a proof that passed: the fingerprint of the host's folder as it is now, in
+     * proved/<host>. With `source`, a well-formed record that is not the folder's: the sha256 of `source`.
      */
     async prove(source?: string | Buffer, host = PORTAL_HOST) {
-      const bytes = source ?? (await readFile(join(workspace, "portals", host, "script.mjs")))
-      const sha256 = createHash("sha256").update(bytes).digest("hex")
-      await writeFile(join(workspace, "proved", host), `${sha256}\n`)
+      let record: string
+      if (source === undefined) {
+        const folder = await fingerprintPortal(workspace, host)
+        if (folder.kind !== "ok")
+          throw new Error(`portals/${host}/ has no fingerprint: ${folder.why}`)
+        record = folder.fingerprint
+      } else {
+        record = createHash("sha256").update(source).digest("hex")
+      }
+      await writeFile(join(workspace, "proved", host), `${record}\n`)
     },
     proved: (host = PORTAL_HOST) =>
       readFile(join(workspace, "proved", host), "utf8").then(

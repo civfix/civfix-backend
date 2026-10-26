@@ -229,7 +229,7 @@ describe("confinement that nothing in .git can fool", () => {
   it("T40: when the restoring git call fails, other.example loses its proved record, logged; failed / portal_error and no live run", async () => {
     h = await filerHarness()
     await otherHostCommitted()
-    await h.prove(ORIGINAL, "other.example")
+    await h.prove(undefined, "other.example")
     await h.claude(`${writes(PROVABLE_SCRIPT)}
       fs.writeFileSync(join(workspace, "${OTHER_SCRIPT}"), "export default async () => { /* hijacked */ }\\n")`)
     h.failing.when = (args) => args.includes("cat-file")
@@ -249,7 +249,7 @@ describe("confinement that nothing in .git can fool", () => {
   it("a portals/ node can't list, with a shadow kit planted in other.example's folder, deletes every proved record; failed / portal_error", async () => {
     h = await filerHarness()
     await otherHostCommitted()
-    await h.prove(ORIGINAL, "other.example")
+    await h.prove(undefined, "other.example")
     await h.prove("export default async () => {}\n", "third.example")
     await h.claude(`${writes(PROVABLE_SCRIPT)}
       const kit = join(workspace, "portals", "other.example", "node_modules", "@civfix", "filer-kit")
