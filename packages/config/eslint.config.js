@@ -74,13 +74,13 @@ export function config(...extra) {
           "error",
           { prefer: "type-imports", disallowTypeAnnotations: false },
         ],
-        // Measured at ~1,400 and ~140 hits, nearly all correct code: async fakes and handlers that
-        // satisfy a Promise-returning interface without awaiting, and methods passed as callbacks
-        // that never touch `this`.
+        // Measured hits are nearly all correct code: async fakes and handlers that satisfy a
+        // Promise-returning interface without awaiting, and methods passed as callbacks that never
+        // touch `this`.
         "@typescript-eslint/require-await": "off",
         "@typescript-eslint/unbound-method": "off",
-        // Tests stay relaxed here for good. In src the ~90 hits sit almost all on the untyped push
-        // and SMS SDK imports and the ws socket; they come on once those get typed shims.
+        // Off for tests by decision. In src they wait on typed shims for the lazily imported push
+        // and SMS SDKs and the ws socket, whose untyped values account for most of the hits.
         "@typescript-eslint/no-unsafe-argument": "off",
         "@typescript-eslint/no-unsafe-assignment": "off",
         "@typescript-eslint/no-unsafe-call": "off",
