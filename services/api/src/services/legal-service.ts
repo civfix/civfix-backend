@@ -116,3 +116,16 @@ export function assertConsentVersionsCurrent(claims: readonly ConsentVersionClai
     throw new AppError(ErrorCode.CONFLICT, STALE_CONSENT_MESSAGE, { fields: stale })
   }
 }
+
+export interface EventConsentClaim {
+  termsVersion: string
+  disclosureVersion: string
+}
+
+export function eventConsentDocuments(
+  _claim: EventConsentClaim,
+  _now: Date,
+  _versions: readonly LegalDocumentVersion[] = [],
+): { type: LegalDocumentType; version: string; sha256: string }[] {
+  throw new Error("not implemented")
+}

@@ -35,7 +35,6 @@ import {
 import { makeTicketTokenSigner } from "../../src/services/host/ticket-token.js"
 import { NO_HOST_STANDING } from "@civfix/contract/host"
 import { fakeCleanupReader } from "../helpers/host-team.js"
-import { PENDING_IN_EPIC } from "../helpers/pending-in-epic.js"
 
 const SIGNING_KEY = "test-anon-signing-key"
 
@@ -217,16 +216,6 @@ describe("route-coverage: every shared endpoint is registered (offline boot smok
   })
 
   for (const [name, ep] of Object.entries(endpoints)) {
-    const pendingIn = PENDING_IN_EPIC[name]
-    if (pendingIn !== undefined) {
-      it(`T24: leaves ${name} to ${pendingIn}: ${ep.method} ${ep.path}`, async () => {
-        const res = await app.inject(injectArgs(ep))
-        const body = res.json<{ message?: string }>()
-        expect(res.statusCode, `${name} is registered now; drop it from PENDING_IN_EPIC`).toBe(404)
-        expect(body.message?.startsWith(`Route ${ep.method} `)).toBe(true)
-      })
-      continue
-    }
     it(`registers ${name}: ${ep.method} ${ep.path}`, async () => {
       const res = await app.inject(injectArgs(ep))
 
@@ -242,9 +231,8 @@ describe("route-coverage: every shared endpoint is registered (offline boot smok
     })
   }
 
-  it("T42: covers ALL 345 endpoints in the registry (none skipped but PENDING_IN_EPIC)", () => {
+  it("T42: covers ALL 345 endpoints in the registry (no endpoint skipped)", () => {
     expect(Object.keys(endpoints).length).toBe(345)
-    expect(Object.keys(PENDING_IN_EPIC).filter((name) => !(name in endpoints))).toEqual([])
   })
 
   it("the discriminator is not vacuous: a bogus path IS detected as route-missing", async () => {

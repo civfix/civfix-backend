@@ -23,6 +23,7 @@ import {
   subjectOwner,
   withinSalesWindow,
 } from "../../../src/services/host/registration-repository-register.drizzle.js"
+import type { NewConsentRecord } from "../../../src/services/legal-acceptance-repository.js"
 import type { AppliedBan } from "../../../src/services/host/registration-repository-roster.drizzle.js"
 import { MAX_TICKET_TYPES } from "../../../src/services/host/registration-repository-ticket-types.drizzle.js"
 import { waitlistEntryAsRegistration } from "../../../src/services/host/registration-repository-waitlist.drizzle.js"
@@ -33,6 +34,7 @@ import type {
   CheckinCountersRecord,
   CheckinResultRecord,
   ClaimWaitlistOutcome,
+  ConsentWrite,
   CreateTicketTypeOutcome,
   DeleteTicketTypeOutcome,
   DesiredQuestion,
@@ -111,6 +113,16 @@ export class InMemoryHostRegistrationRepository implements HostRegistrationRepos
   readonly bans = new Set<string>()
   readonly members = new Set<string>()
   readonly idempotency = new Map<string, string>()
+  /** event_consents rows, as registerIn writes them. */
+  readonly eventConsents: {
+    cleanupId: string
+    subject: RegisterTxArgs["subject"]
+    registrationId: string
+    consent: ConsentWrite
+    acceptedAt: Date
+  }[] = []
+  /** consent_records rows a signed-in registrant's consent writes (DECISIONS D7). */
+  readonly consentRecords: (NewConsentRecord & { userId: string; acceptedAt: Date })[] = []
 
   constructor(private readonly newId: () => string = () => randomUUID()) {}
 
@@ -693,8 +705,32 @@ export class InMemoryHostRegistrationRepository implements HostRegistrationRepos
     this.registrations.set(registration.id, registration)
     this.idempotency.set(idempotencyKey, registration.id)
     if (type !== null) this.recomputeSold(type.id)
+    this.recordConsent(args, registration.id)
 
     return { kind: "registered", registration: this.toRecord(registration) }
+  }
+
+  private recordConsent(args: RegisterTxArgs, registrationId: string): void {
+    const consent = args.consent
+    if (consent === null) return
+    this.eventConsents.push({
+      cleanupId: args.cleanupId,
+      subject: args.subject,
+      registrationId,
+      consent,
+      acceptedAt: args.now,
+    })
+    const subject = args.subject
+    if (subject.kind !== "user") return
+    for (const document of consent.documents) {
+      this.consentRecords.push({
+        ...document,
+        action: "accepted",
+        surface: "event_registration",
+        userId: subject.userId,
+        acceptedAt: args.now,
+      })
+    }
   }
 
   async findRegistration(

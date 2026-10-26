@@ -197,6 +197,33 @@ describe("the export byte budget favors the small structured sections", () => {
     )
   })
 
+  it("T43: keeps the consent records even when chat messages alone exceed the budget", async () => {
+    const chatRows = Array.from({ length: DATA_EXPORT_FREE_TEXT_MAX_ROWS }, (_, i) => ({
+      id: `c${i}`,
+      body: "x".repeat(LARGE_BODY_BYTES),
+    }))
+    const consentRow = {
+      document_type: "terms",
+      document_version: "2026-09-21",
+      document_sha256: "52fe3908a8d7aa4427239a7555a2d7b2346d7a2b9730dfb539ecd157f6195772",
+      action: "accepted",
+      surface: "signup",
+      accepted_at: new Date("2026-01-01T00:00:00.000Z"),
+    }
+    const mailer = new FakeMailer()
+    const { service } = harness(mailer, [
+      { match: /FROM chat_messages/, rows: chatRows },
+      { match: /FROM consent_records/, rows: [consentRow] },
+    ])
+    await service.exportData(USER_ID)
+    const att = mailer.lastOutbound()!.attachments![0]!
+    const parsed = JSON.parse(new TextDecoder().decode(att.content)) as Record<string, unknown>
+    expect(parsed.consentRecords).toEqual([
+      { ...consentRow, accepted_at: consentRow.accepted_at.toISOString() },
+    ])
+    expect((parsed.truncated as { sections: string[] }).sections).toEqual(["chatMessages"])
+  })
+
   it("reports each truncated section's own row cap", async () => {
     const postRows = Array.from({ length: DATA_EXPORT_FREE_TEXT_MAX_ROWS + 1 }, (_, i) => ({
       id: `p${i}`,
