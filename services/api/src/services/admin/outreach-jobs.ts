@@ -19,11 +19,10 @@ export async function registerOutreachJobs(
 ): Promise<void> {
   const service = makeOutreachServiceFromContainer(container, logger)
 
-  if (container.env.OUTREACH_DIGEST_ENABLED) {
-    await container.jobs.schedule(OUTREACH_DIGEST_JOB, container.env.OUTREACH_DIGEST_CRON)
-  }
+  // Always scheduled: the flag is read per run, so turning it on needs no restart.
+  await container.jobs.schedule(OUTREACH_DIGEST_JOB, container.env.OUTREACH_DIGEST_CRON)
   await container.jobs.work(OUTREACH_DIGEST_JOB, async (job) => {
-    if (!container.env.OUTREACH_DIGEST_ENABLED) return
+    if (!(await container.getRuntimeFlags().get("outreach_digest_enabled"))) return
     const geoid = extractGeoid(job.data)
     if (geoid !== null) {
       await auditSent(container, [await service.runForGeoid(geoid)])

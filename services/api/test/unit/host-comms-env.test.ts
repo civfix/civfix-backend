@@ -33,7 +33,7 @@ describe("loadCommsEnv defaults", () => {
     expect(env.BROADCAST_CHUNK_SIZE).toBe(200)
     expect(env.BROADCAST_EMAIL_CONCURRENCY).toBe(4)
     expect(env.BROADCAST_EMAIL_RATE_PER_SEC).toBe(10)
-    expect(env.HOST_MESSAGING_KILL_SWITCH).toBe(false)
+    expect(env).not.toHaveProperty("HOST_MESSAGING_KILL_SWITCH")
     expect(env.HOST_ANALYTICS_CACHE_TTL_SEC).toBe(120)
     expect(env.METRICS_ROLLUP_LOOKBACK_DAYS).toBe(3)
     expect(env.HOST_EXPORT_MAX_ROWS).toBe(50_000)

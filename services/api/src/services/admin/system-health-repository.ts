@@ -7,5 +7,5 @@ export interface CountRow {
 // Each read returns the pending query rather than its rows so the probe can cancel it on timeout.
 export interface SystemHealthRepository {
   countJurisdictions(): postgres.PendingQuery<CountRow[]>
-  countMailEventsLast7Days(): postgres.PendingQuery<CountRow[]>
+  countSentMailLast7Days(): postgres.PendingQuery<CountRow[]>
 }
