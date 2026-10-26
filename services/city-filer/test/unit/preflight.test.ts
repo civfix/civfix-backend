@@ -197,4 +197,20 @@ describe("the preflight's Claude Code checks", () => {
     expect(noMcp.lines).toEqual([expect.stringMatching(/playwright-mcp --help exited 2/)])
     expect(passing).toEqual({ exit: 0, lines: ["city-filer: preflight ok"] })
   })
+
+  it("T29: a help naming the flag only as --append-system-prompt[-file], as 2.1.310's does, passes; without that token it fails, naming --append-system-prompt-file", async () => {
+    const bracket = HELP.replace(
+      /^.*--append-system-prompt-file .*$/m,
+      "  --append-system-prompt <prompt>   Append a system prompt\n  --bare   context via --append-system-prompt[-file], --add-dir",
+    )
+    const neither = bracket.replace(" --append-system-prompt[-file],", "")
+
+    expect(await claudePreflight({ help: bracket })).toEqual({
+      exit: 0,
+      lines: ["city-filer: preflight ok"],
+    })
+    expect((await claudePreflight({ help: neither })).lines).toEqual([
+      expect.stringMatching(/does not list --append-system-prompt-file$/),
+    ])
+  })
 })
