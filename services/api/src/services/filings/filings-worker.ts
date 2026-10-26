@@ -123,6 +123,8 @@ export interface FilingsWorker {
   claimFiling(filingId: string, attempt: number): Promise<{ runId: string } | null>
   /** Running portal filings: an email filing's try is the API's, never the filer's to settle. */
   listRunningFilings(): Promise<RunningFiling[]>
+  /** D6's re-check before a run; false for an unknown filing. */
+  isReportFileable(filingId: string): Promise<boolean>
 }
 
 const RUN_PHOTOS_MAX = 5
@@ -176,5 +178,16 @@ export function makeFilingsWorker(sql: Sql): FilingsWorker {
     getFilingSettings: () => filings.getSettings(),
     claimFiling: (filingId, attempt) => filings.claim(filingId, attempt),
     listRunningFilings: () => filings.listRunningFilings(),
+
+    async isReportFileable(filingId) {
+      const [row] = await sql<{ fileable: boolean }[]>`
+        SELECT r.status <> 'rejected' AND r.deleted_at IS NULL
+               AND r.verification_verdict IS DISTINCT FROM 'rejected' AS fileable
+        FROM report_filings f
+        JOIN reports r ON r.id = f.report_id
+        WHERE f.id = ${filingId}
+      `
+      return row?.fileable ?? false
+    },
   }
 }

@@ -233,7 +233,8 @@ export class InMemoryFilingRepository implements FilingRepository {
     if (
       f === undefined ||
       !input.from.includes(f.status) ||
-      (input.attempts !== undefined && f.attempts !== input.attempts)
+      (input.attempts !== undefined && f.attempts !== input.attempts) ||
+      (input.runId !== undefined && f.runId !== input.runId)
     ) {
       return Promise.resolve(null)
     }
@@ -253,6 +254,7 @@ export class InMemoryFilingRepository implements FilingRepository {
         f === undefined ||
         !guard.status.includes(f.status) ||
         (guard.attempts !== undefined && f.attempts !== guard.attempts) ||
+        (guard.runId !== undefined && f.runId !== guard.runId) ||
         (guard.reason !== undefined && f.reason !== guard.reason)
       ) {
         return Promise.resolve(null)

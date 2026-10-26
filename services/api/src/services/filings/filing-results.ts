@@ -63,8 +63,10 @@ function detail(payload: FilingResultPayload): Partial<FilingMutableFields> {
 }
 
 /**
- * Applies a filer run's outcome (D6, D7). Every write is guarded on the run's attempt while the filing
- * is still running, so a redelivered or stale result matches no row and changes nothing.
+ * Applies a filer run's outcome (D6, D7). Every write is guarded on the run's attempt and run id while the
+ * filing is still running, so a redelivered or stale result matches no row and changes nothing. The run
+ * id is what tells runs apart when a requeue spends no attempt (ai_unavailable): the next run then claims
+ * the same attempt number.
  */
 export function makeApplyFilingResult(
   deps: FilingResultDeps,
@@ -77,6 +79,7 @@ export function makeApplyFilingResult(
     return deps.filings.transition(filing.id, {
       from: ["running"],
       attempts: payload.attempt,
+      runId: payload.runId,
       set: {
         ...set,
         dryRun: payload.dryRun,
@@ -125,7 +128,7 @@ export function makeApplyFilingResult(
     }
     const { applied } = await deps.applyFilingSuccess({
       filingId: filing.id,
-      from: { status: ["running"], attempts: payload.attempt },
+      from: { status: ["running"], attempts: payload.attempt, runId: payload.runId },
       outcome: payload.outcome,
       method: "script",
       ...(caseId !== undefined ? { caseId } : {}),
@@ -188,7 +191,7 @@ export function makeApplyFilingResult(
     if (!applied) {
       deps.logger?.warn(
         { filingId: payload.filingId, runId: payload.runId, attempt: payload.attempt },
-        "filing result matched no running filing at that attempt; ignored",
+        "filing result matched no running filing at that attempt and run; ignored",
       )
     }
     return { applied }
