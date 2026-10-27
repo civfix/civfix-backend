@@ -1,6 +1,6 @@
 {
   "name": "@civfix/api",
-  "version": "1.4.0",
+  "version": "1.4.1",
   "private": true,
   "description": "civfix Fastify 5 API service. Hosts HTTP + WS endpoints; all external dependencies sit behind the 11 @civfix/seams seam interfaces, selected real-vs-fake in the DI container.",
   "license": "AGPL-3.0-only",
