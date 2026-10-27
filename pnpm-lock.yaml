@@ -136,8 +136,8 @@ importers:
         specifier: ^0.65.0
         version: 0.65.0
       '@civfix/tokens':
-        specifier: ^0.1.0
-        version: 0.1.0
+        specifier: ^0.1.1
+        version: 0.1.1
       '@fastify/cookie':
         specifier: ^11.1.2
         version: 11.1.2
@@ -478,8 +478,8 @@ packages:
     resolution: {integrity: sha512-AW2XCtjpP05I2NgzN9vdalSqGi9Rz4l78lLlqMStvy/Gf9HyY3a3U8+OSZ0uns6XRl0TSmiU79Ky/r9EouRvGw==}
     engines: {node: '>=20'}
 
-  '@civfix/tokens@0.1.0':
-    resolution: {integrity: sha512-CSwCLbNl0ojkG6oUBL2SSM73Kw8n+8J2G3GN06ptyjiKVQ0G5KybWIxPXIG0uumtu3iTrMBBh/b7RAx2GjqFpg==}
+  '@civfix/tokens@0.1.1':
+    resolution: {integrity: sha512-q8X1kGM90fEAbbk1tEuy91cA9Dr8Z/l9v3gdKN5DibEZrSnVbPnclJCMotmW7HzC8AjhqBo1MHxxrBaooGUPkw==}
     engines: {node: '>=20'}
 
   '@derhuerst/http-basic@8.2.4':
@@ -4694,7 +4694,7 @@ snapshots:
     dependencies:
       zod: 4.6.7
 
-  '@civfix/tokens@0.1.0': {}
+  '@civfix/tokens@0.1.1': {}
 
   '@derhuerst/http-basic@8.2.4':
     dependencies:
