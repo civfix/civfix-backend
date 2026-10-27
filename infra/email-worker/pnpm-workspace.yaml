@@ -1,7 +1,6 @@
 # Settings only. The email worker is its own workspace root (own lockfile, not one of the backend's packages), and
 # pnpm takes the nearest pnpm-workspace.yaml as the root, so this file is what it reads here. Install it WITHOUT
-# --ignore-workspace: that flag drops these settings, overrides included. Same supply-chain gates as the repo root,
-# but blockExoticSubdeps stays on: the root turns it off only for node-apn, which this package does not use.
+# --ignore-workspace: that flag drops these settings, overrides included. Same supply-chain gates as the repo root.
 
 # A dependency that declares it cannot run on our Node must stop the install, not print a warning CI ignores.
 engineStrict: true
