@@ -10,7 +10,7 @@
 #     docker build -f services/api/Dockerfile -t civfix/api:latest .
 #
 # Stages:
-#   base    pinned Node 22 (Debian bookworm-slim, glibc) + corepack-pinned pnpm.
+#   base    pinned Node 22 (Debian bookworm-slim, glibc) with corepack enabled.
 #   build   install the FULL workspace (incl. dev tooling), build the api with turbo/tsup, then
 #           `pnpm deploy --prod` the API into a self-contained, dev-pruned directory (/out) whose
 #           node_modules contains only production deps with @civfix/contract resolved via the pnpm store.
@@ -27,11 +27,14 @@ ENV PNPM_HOME="/pnpm" \
     PATH="/pnpm:$PATH" \
     # Keep pnpm output terse + deterministic in CI.
     CI=true
-# corepack ships with Node 22; pin pnpm to the version in the root package.json packageManager field.
-RUN corepack enable && corepack prepare pnpm@9.12.0 --activate
+RUN corepack enable
 WORKDIR /app
 
 FROM base AS build
+# pnpm comes from the root package.json packageManager field, sha512 included, so the image runs exactly the
+# pnpm CI and developers run. Copied alone first so the download stays cached until the root package.json changes.
+COPY package.json ./
+RUN corepack install
 # The .dockerignore keeps node_modules/dist/tests out of this copy.
 COPY . .
 # Dev deps are needed here: tsup/turbo do the build. --frozen-lockfile fails the build on a stale
