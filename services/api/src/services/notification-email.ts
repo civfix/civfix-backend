@@ -206,10 +206,13 @@ export function makeNotificationEmailer(deps: NotificationEmailerDeps): Notifica
     if (found.length === 0) return
     // Keyed by link, not by name: two report chats can share a name.
     const conversation = CHAT_CATEGORIES.has(email.category) ? email.link : null
-    const claims = found.map((r) => ({ userId: r.userId, conversation }))
+    const claims = found.map((recipient) => ({
+      recipient,
+      claim: { userId: recipient.userId, conversation },
+    }))
     let granted: boolean[]
     try {
-      granted = await deps.throttle.claim(claims)
+      granted = await deps.throttle.claim(claims.map((c) => c.claim))
     } catch (err) {
       deps.logger?.warn(
         { err, category: email.category, count: found.length },
@@ -218,9 +221,7 @@ export function makeNotificationEmailer(deps: NotificationEmailerDeps): Notifica
       return
     }
     const notificationIds = new Map(batch.map((r) => [r.userId, r.notificationId]))
-    const sendable = found.flatMap((recipient, i) =>
-      granted[i] === true ? [{ recipient, claim: claims[i]! }] : [],
-    )
+    const sendable = claims.filter((_, i) => granted[i] === true)
     await mapWithLimit(sendable, SEND_CONCURRENCY, ({ recipient, claim }) =>
       deliver(email, recipient, claim, notificationIds.get(recipient.userId) ?? ""),
     )

@@ -11,7 +11,6 @@ import {
   type SetMessagePinnedRequest,
 } from "@civfix/contract"
 import { randomUUID } from "node:crypto"
-import { z } from "zod"
 import type { FastifyInstance } from "fastify"
 import { perIdentity } from "../plugins/rate-limit.js"
 import type { Container } from "../di.js"
@@ -58,7 +57,7 @@ export const CreatePollBodySchema = trimTextFields(
   poll.options.forEach((option, index) => {
     if (seen.has(option)) {
       ctx.addIssue({
-        code: z.ZodIssueCode.custom,
+        code: "custom",
         path: ["options", index],
         message: "must not repeat an earlier option",
       })

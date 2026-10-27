@@ -32,9 +32,11 @@ describe("RealAbuseChecks.nsfwScore (default benign, never throws)", () => {
 
   it("a wired model is NOT used while the flag is off (stays benign)", async () => {
     const nsfwModel = vi.fn().mockResolvedValue(1)
-    const abuse = new RealAbuseChecks({ useRealNsfw: false, nsfwModel })
+    const lines: string[] = []
+    const abuse = new RealAbuseChecks({ useRealNsfw: false, nsfwModel, log: (l) => lines.push(l) })
     await expect(abuse.nsfwScore(IMG)).resolves.toBe(0)
     expect(nsfwModel).not.toHaveBeenCalled()
+    expect(lines.some((l) => l.includes("NSFW model not configured"))).toBe(true)
   })
 })
 

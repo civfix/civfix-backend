@@ -290,7 +290,7 @@ describe("makeCityForwardThrottle (F023: durable per-actor / per-geoid city-forw
     let allowed = 0
     for (let i = 0; i < CITY_FORWARD_PER_GEOID_PER_HOUR + 5; i++) {
       const actor = `actor-${i}`
-      if (await gate(R1 + i, GEO, actor)) allowed++
+      if (await gate(`${R1}${i}`, GEO, actor)) allowed++
     }
     expect(allowed).toBe(CITY_FORWARD_PER_GEOID_PER_HOUR)
   })

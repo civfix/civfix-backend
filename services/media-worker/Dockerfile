@@ -1,4 +1,4 @@
-# syntax=docker/dockerfile:1.7
+# syntax=docker/dockerfile:1.7@sha256:a57df69d0ea827fb7266491f2813635de6f17269be881f696fbfdf2d83dda33e
 #
 # civfix media-worker production image (multi-stage).
 #
@@ -66,11 +66,14 @@
 #   ffmpeg  verify the pinned FFmpeg source release and compile the minimal ffmpeg + ffprobe.
 #   build   install the FULL workspace, build api(src is inlined) -> worker, then
 #           `pnpm deploy --prod` the worker into a self-contained, dev-pruned /out.
-#   runtime copy /out + the pinned binaries, provision the sandbox user, drop privileges in the
-#           entrypoint, run the worker. (No port / no HTTP healthcheck: the worker is a queue consumer;
-#           liveness is observed via pg-boss + logs. Docker restarts it on exit.)
+#   runtime plain Node 22 with no package manager: copy /out + the pinned binaries, provision the
+#           sandbox user, drop privileges in the entrypoint, run the worker. (No port / no HTTP
+#           healthcheck: the worker is a queue consumer; liveness is observed via pg-boss + logs.
+#           Docker restarts it on exit.)
 
-FROM node:22-bookworm-slim AS base
+# The digest is the multi-arch index (it carries linux/arm64 and linux/amd64), so a rebuild of the same
+# commit gets the same base; the tag only tells a reader which line it is. Move both together.
+FROM node:22-bookworm-slim@sha256:de170b39439eb0e5a3444ad7d60b015614a381e10fecae2e30ec9e735122f38d AS base
 ENV PNPM_HOME="/pnpm" \
     PATH="/pnpm:$PATH" \
     CI=true
@@ -153,13 +156,20 @@ RUN pnpm --filter @civfix/media-worker... build
 RUN --mount=type=cache,id=pnpm-store,target=/pnpm/store \
     pnpm --filter @civfix/media-worker --prod deploy /out
 
-FROM base AS runtime
+# From the plain Node image, not `base`: the runtime needs no package manager, and the corepack-cached
+# pnpm in `base` carries its own bundled dependency tree (tar, glob, minimatch, cross-spawn, ...) that the
+# image scan flags. Same digest as `base`, so both move together.
+FROM node:22-bookworm-slim@sha256:de170b39439eb0e5a3444ad7d60b015614a381e10fecae2e30ec9e735122f38d AS runtime
 # Same contract as the api image: the release identity is a property of the promoted artifact, not of the
 # deploy that placed it. Read by src/seams.ts as the GlitchTip `release`.
 ARG SERVICE_VERSION=0.0.0
 ENV NODE_ENV=production \
     SERVICE_VERSION=${SERVICE_VERSION}
 WORKDIR /app
+# No package manager, as in the api image: nothing here runs one, and npm's bundled dependency tree is
+# where the image scan finds fixable HIGH advisories.
+RUN rm -rf /usr/local/bin/corepack /usr/local/lib/node_modules/corepack /usr/local/bin/yarn /usr/local/bin/yarnpkg /opt/yarn-* \
+    /usr/local/bin/npm /usr/local/bin/npx /usr/local/lib/node_modules/npm
 RUN apt-get update \
  && apt-get install -y --no-install-recommends util-linux \
  && rm -rf /var/lib/apt/lists/* \
@@ -183,4 +193,4 @@ ENV FFMPEG_PATH=/usr/local/bin/ffmpeg \
 # fatal error, so `restart: unless-stopped` in compose recovers it. main.js installs SIGTERM/SIGINT
 # graceful shutdown (drain the queue, then tear down the DB pool + telemetry).
 ENTRYPOINT ["/usr/local/bin/media-worker-entrypoint"]
-CMD ["node", "dist/main.js"]
+CMD ["node", "--enable-source-maps", "dist/main.js"]

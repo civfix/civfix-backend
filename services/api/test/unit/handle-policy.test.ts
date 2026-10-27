@@ -91,7 +91,7 @@ describe("decideHandleWrite: the rolling 30-day rename cooldown", () => {
     const atBoundary = new Date(NOW.getTime() - HANDLE_RENAME_COOLDOWN_MS)
     const oneMsShort = new Date(atBoundary.getTime() + 1)
 
-    expect(() => decideHandleWrite(input({ handleChangedAt: oneMsShort }))).toThrowError(
+    expect(() => decideHandleWrite(input({ handleChangedAt: oneMsShort }))).toThrow(
       expect.objectContaining({ code: "RATE_LIMITED" }),
     )
     expect(decideHandleWrite(input({ handleChangedAt: atBoundary }))).toEqual({
@@ -135,7 +135,7 @@ describe("decideHandleWrite: format + uniqueness gates run BEFORE the cooldown",
   })
 
   it("throws CONFLICT 409 when the handle is taken by a different user", () => {
-    expect(() => decideHandleWrite(input({ isTaken: true }))).toThrowError(
+    expect(() => decideHandleWrite(input({ isTaken: true }))).toThrow(
       expect.objectContaining({ code: "CONFLICT", httpStatus: 409 }),
     )
   })
@@ -144,16 +144,16 @@ describe("decideHandleWrite: format + uniqueness gates run BEFORE the cooldown",
     // Ordering matters for the message the user sees: telling a coach "wait until August" for a handle
     // that could never be accepted is a dead end.
     const yesterday = new Date(NOW.getTime() - 24 * 60 * 60 * 1000)
-    expect(() =>
-      decideHandleWrite(input({ submitted: "!!", handleChangedAt: yesterday })),
-    ).toThrowError(expect.objectContaining({ code: "VALIDATION" }))
+    expect(() => decideHandleWrite(input({ submitted: "!!", handleChangedAt: yesterday }))).toThrow(
+      expect.objectContaining({ code: "VALIDATION" }),
+    )
   })
 
   it("reports the CONFLICT (not the cooldown) when both would fail", () => {
     const yesterday = new Date(NOW.getTime() - 24 * 60 * 60 * 1000)
-    expect(() =>
-      decideHandleWrite(input({ isTaken: true, handleChangedAt: yesterday })),
-    ).toThrowError(expect.objectContaining({ code: "CONFLICT" }))
+    expect(() => decideHandleWrite(input({ isTaken: true, handleChangedAt: yesterday }))).toThrow(
+      expect.objectContaining({ code: "CONFLICT" }),
+    )
   })
 })
 
@@ -166,10 +166,10 @@ describe("decideHandleWrite: trim normalization (LOW/readability finding)", () =
   })
 
   it("still rejects a handle that is invalid AFTER trimming", () => {
-    expect(() => decideHandleWrite(input({ submitted: "  ab  " }))).toThrowError(
+    expect(() => decideHandleWrite(input({ submitted: "  ab  " }))).toThrow(
       expect.objectContaining({ code: "VALIDATION" }),
     )
-    expect(() => decideHandleWrite(input({ submitted: "   " }))).toThrowError(
+    expect(() => decideHandleWrite(input({ submitted: "   " }))).toThrow(
       expect.objectContaining({ code: "VALIDATION" }),
     )
   })

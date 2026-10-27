@@ -13,8 +13,8 @@ function flat(sql: string): string {
 async function runPurge(handlers: SqlHandler[]) {
   const fake = makeFakeSql(handlers)
   const result = await purgeDemo(fake.sql as unknown as TransactionSql).then(
-    (counts) => ({ counts, error: null as Error | null }),
-    (error: Error) => ({ counts: null, error }),
+    (counts) => ({ counts, error: null }),
+    (error: unknown) => ({ counts: null, error }),
   )
   return { ...result, statements: fake.statements.map((s) => flat(s.sql)) }
 }
@@ -24,7 +24,7 @@ describe("seed-demo-la purge", () => {
     const { error, statements } = await runPurge([
       { match: /FROM volunteer_hours vh/, rows: [{ kind: "post", id: REAL_POST }] },
     ])
-    expect(error?.message).toContain(REAL_POST)
+    expect(error).toMatchObject({ message: expect.stringContaining(REAL_POST) })
     expect(statements.some((s) => s.startsWith("DELETE"))).toBe(false)
   })
 

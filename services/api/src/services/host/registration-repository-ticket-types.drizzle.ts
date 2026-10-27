@@ -185,13 +185,7 @@ async function updateTicketTypeIn(
       sales_opens_at   = ${patch.has("salesOpensAt") ? args.salesOpensAt : sql`sales_opens_at`},
       sales_closes_at  = ${patch.has("salesClosesAt") ? args.salesClosesAt : sql`sales_closes_at`},
       visibility       = ${patch.has("visibility") ? args.visibility : sql`visibility`},
-      access_code_hash = ${
-        args.clearAccessCode
-          ? null
-          : args.accessCodeHash !== null
-            ? args.accessCodeHash
-            : sql`access_code_hash`
-      },
+      access_code_hash = ${args.clearAccessCode ? null : (args.accessCodeHash ?? sql`access_code_hash`)},
       max_party_size   = ${patch.has("maxPartySize") ? args.maxPartySize : sql`max_party_size`},
       sort_order       = ${patch.has("sortOrder") && args.sortOrder !== null ? args.sortOrder : sql`sort_order`},
       waitlist_enabled = ${patch.has("waitlistEnabled") ? args.waitlistEnabled : sql`waitlist_enabled`},
