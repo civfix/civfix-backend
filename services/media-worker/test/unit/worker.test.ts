@@ -75,7 +75,11 @@ describe("media-worker wiring", () => {
     const handle = makeJobs()
     const calls: {
       name: string
-      options?: { retryLimit?: number; retryBackoff?: boolean; policy?: string }
+      options?: {
+        retryLimit?: number | undefined
+        retryBackoff?: boolean | undefined
+        policy?: string | undefined
+      }
     }[] = []
     const original = handle.jobs.createQueue.bind(handle.jobs)
     handle.jobs.createQueue = (name, options) => {

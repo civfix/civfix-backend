@@ -59,9 +59,9 @@ interface MessageExtras {
   reactions?: ReactionSummaryDTO[]
   mentions?: UserMentionDTO[]
   viewerUserId?: string | null
-  clientId?: string
+  clientId?: string | undefined
   attachments?: MediaDTO[]
-  replyTo?: ReplyToDTO | null
+  replyTo?: ReplyToDTO | null | undefined
 }
 
 function toMessageDTO(r: DmRowSelect, extras: MessageExtras = {}): ChatMessageDTO {

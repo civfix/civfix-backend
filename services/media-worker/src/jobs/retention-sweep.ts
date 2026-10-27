@@ -22,7 +22,7 @@ export interface RetentionSweepDeps extends JobObsDeps {
   inboundEmailsRetentionMs?: number
   batchSize?: number
   maxPages?: number
-  storage?: Pick<Storage, "delete">
+  storage?: Pick<Storage, "delete"> | undefined
 }
 
 export interface RetentionSweepResult {

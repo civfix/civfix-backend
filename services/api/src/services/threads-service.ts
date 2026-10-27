@@ -113,9 +113,9 @@ export interface ThreadsServiceDeps {
   repo: ThreadsRepository
   readState: ChatReadState
   dm?: DmThreadsSource
-  report?: ReportThreadsSource
-  group?: GroupThreadsSource
-  mutes?: ThreadsMutesSource
+  report?: ReportThreadsSource | undefined
+  group?: GroupThreadsSource | undefined
+  mutes?: ThreadsMutesSource | undefined
   now?: () => Date
 }
 
