@@ -1,0 +1,36 @@
+# Settings only. The email worker is its own workspace root (own lockfile, not one of the backend's packages), and
+# pnpm takes the nearest pnpm-workspace.yaml as the root, so this file is what it reads here. Install it WITHOUT
+# --ignore-workspace: that flag drops these settings, overrides included. Same supply-chain gates as the repo root,
+# but blockExoticSubdeps stays on: the root turns it off only for node-apn, which this package does not use.
+
+# A dependency that declares it cannot run on our Node must stop the install, not print a warning CI ignores.
+engineStrict: true
+
+# Supply-chain gates (civfix/issue-tracker#259 D11). A version must be a day old before it can resolve, so a
+# hijacked publish is usually caught and pulled first. @civfix/* is exempt: it is our own registry, and a fresh
+# contract or tokens publish has to be adoptable the same day. An urgent same-day security fix gets its own
+# per-package entry in minimumReleaseAgeExclude; never lower the global age.
+minimumReleaseAge: 1440
+minimumReleaseAgeExclude:
+  - "@civfix/*"
+# Refuse a version published with weaker provenance than the versions before it (a stolen token, not CI).
+trustPolicy: no-downgrade
+# A git or tarball-URL subdependency carries no publish time or provenance, so it would slip past both checks above.
+blockExoticSubdeps: true
+# A new install script must stop the install for review: skipped silently, it can also break a native binary unnoticed.
+strictDepBuilds: true
+
+# The only packages allowed to run install scripts. Both are postinstalls that verify, and if needed fetch, the
+# native binary their platform package provides: esbuild (vitest, wrangler) and workerd (the local runtime wrangler
+# dev runs). Add a package here only after reading its script.
+allowBuilds:
+  esbuild: true
+  workerd: true
+
+# wrangler 4.152.0 pins miniflare 5.20261019.2-beta, which pins undici 7.29.1 (GHSA-xjj6-f33q-929c,
+# GHSA-4qv8-2p9j-2685, GHSA-f72v-6w45-q472). This forces miniflare's copy (the local dev/test runtime) to the
+# patched 7.x inside the same major. It cannot reach the undici 7.29.1 that wrangler bundles into its own CLI for
+# Cloudflare API calls. Drop once a wrangler release bundles undici >=7.30.1 and ships a miniflare that depends on
+# it.
+overrides:
+  undici@7: ">=7.30.1 <8"
