@@ -1,0 +1,36 @@
+name: Set up Trivy
+description: Installs a pinned Trivy release, checked against a recorded sha256. The scan gate itself is trivy.yaml at the repo root.
+
+# The binary, not aquasecurity/trivy-action: the action's own install step trusts whatever release its
+# tag points at, and its tags were force-pushed to credential stealers in March 2026. To bump, take the
+# release's trivy_<version>_checksums.txt, verify it with
+#   cosign verify-blob --bundle trivy_<version>_checksums.txt.sigstore.json \
+#     --certificate-identity-regexp '^https://github\.com/aquasecurity/trivy/\.github/workflows/' \
+#     --certificate-oidc-issuer https://token.actions.githubusercontent.com trivy_<version>_checksums.txt
+# and copy the two Linux tarball hashes below.
+runs:
+  using: composite
+  steps:
+    - name: Install Trivy
+      shell: bash
+      env:
+        TRIVY_VERSION: 0.76.1
+        SHA256_X64: c7cbe3137fb8a48a17574bede3dd6beb16742d1e9772929940fc90082c39d9c0
+        SHA256_ARM64: e174dff2a6dba5e3ae41f8d0537a6324405bd08132497340304c6b20e0f16a1f
+      run: |
+        set -euo pipefail
+        case "$RUNNER_ARCH" in
+          X64) asset="Linux-64bit"; sha="$SHA256_X64" ;;
+          ARM64) asset="Linux-ARM64"; sha="$SHA256_ARM64" ;;
+          *) echo "::error::no pinned Trivy build for runner arch $RUNNER_ARCH" >&2; exit 1 ;;
+        esac
+        dir="$RUNNER_TEMP/trivy"
+        mkdir -p "$dir"
+        tarball="$dir/trivy.tar.gz"
+        curl -fsSL --retry 5 --retry-all-errors -o "$tarball" \
+          "https://github.com/aquasecurity/trivy/releases/download/v${TRIVY_VERSION}/trivy_${TRIVY_VERSION}_${asset}.tar.gz"
+        echo "${sha}  ${tarball}" | sha256sum -c -
+        tar -xzf "$tarball" -C "$dir" trivy
+        sudo install -m 0755 "$dir/trivy" /usr/local/bin/trivy
+        rm -rf "$dir"
+        trivy --version

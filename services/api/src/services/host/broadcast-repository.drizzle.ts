@@ -44,6 +44,7 @@ import type {
   MemberContact,
 } from "./broadcast-types.js"
 import { ANNOUNCEMENT_VISIBLE_STATUSES, DEFAULT_BROADCAST_CHUNK_SIZE } from "./broadcast-types.js"
+import { requireRow } from "../../db/rows.js"
 
 interface BroadcastRowSelect {
   id: string
@@ -202,7 +203,7 @@ export function makeDrizzleBroadcastRepository(sql: Sql): BroadcastRepository {
           ${input.startedAt ?? null}, ${input.chunkSize ?? DEFAULT_BROADCAST_CHUNK_SIZE}
         )
         RETURNING ${broadcastColumns(sql)}`
-    return toRecord(rows[0]!)
+    return toRecord(requireRow(rows, "broadcast insert"))
   }
 
   return {

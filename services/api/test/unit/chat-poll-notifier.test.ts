@@ -24,6 +24,7 @@ import { FakePushSender } from "@civfix/seams"
 import type { ChatMessageDTO, PersonDTO } from "@civfix/contract"
 import type { Container } from "../../src/di.js"
 import { fakeNotificationEmail } from "../helpers/notification-email.js"
+import type { BlocksRepository } from "../../src/services/blocks-repository.js"
 
 /**
  * Mock state. Held in a hoisted record because the vi.mock factories below are lifted above the imports;
@@ -199,13 +200,13 @@ function containerFor(useFakeChat = false): Container {
  */
 let blockGateCalls: string[] | undefined
 
-function blocksRepoForContainer(): InstanceType<typeof InMemoryBlocksRepository> {
+function blocksRepoForContainer(): BlocksRepository {
   const calls = blockGateCalls
   if (calls === undefined) return blocks
   return {
-    ...blocks,
     block: (a: string, b: string) => blocks.block(a, b),
     unblock: (a: string, b: string) => blocks.unblock(a, b),
+    blockState: (viewerId: string, targetId: string) => blocks.blockState(viewerId, targetId),
     listBlocked: (a: string) => blocks.listBlocked(a),
     isBlockedEitherWay: (a: string, b: string) => {
       calls.push(`single:${b}`)
@@ -218,7 +219,7 @@ function blocksRepoForContainer(): InstanceType<typeof InMemoryBlocksRepository>
       )
       return new Set(candidateIds.filter((_, i) => verdicts[i] === true))
     },
-  } as unknown as InstanceType<typeof InMemoryBlocksRepository>
+  }
 }
 
 /** The notifier is fire-and-forget (returns void), so drain the task queues before asserting. */

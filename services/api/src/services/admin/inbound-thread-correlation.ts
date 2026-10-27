@@ -90,7 +90,8 @@ const OUTLOOK_HEADER_LOOKAHEAD = 2
 
 function hasReplyTextBefore(lines: string[], index: number): boolean {
   for (let i = 0; i < index; i++) {
-    const line = lines[i]!.trim()
+    const line = lines[i]?.trim()
+    if (line === undefined) break
     if (line !== "" && !line.startsWith(">")) return true
   }
   return false
@@ -116,7 +117,8 @@ function ownMailIdentifierRe(replyDomain: string): RegExp {
 }
 
 function isQuotedHistoryStart(lines: string[], index: number): boolean {
-  const line = lines[index]!.trim()
+  const line = lines[index]?.trim()
+  if (line === undefined) return false
   if (isQuotedAttributionAt(lines, index)) return true
   if (QUOTED_MESSAGE_SEPARATOR_RE.test(line)) return true
   if (!OUTLOOK_HEADER_FROM_RE.test(line)) return false
@@ -135,7 +137,8 @@ export function stripQuotedHistory(raw: string, replyDomain = DEFAULT_REPLY_DOMA
   let end = lines.findIndex((line, i) => ownIdentifier.test(line) || isQuotedHistoryStart(lines, i))
   if (end === -1) end = lines.length
   while (end > 0) {
-    const line = lines[end - 1]!.trim()
+    const line = lines[end - 1]?.trim()
+    if (line === undefined) break
     if (line !== "" && !line.startsWith(">") && !TRAILING_SEPARATOR_RE.test(line)) break
     end -= 1
   }

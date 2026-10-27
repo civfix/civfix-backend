@@ -116,13 +116,13 @@ function refineScheduledAt(
   const nowMs = Date.now()
   if (opts.rejectPast && whenMs < nowMs - SCHEDULE_MAX_BACKDATE_MS) {
     ctx.addIssue({
-      code: z.ZodIssueCode.custom,
+      code: "custom",
       path: ["scheduledAt"],
       message: "must not be in the past",
     })
   } else if (whenMs > nowMs + SCHEDULE_MAX_AHEAD_MS) {
     ctx.addIssue({
-      code: z.ZodIssueCode.custom,
+      code: "custom",
       path: ["scheduledAt"],
       message: "is too far in the future",
     })

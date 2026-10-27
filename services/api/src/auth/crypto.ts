@@ -4,7 +4,7 @@
  * live tokens.
  */
 
-import { randomBytes, timingSafeEqual } from "node:crypto"
+import { randomBytes, randomInt, timingSafeEqual } from "node:crypto"
 import { sha256 } from "oslo/crypto"
 
 export const TOKEN_BYTES = 32
@@ -22,24 +22,9 @@ export async function sha256Hex(input: string): Promise<string> {
   return Buffer.from(digest).toString("hex")
 }
 
-/** Rejection sampling over whole bytes, so there is no modulo bias. */
+/** node's randomInt rejection-samples, so there is no modulo bias; it throws on a max outside [1, 2^48). */
 export function randomIntBelow(max: number): number {
-  if (!Number.isInteger(max) || max <= 0) {
-    throw new Error("randomIntBelow: max must be a positive integer")
-  }
-  const bytes = Math.ceil(Math.log2(max) / 8) || 1
-  const maxUint = 256 ** bytes
-  const limit = maxUint - (maxUint % max)
-  for (;;) {
-    const buf = randomBytes(bytes)
-    let value = 0
-    for (let i = 0; i < bytes; i++) {
-      value = value * 256 + buf[i]!
-    }
-    if (value < limit) {
-      return value % max
-    }
-  }
+  return randomInt(max)
 }
 
 export function generateNumericCode(digits: number): string {

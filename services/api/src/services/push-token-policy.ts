@@ -127,8 +127,10 @@ function ipv6ToBytes(input: string): number[] | null {
     if (quad.length !== 4) return null
     const nums = quad.map((p) => Number(p))
     if (!nums.every(isOctet)) return null
-    const hi = ((nums[0]! << 8) | nums[1]!).toString(16)
-    const lo = ((nums[2]! << 8) | nums[3]!).toString(16)
+    const [n0, n1, n2, n3] = nums
+    if (n0 === undefined || n1 === undefined || n2 === undefined || n3 === undefined) return null
+    const hi = ((n0 << 8) | n1).toString(16)
+    const lo = ((n2 << 8) | n3).toString(16)
     s = `${s.slice(0, cut + 1)}${hi}:${lo}`
   }
   const { hextets: groups, runs, fill } = expandIpv6Hextets(s)
@@ -147,6 +149,8 @@ function ipv6ToBytes(input: string): number[] | null {
 function isPublicIpv6(addr: string): boolean {
   const b = ipv6ToBytes(addr)
   if (!b) return false
+  const [first, second] = b
+  if (first === undefined || second === undefined) return false
   if (b.every((x) => x === 0)) return false
   const embeddedV4 = () => b.slice(12).join(".")
   const first10Zero = b.slice(0, 10).every((x) => x === 0)
@@ -161,9 +165,9 @@ function isPublicIpv6(addr: string): boolean {
   ) {
     return isPublicIpv4(embeddedV4())
   }
-  if (b[0] === 0xfe && (b[1]! & 0xc0) === 0x80) return false
-  if ((b[0]! & 0xfe) === 0xfc) return false
-  if (b[0] === 0xff) return false
+  if (first === 0xfe && (second & 0xc0) === 0x80) return false
+  if ((first & 0xfe) === 0xfc) return false
+  if (first === 0xff) return false
   return true
 }
 

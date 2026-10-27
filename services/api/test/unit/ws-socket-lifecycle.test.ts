@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach, vi } from "vitest"
 import type { FastifyInstance, FastifyRequest } from "fastify"
-import type { WebSocket } from "@fastify/websocket"
+import type { GatewaySocket } from "../../src/ws/types.js"
 import { FakeUserChannel } from "@civfix/seams"
 import {
   MAX_CONNECTIONS_PER_IP,
@@ -160,13 +160,13 @@ type GatewayOptions = Parameters<typeof registerChatGateway>[1]
 
 function captureGatewayHandler(
   opts: GatewayOptions,
-): (socket: WebSocket, request: FastifyRequest) => void {
-  let captured: ((socket: WebSocket, request: FastifyRequest) => void) | undefined
+): (socket: GatewaySocket, request: FastifyRequest) => void {
+  let captured: ((socket: GatewaySocket, request: FastifyRequest) => void) | undefined
   const app = {
     get(
       _path: string,
       _opts: unknown,
-      handler: (socket: WebSocket, request: FastifyRequest) => void,
+      handler: (socket: GatewaySocket, request: FastifyRequest) => void,
     ): void {
       captured = handler
     },
@@ -369,7 +369,7 @@ describe("the pre-auth buffer holds as many frames as the post-auth queue", () =
 describe("per-user connection cap and slot release", () => {
   let opened = 0
   async function open(
-    handler: (socket: WebSocket, request: FastifyRequest) => void,
+    handler: (socket: GatewaySocket, request: FastifyRequest) => void,
   ): Promise<MockSocket> {
     const socket = new MockSocket()
     handler(socket, authedRequest(ALICE, ipN(opened++)))

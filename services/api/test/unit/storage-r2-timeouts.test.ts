@@ -33,7 +33,6 @@ const { R2Storage, R2_RESPONSE_TIMEOUT_MS, R2_TRANSFER_OPERATION_TIMEOUT_MS } =
   await import("../../src/adapters/storage.r2.js")
 
 const ENV_KEYS = ["HTTPS_PROXY", "https_proxy", "NO_PROXY", "no_proxy"] as const
-const saved: Record<string, string | undefined> = {}
 
 interface HandlerConfig {
   connectionTimeout?: number
@@ -61,17 +60,11 @@ async function resolvedHandlerConfig(): Promise<HandlerConfig | undefined> {
 beforeEach(() => {
   clientConfigs.length = 0
   sendOptions.length = 0
-  for (const key of ENV_KEYS) {
-    saved[key] = process.env[key]
-    delete process.env[key]
-  }
+  for (const key of ENV_KEYS) vi.stubEnv(key, undefined)
 })
 
 afterEach(() => {
-  for (const key of ENV_KEYS) {
-    if (saved[key] === undefined) delete process.env[key]
-    else process.env[key] = saved[key]
-  }
+  vi.unstubAllEnvs()
 })
 
 describe("R2 client timeouts", () => {
@@ -87,7 +80,7 @@ describe("R2 client timeouts", () => {
   })
 
   it("keeps the same timeouts on the proxied handler", async () => {
-    process.env.HTTPS_PROXY = "http://media-egress-proxy:8888"
+    vi.stubEnv("HTTPS_PROXY", "http://media-egress-proxy:8888")
 
     await storage().head("uploads/a")
 

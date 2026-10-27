@@ -49,7 +49,7 @@ const SettingsLocaleSchema = z
   .object({
     locale: z.enum([...SUPPORTED_LOCALES] as [string, ...string[]]).optional(),
   })
-  .passthrough()
+  .loose()
 
 const USER_SEARCH_DEFAULT_LIMIT = 10
 
@@ -343,7 +343,7 @@ async function runPostDeletionCleanups(
   outcomes.forEach((outcome, i) => {
     if (outcome.status === "rejected") {
       log.error(
-        { err: outcome.reason, userId, step: cleanups[i]![0] },
+        { err: outcome.reason, userId, step: cleanups[i]?.[0] },
         "account deletion: post-commit cleanup step failed (the account IS deleted, its session rows went with the erasure and the ban marker set before it still rejects cached sessions)",
       )
     }

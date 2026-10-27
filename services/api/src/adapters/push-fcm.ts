@@ -1,4 +1,5 @@
 import { encodePushMessageData } from "@civfix/contract"
+import type { Messaging, TokenMessage } from "firebase-admin/messaging"
 import type {
   PushSenderConfig,
   PushLogger,
@@ -61,40 +62,36 @@ export function makeFcmDispatcher(
   fcm: NonNullable<PushSenderConfig["fcm"]>,
   logger: PushLogger,
 ): PlatformDispatcher {
-  let initPromise: Promise<{ messaging: any; deleteApp: () => Promise<void> }> | null = null
+  let initPromise: Promise<{ messaging: Messaging; deleteApp: () => Promise<void> }> | null = null
 
   async function getMessaging() {
-    if (!initPromise) {
-      initPromise = (async () => {
-        const admin = await import("firebase-admin/app")
-        const messaging = await import("firebase-admin/messaging")
-        const serviceAccount = JSON.parse(fcm.serviceAccountJson) as Record<string, unknown>
-        const existing = admin.getApps().find((a) => a.name === FCM_APP_NAME)
-        const app =
-          existing ??
-          admin.initializeApp(
-            {
-              credential: admin.cert(serviceAccount),
-              ...(fcm.projectId !== undefined ? { projectId: fcm.projectId } : {}),
-            },
-            FCM_APP_NAME,
-          )
-        return { messaging: messaging.getMessaging(app), deleteApp: () => admin.deleteApp(app) }
-      })()
-    }
+    initPromise ??= (async () => {
+      const admin = await import("firebase-admin/app")
+      const messaging = await import("firebase-admin/messaging")
+      const serviceAccount = JSON.parse(fcm.serviceAccountJson) as Record<string, unknown>
+      const existing = admin.getApps().find((a) => a.name === FCM_APP_NAME)
+      const app =
+        existing ??
+        admin.initializeApp(
+          {
+            credential: admin.cert(serviceAccount),
+            ...(fcm.projectId !== undefined ? { projectId: fcm.projectId } : {}),
+          },
+          FCM_APP_NAME,
+        )
+      return { messaging: messaging.getMessaging(app), deleteApp: () => admin.deleteApp(app) }
+    })()
     return (await initPromise).messaging
   }
 
   async function dispatchSlice(
-    messaging: any,
+    messaging: Messaging,
     slice: PushDelivery[],
     invalidTokens: string[],
   ): Promise<FcmSliceVerdict["payloadRejected"]> {
     const tokens = slice.map((d) => d.token)
     try {
-      const resp = (await messaging.sendEach(slice.map(fcmMessage))) as {
-        responses: FcmSendResponse[]
-      }
+      const resp = await messaging.sendEach(slice.map(fcmMessage))
       const verdict = classifyFcmResponses(tokens, resp.responses)
       invalidTokens.push(...verdict.invalidTokens)
       for (const { code, token } of verdict.failures) {
@@ -148,8 +145,11 @@ export function makeFcmDispatcher(
   return dispatch
 }
 
-// `channelId` is the Admin SDK's name for the v1 API's android.notification.channel_id.
-function fcmMessage({ token, message }: PushDelivery): Record<string, unknown> {
+// `channelId` is the Admin SDK's name for the v1 API's android.notification.channel_id. Stored android
+// tokens are FCM registration tokens, not Firebase installation IDs; the FID message needs clients to
+// register FIDs first.
+// eslint-disable-next-line @typescript-eslint/no-deprecated
+function fcmMessage({ token, message }: PushDelivery): TokenMessage {
   const data = encodePushMessageData(pushMessageData(message))
   if (message.kind === "clear") {
     return { token, data, android: { priority: FCM_SILENT_PRIORITY } }

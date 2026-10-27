@@ -113,7 +113,8 @@ export function makeChatPollService(deps: ChatPollServiceDeps): ChatPollService 
     }
     if (meta.reportId !== null) return { roomKind: "report", roomId: meta.reportId }
     if (meta.groupId !== null) return { roomKind: "group", roomId: meta.groupId }
-    return { roomKind: "cleanup", roomId: meta.cleanupId! }
+    if (meta.cleanupId !== null) return { roomKind: "cleanup", roomId: meta.cleanupId }
+    throw new Error(`chat poll ${messageId}: message belongs to no room`)
   }
 
   /** Everyone else gets the viewer-neutral read; the caller gets their own vote state back. */

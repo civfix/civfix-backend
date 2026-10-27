@@ -3,7 +3,7 @@ import type { SessionService } from "../auth/session-service.js"
 import type { AccountStatus } from "../auth/stores.js"
 import type { WsTicketPayload } from "../auth/ws-ticket.js"
 import { sha256Hex } from "../auth/crypto.js"
-import { presentedSessionToken, sessionCookieValue } from "../auth/transport.js"
+import { firstHeaderValue, presentedSessionToken, sessionCookieValue } from "../auth/transport.js"
 import { isProd } from "../env.js"
 import type { WsHandshakeResult } from "./types.js"
 
@@ -20,8 +20,7 @@ export function isAllowedWsOrigin(
 }
 
 function originHeader(request: FastifyRequest): string | undefined {
-  const raw = request.headers.origin
-  const value = Array.isArray(raw) ? raw[0] : raw
+  const value = firstHeaderValue(request.headers.origin)
   return value === undefined || value === "" ? undefined : value
 }
 

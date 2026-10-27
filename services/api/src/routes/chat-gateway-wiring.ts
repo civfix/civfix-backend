@@ -333,7 +333,11 @@ function makeChatRepos({ container, overrides, useFakeChat }: WiringContext): Ch
 
 function makeGroupChat(repos: ChatRepos): GatewayGroupChat | undefined {
   if (!repos.groupWired) return undefined
-  const groups = (): ChatGroupRepository => repos.getGroupsRepo()!
+  const groups = (): ChatGroupRepository => {
+    const repo = repos.getGroupsRepo()
+    if (!repo) throw new Error("chat gateway: group chat is wired but has no group repository")
+    return repo
+  }
   return {
     isMember: async (groupId, userId) => (await groups().roleOf(groupId, userId)) !== null,
     access: async (groupId, userId) => {
@@ -523,6 +527,7 @@ function withSendResilience(
     deliverLocal?: LocalDeliver
   }
   const { dmRepo, getChatRepo } = repos
+  const baseBroadcastEvent = baseChat.broadcastEvent?.bind(baseChat)
   const sendResilience = makeSendResilience({
     dedupe,
     findRoomMessage: (kind, roomId, messageId, viewerUserId) => {
@@ -544,11 +549,7 @@ function withSendResilience(
     history: (room, before, limit, viewerUserId, around) =>
       baseChat.history(room, before, limit, viewerUserId, around),
     broadcast: (room, msg, opts) => baseChat.broadcast(room, msg, opts),
-    ...(baseChat.broadcastEvent
-      ? {
-          broadcastEvent: (room, frame, opts) => baseChat.broadcastEvent!(room, frame, opts),
-        }
-      : {}),
+    ...(baseBroadcastEvent ? { broadcastEvent: baseBroadcastEvent } : {}),
     sendResilience,
   }
 }

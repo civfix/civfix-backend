@@ -59,32 +59,34 @@ export class RedisNotificationEmailThrottle implements NotificationEmailThrottle
 
   async claim(requests: readonly EmailThrottleRequest[]): Promise<boolean[]> {
     const granted = requests.map(() => true)
-    const chats = requests.flatMap((r, i) => (r.conversation !== null ? [i] : []))
+    const chats = requests.flatMap(({ userId, conversation }, i) =>
+      conversation !== null ? [{ i, userId, conversation }] : [],
+    )
     if (chats.length > 0) {
       const tx = this.redis().multi()
-      for (const i of chats) {
-        const r = requests[i]!
-        tx.set(conversationKey(r.userId, r.conversation!), "1", "EX", WINDOW_SECONDS, "NX")
+      for (const { userId, conversation } of chats) {
+        tx.set(conversationKey(userId, conversation), "1", "EX", WINDOW_SECONDS, "NX")
       }
-      repliesOf(await tx.exec()).forEach((reply, n) => {
-        if (reply !== "OK") granted[chats[n]!] = false
-      })
+      const replies = repliesOf(await tx.exec())
+      for (const [n, { i }] of chats.entries()) {
+        if (replies[n] !== "OK") granted[i] = false
+      }
     }
 
-    const counted = requests.flatMap((_, i) => (granted[i] ? [i] : []))
+    const counted = requests.flatMap((request, i) => (granted[i] ? [{ i, request }] : []))
     if (counted.length === 0) return granted
     const tx = this.redis().multi()
-    for (const i of counted) {
-      const key = capKey(requests[i]!.userId)
+    for (const { request } of counted) {
+      const key = capKey(request.userId)
       // The SET opens the window with its TTL; INCR keeps it.
       tx.set(key, "0", "EX", WINDOW_SECONDS, "NX").incr(key)
     }
     const replies = repliesOf(await tx.exec())
     const refused: EmailThrottleRequest[] = []
-    counted.forEach((i, n) => {
+    counted.forEach(({ i, request }, n) => {
       if (Number(replies[n * 2 + 1]) <= NOTIFICATION_EMAILS_PER_HOUR) return
       granted[i] = false
-      refused.push(requests[i]!)
+      refused.push(request)
     })
     await this.release(refused)
     return granted

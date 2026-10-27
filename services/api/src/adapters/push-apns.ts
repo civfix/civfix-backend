@@ -163,7 +163,7 @@ export function makeApnsDispatcher(
       if (opened.inFlight === 0) opened.session.destroy()
     })
     opened.session.on("close", forget)
-    opened.session.on("error", (err) => logger.warn({ err }, "push(apns): session error"))
+    opened.session.on("error", (err: unknown) => logger.warn({ err }, "push(apns): session error"))
     connection = opened
     return opened
   }
