@@ -437,6 +437,50 @@ describe("recordManualFiling", () => {
   })
 })
 
+describe("blank operator notes", () => {
+  it("T1: Cancel with a blank note records the cancel with no note", async () => {
+    const f = await filing({ status: "queued" })
+
+    const res = await call("cancelFiling", { params: { id: f.id }, body: { note: "   " } })
+    expect(res.statusCode, res.body).toBe(200)
+    expect(h.f.filings.audits.filter((a) => a.target === `filing:${f.id}`)).toEqual([
+      { actorId: h.operatorId, action: "filing.cancelled", target: `filing:${f.id}` },
+    ])
+  })
+
+  it("T2: a manual filing's note is recorded trimmed, and a blank one as no note", async () => {
+    const faxed = await filing({ status: "queued" })
+    const blank = await filing({ status: "queued" })
+
+    const res1 = await call("recordManualFiling", {
+      params: { id: faxed.id },
+      body: { caseId: "1-555", note: "  sent by fax  " },
+    })
+    expect(res1.statusCode, res1.body).toBe(200)
+    const res2 = await call("recordManualFiling", {
+      params: { id: blank.id },
+      body: { caseId: "1-556", note: " " },
+    })
+    expect(res2.statusCode, res2.body).toBe(200)
+
+    const recorded = (id: string) =>
+      h.f.filings.audits.filter(
+        (a) => a.action === "filing.manual_recorded" && a.target === `filing:${id}`,
+      )
+    expect(recorded(faxed.id)).toEqual([
+      {
+        actorId: h.operatorId,
+        action: "filing.manual_recorded",
+        target: `filing:${faxed.id}`,
+        meta: { note: "sent by fax" },
+      },
+    ])
+    expect(recorded(blank.id)).toEqual([
+      { actorId: h.operatorId, action: "filing.manual_recorded", target: `filing:${blank.id}` },
+    ])
+  })
+})
+
 describe("filing settings", () => {
   it("T15: resuming runs one sweep pass that queues 100 email filings, oldest first", async () => {
     const created: string[] = []

@@ -515,7 +515,7 @@ describe("F131: the PRODUCTION anon service raises abuse flags and logs", () => 
     db: FakeSqlControl
     tokenId: string
     anonToken: string
-    logs: { line: string; extra: Record<string, unknown> }[]
+    logs: { msg: string }[]
   }
 
   async function prodHarness(): Promise<ProdHarness> {
@@ -525,11 +525,15 @@ describe("F131: the PRODUCTION anon service raises abuse flags and logs", () => 
       ...makeContainer(env),
       getDb: () => ({ sql: db.sql }),
     } as unknown as Container
-    const app = await makeServer({ env, container })
-    const logs: { line: string; extra: Record<string, unknown> }[] = []
-    app.log.info = ((extra: Record<string, unknown>, line: string) => {
-      logs.push({ line, extra })
-    }) as unknown as typeof app.log.info
+    const logs: { msg: string }[] = []
+    const app = await makeServer({
+      env,
+      container,
+      logCapture: {
+        level: "info",
+        stream: { write: (line) => logs.push(JSON.parse(line) as { msg: string }) },
+      },
+    })
     const tokenId = "anon-token-id-f131"
     return {
       app,
@@ -571,14 +575,22 @@ describe("F131: the PRODUCTION anon service raises abuse flags and logs", () => 
     await prod.app.inject({
       method: "POST",
       url: "/v1/anon/reports",
-      payload: anonPayload({ anonToken: prod.anonToken, honeypot: "bot" }),
+      payload: anonPayload({
+        anonToken: prod.anonToken,
+        honeypot: "bot",
+        lat: 34.123456,
+        lng: -118.654321,
+      }),
     })
 
-    const line = prod.logs.find((l) => l.line.includes("honeypot tripped"))
-    expect(line).toBeDefined()
-    const serialized = JSON.stringify(prod.logs)
-    expect(serialized).not.toContain("34.1")
-    expect(serialized).not.toContain("-118.35")
+    const logs = prod.logs
+    expect(logs.find((l) => l.msg.includes("honeypot tripped"))).toBeDefined()
+    await expect
+      .poll(() => logs.some((l) => l.msg === "request completed"), { timeout: 2000 })
+      .toBe(true)
+    const serialized = JSON.stringify(logs)
+    expect(serialized).not.toContain("34.123456")
+    expect(serialized).not.toContain("118.654321")
   })
 
   it("raises NO flag for a clean submit (the honeypot branch is the only producer here)", async () => {

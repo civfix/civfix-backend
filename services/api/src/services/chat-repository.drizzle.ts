@@ -38,6 +38,7 @@ import type {
   InsertMessageOptions,
   SoftDeleteOpts,
 } from "./chat-repository.js"
+import { requireRow } from "../db/rows.js"
 
 export interface ReportCityContext {
   geoid: string
@@ -99,14 +100,19 @@ function buildMessageDTO(
       system_body: r.system_body,
     })
   }
+  const roomId = r.cleanup_id ?? r.report_id ?? r.group_id
+  const senderId = r.sender_id
+  if (roomId === null || senderId === null) {
+    throw new Error(`chat message ${r.id}: a user message needs a room and a sender`)
+  }
   const isReport = r.report_id !== null
   const isGroup = r.group_id !== null
   return {
     id: r.id,
-    cleanupId: r.cleanup_id ?? r.report_id ?? r.group_id!,
+    cleanupId: roomId,
     ...(isReport ? { roomKind: "report" as const } : {}),
     ...(isGroup ? { roomKind: "group" as const } : {}),
-    ...messageCoreFields(r, r.sender_id!, { attachments, reactions, mentions, replyTo }),
+    ...messageCoreFields(r, senderId, { attachments, reactions, mentions, replyTo }),
     ...(poll != null ? { poll } : {}),
     mine: viewerUserId != null && r.sender_id === viewerUserId,
     ...(isReport ? cityForwardFields(r, reportCity) : {}),
@@ -446,7 +452,7 @@ export function makeDrizzleChatRepository(
         wantsMedia || inTx
           ? sql.begin(async (tx) => {
               const inserted = await run(tx)
-              const createdAt = inserted[0]!.created_at
+              const createdAt = requireRow(inserted, "chat message insert").created_at
               if (wantsMedia) await attachChatMedia(tx, id, uploadIds, createdAt, input.userId)
               if (inTx) await inTx(tx, { id, createdAt })
               return inserted
@@ -460,7 +466,7 @@ export function makeDrizzleChatRepository(
         ? ((await loadChatAttachments(sql, [id], presign, input.userId)).get(id) ?? [])
         : []
       await withSenderAvatars(rows)
-      return toMessageDTO(rows[0]!, {
+      return toMessageDTO(requireRow(rows, "chat message insert"), {
         viewerUserId: input.userId,
         clientId: input.clientId,
         attachments,

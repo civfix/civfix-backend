@@ -55,14 +55,12 @@ export async function registerClaimRoutes(
 
   let reportServiceMemo: ReportService | undefined
   function reportService(): ReportService {
-    if (reportServiceMemo === undefined) {
-      reportServiceMemo = makeReportService({
-        repo: makeDrizzleReportRepository(container.getDb().sql),
-        resolveJurisdictionGeoid: () => Promise.resolve(null),
-        presignMedia: makeMediaPresigner(container.storage),
-        presignPrivateMedia: makePrivateMediaPresigner(container.storage),
-      })
-    }
+    reportServiceMemo ??= makeReportService({
+      repo: makeDrizzleReportRepository(container.getDb().sql),
+      resolveJurisdictionGeoid: () => Promise.resolve(null),
+      presignMedia: makeMediaPresigner(container.storage),
+      presignPrivateMedia: makePrivateMediaPresigner(container.storage),
+    })
     return reportServiceMemo
   }
 

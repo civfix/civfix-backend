@@ -45,6 +45,7 @@ const CHANNEL_READ_ONLY_CODE = "channel_read_only"
 const NOT_GROUP_MEMBER_MESSAGE = "You are not a member of this group."
 
 const DM_NOT_ALLOWED_MESSAGE = "You can't message in this conversation."
+const DMS_UNAVAILABLE_MESSAGE = "Direct messages are not available."
 
 type ClientFrame = WsClientMessage
 type ExtractFrame<T extends ClientFrame["type"]> = Extract<ClientFrame, { type: T }>
@@ -196,7 +197,7 @@ async function authorizeRoom(
     return { ok: true }
   }
   if (!deps.dm) {
-    return { ok: false, code: ErrorCode.FORBIDDEN, message: "Direct messages are not available." }
+    return { ok: false, code: ErrorCode.FORBIDDEN, message: DMS_UNAVAILABLE_MESSAGE }
   }
   const peer = await deps.dm.peerOf(id, userId)
   if (peer === null) {
@@ -386,7 +387,8 @@ function persistSendFrame(
   body: string,
 ): Promise<ChatMessageDTO> {
   if (room.kind === "dm") {
-    return deps.dm!.persist({
+    if (!deps.dm) return Promise.reject(AppError.forbidden(DMS_UNAVAILABLE_MESSAGE))
+    return deps.dm.persist({
       threadId: room.id,
       senderId: userId,
       body,

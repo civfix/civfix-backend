@@ -8,6 +8,7 @@ import type {
 import type { Jobs } from "@civfix/seams"
 import type { FastifyBaseLogger } from "fastify"
 import type { WriteAuditInput } from "../admin/audit.js"
+import { firstNonEmpty } from "../../lib/text.js"
 import type {
   AdminReportRecord,
   AdminReportRepository,
@@ -323,7 +324,7 @@ export function makeFilingService(deps: FilingServiceDeps): FilingService {
 
       const route = await routeFor(report, routing)
       const { status, reason } = initialState(route, deps.automaticFiling)
-      const note = input.note?.trim() || null
+      const note = firstNonEmpty(input.note?.trim()) ?? null
       const created = await deps.filings.create(
         {
           reportId: report.id,

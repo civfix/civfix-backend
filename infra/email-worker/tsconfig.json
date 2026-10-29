@@ -7,13 +7,22 @@
     "types": ["@cloudflare/workers-types"],
     "strict": true,
     "noUncheckedIndexedAccess": true,
+    "exactOptionalPropertyTypes": true,
     "noImplicitOverride": true,
+    "noImplicitReturns": true,
+    "noFallthroughCasesInSwitch": true,
+    "noUnusedLocals": true,
+    "noUnusedParameters": true,
+    "allowUnreachableCode": false,
+    "allowUnusedLabels": false,
+    "noUncheckedSideEffectImports": true,
     "esModuleInterop": true,
     "skipLibCheck": true,
     "forceConsistentCasingInFileNames": true,
     "verbatimModuleSyntax": true,
+    "isolatedModules": true,
     "noEmit": true
   },
-  "_note": "typecheck targets src/ against the Workers runtime types; tests run/typecheck via vitest+esbuild (they use node:crypto, which is not in the Workers lib).",
+  "_note": "src/ is checked against the Workers runtime types alone, so a Node API cannot slip into the Worker; tsconfig.test.json adds Node's types for the tests, which use node:crypto as the HMAC reference.",
   "include": ["src"]
 }

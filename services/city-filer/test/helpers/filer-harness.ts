@@ -112,13 +112,15 @@ export async function filerHarness(
       spawnEnvs.push(options.env)
       spawns.push({ command, args, env: options.env })
       spawnCwds.push(options.cwd)
-      const n = spawnStderrs.push("") - 1
+      let stderr = ""
+      const n = spawnStderrs.push(stderr) - 1
       const child =
         failing.when?.(args) === true
           ? spawn(process.execPath, ["-e", "process.exit(1)"], options)
           : spawn(command, args, options)
       child.stderr?.on("data", (chunk: Buffer) => {
-        spawnStderrs[n] += chunk.toString("utf8")
+        stderr += chunk.toString("utf8")
+        spawnStderrs[n] = stderr
       })
       return child
     }) as typeof spawn,
