@@ -27,7 +27,7 @@ import { makeDrizzleChatReadState } from "../../src/services/read-watermark-repo
 type MarkRead = (cleanupId: string, userId: string, upToId: string) => Promise<void>
 
 // eslint-disable-next-line @typescript-eslint/no-unnecessary-type-assertion -- the assertion is the field's declared type: vi.hoisted infers the record from this literal
-const { captured } = vi.hoisted(() => ({ captured: {} as { markRead?: MarkRead } }))
+const { captured } = vi.hoisted(() => ({ captured: {} as { markRead?: MarkRead | undefined } }))
 
 vi.mock("../../src/ws/gateway.js", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../../src/ws/gateway.js")>()

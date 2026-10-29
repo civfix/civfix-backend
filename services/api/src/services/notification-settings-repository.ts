@@ -7,7 +7,11 @@ export interface NotificationSettingRecord extends NotificationCategorySetting {
 }
 
 export type NotificationSettingsPatch = Partial<
-  Record<NotificationCategory, Partial<NotificationCategorySetting>>
+  Record<
+    NotificationCategory,
+    | { [F in keyof NotificationCategorySetting]?: NotificationCategorySetting[F] | undefined }
+    | undefined
+  >
 >
 
 export interface NotificationSettingsRepository {

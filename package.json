@@ -5,39 +5,7 @@
   "description": "civfix backend monorepo: Fastify API + media worker (VPS infra lives in the civfix-infra repo). Depends on @civfix/contract and @civfix/tokens (from the private npm registry) as the single contract source.",
   "license": "AGPL-3.0-only",
   "type": "module",
-  "packageManager": "pnpm@9.12.0",
-  "pnpm": {
-    "//onlyBuiltDependencies": "The only packages allowed to run install scripts; any other dependency that ships one is skipped. esbuild (tsup, tsx, vitest) verifies and if needed fetches its platform binary; ffmpeg-static downloads the ffmpeg binary the media-worker runs outside its image (dev and tests). Skipped on purpose: ssh2 and cpu-features (optional native speedups under testcontainers, which fall back to pure JS) and protobufjs (a version notice). Add a package here only after reading its script.",
-    "onlyBuiltDependencies": [
-      "esbuild",
-      "ffmpeg-static"
-    ],
-    "//overrides-transitive": "These entries force patched versions of transitive packages whose direct parent still declares a vulnerable range, each bounded INSIDE the vulnerable package's own major so the fix stays a patch/minor for the requester: find-my-way + fast-uri (fastify/ajv, HTTP/2 DDoS + host-confusion/SSRF); brace-expansion 1/2/5, js-yaml 4, nanoid 3, postcss, source-map-js 1 (eslint, minimatch, glob, vite, tsup DoS + path-traversal advisories; postcss 8.5.28 still declares a vulnerable source-map-js range); vite (vitest's resolution, path traversal + fs.deny bypass); protobufjs 7 (grpc/firebase, proto-parse DoS); deepmerge-ts (html-to-text stack exhaustion); uuid 9/10 (gaxios, dockerode - missing buffer bounds check); @fastify/busboy 3 and @grpc/grpc-js 1 (firebase-admin, multipart and HTTP/2 DoS); and the scoped esbuild entries for tsup, tsx, vite and drizzle-kit's abandoned @esbuild-kit/core-utils (dev-server arbitrary file read). Drop each entry once its parent ships the fixed range itself.",
-    "overrides": {
-      "find-my-way": ">=9.9.0 <10",
-      "fast-uri": ">=3.1.9 <4",
-      "websocket-driver@<0.7.5": "^0.7.5",
-      "form-data@<2.5.6": "^2.5.6",
-      "brace-expansion@1": ">=1.1.21 <2",
-      "brace-expansion@2": ">=2.1.6 <3",
-      "brace-expansion@5": ">=5.0.12 <6",
-      "js-yaml@4": ">=4.3.2 <5",
-      "nanoid@3": ">=3.3.18 <4",
-      "postcss": ">=8.5.28 <9",
-      "source-map-js@1": ">=1.2.2 <2",
-      "vite": ">=7.3.6 <8",
-      "protobufjs@7": ">=7.6.6 <8",
-      "deepmerge-ts": ">=8.0.2 <9",
-      "@fastify/busboy@3": ">=3.2.1 <4",
-      "@grpc/grpc-js@1": ">=1.14.5 <2",
-      "tsup>esbuild": ">=0.28.1 <0.29",
-      "tsx>esbuild": ">=0.28.1 <0.29",
-      "@esbuild-kit/core-utils>esbuild": ">=0.25.0 <0.26",
-      "uuid@9": ">=11.1.1 <12",
-      "uuid@10": ">=11.1.1 <12",
-      "vite>esbuild": ">=0.28.1 <0.29"
-    }
-  },
+  "packageManager": "pnpm@10.34.9+sha512.f49b5a8ea0fdedb44bb3c0c1d6575092a53c2950d95b7ad15df11f17974877a2de3a01c07e934e9b28ce716e51c09a94962c7306d09be2e1e4b18a8c8762fd32",
   "engines": {
     "node": ">=22"
   },

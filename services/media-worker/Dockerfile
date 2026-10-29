@@ -62,7 +62,7 @@
 # read-only rootfs and a noexec tmpfs /tmp. The boot preflight proves all of it (src/sandbox/preflight.ts).
 #
 # Stages:
-#   base    pinned Node 22 (bookworm-slim, glibc) + corepack-pinned pnpm.
+#   base    pinned Node 22 (bookworm-slim, glibc) with corepack enabled.
 #   ffmpeg  verify the pinned FFmpeg source release and compile the minimal ffmpeg + ffprobe.
 #   build   install the FULL workspace, build api(src is inlined) -> worker, then
 #           `pnpm deploy --prod` the worker into a self-contained, dev-pruned /out.
@@ -77,7 +77,7 @@ FROM node:22-bookworm-slim@sha256:de170b39439eb0e5a3444ad7d60b015614a381e10fecae
 ENV PNPM_HOME="/pnpm" \
     PATH="/pnpm:$PATH" \
     CI=true
-RUN corepack enable && corepack prepare pnpm@9.12.0 --activate
+RUN corepack enable
 WORKDIR /app
 
 FROM base AS ffmpeg
@@ -143,6 +143,10 @@ RUN curl -fsSL --retry 5 --retry-all-errors -O "https://ffmpeg.org/releases/ffmp
  && /opt/ffmpeg/bin/ffmpeg -version | head -n 1 | grep -q "version ${FFMPEG_VERSION} "
 
 FROM base AS build
+# pnpm comes from the root package.json packageManager field, sha512 included, so the image runs exactly the
+# pnpm CI and developers run. Copied alone first so the download stays cached until the root package.json changes.
+COPY package.json ./
+RUN corepack install
 COPY . .
 RUN --mount=type=cache,id=pnpm-store,target=/pnpm/store \
     pnpm install --frozen-lockfile
@@ -156,9 +160,9 @@ RUN pnpm --filter @civfix/media-worker... build
 RUN --mount=type=cache,id=pnpm-store,target=/pnpm/store \
     pnpm --filter @civfix/media-worker --prod deploy /out
 
-# From the plain Node image, not `base`: the runtime needs no package manager, and the corepack-cached
-# pnpm in `base` carries its own bundled dependency tree (tar, glob, minimatch, cross-spawn, ...) that the
-# image scan flags. Same digest as `base`, so both move together.
+# From the plain Node image, not `base`: the runtime needs no package manager, and corepack and the pnpm it
+# installs carry their own bundled dependency trees (tar, glob, minimatch, cross-spawn, ...) that the image
+# scan flags. Same digest as `base`, so both move together.
 FROM node:22-bookworm-slim@sha256:de170b39439eb0e5a3444ad7d60b015614a381e10fecae2e30ec9e735122f38d AS runtime
 # Same contract as the api image: the release identity is a property of the promoted artifact, not of the
 # deploy that placed it. Read by src/seams.ts as the GlitchTip `release`.

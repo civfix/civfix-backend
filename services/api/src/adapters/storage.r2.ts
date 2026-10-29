@@ -227,7 +227,9 @@ function transferDeadline(): { abortSignal: AbortSignal; requestTimeout: number 
   }
 }
 
-async function boundedRequestHandler(host: string): Promise<S3ClientConfig["requestHandler"]> {
+async function boundedRequestHandler(
+  host: string,
+): Promise<NonNullable<S3ClientConfig["requestHandler"]>> {
   const { NodeHttpHandler } = await import("@smithy/node-http-handler")
   const settings = readProxySettings()
   const httpsAgent =

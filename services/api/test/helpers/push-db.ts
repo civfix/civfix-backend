@@ -7,7 +7,7 @@ export interface PushTokenRow {
   userId: string
   platform: PushPlatform
   token: string
-  revokedAt?: Date
+  revokedAt?: Date | undefined
 }
 
 export interface FakePushDb {

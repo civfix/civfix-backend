@@ -85,7 +85,7 @@ export interface CreateNotificationInput {
   bodyKey?: MessageKey
   vars?: MessageVars
   varKeys?: Record<string, MessageKey>
-  link?: string
+  link?: string | undefined
   dedupeWindowMs?: number
   coalesceWindowMs?: number
   push?: PushGateMode
