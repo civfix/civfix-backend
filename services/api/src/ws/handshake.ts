@@ -91,7 +91,7 @@ export async function checkWsHandshake(
   opts: {
     sessions: SessionService | undefined
     webOrigins: readonly string[]
-    redeemTicket?: (ticket: string) => Promise<WsTicketPayload | null>
+    redeemTicket?: ((ticket: string) => Promise<WsTicketPayload | null>) | undefined
   },
 ): Promise<WsHandshakeResult> {
   const hasSessionCookie = wsHasSessionCookie(request)

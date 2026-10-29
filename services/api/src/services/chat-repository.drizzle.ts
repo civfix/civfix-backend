@@ -64,10 +64,10 @@ interface MessageExtras {
   reactions?: ReactionSummaryDTO[]
   mentions?: UserMentionDTO[]
   viewerUserId?: string | null
-  clientId?: string
+  clientId?: string | undefined
   attachments?: MediaDTO[]
   reportCity?: ReportCityContext | null
-  replyTo?: ReplyToDTO | null
+  replyTo?: ReplyToDTO | null | undefined
   poll?: PollDTO | null
 }
 

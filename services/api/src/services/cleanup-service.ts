@@ -123,7 +123,7 @@ type HostEventPatch = Pick<
   | "organizationId"
   | "reminderOffsetsMinutes"
   | "hostReplyTo"
-> & { scheduledAt?: string }
+> & { scheduledAt?: string | undefined }
 
 // `joined` means an RSVP (a cleanup_members row, which the organizer always has). Org standing
 // grants host powers and visibility, not attendance: clients key Join/Leave off this flag.
@@ -347,7 +347,7 @@ export interface CleanupServiceDeps {
   audit?: HostAuditSink
   presignEventMedia?: EventMediaPresigner
   presignThumb?: (thumbKey: string) => Promise<string>
-  resolveJurisdictionGeoid?: (lat: number, lng: number) => Promise<string | null>
+  resolveJurisdictionGeoid?: ((lat: number, lng: number) => Promise<string | null>) | undefined
   resolveJurisdictionCode?: (geoid: string | null) => Promise<number>
   /**
    * Only ever called for an OLD client (one that sends no `addressSource`) that also sent no address,

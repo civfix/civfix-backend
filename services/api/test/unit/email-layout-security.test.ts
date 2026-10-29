@@ -6,7 +6,7 @@ const UNSUBSCRIBE_URL = "https://civfix.org/unsubscribe?t=abc&x=1"
 const MANAGE_URL = "https://civfix.org/e/beach"
 const LURE_URL = "https://civfix-login.example/verify"
 
-function render(footer: Parameters<typeof renderEmailBody>[0]["footer"]) {
+function render(footer: NonNullable<Parameters<typeof renderEmailBody>[0]["footer"]>) {
   return renderEmailBody({ blocks: [paragraph("x")], footer })
 }
 

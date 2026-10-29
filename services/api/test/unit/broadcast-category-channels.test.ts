@@ -146,14 +146,19 @@ async function runInAppAndPush(
   kind: BroadcastKind,
   channels: BroadcastChannel[],
   members: string[],
-): Promise<Map<string, { inapp?: DeliveryOutcome; push?: DeliveryOutcome }>> {
+): Promise<
+  Map<string, { inapp?: DeliveryOutcome | undefined; push?: DeliveryOutcome | undefined }>
+> {
   const claims = members.flatMap((userId) =>
     channels.filter((c) => c === "inapp" || c === "push").map((c) => claim(c, { userId })),
   )
   const outcomes: DeliveryOutcome[] = []
   await inApp().runInAppAndPush(record(kind, channels), EVENT_CONTEXT, claims, outcomes)
   await flushNotificationDispatch()
-  const byMember = new Map<string, { inapp?: DeliveryOutcome; push?: DeliveryOutcome }>()
+  const byMember = new Map<
+    string,
+    { inapp?: DeliveryOutcome | undefined; push?: DeliveryOutcome | undefined }
+  >()
   for (const c of claims) {
     const entry = byMember.get(c.userId!) ?? {}
     entry[c.channel as "inapp" | "push"] = outcomes.find((o) => o.id === c.id)
