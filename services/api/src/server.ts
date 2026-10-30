@@ -174,10 +174,12 @@ export function loggerOptions(env: Env, capture?: MakeServerOptions["logCapture"
         return {
           method: request.method,
           url: loggedRequestUrl(request.url),
-          version: typeof acceptVersion === "string" ? acceptVersion : undefined,
+          ...(typeof acceptVersion === "string" ? { version: acceptVersion } : {}),
           host: request.host,
           remoteAddress: request.ip,
-          remotePort: request.socket.remotePort,
+          ...(request.socket.remotePort !== undefined
+            ? { remotePort: request.socket.remotePort }
+            : {}),
         }
       },
     },

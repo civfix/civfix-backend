@@ -53,7 +53,7 @@ export const PROFILE_PAST_EVENTS_LIMIT = 20
 
 const PROFILE_UPCOMING_EVENTS_LIMIT = 20
 
-export type ProfileWithBlock = UserProfileDTO & { blockedByMe?: boolean }
+export type ProfileWithBlock = UserProfileDTO
 
 export interface SocialNotifier {
   onNewFollower(args: { followeeId: string; follower: PersonView }): Promise<void>

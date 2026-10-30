@@ -43,13 +43,13 @@ civfix-backend/
   .github/workflows/            ci.yml (PR checks: audit, licenses, zizmor, lint, format, typecheck, static checks, build, test), audit.yml (weekly), build-images.yml, deploy-staging.yml, deploy.yml
   tsconfig.base.json            strict base TS config
   turbo.json                    turborepo task graph
-  pnpm-workspace.yaml
+  pnpm-workspace.yaml           workspace packages + every pnpm setting (overrides, audit ignores, build allowlist, supply-chain gates)
 ```
 
 ## Requirements
 
 - Node >= 22 (see `.nvmrc`)
-- pnpm 9.12.0 (this repo is pnpm-only)
+- pnpm 10.34.9, pinned by `packageManager` (this repo is pnpm-only; `corepack enable` picks it up)
 - Docker is needed only for the integration suites; it is not required to build or test.
   The Docker-gated suites SKIP themselves on a machine with no Docker so `pnpm test` stays green, but
   only there: with `CI` (set by GitHub Actions) or `CIVFIX_REQUIRE_PG=1` in the environment, a failed
@@ -111,11 +111,11 @@ pnpm clean        # remove build artifacts
 ```
 
 CI runs every command above except `dev` and `clean`. The Cloudflare email worker in
-`infra/email-worker` is not a workspace package and keeps its own lockfile, so it installs and tests
-in isolation:
+`infra/email-worker` is not a workspace package and keeps its own lockfile and settings-only
+`pnpm-workspace.yaml`, so it installs and tests in isolation:
 
 ```
-pnpm --dir infra/email-worker install --frozen-lockfile --ignore-workspace
+pnpm --dir infra/email-worker install --frozen-lockfile
 pnpm --dir infra/email-worker test
 ```
 

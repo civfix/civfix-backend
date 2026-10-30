@@ -59,10 +59,10 @@ function ledger(count: number, korean = false): TranscriptLedgerRow[] {
       source,
       hours: source === "report" ? 0.1 : ((i % 5) + 1) * 0.75,
       occurredAt: new Date(Date.UTC(2024, 0, 3) + i * 43_200_000).toISOString(),
-      eventTitle: source === "event" ? titles[i % titles.length] : null,
+      eventTitle: source === "event" ? (titles[i % titles.length] ?? null) : null,
       reportReferenceCode: source === "report" ? `R-2026-${String(i).padStart(4, "0")}` : null,
       jurisdictionName:
-        i % 9 === 4 ? null : korean ? "강남구" : COMMUNITIES[i % COMMUNITIES.length],
+        i % 9 === 4 ? null : korean ? "강남구" : (COMMUNITIES[i % COMMUNITIES.length] ?? null),
       creditedByName: source === "event" ? (korean ? "김호스트" : "Ada Host") : "Ops Operator",
     }
   })

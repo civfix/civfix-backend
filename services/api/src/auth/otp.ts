@@ -107,10 +107,10 @@ export class OtpService {
   private readonly cache: CacheClient
   private readonly mailer: LocaleAwareMailer
   private readonly now: () => number
-  private readonly logger?: OtpLogger
+  private readonly logger: OtpLogger | undefined
   private readonly reviewer: ReviewerOtpConfig | null
   private readonly supportEmail: string | null
-  private readonly audit?: OtpAuditSink
+  private readonly audit: OtpAuditSink | undefined
 
   constructor(opts: OtpServiceOptions) {
     this.store = opts.store

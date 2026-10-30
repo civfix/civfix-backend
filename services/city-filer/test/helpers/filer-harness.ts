@@ -133,7 +133,7 @@ export async function filerHarness(
   const filings = new FakeFilingsWorker()
   const storage = new FakeStorage()
   const jobs = new FakeJobs()
-  const logs: { line: string; fields?: Record<string, unknown> }[] = []
+  const logs: { line: string; fields?: Record<string, unknown> | undefined }[] = []
   const log = (line: string, fields?: Record<string, unknown>) => void logs.push({ line, fields })
   const gate = makeClaudeGate()
   const deps = { filings, jobs, storage, config, runner, gate, log, report: () => {} }

@@ -108,7 +108,7 @@ const MapReportsQuerySchema = z
     types: TypesQueryParam.optional(),
     zoom: ZoomQueryParam,
   })
-  .transform((q) => ({
+  .transform((q): z.input<typeof ListReportsInBBoxRequestSchema> => ({
     bbox: q.bbox,
     ...(q.categories !== undefined ? { categories: q.categories } : {}),
     ...(q.types !== undefined ? { types: q.types } : {}),

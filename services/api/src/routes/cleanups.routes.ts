@@ -129,7 +129,9 @@ function refineScheduledAt(
   }
 }
 
-function dropBlankBringItems<T extends { bring?: readonly string[] | null }>(body: T): T {
+function dropBlankBringItems<T extends { bring?: readonly string[] | null | undefined }>(
+  body: T,
+): T {
   if (!Array.isArray(body.bring)) return body
   return { ...body, bring: body.bring.filter((item) => item !== "") }
 }
