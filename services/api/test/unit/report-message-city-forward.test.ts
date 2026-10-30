@@ -47,7 +47,7 @@ describe("cityForwardFields (report @city surfacing)", () => {
   })
 
   it("treats an absent forwarded_to_city column as not forwarded", () => {
-    const out = cityForwardFields({ body: "@sf hi", forwarded_to_city: undefined }, SF)
+    const out = cityForwardFields({ body: "@sf hi" }, SF)
     expect(out.forwardedToCity).toBe(false)
     expect(out.cityMention?.forwarded).toBe(false)
   })

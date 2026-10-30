@@ -204,7 +204,10 @@ const MUTABLE_COLUMNS: { [K in keyof FilingMutableFields]-?: string } = {
   mailThreadId: "mail_thread_id",
 }
 
-function setList(tx: Queryable, set: Partial<FilingMutableFields>): SqlFragment {
+// An undefined field is left as it is, so callers can pass optional input straight through.
+type FilingSet = { [K in keyof FilingMutableFields]?: FilingMutableFields[K] | undefined }
+
+function setList(tx: Queryable, set: FilingSet): SqlFragment {
   let list = tx`updated_at = now()`
   for (const [key, column] of Object.entries(MUTABLE_COLUMNS) as [
     keyof FilingMutableFields,
@@ -298,7 +301,7 @@ async function updateToSuccess(
   tx: Queryable,
   input: Extract<RecordSuccessInput, { filingId: string }>,
 ): Promise<FilingRow | undefined> {
-  const set: Partial<FilingMutableFields> = {
+  const set: FilingSet = {
     status: input.outcome,
     method: input.method,
     caseId: input.caseId,

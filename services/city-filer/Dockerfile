@@ -37,10 +37,14 @@ FROM node:22-bookworm-slim AS base
 ENV PNPM_HOME="/pnpm" \
     PATH="/pnpm:$PATH" \
     CI=true
-RUN corepack enable && corepack prepare pnpm@9.12.0 --activate
+RUN corepack enable
 WORKDIR /app
 
 FROM base AS build
+# pnpm comes from the root package.json packageManager field, sha512 included, so the image runs exactly the
+# pnpm CI and developers run. Copied alone first so the download stays cached until the root package.json changes.
+COPY package.json ./
+RUN corepack install
 COPY . .
 RUN --mount=type=cache,id=pnpm-store,target=/pnpm/store \
     pnpm install --frozen-lockfile
