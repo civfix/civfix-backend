@@ -31,7 +31,7 @@ export const CERTIFICATE_CODE_MINT_ATTEMPTS = 5
 export function generateCertificateCode(): string {
   let out = ""
   for (let i = 0; i < CERTIFICATE_CODE_LENGTH; i++) {
-    out += CERTIFICATE_CODE_ALPHABET[randomIntBelow(CERTIFICATE_CODE_ALPHABET.length)]
+    out += CERTIFICATE_CODE_ALPHABET.charAt(randomIntBelow(CERTIFICATE_CODE_ALPHABET.length))
   }
   return out
 }

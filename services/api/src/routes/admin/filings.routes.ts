@@ -24,6 +24,7 @@ import type { Storage } from "@civfix/seams"
 import type { FastifyInstance } from "fastify"
 import type { Container } from "../../di.js"
 import { requireOperator } from "../../auth/admin-guard.js"
+import { firstNonEmpty } from "../../lib/text.js"
 import { route } from "../../versioning/route.js"
 import type { AdminReportRepository } from "../../services/admin/admin-report-repository.js"
 import { makeDrizzleAdminReportRepository } from "../../services/admin/admin-report-repository.drizzle.js"
@@ -134,7 +135,7 @@ export async function registerAdminFilingRoutes(
       const { id, body } = parseBodyWithId(CancelFilingRequestSchema, request)
       const filing = await service().cancel(id, {
         actorId: operatorId,
-        note: body.note?.trim() || null,
+        note: firstNonEmpty(body.note?.trim()) ?? null,
       })
       const payload: CancelFilingResponse = { filing }
       reply.status(200).send(payload)
@@ -152,7 +153,7 @@ export async function registerAdminFilingRoutes(
         actorId: operatorId,
         caseId: body.caseId,
         caseUrl: body.caseUrl ?? null,
-        note: body.note?.trim() || null,
+        note: firstNonEmpty(body.note?.trim()) ?? null,
       })
       const payload: RecordManualFilingResponse = { filing }
       reply.status(200).send(payload)

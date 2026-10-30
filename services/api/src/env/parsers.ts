@@ -97,7 +97,11 @@ export function parseBounds(
   if (raw === undefined || raw.trim() === "") return fallback
   const parts = raw.split(",").map((s) => Number.parseFloat(s.trim()))
   if (parts.length !== BOUNDS_PART_COUNT || parts.some((n) => !Number.isFinite(n))) return fallback
-  return [parts[0]!, parts[1]!, parts[2]!, parts[3]!]
+  const [west, south, east, north] = parts
+  if (west === undefined || south === undefined || east === undefined || north === undefined) {
+    return fallback
+  }
+  return [west, south, east, north]
 }
 
 export function isCronish(raw: string | undefined): boolean {

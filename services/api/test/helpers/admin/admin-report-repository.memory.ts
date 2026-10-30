@@ -291,7 +291,7 @@ export class InMemoryAdminReportRepository implements AdminReportRepository {
       status: input.to,
       note: input.note,
       kind: input.kind ?? null,
-      who: input.actorId === null ? "system" : input.actorId,
+      who: input.actorId ?? "system",
       createdAt: this.nextDate(),
     })
     this.audits.push({

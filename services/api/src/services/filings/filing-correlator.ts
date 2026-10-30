@@ -90,9 +90,13 @@ async function findFiling(
   deps: FilingCorrelatorDeps,
   text: string,
 ): Promise<{ filing: FilingRecord; byCode: boolean } | null> {
-  const codes = new Set([...text.matchAll(FRAMING_LINE_RE)].map((m) => m[1]!.toUpperCase()))
-  if (codes.size === 1) {
-    const reportId = await deps.ingest.reportIdByReferenceCode([...codes][0]!)
+  const codes = new Set<string>()
+  for (const [, code] of text.matchAll(FRAMING_LINE_RE)) {
+    if (code !== undefined) codes.add(code.toUpperCase())
+  }
+  const [onlyCode] = codes
+  if (codes.size === 1 && onlyCode !== undefined) {
+    const reportId = await deps.ingest.reportIdByReferenceCode(onlyCode)
     const filing =
       reportId === null ? null : await deps.filings.getLatestSuccessfulForReport(reportId)
     if (filing !== null) return { filing, byCode: true }
@@ -100,7 +104,10 @@ async function findFiling(
   const tokens = caseTokens(text)
   if (tokens.length === 0) return null
   const matches = await deps.filings.findByCaseIds(tokens)
-  return matches.length === 1 ? { filing: matches[0]!, byCode: false } : null
+  const [onlyMatch] = matches
+  return matches.length === 1 && onlyMatch !== undefined
+    ? { filing: onlyMatch, byCode: false }
+    : null
 }
 
 /**

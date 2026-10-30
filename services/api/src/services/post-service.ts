@@ -421,10 +421,11 @@ export function makePostService(deps: PostServiceDeps): PostService {
     return pageFrom(viewerId, recomputable(), limit)
   }
 
-  async function safeNotify(fn: () => Promise<void>): Promise<void> {
-    if (!deps.notifier) return
+  async function safeNotify(fn: (notifier: PostNotifier) => Promise<void>): Promise<void> {
+    const notifier = deps.notifier
+    if (!notifier) return
     try {
-      await fn()
+      await fn(notifier)
     } catch (err) {
       deps.logger?.warn({ err }, "post: notification dispatch failed (suppressed)")
     }
@@ -519,13 +520,13 @@ export function makePostService(deps: PostServiceDeps): PostService {
     const actorName = await deps.repo.actorNameOf(authorId)
     const { replyParentAuthor, quoteTargetAuthor } = targets
     if (replyParentAuthor !== null && (await shouldNotify(authorId, replyParentAuthor))) {
-      await safeNotify(() =>
-        deps.notifier!.onPostReply({ recipientId: replyParentAuthor, actorName, postId }),
+      await safeNotify((notifier) =>
+        notifier.onPostReply({ recipientId: replyParentAuthor, actorName, postId }),
       )
     }
     if (quoteTargetAuthor !== null && (await shouldNotify(authorId, quoteTargetAuthor))) {
-      await safeNotify(() =>
-        deps.notifier!.onPostQuote({ recipientId: quoteTargetAuthor, actorName, postId }),
+      await safeNotify((notifier) =>
+        notifier.onPostQuote({ recipientId: quoteTargetAuthor, actorName, postId }),
       )
     }
     const recipients = mentions.map((m) => m.id).filter((id) => id !== authorId)
@@ -533,7 +534,7 @@ export function makePostService(deps: PostServiceDeps): PostService {
     const blocked = await blockedIdsAmong(authorId, recipients)
     const unblocked = recipients.filter((id) => !blocked.has(id))
     await mapWithLimit(unblocked, MENTION_NOTIFY_CONCURRENCY, (recipientId) =>
-      safeNotify(() => deps.notifier!.onPostMention({ recipientId, actorName, postId })),
+      safeNotify((notifier) => notifier.onPostMention({ recipientId, actorName, postId })),
     )
   }
 
@@ -617,8 +618,8 @@ export function makePostService(deps: PostServiceDeps): PostService {
       if (created) await announceCountChange(subject.id, viewerId)
       if (created && (await shouldNotify(viewerId, subject.authorId))) {
         const actorName = await deps.repo.actorNameOf(viewerId)
-        await safeNotify(() =>
-          deps.notifier!.onPostLike({
+        await safeNotify((notifier) =>
+          notifier.onPostLike({
             recipientId: subject.authorId,
             actorName,
             postId: subject.id,
@@ -658,8 +659,8 @@ export function makePostService(deps: PostServiceDeps): PostService {
         const targetBrief = await deps.repo.getPostBrief(targetId)
         if (targetBrief && (await shouldNotify(viewerId, targetBrief.authorId))) {
           const actorName = await deps.repo.actorNameOf(viewerId)
-          await safeNotify(() =>
-            deps.notifier!.onPostRepost({
+          await safeNotify((notifier) =>
+            notifier.onPostRepost({
               recipientId: targetBrief.authorId,
               actorName,
               postId: targetId,

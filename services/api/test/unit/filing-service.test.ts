@@ -161,6 +161,14 @@ describe("filingService.create", () => {
     expect(again.kind).toBe("created")
   })
 
+  it("T3: a blank note is stored as no note; a padded one is stored trimmed", async () => {
+    const h = filingHarness()
+    const blank = h.seed({ contact: J_CONTACT })
+    expect((await created(h, blank.record.id, "  ")).note).toBeNull()
+    const padded = h.seed({ contact: J_CONTACT })
+    expect((await created(h, padded.record.id, " call back ")).note).toBe("call back")
+  })
+
   it("C8: a report whose verdict is rejected is not fileable and gets no filing", async () => {
     const h = filingHarness()
     const r = h.seed({ contact: J_CONTACT, verificationVerdict: "rejected" })

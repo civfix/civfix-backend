@@ -36,6 +36,7 @@ function sampleReport(): AdminReportRecord {
     id: "11111111-2222-3333-4444-555555555555",
     category: "graffiti",
     status: "submitted",
+    visibility: "public",
     flagged: false,
     title: "Tagging on the Jefferson Blvd underpass",
     place: "Del Rey",
@@ -258,8 +259,12 @@ function collect(): GalleryEntry[] {
     buildReportPacket(
       sampleReport(),
       { geoid: "0644000", dept: "Public Works", place: "Los Angeles", contact: null, routed: true },
-      [`${WEB}/m/a?t=1`, `${WEB}/m/b?t=2`],
+      [
+        { id: "media-a", kind: "image", url: `${WEB}/m/a?t=1` },
+        { id: "media-b", kind: "image", url: `${WEB}/m/b?t=2` },
+      ],
       "Second report at this location this month; residents flagged it as recurring.",
+      { subject: null, body: null },
     ),
   )
 

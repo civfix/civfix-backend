@@ -13,6 +13,11 @@ export default defineConfig({
   platform: "node",
   dts: false,
   sourcemap: true,
+  // The image runs with --enable-source-maps, and Node keeps every loaded map in memory for the life of
+  // the process. Stack remapping needs only the mappings, so the sources are not embedded.
+  esbuildOptions(options) {
+    options.sourcesContent = false
+  },
   clean: true,
   splitting: false,
   noExternal: ["@civfix/api", "@civfix/contract", "@civfix/seams"],

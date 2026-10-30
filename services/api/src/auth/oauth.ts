@@ -229,9 +229,7 @@ export class OAuthService {
 
   private requireGoogle(): Google {
     const cfg = this.requireGoogleConfig()
-    if (!this.googleClient) {
-      this.googleClient = new Google(cfg.clientId, cfg.clientSecret, cfg.redirectUri)
-    }
+    this.googleClient ??= new Google(cfg.clientId, cfg.clientSecret, cfg.redirectUri)
     return this.googleClient
   }
 
@@ -259,15 +257,13 @@ export class OAuthService {
 
   private requireAppleWeb(): Apple {
     const cfg = this.requireAppleWebConfig()
-    if (!this.appleClient) {
-      this.appleClient = new Apple(
-        cfg.webClientId,
-        cfg.teamId,
-        cfg.keyId,
-        decodeApplePrivateKey(cfg.privateKey),
-        cfg.redirectUri,
-      )
-    }
+    this.appleClient ??= new Apple(
+      cfg.webClientId,
+      cfg.teamId,
+      cfg.keyId,
+      decodeApplePrivateKey(cfg.privateKey),
+      cfg.redirectUri,
+    )
     return this.appleClient
   }
 

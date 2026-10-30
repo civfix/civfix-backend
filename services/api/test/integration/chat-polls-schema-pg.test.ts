@@ -48,7 +48,7 @@ describe.skipIf(!pg)("chat polls schema (0048, integration)", () => {
     for (let idx = 0; idx < optionCount; idx++) {
       await h.sql`
         INSERT INTO chat_poll_options (poll_id, idx, text)
-        VALUES (${pollId}, ${idx}, ${"Option " + idx})
+        VALUES (${pollId}, ${idx}, ${`Option ${idx}`})
       `
     }
     return pollId

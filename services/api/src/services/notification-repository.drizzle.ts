@@ -17,6 +17,7 @@ import type {
 import { DEFAULT_PREFS, FEED_HIDDEN_NOTIFICATION_TYPES } from "./notification-service.js"
 import { AppError } from "@civfix/contract"
 import type { NotificationType, PushPlatform } from "@civfix/contract"
+import { requireRow } from "../db/rows.js"
 
 const QUIET_TIME_RE = /^([01]\d|2[0-3]):[0-5]\d(:[0-5]\d)?$/
 
@@ -106,7 +107,7 @@ export function makeDrizzleNotificationRepository(sql: Sql): NotificationReposit
         VALUES (${args.userId}, ${args.type}, ${args.title}, ${args.body}, ${args.link})
         RETURNING id, user_id, type, title, body, link, read_at, created_at
       `
-      return toRecord(rows[0]!)
+      return toRecord(requireRow(rows, "notification insert"))
     },
 
     async listNotifications(
@@ -250,7 +251,7 @@ export function makeDrizzleNotificationRepository(sql: Sql): NotificationReposit
         ON CONFLICT (user_id) DO UPDATE SET ${joinSet(sql, setFragments)}
         RETURNING push, cleanup_chat, report_updates, follows, mentions, post_interactions, host_broadcasts, quiet_start, quiet_end, tz
       `
-      return toPrefsRecord(rows[0]!)
+      return toPrefsRecord(requireRow(rows, "notification prefs upsert"))
     },
 
     async upsertPushToken(args: {
@@ -329,7 +330,7 @@ export function makeDrizzleNotificationRepository(sql: Sql): NotificationReposit
           VALUES (${args.userId}, ${args.type}, ${args.title}, ${args.body}, ${args.link})
           RETURNING id, user_id, type, title, body, link, read_at, created_at
         `
-        return { record: toRecord(rows[0]!), deduped: false }
+        return { record: toRecord(requireRow(rows, "notification insert")), deduped: false }
       })
     },
 
@@ -355,7 +356,7 @@ export function makeDrizzleNotificationRepository(sql: Sql): NotificationReposit
           VALUES (${args.userId}, ${args.type}, ${args.title}, ${args.body}, ${args.link})
           RETURNING id, user_id, type, title, body, link, read_at, created_at
         `
-        return { record: toRecord(rows[0]!), coalesced: false }
+        return { record: toRecord(requireRow(rows, "notification insert")), coalesced: false }
       })
     },
 

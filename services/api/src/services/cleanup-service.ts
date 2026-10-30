@@ -444,7 +444,9 @@ export function makeCleanupService(deps: CleanupServiceDeps): CleanupService {
     cleanupIds: string[],
     userId: string | null,
   ): Promise<Map<string, HostStanding>> {
-    if (userId === null || cleanupIds.length === 0) return Promise.resolve(new Map())
+    if (userId === null || cleanupIds.length === 0) {
+      return Promise.resolve(new Map<string, HostStanding>())
+    }
     return deps.repo.standingsOf(cleanupIds, userId)
   }
 
@@ -748,7 +750,7 @@ export function makeCleanupService(deps: CleanupServiceDeps): CleanupService {
         patch.scheduledAt !== undefined
           ? new Date(patch.scheduledAt)
           : (current?.scheduledAt ?? new Date(0)),
-      endsAt: write.endsAt !== undefined ? write.endsAt : (current?.endsAt ?? null),
+      endsAt: write.endsAt ?? current?.endsAt ?? null,
       registrationOpensAt:
         write.registrationOpensAt !== undefined
           ? write.registrationOpensAt

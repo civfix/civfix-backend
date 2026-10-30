@@ -32,10 +32,10 @@ function base32(bytes: Buffer): string {
     bits += BITS_PER_BYTE
     while (bits >= BASE32_BITS) {
       bits -= BASE32_BITS
-      out += BASE32_ALPHABET[(buffer >> bits) & BASE32_MASK]
+      out += BASE32_ALPHABET.charAt((buffer >> bits) & BASE32_MASK)
     }
   }
-  if (bits > 0) out += BASE32_ALPHABET[(buffer << (BASE32_BITS - bits)) & BASE32_MASK]
+  if (bits > 0) out += BASE32_ALPHABET.charAt((buffer << (BASE32_BITS - bits)) & BASE32_MASK)
   return out
 }
 

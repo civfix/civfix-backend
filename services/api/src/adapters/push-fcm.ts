@@ -1,4 +1,5 @@
 import type { PushPayload } from "@civfix/seams"
+import type { Messaging } from "firebase-admin/messaging"
 import type { PushSenderConfig, PushLogger, PlatformDispatcher } from "./push-sender.js"
 import { hashForLog } from "./push-sender.js"
 
@@ -52,32 +53,30 @@ export function makeFcmDispatcher(
   fcm: NonNullable<PushSenderConfig["fcm"]>,
   logger: PushLogger,
 ): PlatformDispatcher {
-  let initPromise: Promise<{ messaging: any; deleteApp: () => Promise<void> }> | null = null
+  let initPromise: Promise<{ messaging: Messaging; deleteApp: () => Promise<void> }> | null = null
 
   async function getMessaging() {
-    if (!initPromise) {
-      initPromise = (async () => {
-        const admin = await import("firebase-admin/app")
-        const messaging = await import("firebase-admin/messaging")
-        const serviceAccount = JSON.parse(fcm.serviceAccountJson) as Record<string, unknown>
-        const existing = admin.getApps().find((a) => a.name === FCM_APP_NAME)
-        const app =
-          existing ??
-          admin.initializeApp(
-            {
-              credential: admin.cert(serviceAccount),
-              ...(fcm.projectId !== undefined ? { projectId: fcm.projectId } : {}),
-            },
-            FCM_APP_NAME,
-          )
-        return { messaging: messaging.getMessaging(app), deleteApp: () => admin.deleteApp(app) }
-      })()
-    }
+    initPromise ??= (async () => {
+      const admin = await import("firebase-admin/app")
+      const messaging = await import("firebase-admin/messaging")
+      const serviceAccount = JSON.parse(fcm.serviceAccountJson) as Record<string, unknown>
+      const existing = admin.getApps().find((a) => a.name === FCM_APP_NAME)
+      const app =
+        existing ??
+        admin.initializeApp(
+          {
+            credential: admin.cert(serviceAccount),
+            ...(fcm.projectId !== undefined ? { projectId: fcm.projectId } : {}),
+          },
+          FCM_APP_NAME,
+        )
+      return { messaging: messaging.getMessaging(app), deleteApp: () => admin.deleteApp(app) }
+    })()
     return (await initPromise).messaging
   }
 
   async function dispatchSlice(
-    messaging: any,
+    messaging: Messaging,
     tokens: string[],
     payload: PushPayload,
     invalidTokens: string[],
@@ -94,9 +93,10 @@ export function makeFcmDispatcher(
       }),
     }
     try {
-      const resp = (await messaging.sendEachForMulticast(message)) as {
-        responses: FcmSendResponse[]
-      }
+      // Stored android tokens are FCM registration tokens, not Firebase installation IDs; the FID
+      // overload needs clients to register FIDs first.
+      // eslint-disable-next-line @typescript-eslint/no-deprecated
+      const resp = await messaging.sendEachForMulticast(message)
       const verdict = classifyFcmResponses(tokens, resp.responses)
       invalidTokens.push(...verdict.invalidTokens)
       for (const { code, token } of verdict.failures) {

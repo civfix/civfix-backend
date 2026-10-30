@@ -61,6 +61,7 @@ import {
 import { touchUserActivity } from "../db/sql/user-activity.js"
 import { isUniqueViolation } from "../db/pg-errors.js"
 import { insertReopenFilingIn } from "./filings/filing-reopen.drizzle.js"
+import { requireRow } from "../db/rows.js"
 
 const REPORT_SEARCH_MIN_QUERY_LENGTH = 3
 
@@ -609,17 +610,20 @@ export function makeDrizzleReportRepository(sql: Sql): ReportRepository {
           `
         }
         const delta = (kind: ReportVote) => (after === kind ? 1 : 0) - (before === kind ? 1 : 0)
-        const updated = await tx<{ confirm_count: number; fixed_count: number }[]>`
-          UPDATE reports
-          SET confirm_count = GREATEST(confirm_count + ${delta("seen")}, 0),
-              fixed_count = GREATEST(fixed_count + ${delta("fixed")}, 0)
-          WHERE id = ${reportId}
-          RETURNING confirm_count, fixed_count
-        `
+        const updated = requireRow(
+          await tx<{ confirm_count: number; fixed_count: number }[]>`
+            UPDATE reports
+            SET confirm_count = GREATEST(confirm_count + ${delta("seen")}, 0),
+                fixed_count = GREATEST(fixed_count + ${delta("fixed")}, 0)
+            WHERE id = ${reportId}
+            RETURNING confirm_count, fixed_count
+          `,
+          "report vote count update",
+        )
         return {
           kind: "applied",
-          confirmCount: updated[0]!.confirm_count,
-          fixedCount: updated[0]!.fixed_count,
+          confirmCount: updated.confirm_count,
+          fixedCount: updated.fixed_count,
           vote: after,
         }
       })

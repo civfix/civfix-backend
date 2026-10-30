@@ -158,10 +158,8 @@ describe("H7: only client-authorable message kinds are accepted on send", () => 
 
   it("rejects kind:'system' with BAD_FRAME and persists nothing", async () => {
     const conn = new MockConnection("a")
-    const persist = vi.fn()
-    const session = sessionFor(ALICE, conn, {
-      chat: { ...chat, persist } as unknown as GatewayDeps["chat"],
-    })
+    const persist = vi.spyOn(chat, "persist")
+    const session = sessionFor(ALICE, conn)
     await handleClientFrame(session, sendFrame("system"))
 
     const errors = conn.framesOfType("error")
@@ -300,10 +298,8 @@ describe("F036: repeat join is idempotent (no duplicate presence delta, no re-ru
 describe("F037: an over-long clientId is rejected, never persisted or fanned out", () => {
   it("a send with a >64-char clientId is answered BAD_FRAME and persists nothing", async () => {
     const conn = new MockConnection("a")
-    const persist = vi.fn()
-    const session = sessionFor(ALICE, conn, {
-      chat: { ...chat, persist } as unknown as GatewayDeps["chat"],
-    })
+    const persist = vi.spyOn(chat, "persist")
+    const session = sessionFor(ALICE, conn)
     await handleClientFrame(
       session,
       JSON.stringify({ type: "send", cleanupId: ROOM, body: "hi", clientId: "x".repeat(65) }),
@@ -328,11 +324,8 @@ describe("F037: an over-long clientId is rejected, never persisted or fanned out
 describe("F039: a socket cannot join more than WS_MAX_JOINED_ROOMS rooms", () => {
   it("the cap+1-th distinct room is refused RATE_LIMITED, and does not run joinRoom", async () => {
     const conn = new MockConnection("a")
-    const joinRoom = vi.fn(() => Promise.resolve())
-    const session = sessionFor(ALICE, conn, {
-      chat: { ...chat, joinRoom } as unknown as GatewayDeps["chat"],
-      presence: undefined,
-    })
+    const joinRoom = vi.spyOn(chat, "joinRoom").mockResolvedValue(undefined)
+    const session = sessionFor(ALICE, conn, { presence: undefined })
     for (let i = 0; i < WS_MAX_JOINED_ROOMS; i++) {
       session.joined.add(roomKeyFor("cleanup", `room-${i}`))
     }

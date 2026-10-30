@@ -15,6 +15,7 @@ import type {
   ReportChatRepository,
   ReportChatRole,
 } from "./report-chat-repository.js"
+import { requireRow } from "../db/rows.js"
 
 type ChatSystemPayload = NonNullable<NonNullable<ChatMessageDTO["system"]>>
 type ReportSystemStatus = ChatSystemPayload["status"]
@@ -145,7 +146,7 @@ export function makeReportChatRepository(
           (NULL, ${input.reportId}, NULL, ${body}, 'system', ${status}, ${input.kind ?? null}, ${input.body ?? null})
         RETURNING id, report_id, body, created_at, system_status, system_kind, system_body
       `
-      return mapSystemRow(rows[0]!)
+      return mapSystemRow(requireRow(rows, "report chat system message insert"))
     },
 
     async listMemberIds(

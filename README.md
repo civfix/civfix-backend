@@ -31,15 +31,16 @@ civfix-backend/
   packages/
     config/                     shared eslint + prettier presets (@civfix/config)
     seams/                      the 11 seam interfaces, their fakes, MailSendError (@civfix/seams)
+    testing/                    shared test support: the console guard every vitest suite runs (@civfix/testing)
   services/
     api/                        Fastify API (@civfix/api)
     media-worker/               pg-boss media worker (@civfix/media-worker)
     city-filer/                 prod-only portal filer: works filing.run (@civfix/city-filer, docs/city-filing.md)
   infra/
     email-worker/               Cloudflare Email Worker for inbound mail (standalone, own wrangler toolchain)
-  scripts/                      the CI no-frontend guard + the dynamic-SQL check (pnpm check:sql, a CI gate)
+  scripts/                      CI guards: no-frontend, dynamic SQL (pnpm check:sql), licenses (pnpm check:licenses)
   docs/                         engineering notes (retention, erasure, migrations, operator runbook, ...)
-  .github/workflows/            ci.yml (PR checks: lint, format, typecheck, static checks, build, test), build-images.yml, deploy-staging.yml, deploy.yml
+  .github/workflows/            ci.yml (PR checks: audit, licenses, zizmor, lint, format, typecheck, static checks, build, test), audit.yml (weekly), build-images.yml, deploy-staging.yml, deploy.yml
   tsconfig.base.json            strict base TS config
   turbo.json                    turborepo task graph
   pnpm-workspace.yaml
@@ -98,13 +99,15 @@ pnpm build        # tsup build of api + media-worker
 pnpm typecheck    # tsc --noEmit in both services
 pnpm lint         # eslint in both services
 pnpm test         # vitest in both services: unit + the Docker-gated integration suites
+pnpm test:coverage # the same run with v8 coverage and each package's thresholds (what CI runs)
 pnpm format:check # prettier --check (Markdown is excluded, see .prettierignore)
 pnpm check:sql    # dynamic-SQL guard: unsafe/raw allowlist, Drizzle $client, parameter IS NULL tests
 pnpm knip         # unused files, exports and dependencies (knip.jsonc)
 pnpm dup:check    # copy-paste duplication over the service sources (.jscpd.json threshold)
+pnpm check:licenses # fails on a production dependency whose license is AGPL-incompatible or unknown
+pnpm audit --audit-level high && pnpm audit --prod --audit-level moderate   # the CI audit gates
 pnpm dev          # run both services in watch mode (persistent)
 pnpm clean        # remove build artifacts
-pnpm check:sql    # dynamic-SQL guard (manual; not run by CI)
 ```
 
 CI runs every command above except `dev` and `clean`. The Cloudflare email worker in
@@ -115,6 +118,10 @@ in isolation:
 pnpm --dir infra/email-worker install --frozen-lockfile --ignore-workspace
 pnpm --dir infra/email-worker test
 ```
+
+Every vitest suite fails a test that logs an unexpected `console.error` or `console.warn`. A test that
+expects one declares it with `expectConsoleError` / `expectConsoleWarn` from `@civfix/testing/console`.
+The coverage thresholds in each `vitest.config.ts` only ever go up.
 
 ## Running the API in dev (offline, no credentials)
 

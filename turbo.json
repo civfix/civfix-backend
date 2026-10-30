@@ -30,6 +30,8 @@
   // list, because it changes which suite actually runs: unhashed, an arm64 run that skipped on the
   // amd64-only default image would be cached green and replayed after the override is set.
   "globalEnv": ["CIVFIX_TEST_PG_IMAGE"],
+  // Every package's tsconfig extends it, so a flag change has to invalidate cached typecheck results.
+  "globalDependencies": ["tsconfig.base.json"],
   "tasks": {
     "build": {
       "dependsOn": ["^build"],
@@ -39,6 +41,9 @@
       "dependsOn": ["^build"]
     },
     "test": {
+      "dependsOn": ["^build"]
+    },
+    "test:coverage": {
       "dependsOn": ["^build"]
     },
     "lint": {},

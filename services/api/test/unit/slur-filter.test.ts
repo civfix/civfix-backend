@@ -106,7 +106,7 @@ describe("assertNoSlur", () => {
   })
 
   it("throws a VALIDATION AppError keyed on the given field when a slur is present", () => {
-    expect(() => assertNoSlur("you faggot", "body")).toThrowError()
+    expect(() => assertNoSlur("you faggot", "body")).toThrow()
     try {
       assertNoSlur("you faggot", "body")
       throw new Error("expected to throw")

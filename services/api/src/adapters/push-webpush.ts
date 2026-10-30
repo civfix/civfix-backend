@@ -158,26 +158,43 @@ function withDeadline<T>(work: Promise<T>, ms: number, onExpire: () => void): Pr
   })
 }
 
+type WebPushSdk = Pick<typeof WebPush, "setVapidDetails" | "sendNotification">
+
+// The module arrives untyped from a dynamic import or an injected loader, with web-push's CommonJS
+// exports possibly behind `default`, so the two members we call are checked once before first use.
+function toWebPushSdk(mod: unknown): WebPushSdk {
+  const candidate = (mod as { default?: unknown }).default ?? mod
+  if (
+    (typeof candidate === "object" || typeof candidate === "function") &&
+    candidate !== null &&
+    "setVapidDetails" in candidate &&
+    typeof candidate.setVapidDetails === "function" &&
+    "sendNotification" in candidate &&
+    typeof candidate.sendNotification === "function"
+  ) {
+    return candidate as WebPushSdk
+  }
+  throw new Error("web-push module lacks setVapidDetails/sendNotification")
+}
+
 export function makeWebPushDispatcher(
   webPush: NonNullable<PushSenderConfig["webPush"]>,
   logger: PushLogger,
   pool: PinnedAgentPool = agentPool,
 ): PlatformDispatcher {
-  let webpushPromise: Promise<any> | null = null
+  let webpushPromise: Promise<WebPushSdk> | null = null
   const requestTimeoutMs = webPush.timeoutMs ?? WEB_PUSH_REQUEST_TIMEOUT_MS
   const deadlineMs = requestTimeoutMs + WEB_PUSH_DEADLINE_SLACK_MS
   const batchBudgetMs = webPush.batchBudgetMs ?? WEB_PUSH_BATCH_BUDGET_MS
   const resolveAddresses: PushAddressResolver = webPush.resolveAddresses ?? boundedAddressResolver
 
   async function getWebPush() {
-    if (!webpushPromise) {
-      webpushPromise = (async () => {
-        const mod = await (webPush.loadModule ? webPush.loadModule() : import("web-push"))
-        const wp: any = (mod as { default?: unknown }).default ?? mod
-        wp.setVapidDetails(webPush.subject, webPush.publicKey, webPush.privateKey)
-        return wp
-      })()
-    }
+    webpushPromise ??= (async () => {
+      const mod: unknown = await (webPush.loadModule ? webPush.loadModule() : import("web-push"))
+      const wp = toWebPushSdk(mod)
+      wp.setVapidDetails(webPush.subject, webPush.publicKey, webPush.privateKey)
+      return wp
+    })()
     return webpushPromise
   }
 
