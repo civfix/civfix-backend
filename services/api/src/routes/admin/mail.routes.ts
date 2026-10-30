@@ -175,13 +175,13 @@ export async function registerAdminMailRoutes(
 
   route(app, "getMailStats", async (_request, reply) => {
     const payload: MailStatsResponse = await service().stats()
-    reply.status(200).send(payload)
+    return reply.status(200).send(payload)
   })
 
   route(app, "listMail", async (request, reply) => {
     const query = parse(MailListQuerySchema, request.query)
     const payload: MailListResponse = await service().list(query)
-    reply.status(200).send(payload)
+    return reply.status(200).send(payload)
   })
 
   route(app, "getMailThread", async (request, reply) => {
@@ -195,7 +195,7 @@ export async function registerAdminMailRoutes(
       in: storage(),
       out: outboundStorage(),
     })
-    reply.status(200).send(payload)
+    return reply.status(200).send(payload)
   })
 
   route(
@@ -206,7 +206,7 @@ export async function registerAdminMailRoutes(
       const actorId = requireOperator(request)
       const body = parse(ComposeRequestSchema, request.body)
       await service().compose({ to: body.to, subject: body.subject, body: body.body }, actorId)
-      sendOk(reply)
+      return sendOk(reply)
     },
   )
 
@@ -218,21 +218,21 @@ export async function registerAdminMailRoutes(
       const actorId = requireOperator(request)
       const { id, body } = parseBodyWithId(ReplyRequestSchema, request)
       await service().reply(id, { body: body.body }, actorId)
-      sendOk(reply)
+      return sendOk(reply)
     },
   )
 
   route(app, "markMailRead", { preHandler: csrfProtect }, async (request, reply) => {
     const { id } = parseBodyWithId(MarkMailReadRequestSchema, request)
     await service().markRead(id)
-    sendOk(reply)
+    return sendOk(reply)
   })
 
   route(app, "setMailStatus", { preHandler: csrfProtect }, async (request, reply) => {
     const actorId = requireOperator(request)
     const { id, body } = parseBodyWithId(SetMailStatusRequestSchema, request)
     await service().setStatus(id, body.status, actorId)
-    sendOk(reply)
+    return sendOk(reply)
   })
 
   route(
@@ -243,7 +243,7 @@ export async function registerAdminMailRoutes(
       const actorId = requireOperator(request)
       const { id } = parseBodyWithId(ResendRequestSchema, request)
       await service().resend(id, actorId)
-      sendOk(reply)
+      return sendOk(reply)
     },
   )
 
@@ -260,13 +260,13 @@ export async function registerAdminMailRoutes(
         messageId,
         actorId,
       })
-      reply.status(200).send(payload)
+      return reply.status(200).send(payload)
     },
   )
 
   route(app, "getForwardTemplateDefault", async (_request, reply) => {
     const payload: ForwardTemplateSettingsDTO = await templateService().get()
-    reply.status(200).send(payload)
+    return reply.status(200).send(payload)
   })
 
   route(
@@ -277,7 +277,7 @@ export async function registerAdminMailRoutes(
       const actorId = requireOperator(request)
       const body = parse(SetForwardTemplateDefaultRequestSchema, request.body)
       const payload: ForwardTemplateSettingsDTO = await templateService().set(body, actorId)
-      reply.status(200).send(payload)
+      return reply.status(200).send(payload)
     },
   )
 
@@ -288,7 +288,7 @@ export async function registerAdminMailRoutes(
     async (request, reply) => {
       const body = parse(PreviewForwardTemplateRequestSchema, request.body)
       const payload: PreviewForwardTemplateResponse = await templateService().preview(body)
-      reply.status(200).send(payload)
+      return reply.status(200).send(payload)
     },
   )
 }
