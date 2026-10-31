@@ -106,14 +106,14 @@ export async function registerServiceHoursCertificateRoutes(
         userId,
         body.locale,
       )
-      reply.status(200).send(payload)
+      return reply.status(200).send(payload)
     },
   )
 
   route(app, "listMyServiceHoursCertificates", async (request, reply) => {
     const userId = requireAuth(request)
     const payload: ListMyCertificatesResponse = await service().list(userId)
-    reply.status(200).send(payload)
+    return reply.status(200).send(payload)
   })
 
   route(
@@ -131,7 +131,7 @@ export async function registerServiceHoursCertificateRoutes(
         code,
       })
       const payload: RevokeCertificateResponse = await service().revoke(userId, body.code)
-      reply.status(200).send(payload)
+      return reply.status(200).send(payload)
     },
   )
 
@@ -154,7 +154,7 @@ export async function registerServiceHoursCertificateRoutes(
         code: (request.params as { code?: unknown }).code,
       })
       const payload: VerifyCertificateResponse = await service().verify(code)
-      reply.status(200).send(payload)
+      return reply.status(200).send(payload)
     },
   )
 }
