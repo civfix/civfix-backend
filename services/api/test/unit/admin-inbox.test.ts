@@ -233,7 +233,7 @@ describe("sender verdict on inbox rows", () => {
 })
 
 describe("GET /admin/inbox/:id (detail)", () => {
-  it("returns the full email with every attachment key replaced by a presigned URL", async () => {
+  it("T4: returns the full email with every attachment key replaced by a presigned URL", async () => {
     harness = await makeHarness()
     const id = await seed(harness, {
       messageId: "<detail@x>",
@@ -261,8 +261,16 @@ describe("GET /admin/inbox/:id (detail)", () => {
     expect(dto.messageId).toBe("<detail@x>")
     // The raw R2 key never reaches the wire; it is swapped for a time-limited GET URL.
     expect(dto.attachments).toEqual([
-      { key: "memory://inbound-emails/d/permit.pdf", filename: "permit.pdf", size: 2048 },
-      { key: "memory://inbound-emails/d/map.png", filename: "map.png", size: 512 },
+      {
+        key: "https://fake-storage.invalid/inbound-emails/d/permit.pdf",
+        filename: "permit.pdf",
+        size: 2048,
+      },
+      {
+        key: "https://fake-storage.invalid/inbound-emails/d/map.png",
+        filename: "map.png",
+        size: 512,
+      },
     ])
     expect(harness.storage.signed).toEqual([
       { key: "inbound-emails/d/permit.pdf", ttlSec: MEDIA_GET_URL_TTL_SEC },
