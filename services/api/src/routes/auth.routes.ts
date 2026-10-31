@@ -133,7 +133,7 @@ function registerOtpRoutes(app: FastifyInstance, ctx: AuthRouteContext): void {
       const body = parse(EmailOtpRequestRequestSchema, request.body)
       const result = await services.otp.issueOtp(body.email, request.ip || null)
       const payload: EmailOtpRequestResponse = { sent: true, resendAfterSec: result.resendAfterSec }
-      reply.status(200).send(payload)
+      return reply.status(200).send(payload)
     },
   )
 
@@ -144,7 +144,7 @@ function registerOtpRoutes(app: FastifyInstance, ctx: AuthRouteContext): void {
     async (request, reply) => {
       const body = parse(EmailOtpVerifyRequestSchema, request.body)
       const userId = await services.otp.verifyOtp(body.email, body.code, request.ip || null)
-      await issueSession(ctx, request, reply, userId, { guestSmsEnabled })
+      return issueSession(ctx, request, reply, userId, { guestSmsEnabled })
     },
   )
 }
@@ -157,7 +157,7 @@ function registerNativeOAuthRoutes(app: FastifyInstance, ctx: AuthRouteContext):
     { config: { rateLimit: OAUTH_RATE_LIMIT } },
     async (_request, reply) => {
       const { secret, expiresInSeconds } = await oauthNonces.mint()
-      reply.status(200).send({ nonce: secret, expiresInSeconds })
+      return reply.status(200).send({ nonce: secret, expiresInSeconds })
     },
   )
 
@@ -172,7 +172,7 @@ function registerNativeOAuthRoutes(app: FastifyInstance, ctx: AuthRouteContext):
       body.fullName,
       expectedNonce,
     )
-    await issueSessionForUser(ctx, request, reply, user, { guestSmsEnabled })
+    return issueSessionForUser(ctx, request, reply, user, { guestSmsEnabled })
   })
 
   route(
@@ -186,7 +186,7 @@ function registerNativeOAuthRoutes(app: FastifyInstance, ctx: AuthRouteContext):
         log: request.log,
       })
       const user = await services.oauth.signInWithGoogleIdToken(body.idToken, expectedNonce)
-      await issueSessionForUser(ctx, request, reply, user, { guestSmsEnabled })
+      return issueSessionForUser(ctx, request, reply, user, { guestSmsEnabled })
     },
   )
 }
@@ -223,7 +223,7 @@ async function registerWebOAuthRoutes(app: FastifyInstance, ctx: AuthRouteContex
       clearOAuthStateCookie(reply)
       const user = await services.oauth.completeGoogleCallback(query.code, stash.codeVerifier)
       const target = resolvePostLoginRedirect(stash.redirect, webOrigins)
-      await issueSessionForUser(ctx, request, reply, user, {
+      return issueSessionForUser(ctx, request, reply, user, {
         forceKind: "web",
         webRedirectTo: target,
         guestSmsEnabled,
@@ -263,7 +263,7 @@ async function registerWebOAuthRoutes(app: FastifyInstance, ctx: AuthRouteContex
         const fullName = appleFullNameFromUserField(body.user)
         const user = await services.oauth.completeAppleCallback(body.code, fullName)
         const target = resolvePostLoginRedirect(stash.redirect, webOrigins)
-        await issueSessionForUser(ctx, request, reply, user, {
+        return issueSessionForUser(ctx, request, reply, user, {
           forceKind: "web",
           webRedirectTo: target,
           guestSmsEnabled,
@@ -279,7 +279,7 @@ function registerSessionRoutes(app: FastifyInstance, ctx: AuthRouteContext): voi
 
   route(app, "session", async (request, reply) => {
     const payload = await buildSessionCheck(ctx, request, reply)
-    reply.status(200).send({ ...payload, guestSmsEnabled })
+    return reply.status(200).send({ ...payload, guestSmsEnabled })
   })
 
   route(
@@ -295,7 +295,7 @@ function registerSessionRoutes(app: FastifyInstance, ctx: AuthRouteContext): voi
       clearSessionCookie(reply)
       clearCsrfCookie(reply)
       const payload: LogoutResponse = { ok: true }
-      reply.status(200).send(payload)
+      return reply.status(200).send(payload)
     },
   )
 
@@ -304,7 +304,7 @@ function registerSessionRoutes(app: FastifyInstance, ctx: AuthRouteContext): voi
     const token = presentedSessionToken(request)
     if (token === null) throw AppError.unauthorized()
     const payload = await wsTickets.mint(userId, await sha256Hex(token))
-    reply.status(200).send(payload)
+    return reply.status(200).send(payload)
   })
 }
 
@@ -335,7 +335,7 @@ function registerProfileRoutes(app: FastifyInstance, ctx: AuthRouteContext): voi
     const userId = requireAuth(request)
     const { handle } = parse(HandleAvailableRequestSchema, request.query)
     const payload = await handleAvailability(userId, handle)
-    reply.status(200).send(payload)
+    return reply.status(200).send(payload)
   })
 
   route(app, "updateProfile", { preHandler: csrf.protect }, async (request, reply) => {
@@ -364,7 +364,7 @@ function registerProfileRoutes(app: FastifyInstance, ctx: AuthRouteContext): voi
       ...(body.avatarUploadId !== undefined ? { avatarUploadId: body.avatarUploadId } : {}),
     })
     const payload: UpdateProfileResponse = { user: await toUserDTO(updated, ctx.presignAvatar) }
-    reply.status(200).send(payload)
+    return reply.status(200).send(payload)
   })
 }
 
@@ -412,12 +412,12 @@ async function issueSession(
   reply: FastifyReply,
   userId: string,
   opts: IssueSessionOptions = {},
-): Promise<void> {
+): Promise<FastifyReply> {
   const user = await ctx.services.users.findById(userId)
   if (!user) {
     throw AppError.internal("User vanished after sign-in.")
   }
-  await issueSessionForUser(ctx, request, reply, user, opts)
+  return issueSessionForUser(ctx, request, reply, user, opts)
 }
 
 async function issueSessionForUser(
@@ -426,7 +426,7 @@ async function issueSessionForUser(
   reply: FastifyReply,
   user: UserRecord,
   opts: IssueSessionOptions = {},
-): Promise<void> {
+): Promise<FastifyReply> {
   const accountStatus = await services.users.accountStatus(user.id)
   if (accountStatus === "banned") {
     throw AppError.forbidden("This account has been banned.")
@@ -448,19 +448,17 @@ async function issueSessionForUser(
 
   if (kind === "mobile") {
     const payload: SessionResponse = { user: dto, token, ...guestSms }
-    reply.status(200).send(payload)
-    return
+    return reply.status(200).send(payload)
   }
 
   setSessionCookie(reply, token, ttl)
   const csrfToken = await csrf.tokenForSession(token)
   setCsrfCookie(reply, csrfToken, ttl)
   if (opts.webRedirectTo !== undefined) {
-    reply.redirect(opts.webRedirectTo)
-    return
+    return reply.redirect(opts.webRedirectTo)
   }
   const payload: SessionResponse = { user: dto, csrfToken, ...guestSms }
-  reply.status(200).send(payload)
+  return reply.status(200).send(payload)
 }
 
 async function buildSessionCheck(

@@ -30,6 +30,14 @@ tester.run("return-reply", rule, {
       name: "T9: an expression body and a send at module top level",
       code: "const h = async (req, reply) => reply.send(x)\nreply.send(x)",
     },
+    {
+      name: "a chain rooted at this, not at a reply identifier",
+      code: "async function h() { this.reply.send(x) }",
+    },
+    {
+      name: "a computed send",
+      code: 'async function h(reply) { reply["send"](x) }',
+    },
   ],
   invalid: [
     {

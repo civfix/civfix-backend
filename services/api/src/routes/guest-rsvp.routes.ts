@@ -60,7 +60,7 @@ export async function registerGuestRsvpRoutes(
       const { id } = parse(CleanupIdParamsSchema, request.params)
       const body = parse(GuestRsvpRequestBodySchema, { ...(request.body as object), id })
       const payload: GuestRsvpRequestResponse = await service().requestCode(body, ctxOf(request))
-      reply.status(200).send(payload)
+      return reply.status(200).send(payload)
     },
   )
 
@@ -72,7 +72,7 @@ export async function registerGuestRsvpRoutes(
       const { id } = parse(CleanupIdParamsSchema, request.params)
       const body = parse(GuestRsvpVerifyRequestSchema, { ...(request.body as object), id })
       const payload: GuestRsvpVerifyResponse = await service().verifyCode(body, ctxOf(request))
-      reply.status(200).send(payload)
+      return reply.status(200).send(payload)
     },
   )
 
@@ -83,7 +83,7 @@ export async function registerGuestRsvpRoutes(
     async (request, reply) => {
       const body = parse(GuestRsvpCancelRequestSchema, request.body)
       const payload: GuestRsvpCancelResponse = await service().cancelRsvp(body.token)
-      reply.status(200).send(payload)
+      return reply.status(200).send(payload)
     },
   )
 
@@ -96,7 +96,7 @@ export async function registerGuestRsvpRoutes(
       const { id } = parse(CleanupIdParamsSchema, request.params)
       const query = parse(GetCleanupGuestsRequestSchema, { ...(request.query as object), id })
       const payload: GetCleanupGuestsResponse = await service().listGuests(query, userId)
-      reply.status(200).send(payload)
+      return reply.status(200).send(payload)
     },
   )
 }
