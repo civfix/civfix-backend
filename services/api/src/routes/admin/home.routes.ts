@@ -61,11 +61,11 @@ export async function registerAdminHomeRoutes(
 
   route(app, "adminHomeSummary", async (_request, reply) => {
     const payload: HomeSummaryResponse = await service().summary()
-    reply.status(200).send(payload)
+    return reply.status(200).send(payload)
   })
 
   route(app, "adminHomeMap", async (_request, reply) => {
     const payload: HomeMapResponse = await service().map()
-    reply.status(200).send(payload)
+    return reply.status(200).send(payload)
   })
 }
