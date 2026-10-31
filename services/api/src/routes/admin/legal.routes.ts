@@ -13,6 +13,6 @@ export async function registerAdminLegalRoutes(
       documents: legalDocumentVersions(),
       generatedAt: new Date().toISOString(),
     }
-    reply.status(200).send(payload)
+    return reply.status(200).send(payload)
   })
 }

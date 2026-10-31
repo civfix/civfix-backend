@@ -44,7 +44,7 @@ export function registerHostPageRoutes(
       const payload: GetPublicEventPageResponse = await ctx
         .pages()
         .getPublicEventPage(query, auth.userId ?? null)
-      reply.status(200).send(payload)
+      return reply.status(200).send(payload)
     },
   )
 
@@ -58,7 +58,7 @@ export function registerHostPageRoutes(
       await ctx.pageGuards().requireCapability(id, userId, "manage_page")
       const query = parse(GetEventPageRequestSchema, { id })
       const payload: GetEventPageResponse = await ctx.pages().get(query)
-      reply.status(200).send(payload)
+      return reply.status(200).send(payload)
     },
   )
 
@@ -72,7 +72,7 @@ export function registerHostPageRoutes(
       await ctx.pageGuards().requireCapability(id, userId, "manage_page")
       const body = parse(SaveEventPageRequestSchema, bodyWith(request, { id }))
       const payload: SaveEventPageResponse = await ctx.pages().save(body, userId)
-      reply.status(200).send(payload)
+      return reply.status(200).send(payload)
     },
   )
 
@@ -86,7 +86,7 @@ export function registerHostPageRoutes(
       await ctx.pageGuards().requireCapability(id, userId, "manage_page")
       const body = parse(PublishEventPageRequestSchema, bodyWith(request, { id }))
       const payload: PublishEventPageResponse = await ctx.pages().publish(body, userId)
-      reply.status(200).send(payload)
+      return reply.status(200).send(payload)
     },
   )
 
@@ -100,7 +100,7 @@ export function registerHostPageRoutes(
       await ctx.pageGuards().requireCapability(id, userId, "manage_page")
       const query = parse(CheckEventPageSlugRequestSchema, queryWith(request, { id }))
       const payload: CheckEventPageSlugResponse = await ctx.pages().checkSlug(query)
-      reply.status(200).send(payload)
+      return reply.status(200).send(payload)
     },
   )
 }

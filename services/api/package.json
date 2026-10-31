@@ -80,7 +80,7 @@
     "@fastify/rate-limit": "^10.3.0",
     "@fastify/websocket": "^11.3.3",
     "@node-rs/argon2": "^2.2.2",
-    "@parse/node-apn": "^8.1.0",
+    "@parse/node-apn": "^8.1.1",
     "@sentry/node": "^10.76.1",
     "@smithy/node-http-handler": "4.7.5",
     "arctic": "^2.3.4",

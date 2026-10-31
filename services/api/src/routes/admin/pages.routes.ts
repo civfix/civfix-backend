@@ -113,7 +113,7 @@ export async function registerAdminEventPageRoutes(
       id: row.pageId,
     }))
     const payload: AdminEventPageListResponse = { items: items.map(toDTO), nextCursor }
-    reply.status(200).send(payload)
+    return reply.status(200).send(payload)
   })
 
   route(app, "adminGetEventPage", async (request, reply) => {
@@ -126,7 +126,7 @@ export async function registerAdminEventPageRoutes(
         ? null
         : await makeEventMediaPresigner(container.storage)(record.coverKey, { forceSigned: true })
     const payload: AdminGetEventPageResponse = toEventPageDTO(record, coverUrl)
-    reply.status(200).send(payload)
+    return reply.status(200).send(payload)
   })
 
   route(app, "adminFlagEventPage", { preHandler: csrfProtect }, async (request, reply) => {
@@ -148,7 +148,7 @@ export async function registerAdminEventPageRoutes(
       return flagged
     })
     if (row === null) throw AppError.notFound("Signup page not found.")
-    reply.status(200).send(toDTO(row))
+    return reply.status(200).send(toDTO(row))
   })
 
   route(app, "adminUnpublishEventPage", { preHandler: csrfProtect }, async (request, reply) => {
@@ -166,6 +166,6 @@ export async function registerAdminEventPageRoutes(
       return unpublished
     })
     if (row === null) throw AppError.notFound("Signup page not found.")
-    reply.status(200).send(toDTO(row))
+    return reply.status(200).send(toDTO(row))
   })
 }

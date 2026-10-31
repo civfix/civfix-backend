@@ -59,9 +59,9 @@ export function parseBodyWithId<S extends z.ZodType>(
   return { id, body: parse(schema, { ...(request.body as object), id }) }
 }
 
-export function sendOk(reply: FastifyReply): void {
+export function sendOk(reply: FastifyReply): FastifyReply {
   const payload: AdminOkResponse = { ok: true }
-  reply.status(200).send(payload)
+  return reply.status(200).send(payload)
 }
 
 /**
