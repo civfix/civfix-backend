@@ -262,7 +262,7 @@ export async function registerMessagesRoutes(
         mentionedUserIds: body.mentionedUserIds,
       })
 
-      reply.status(200).send(updated)
+      return reply.status(200).send(updated)
     },
   )
 
@@ -302,7 +302,7 @@ export async function registerMessagesRoutes(
         neutralizeChatViewerFields(updated),
       )
 
-      reply.status(200).send(updated)
+      return reply.status(200).send(updated)
     },
   )
 
@@ -343,7 +343,7 @@ export async function registerMessagesRoutes(
         container.chatService.broadcastEvent?.(roomKeyFor(roomKind, roomId), frame),
       ).catch(() => {})
 
-      reply.status(200).send(updated)
+      return reply.status(200).send(updated)
     },
   )
 
@@ -395,7 +395,7 @@ export async function registerMessagesRoutes(
         anonymous: body.anonymous,
         userId,
       })
-      reply.status(200).send(created)
+      return reply.status(200).send(created)
     },
   )
 
@@ -411,7 +411,7 @@ export async function registerMessagesRoutes(
         optionIdxs: body.optionIdxs,
         userId,
       })
-      reply.status(200).send(updated)
+      return reply.status(200).send(updated)
     },
   )
 
@@ -423,7 +423,7 @@ export async function registerMessagesRoutes(
       const userId = requireAuth(request)
       const body = parse(ClosePollRequestSchema, request.body)
       const closed = await getPollService().closePoll({ messageId: body.messageId, userId })
-      reply.status(200).send(closed)
+      return reply.status(200).send(closed)
     },
   )
 }

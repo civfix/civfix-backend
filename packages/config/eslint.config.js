@@ -2,6 +2,7 @@ import eslint from "@eslint/js"
 import tseslint from "typescript-eslint"
 import globals from "globals"
 import vitest from "@vitest/eslint-plugin"
+import returnReply from "./rules/return-reply.js"
 
 // Type-aware rules need a TypeScript program, which only the consuming service can locate, so each
 // service passes its own parserOptions (projectService + tsconfigRootDir) through `typed()`.
@@ -106,7 +107,9 @@ export function config(...extra) {
     },
     {
       files: ["src/**/*.ts"],
+      plugins: { civfix: { rules: { "return-reply": returnReply } } },
       rules: {
+        "civfix/return-reply": "error",
         "@typescript-eslint/no-explicit-any": "error",
         "@typescript-eslint/no-unsafe-argument": "error",
         "@typescript-eslint/no-unsafe-assignment": "error",

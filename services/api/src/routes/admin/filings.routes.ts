@@ -96,7 +96,7 @@ export async function registerAdminFilingRoutes(
       const { id, body } = parseBodyWithId(FileReportRequestSchema, request)
       const filing = await service().file(id, { actorId: operatorId, note: body.note ?? null })
       const payload: FileReportResponse = { filing }
-      reply.status(200).send(payload)
+      return reply.status(200).send(payload)
     },
   )
 
@@ -104,14 +104,14 @@ export async function registerAdminFilingRoutes(
     requireOperator(request)
     const query = parse(ListFilingsRequestSchema, request.query)
     const payload: ListFilingsResponse = await service().list(query)
-    reply.status(200).send(payload)
+    return reply.status(200).send(payload)
   })
 
   route(app, "getFiling", { config: RATE_LIMITED }, async (request, reply) => {
     requireOperator(request)
     const { id } = parse(GetFilingRequestSchema, idParam(request))
     const payload: GetFilingResponse = { filing: await service().get(id) }
-    reply.status(200).send(payload)
+    return reply.status(200).send(payload)
   })
 
   route(
@@ -122,7 +122,7 @@ export async function registerAdminFilingRoutes(
       const operatorId = requireOperator(request)
       const { id } = parseBodyWithId(RetryFilingRequestSchema, request)
       const payload: RetryFilingResponse = { filing: await service().retry(id, operatorId) }
-      reply.status(200).send(payload)
+      return reply.status(200).send(payload)
     },
   )
 
@@ -138,7 +138,7 @@ export async function registerAdminFilingRoutes(
         note: firstNonEmpty(body.note?.trim()) ?? null,
       })
       const payload: CancelFilingResponse = { filing }
-      reply.status(200).send(payload)
+      return reply.status(200).send(payload)
     },
   )
 
@@ -156,7 +156,7 @@ export async function registerAdminFilingRoutes(
         note: firstNonEmpty(body.note?.trim()) ?? null,
       })
       const payload: RecordManualFilingResponse = { filing }
-      reply.status(200).send(payload)
+      return reply.status(200).send(payload)
     },
   )
 
@@ -164,7 +164,7 @@ export async function registerAdminFilingRoutes(
     requireOperator(request)
     parse(GetFilingSettingsRequestSchema, request.query)
     const payload: GetFilingSettingsResponse = await service().getSettings()
-    reply.status(200).send(payload)
+    return reply.status(200).send(payload)
   })
 
   route(
@@ -178,7 +178,7 @@ export async function registerAdminFilingRoutes(
         body.paused,
         operatorId,
       )
-      reply.status(200).send(payload)
+      return reply.status(200).send(payload)
     },
   )
 
@@ -186,7 +186,7 @@ export async function registerAdminFilingRoutes(
     requireOperator(request)
     const { geoid } = parse(ListFilingRoutesRequestSchema, { geoid: geoidParam(request) })
     const payload: ListFilingRoutesResponse = { routes: await service().listRoutes(geoid) }
-    reply.status(200).send(payload)
+    return reply.status(200).send(payload)
   })
 
   route(
@@ -199,7 +199,7 @@ export async function registerAdminFilingRoutes(
       const body = parse(SaveFilingRoutesRequestSchema, { ...(request.body as object), geoid })
       const routes = await service().saveRoutes(geoid, body.routes, operatorId)
       const payload: SaveFilingRoutesResponse = { routes }
-      reply.status(200).send(payload)
+      return reply.status(200).send(payload)
     },
   )
 }

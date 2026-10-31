@@ -1,4 +1,5 @@
 import { describe, it, expect } from "vitest"
+import { HttpUrlSchema } from "@civfix/contract"
 import {
   FakeStorage,
   FakeMailer,
@@ -54,6 +55,17 @@ describe("FakeStorage", () => {
 
     await s.delete("k1")
     expect(await s.head("k1")).toBeNull()
+  })
+
+  it("T1: presignGet hands out an http(s) link to the key", async () => {
+    const url = await new FakeStorage().presignGet("inbound-mail/t1/permit.pdf", 900)
+    expect(url).toBe("https://fake-storage.invalid/inbound-mail/t1/permit.pdf")
+    expect(HttpUrlSchema.safeParse(url).success).toBe(true)
+  })
+
+  it("T2: presignPut still hands out a memory url", async () => {
+    const pre = await new FakeStorage().presignPut("k1", { contentType: "image/png", byteSize: 3 })
+    expect(pre.url).toBe("memory://k1")
   })
 })
 

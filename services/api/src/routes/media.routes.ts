@@ -136,7 +136,7 @@ export async function registerMediaRoutes(
         body,
         ownerOf(request),
       )
-      reply.status(200).send(payload)
+      return reply.status(200).send(payload)
     },
   )
 
@@ -152,14 +152,14 @@ export async function registerMediaRoutes(
       // stays the single source.
       const input = parse(FinalizeMediaRequestSchema, { uploadId })
       const payload: FinalizeMediaResponse = await service().finalize(input, ownerOf(request))
-      reply.status(200).send(payload)
+      return reply.status(200).send(payload)
     },
   )
 
   route(app, "getMedia", async (request, reply) => {
     const { id } = parse(MediaIdParamsSchema, request.params)
     const payload: GetMediaResponse = await service().getMedia(id, ownerOf(request))
-    reply.status(200).send(payload)
+    return reply.status(200).send(payload)
   })
 }
 

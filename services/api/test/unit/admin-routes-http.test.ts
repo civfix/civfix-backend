@@ -677,7 +677,7 @@ describe("every admin list route rejects a malformed query with 422", () => {
 })
 
 describe("F092: GET /admin/mail/:id presigns inbound attachment keys", () => {
-  it("returns an absolute presigned URL per attachment, never the raw object key", async () => {
+  it("T3: returns an absolute presigned URL per attachment, never the raw object key", async () => {
     await h.fakes.mail.insertMessage({
       threadId: h.mailThreadId,
       direction: "in",
@@ -697,7 +697,9 @@ describe("F092: GET /admin/mail/:id presigns inbound attachment keys", () => {
     const inbound = dto.messages.at(-1)!
     expect(inbound.attachments.map((a) => a.filename)).toEqual(["permit.pdf", "photo.jpg"])
     for (const att of inbound.attachments) {
-      expect(att.key).toBe(`memory://inbound-mail/${h.mailThreadId}/${att.filename}`)
+      expect(att.key).toBe(
+        `https://fake-storage.invalid/inbound-mail/${h.mailThreadId}/${att.filename}`,
+      )
       expect(att.key).not.toMatch(/^inbound-mail\//)
     }
   })
@@ -721,7 +723,9 @@ describe("F092: GET /admin/mail/:id presigns inbound attachment keys", () => {
     const dto = res.json() as { messages: { attachments: { key: string }[] }[] }
     const inbound = dto.messages.at(-1)!
     expect(inbound.attachments).toHaveLength(50)
-    expect(inbound.attachments.every((a) => a.key.startsWith("memory://"))).toBe(true)
+    expect(
+      inbound.attachments.every((a) => a.key.startsWith("https://fake-storage.invalid/")),
+    ).toBe(true)
   })
 })
 

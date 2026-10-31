@@ -1,6 +1,7 @@
 /**
  * The GH#209 avatar fixtures, shared by both resolver slices: six users whose stored avatar_url and avatar
- * media cover every branch of the resolver. Storage is the seams fake, so a key presigns to memory://<key>.
+ * media cover every branch of the resolver. Storage is the seams fake, so a key presigns to
+ * https://fake-storage.invalid/<key>.
  */
 
 import { randomUUID } from "node:crypto"
@@ -56,8 +57,8 @@ const AVATAR_FIXTURES: Readonly<Record<AvatarFixtureName, Fixture>> = {
 
 /** What each fixture user resolves to through fake storage; null is "no URL". */
 export const RESOLVED_AVATAR: Readonly<Record<AvatarFixtureName, string | null>> = {
-  P: "memory://thumbs/uploads/2026/10/p1.jpg",
-  S: "memory://processed/uploads/2026/10/s1",
+  P: "https://fake-storage.invalid/thumbs/uploads/2026/10/p1.jpg",
+  S: "https://fake-storage.invalid/processed/uploads/2026/10/s1",
   V: "https://lh3.googleusercontent.com/a/v-old",
   R: "https://lh3.googleusercontent.com/a/r-old",
   O: "https://lh3.googleusercontent.com/a/o",
@@ -116,5 +117,8 @@ export async function seedAvatarUsers(
   return out
 }
 
-/** The container's avatar presigner over the seams fake storage: a key becomes memory://<key>. */
+/**
+ * The container's avatar presigner over the seams fake storage: a key becomes
+ * https://fake-storage.invalid/<key>.
+ */
 export const fakeAvatarPresigner: AvatarPresigner = avatarPresigner(new FakeStorage())
