@@ -59,8 +59,7 @@ export async function registerNotificationUnsubscribeRoutes(
               )
             : null
         if (capability === null) {
-          reply.status(200).send(NOTHING_APPLIED)
-          return
+          return reply.status(200).send(NOTHING_APPLIED)
         }
         let applied: boolean
         try {
@@ -78,7 +77,7 @@ export async function registerNotificationUnsubscribeRoutes(
         const response: UnsubscribeNotificationEmailResponse = applied
           ? { ok: true, category: capability.category }
           : NOTHING_APPLIED
-        reply.status(200).send(response)
+        return reply.status(200).send(response)
       },
     )
 
@@ -94,7 +93,7 @@ export async function registerNotificationUnsubscribeRoutes(
         const target = parsed.success
           ? `${pageUrl()}?t=${encodeURIComponent(parsed.data.t)}`
           : pageUrl()
-        reply.redirect(target, 302)
+        return reply.redirect(target, 302)
       },
     )
   })

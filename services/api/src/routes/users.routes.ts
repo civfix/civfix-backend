@@ -95,7 +95,7 @@ export async function registerUsersRoutes(
               presignAvatar,
             ).searchByHandlePrefix(term, userId, limit)
       const payload: SearchUsersResponse = { results }
-      reply.status(200).send(payload)
+      return reply.status(200).send(payload)
     },
   )
 
@@ -115,7 +115,7 @@ export async function registerUsersRoutes(
               presignAvatar,
             ).searchMentionable(term, userId, USER_SEARCH_DEFAULT_LIMIT)
       const payload: SearchUsersResponse = { results }
-      reply.status(200).send(payload)
+      return reply.status(200).send(payload)
     },
   )
 
@@ -135,7 +135,7 @@ export async function registerUsersRoutes(
       await blocks.block(userId, id)
       await dropContainerSuggestions(container, [userId, id], request.log)
       const payload: BlockUserResponse = { blocked: true }
-      reply.status(200).send(payload)
+      return reply.status(200).send(payload)
     },
   )
 
@@ -149,7 +149,7 @@ export async function registerUsersRoutes(
       await blocksRepo().unblock(userId, id)
       await dropContainerSuggestions(container, [userId, id], request.log)
       const payload: BlockUserResponse = { blocked: false }
-      reply.status(200).send(payload)
+      return reply.status(200).send(payload)
     },
   )
 
@@ -168,7 +168,7 @@ export async function registerUsersRoutes(
         blocked: page.blocked,
         ...(page.nextCursor !== null ? { nextCursor: page.nextCursor } : {}),
       }
-      reply.status(200).send(payload)
+      return reply.status(200).send(payload)
     },
   )
 
@@ -195,7 +195,7 @@ export async function registerUsersRoutes(
         : await store.updateSettings(userId, patch)
     if (!updated) throw AppError.unauthorized(AUTH_REQUIRED_MESSAGE)
     const payload: UpdateSettingsResponse = { user: await toUserDTO(updated, presignAvatar) }
-    reply.status(200).send(payload)
+    return reply.status(200).send(payload)
   })
 
   route(
@@ -248,7 +248,7 @@ export async function registerUsersRoutes(
         request.log,
       )
       const payload: DeleteAccountResponse = { ok: true }
-      reply.status(200).send(payload)
+      return reply.status(200).send(payload)
     },
   )
 
@@ -273,7 +273,7 @@ export async function registerUsersRoutes(
       await container.jobs.enqueue(DATA_EXPORT_JOB, { userId }, { singletonKey: userId })
 
       const payload: RequestDataExportResponse = { ok: true, email }
-      reply.status(200).send(payload)
+      return reply.status(200).send(payload)
     },
   )
 }

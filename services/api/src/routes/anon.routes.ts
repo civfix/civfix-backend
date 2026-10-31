@@ -117,7 +117,7 @@ export async function registerAnonRoutes(
       }
 
       const payload: AnonReportResponse = result.response
-      reply.status(202).send(payload)
+      return reply.status(202).send(payload)
     },
   )
 
@@ -136,7 +136,7 @@ export async function registerAnonRoutes(
       })
 
       const payload: AnonReportStatusResponse = await service().anonReportStatus(id, claimCode)
-      reply.status(200).send(payload)
+      return reply.status(200).send(payload)
     },
   )
 }

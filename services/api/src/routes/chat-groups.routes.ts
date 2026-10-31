@@ -120,14 +120,14 @@ export async function registerChatGroupRoutes(
       const userId = requireAuth(request)
       const body = parse(CreateChatGroupBodySchema, request.body)
       const dto = await svc().createGroup(userId, body)
-      reply.status(201).send(dto)
+      return reply.status(201).send(dto)
     },
   )
 
   route(app, "getChatGroup", async (request, reply) => {
     const userId = requireAuth(request)
     const { id } = parse(GetChatGroupRequestSchema, request.params)
-    reply.status(200).send(await svc().getGroup(userId, id))
+    return reply.status(200).send(await svc().getGroup(userId, id))
   })
 
   route(
@@ -138,7 +138,7 @@ export async function registerChatGroupRoutes(
       const userId = requireAuth(request)
       const { id } = parse(GroupIdParamsSchema, request.params)
       const body = parse(UpdateChatGroupBodySchema, { ...(request.body as object), id })
-      reply.status(200).send(await svc().updateGroup(userId, body))
+      return reply.status(200).send(await svc().updateGroup(userId, body))
     },
   )
 
@@ -151,7 +151,7 @@ export async function registerChatGroupRoutes(
       const { id } = parse(GetChatGroupRequestSchema, request.params)
       const dto = await svc().joinGroup(userId, id)
       nudgeThreads(container.userChannel, userId)
-      reply.status(200).send(dto)
+      return reply.status(200).send(dto)
     },
   )
 
@@ -159,7 +159,7 @@ export async function registerChatGroupRoutes(
     const userId = requireAuth(request)
     const { id } = parse(GroupIdParamsSchema, request.params)
     const q = parse(ListGroupMembersRequestSchema, { ...(request.query as object), id })
-    reply.status(200).send(await svc().listMembers(userId, q))
+    return reply.status(200).send(await svc().listMembers(userId, q))
   })
 
   route(
@@ -175,7 +175,7 @@ export async function registerChatGroupRoutes(
       // learn nothing, and in a group at or over GROUP_MEMBERS_DEFAULT_LIMIT members a fresh member sorts
       // past page one, so a page-derived set skips exactly the big rooms.
       for (const memberId of added) nudgeThreads(container.userChannel, memberId)
-      reply.status(200).send(page)
+      return reply.status(200).send(page)
     },
   )
 
@@ -188,7 +188,7 @@ export async function registerChatGroupRoutes(
       const params = parse(GroupMemberParamsSchema, request.params)
       parse(RemoveGroupMemberRequestSchema, params)
       await svc().removeMember(actorId, params.id, params.userId)
-      reply.status(200).send({ ok: true })
+      return reply.status(200).send({ ok: true })
     },
   )
 
@@ -203,7 +203,9 @@ export async function registerChatGroupRoutes(
         ...(request.body as object),
         ...params,
       })
-      reply.status(200).send(await svc().setMemberRole(actorId, body.id, body.userId, body.role))
+      return reply
+        .status(200)
+        .send(await svc().setMemberRole(actorId, body.id, body.userId, body.role))
     },
   )
 
@@ -222,7 +224,7 @@ export async function registerChatGroupRoutes(
       q,
       limit,
     )
-    reply.status(200).send(payload)
+    return reply.status(200).send(payload)
   })
 
   const resolveChatPowers = wireChatPowers(app, container)
@@ -252,7 +254,7 @@ export async function registerChatGroupRoutes(
         // deleted bubble on clients that upsert by id.
         legacyBroadcast: false,
       })
-      reply.status(200).send(tombstone)
+      return reply.status(200).send(tombstone)
     },
   )
 }

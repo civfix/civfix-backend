@@ -16,7 +16,7 @@
     "clean": "rimraf .turbo *.tsbuildinfo"
   },
   "dependencies": {
-    "@civfix/contract": "0.66.0-b-integration-notification-center.g66a7652"
+    "@civfix/contract": "0.68.0-b-integration-notification-center.g91e57ed"
   },
   "devDependencies": {
     "@civfix/config": "workspace:*",

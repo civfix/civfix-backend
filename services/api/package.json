@@ -72,7 +72,7 @@
   "dependencies": {
     "@aws-sdk/client-s3": "^3.1147.0",
     "@aws-sdk/s3-request-presigner": "^3.1147.0",
-    "@civfix/contract": "0.66.0-b-integration-notification-center.g66a7652",
+    "@civfix/contract": "0.68.0-b-integration-notification-center.g91e57ed",
     "@civfix/tokens": "^0.1.1",
     "@fastify/cookie": "^11.1.2",
     "@fastify/cors": "^10.1.0",

@@ -82,6 +82,16 @@ describe("POST /map/jurisdictions/:geoid/suggest-contact: bounded fields", () =>
     expect(auditWrites(db)).toBe(0)
   })
 
+  it("T6: accepts an http(s) form URL", async () => {
+    await boot()
+    const res = await app!.inject({
+      method: "POST",
+      url: SUGGEST_URL,
+      payload: { formUrl: "https://example.gov/report" },
+    })
+    expect(res.statusCode).toBe(201)
+  })
+
   it("422s an overlong geoid path segment", async () => {
     const db = await boot()
     const res = await app!.inject({

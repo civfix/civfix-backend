@@ -101,7 +101,7 @@ export async function registerReportContentRoutes(
       }
 
       const payload: ReportContentResponse = { ok: true }
-      reply.status(200).send(payload)
+      return reply.status(200).send(payload)
     },
   )
 }

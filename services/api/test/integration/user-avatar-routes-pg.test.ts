@@ -2,8 +2,8 @@
  * GH#209: every route that shows a user's profile photo returns the one resolved avatar URL (the ready
  * avatar media's thumbnail, else its served copy, else the stored avatar_url), through the real Fastify
  * app on PostGIS with the container's own wiring. Storage is the seams fake, so keys presign to
- * memory://<key>. The users P, S, V, R, O and N are the shared fixtures in test/helpers/avatar-fixtures.ts;
- * every case seeds its own set.
+ * https://fake-storage.invalid/<key>. The users P, S, V, R, O and N are the shared fixtures in
+ * test/helpers/avatar-fixtures.ts; every case seeds its own set.
  */
 
 import { afterAll, beforeAll, describe, expect, it } from "vitest"
@@ -132,7 +132,7 @@ describe.skipIf(!pg)("user avatar URLs on routes (integration)", () => {
         payload: { email: u.P.email, code },
       }),
     )
-    expect(body.user.avatarUrl).toBe("memory://thumbs/uploads/2026/10/p1.jpg")
+    expect(body.user.avatarUrl).toBe("https://fake-storage.invalid/thumbs/uploads/2026/10/p1.jpg")
   })
 
   it("T6: PUT /me/profile without avatarUploadId answers with P's thumbnail URL", async () => {
@@ -143,7 +143,7 @@ describe.skipIf(!pg)("user avatar URLs on routes (integration)", () => {
         displayName: u.P.displayName,
       }),
     )
-    expect(body.user.avatarUrl).toBe("memory://thumbs/uploads/2026/10/p1.jpg")
+    expect(body.user.avatarUrl).toBe("https://fake-storage.invalid/thumbs/uploads/2026/10/p1.jpg")
   })
 
   it("T7: PUT /me/settings answers with P's thumbnail URL", async () => {
@@ -151,7 +151,7 @@ describe.skipIf(!pg)("user avatar URLs on routes (integration)", () => {
     const body = okJson<{ user: { avatarUrl: string | null } }>(
       await put(await signIn(u.P), "/v1/me/settings", { allowDirectMessages: false }),
     )
-    expect(body.user.avatarUrl).toBe("memory://thumbs/uploads/2026/10/p1.jpg")
+    expect(body.user.avatarUrl).toBe("https://fake-storage.invalid/thumbs/uploads/2026/10/p1.jpg")
   })
 
   it("T8: GET /feed/home shows each followed author's resolved avatar", async () => {
@@ -172,8 +172,8 @@ describe.skipIf(!pg)("user avatar URLs on routes (integration)", () => {
       avatars[name] = item!.author.avatarUrl
     }
     expect(avatars).toEqual({
-      P: "memory://thumbs/uploads/2026/10/p1.jpg",
-      S: "memory://processed/uploads/2026/10/s1",
+      P: "https://fake-storage.invalid/thumbs/uploads/2026/10/p1.jpg",
+      S: "https://fake-storage.invalid/processed/uploads/2026/10/s1",
       V: "https://lh3.googleusercontent.com/a/v-old",
       O: "https://lh3.googleusercontent.com/a/o",
     })
@@ -190,7 +190,9 @@ describe.skipIf(!pg)("user avatar URLs on routes (integration)", () => {
     const body = okJson<{ repostOf: { author: PersonDTO | null } | null }>(
       await get(await signIn(u.N), `/v1/posts/${row!.id}`),
     )
-    expect(body.repostOf?.author?.avatarUrl).toBe("memory://thumbs/uploads/2026/10/p1.jpg")
+    expect(body.repostOf?.author?.avatarUrl).toBe(
+      "https://fake-storage.invalid/thumbs/uploads/2026/10/p1.jpg",
+    )
   })
 
   it("T10: GET /people/:id (viewer O) and GET /me/profile (P) show P's thumbnail URL", async () => {
@@ -201,8 +203,12 @@ describe.skipIf(!pg)("user avatar URLs on routes (integration)", () => {
     const mine = okJson<{ profile: { avatarUrl?: string } }>(
       await get(await signIn(u.P), "/v1/me/profile"),
     )
-    expect(other.profile.avatarUrl).toBe("memory://thumbs/uploads/2026/10/p1.jpg")
-    expect(mine.profile.avatarUrl).toBe("memory://thumbs/uploads/2026/10/p1.jpg")
+    expect(other.profile.avatarUrl).toBe(
+      "https://fake-storage.invalid/thumbs/uploads/2026/10/p1.jpg",
+    )
+    expect(mine.profile.avatarUrl).toBe(
+      "https://fake-storage.invalid/thumbs/uploads/2026/10/p1.jpg",
+    )
   })
 
   it("T11: GET /people/:id/followers and /following list P with the thumbnail and S with the served copy", async () => {
@@ -218,8 +224,8 @@ describe.skipIf(!pg)("user avatar URLs on routes (integration)", () => {
       )
       expect({ list, P: avatarOf(page.items, u.P), S: avatarOf(page.items, u.S) }).toEqual({
         list,
-        P: "memory://thumbs/uploads/2026/10/p1.jpg",
-        S: "memory://processed/uploads/2026/10/s1",
+        P: "https://fake-storage.invalid/thumbs/uploads/2026/10/p1.jpg",
+        S: "https://fake-storage.invalid/processed/uploads/2026/10/s1",
       })
     }
   })
@@ -231,7 +237,7 @@ describe.skipIf(!pg)("user avatar URLs on routes (integration)", () => {
       await get(await signIn(u.N), `/v1/people?q=${encodeURIComponent(tag)}&limit=50`),
     )
     expect({ P: avatarOf(page.items, u.P), V: avatarOf(page.items, u.V) }).toEqual({
-      P: "memory://thumbs/uploads/2026/10/p1.jpg",
+      P: "https://fake-storage.invalid/thumbs/uploads/2026/10/p1.jpg",
       V: "https://lh3.googleusercontent.com/a/v-old",
     })
   })
@@ -241,7 +247,9 @@ describe.skipIf(!pg)("user avatar URLs on routes (integration)", () => {
     const body = okJson<{ results: PersonDTO[] }>(
       await get(await signIn(u.N), "/v1/users/follow-suggestions?limit=20"),
     )
-    expect(avatarOf(body.results, u.P)).toBe("memory://thumbs/uploads/2026/10/p1.jpg")
+    expect(avatarOf(body.results, u.P)).toBe(
+      "https://fake-storage.invalid/thumbs/uploads/2026/10/p1.jpg",
+    )
   })
 
   it("T14: GET /users/search and /users/mention-search find P with the thumbnail URL", async () => {
@@ -254,7 +262,7 @@ describe.skipIf(!pg)("user avatar URLs on routes (integration)", () => {
       const hit = body.results.find((r) => r.id === u.P.id)
       expect({ path, avatarUrl: hit?.avatarUrl }).toEqual({
         path,
-        avatarUrl: "memory://thumbs/uploads/2026/10/p1.jpg",
+        avatarUrl: "https://fake-storage.invalid/thumbs/uploads/2026/10/p1.jpg",
       })
     }
   })
@@ -263,7 +271,9 @@ describe.skipIf(!pg)("user avatar URLs on routes (integration)", () => {
     const u = await seedAvatarUsers(h.sql)
     await h.sql`INSERT INTO user_blocks (blocker_id, blocked_id) VALUES (${u.O.id}, ${u.P.id})`
     const body = okJson<{ blocked: PersonDTO[] }>(await get(await signIn(u.O), "/v1/me/blocks"))
-    expect(avatarOf(body.blocked, u.P)).toBe("memory://thumbs/uploads/2026/10/p1.jpg")
+    expect(avatarOf(body.blocked, u.P)).toBe(
+      "https://fake-storage.invalid/thumbs/uploads/2026/10/p1.jpg",
+    )
   })
 
   it("T16: GET /posts/:id of a soft-deleted P shows the author without an avatar URL", async () => {

@@ -118,6 +118,6 @@ export async function registerHealthRoutes(
   app.get("/readyz", async (_request, reply) => {
     const body = await readiness()
     reply.header("cache-control", NO_STORE)
-    reply.status(body.ok ? HTTP_OK : HTTP_SERVICE_UNAVAILABLE).send(body)
+    return reply.status(body.ok ? HTTP_OK : HTTP_SERVICE_UNAVAILABLE).send(body)
   })
 }

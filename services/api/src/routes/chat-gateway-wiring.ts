@@ -246,7 +246,7 @@ export function applyWsUpgradeRateLimit(app: FastifyInstance): void {
     const result = await limiter(request)
     if (!result.isAllowed && result.isExceeded) {
       applyRateLimitHeaders(reply, result)
-      reply
+      return reply
         .status(429)
         .send({ code: ErrorCode.RATE_LIMITED, message: "Too many connection attempts." })
     }
