@@ -15,15 +15,28 @@ function rootIdentifier(node) {
   return current.type === "Identifier" ? current.name : null
 }
 
-function isReplySend(call) {
-  const { callee } = call
+// Both send the response themselves, so an async handler must return the reply either one gives back.
+const SENDING_METHODS = new Set(["send", "redirect"])
+
+function isReplySend(node) {
+  if (node.type !== "CallExpression") return false
+  const { callee } = node
   return (
     callee.type === "MemberExpression" &&
     !callee.computed &&
     callee.property.type === "Identifier" &&
-    callee.property.name === "send" &&
+    SENDING_METHODS.has(callee.property.name) &&
     rootIdentifier(callee.object) === "reply"
   )
+}
+
+// `await reply.send(x)` and `void reply.send(x)` still drop the reply.
+function droppedCall(expression) {
+  if (expression.type === "AwaitExpression") return expression.argument
+  if (expression.type === "UnaryExpression" && expression.operator === "void") {
+    return expression.argument
+  }
+  return expression
 }
 
 // A selector cannot say "the NEAREST enclosing function is async" (esquery has no nearest-ancestor
@@ -37,7 +50,8 @@ export default {
   meta: { type: "problem", schema: [], messages: { returnReply: message } },
   create(context) {
     return {
-      "ExpressionStatement > CallExpression.expression"(node) {
+      ExpressionStatement(statement) {
+        const node = droppedCall(statement.expression)
         if (isReplySend(node) && nearestFunctionIsAsync(context, node)) {
           context.report({ node, messageId: "returnReply" })
         }

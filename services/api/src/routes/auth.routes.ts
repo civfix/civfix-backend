@@ -206,7 +206,7 @@ async function registerWebOAuthRoutes(app: FastifyInstance, ctx: AuthRouteContex
       },
       "lax",
     )
-    reply.redirect(auth.url)
+    return reply.redirect(auth.url)
   })
 
   route(
@@ -214,7 +214,8 @@ async function registerWebOAuthRoutes(app: FastifyInstance, ctx: AuthRouteContex
     "googleCallback",
     { config: { rateLimit: OAUTH_RATE_LIMIT } },
     async (request, reply) => {
-      if (redirectOnProviderError(request, reply, webOrigins)) return
+      const cancelled = redirectOnProviderError(request, reply, webOrigins)
+      if (cancelled !== null) return cancelled
       const query = parse(OAuthCallbackQuerySchema, request.query)
       const stash = readOAuthStash(request)
       if (!stash || stash.state !== query.state || stash.codeVerifier === undefined) {
@@ -241,7 +242,7 @@ async function registerWebOAuthRoutes(app: FastifyInstance, ctx: AuthRouteContex
       { state: auth.state, ...(redirect !== undefined ? { redirect } : {}) },
       isProd() ? "none" : "lax",
     )
-    reply.redirect(auth.url)
+    return reply.redirect(auth.url)
   })
 
   await app.register(async (appleScope) => {
@@ -253,7 +254,8 @@ async function registerWebOAuthRoutes(app: FastifyInstance, ctx: AuthRouteContex
       "appleCallback",
       { config: { rateLimit: OAUTH_RATE_LIMIT } },
       async (request, reply) => {
-        if (redirectOnProviderError(request, reply, webOrigins)) return
+        const cancelled = redirectOnProviderError(request, reply, webOrigins)
+        if (cancelled !== null) return cancelled
         const body = parse(AppleCallbackBodySchema, request.body)
         const stash = readOAuthStash(request)
         if (!stash || stash.state !== body.state) {
@@ -552,16 +554,15 @@ function redirectOnProviderError(
   request: FastifyRequest,
   reply: FastifyReply,
   webOrigins: readonly string[],
-): boolean {
+): FastifyReply | null {
   const input = request.method === "POST" ? request.body : request.query
   const failure = providerErrorOf(input)
-  if (failure === null) return false
+  if (failure === null) return null
   const stash = readOAuthStash(request)
   const own = stash !== null && failure.state !== undefined && stash.state === failure.state
   if (own) clearOAuthStateCookie(reply)
   request.log.info({ providerError: failure.error }, "web OAuth sign-in ended at the provider")
-  reply.redirect(resolvePostLoginRedirect(own ? stash.redirect : undefined, webOrigins))
-  return true
+  return reply.redirect(resolvePostLoginRedirect(own ? stash.redirect : undefined, webOrigins))
 }
 
 const MAX_PROVIDER_ERROR_LENGTH = 128
