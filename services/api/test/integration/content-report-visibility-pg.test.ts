@@ -89,7 +89,7 @@ describe.skipIf(!pg)("content-report subject gate (integration: real visibility)
     return id
   }
 
-  const rejects404 = (p: Promise<void>) => expect(p).rejects.toMatchObject({ httpStatus: 404 })
+  const expect404 = (p: Promise<void>) => expect(p).rejects.toMatchObject({ httpStatus: 404 })
 
   it("report: public report is reportable; held report is only reportable by its owner", async () => {
     const owner = await newUser("owner")
@@ -99,8 +99,8 @@ describe.skipIf(!pg)("content-report subject gate (integration: real visibility)
 
     await expect(gate.assertReportable("report", publicReport, other)).resolves.toBeUndefined()
     await expect(gate.assertReportable("report", heldReport, owner)).resolves.toBeUndefined()
-    await rejects404(gate.assertReportable("report", heldReport, other))
-    await rejects404(gate.assertReportable("report", ABSENT, other))
+    await expect404(gate.assertReportable("report", heldReport, other))
+    await expect404(gate.assertReportable("report", ABSENT, other))
   })
 
   it("post: public post is reportable; a hidden post by someone else is not", async () => {
@@ -110,8 +110,8 @@ describe.skipIf(!pg)("content-report subject gate (integration: real visibility)
     const hiddenPost = await seedPost(author, "hidden")
 
     await expect(gate.assertReportable("post", publicPost, other)).resolves.toBeUndefined()
-    await rejects404(gate.assertReportable("post", hiddenPost, other))
-    await rejects404(gate.assertReportable("post", ABSENT, other))
+    await expect404(gate.assertReportable("post", hiddenPost, other))
+    await expect404(gate.assertReportable("post", ABSENT, other))
   })
 
   it("message: a private-group message is reportable only by a member (IDOR gate)", async () => {
@@ -124,8 +124,8 @@ describe.skipIf(!pg)("content-report subject gate (integration: real visibility)
     const message = await seedGroupMessage(group, owner)
 
     await expect(gate.assertReportable("message", message, member)).resolves.toBeUndefined()
-    await rejects404(gate.assertReportable("message", message, outsider))
-    await rejects404(gate.assertReportable("message", ABSENT, member))
+    await expect404(gate.assertReportable("message", message, outsider))
+    await expect404(gate.assertReportable("message", ABSENT, member))
   })
 
   it("message: a DM is reportable by either participant and by nobody else", async () => {
@@ -145,7 +145,7 @@ describe.skipIf(!pg)("content-report subject gate (integration: real visibility)
 
     await expect(gate.assertReportable("message", message!.id, b)).resolves.toBeUndefined()
     await expect(gate.assertReportable("message", message!.id, a)).resolves.toBeUndefined()
-    await rejects404(gate.assertReportable("message", message!.id, outsider))
+    await expect404(gate.assertReportable("message", message!.id, outsider))
   })
 
   it("F052: a soft-deleted message stays reportable by a room member (hit-and-run abuse)", async () => {
@@ -159,7 +159,7 @@ describe.skipIf(!pg)("content-report subject gate (integration: real visibility)
     await h.sql`UPDATE chat_messages SET deleted_at = now() WHERE id = ${message}`
 
     await expect(gate.assertReportable("message", message, member)).resolves.toBeUndefined()
-    await rejects404(gate.assertReportable("message", message, outsider))
+    await expect404(gate.assertReportable("message", message, outsider))
   })
 
   it("profile: an existing user is reportable; an unknown id is not", async () => {
@@ -167,7 +167,7 @@ describe.skipIf(!pg)("content-report subject gate (integration: real visibility)
     const reporter = await newUser("reporter")
 
     await expect(gate.assertReportable("profile", target, reporter)).resolves.toBeUndefined()
-    await rejects404(gate.assertReportable("profile", ABSENT, reporter))
+    await expect404(gate.assertReportable("profile", ABSENT, reporter))
   })
 
   it("event: an existing cleanup is reportable; an unknown id is not", async () => {
@@ -179,7 +179,7 @@ describe.skipIf(!pg)("content-report subject gate (integration: real visibility)
     const reporter = await newUser("event reporter")
 
     await expect(gate.assertReportable("event", cleanupId, reporter)).resolves.toBeUndefined()
-    await rejects404(gate.assertReportable("event", ABSENT, reporter))
+    await expect404(gate.assertReportable("event", ABSENT, reporter))
   })
 
   it("photo: media on a public post is reportable; an unknown id is not", async () => {
@@ -189,7 +189,7 @@ describe.skipIf(!pg)("content-report subject gate (integration: real visibility)
     const media = await seedMedia(post, "ready")
 
     await expect(gate.assertReportable("photo", media, other)).resolves.toBeUndefined()
-    await rejects404(gate.assertReportable("photo", ABSENT, other))
+    await expect404(gate.assertReportable("photo", ABSENT, other))
   })
 
   it("photo: media on a hidden post is not reportable by a non-author, and non-ready media is never reportable", async () => {
@@ -200,14 +200,14 @@ describe.skipIf(!pg)("content-report subject gate (integration: real visibility)
     const publicPost = await seedPost(author, "public")
     const validatingMedia = await seedMedia(publicPost, "validating")
 
-    await rejects404(gate.assertReportable("photo", mediaOnHidden, other))
+    await expect404(gate.assertReportable("photo", mediaOnHidden, other))
     await expect(gate.assertReportable("photo", mediaOnHidden, author)).resolves.toBeUndefined()
-    await rejects404(gate.assertReportable("photo", validatingMedia, other))
+    await expect404(gate.assertReportable("photo", validatingMedia, other))
   })
 
   it("comment: the discussion system was removed, so no comment is reportable", async () => {
     const reporter = await newUser("comment reporter")
-    await rejects404(gate.assertReportable("comment", randomUUID(), reporter))
+    await expect404(gate.assertReportable("comment", randomUUID(), reporter))
   })
 
   it("rejections are AppError not-found instances", async () => {

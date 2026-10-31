@@ -62,13 +62,14 @@
 # read-only rootfs and a noexec tmpfs /tmp. The boot preflight proves all of it (src/sandbox/preflight.ts).
 #
 # Stages:
-#   base    pinned Node 22 (bookworm-slim, glibc) + corepack-pinned pnpm.
+#   base    pinned Node 22 (bookworm-slim, glibc) with corepack enabled.
 #   ffmpeg  verify the pinned FFmpeg source release and compile the minimal ffmpeg + ffprobe.
 #   build   install the FULL workspace, build api(src is inlined) -> worker, then
 #           `pnpm deploy --prod` the worker into a self-contained, dev-pruned /out.
-#   runtime copy /out + the pinned binaries, provision the sandbox user, drop privileges in the
-#           entrypoint, run the worker. (No port / no HTTP healthcheck: the worker is a queue consumer;
-#           liveness is observed via pg-boss + logs. Docker restarts it on exit.)
+#   runtime plain Node 22 with no package manager: copy /out + the pinned binaries, provision the
+#           sandbox user, drop privileges in the entrypoint, run the worker. (No port / no HTTP
+#           healthcheck: the worker is a queue consumer; liveness is observed via pg-boss + logs.
+#           Docker restarts it on exit.)
 
 # The digest is the multi-arch index (it carries linux/arm64 and linux/amd64), so a rebuild of the same
 # commit gets the same base; the tag only tells a reader which line it is. Move both together.
@@ -76,7 +77,7 @@ FROM node:22-bookworm-slim@sha256:de170b39439eb0e5a3444ad7d60b015614a381e10fecae
 ENV PNPM_HOME="/pnpm" \
     PATH="/pnpm:$PATH" \
     CI=true
-RUN corepack enable && corepack prepare pnpm@9.12.0 --activate
+RUN corepack enable
 WORKDIR /app
 
 FROM base AS ffmpeg
@@ -142,6 +143,10 @@ RUN curl -fsSL --retry 5 --retry-all-errors -O "https://ffmpeg.org/releases/ffmp
  && /opt/ffmpeg/bin/ffmpeg -version | head -n 1 | grep -q "version ${FFMPEG_VERSION} "
 
 FROM base AS build
+# pnpm comes from the root package.json packageManager field, sha512 included, so the image runs exactly the
+# pnpm CI and developers run. Copied alone first so the download stays cached until the root package.json changes.
+COPY package.json ./
+RUN corepack install
 COPY . .
 RUN --mount=type=cache,id=pnpm-store,target=/pnpm/store \
     pnpm install --frozen-lockfile
@@ -155,13 +160,20 @@ RUN pnpm --filter @civfix/media-worker... build
 RUN --mount=type=cache,id=pnpm-store,target=/pnpm/store \
     pnpm --filter @civfix/media-worker --prod deploy /out
 
-FROM base AS runtime
+# From the plain Node image, not `base`: the runtime needs no package manager, and corepack and the pnpm it
+# installs carry their own bundled dependency trees (tar, glob, minimatch, cross-spawn, ...) that the image
+# scan flags. Same digest as `base`, so both move together.
+FROM node:22-bookworm-slim@sha256:de170b39439eb0e5a3444ad7d60b015614a381e10fecae2e30ec9e735122f38d AS runtime
 # Same contract as the api image: the release identity is a property of the promoted artifact, not of the
 # deploy that placed it. Read by src/seams.ts as the GlitchTip `release`.
 ARG SERVICE_VERSION=0.0.0
 ENV NODE_ENV=production \
     SERVICE_VERSION=${SERVICE_VERSION}
 WORKDIR /app
+# No package manager, as in the api image: nothing here runs one, and npm's bundled dependency tree is
+# where the image scan finds fixable HIGH advisories.
+RUN rm -rf /usr/local/bin/corepack /usr/local/lib/node_modules/corepack /usr/local/bin/yarn /usr/local/bin/yarnpkg /opt/yarn-* \
+    /usr/local/bin/npm /usr/local/bin/npx /usr/local/lib/node_modules/npm
 RUN apt-get update \
  && apt-get install -y --no-install-recommends util-linux \
  && rm -rf /var/lib/apt/lists/* \

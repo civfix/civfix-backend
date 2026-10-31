@@ -80,7 +80,7 @@ export interface SeedCleanupArgs {
   title?: string
   lng?: number
   lat?: number
-  status?: CleanupRecord["status"]
+  status?: CleanupRecord["status"] | undefined
   scheduledAt?: Date
   endsAt?: Date
   completedAt?: Date | null

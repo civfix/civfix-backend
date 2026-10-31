@@ -15,8 +15,10 @@ import {
   InMemoryDmRepository,
 } from "../../src/services/dm-repository.memory.js"
 
-// eslint-disable-next-line @typescript-eslint/no-unnecessary-type-assertion -- the assertion is the field's declared type: vi.hoisted infers the record from this literal
-const { captured } = vi.hoisted(() => ({ captured: {} as { reportChat?: GatewayReportChat } }))
+const { captured } = vi.hoisted(() => ({
+  // eslint-disable-next-line @typescript-eslint/no-unnecessary-type-assertion -- the assertion is the field's declared type: vi.hoisted infers the record from this literal
+  captured: {} as { reportChat?: GatewayReportChat | undefined },
+}))
 
 vi.mock("../../src/ws/gateway.js", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../../src/ws/gateway.js")>()

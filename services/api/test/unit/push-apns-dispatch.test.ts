@@ -1,15 +1,16 @@
 import { describe, it, expect, vi, beforeEach } from "vitest"
-import type { Notification, Responses } from "node-apn"
+import type { Notification, ResponseFailure, ResponseSent, Responses } from "@parse/node-apn"
 import { makeApnsDispatcher } from "../../src/adapters/push-apns.js"
 import type { PushLogger } from "../../src/adapters/push-sender.js"
 
 const sent: { note: Notification; tokens: string | string[] }[] = []
-let nextResponse: Responses = { sent: [], failed: [] }
+type SendResult = Responses<ResponseSent, ResponseFailure>
+let nextResponse: SendResult = { sent: [], failed: [] }
 
-vi.mock("node-apn", async (importActual) => {
-  const actual = await importActual<typeof import("node-apn")>()
+vi.mock("@parse/node-apn", async (importActual) => {
+  const actual = await importActual<typeof import("@parse/node-apn")>()
   class Provider {
-    send(note: Notification, tokens: string | string[]): Promise<Responses> {
+    send(note: Notification, tokens: string | string[]): Promise<SendResult> {
       sent.push({ note, tokens })
       return Promise.resolve(nextResponse)
     }
@@ -70,8 +71,8 @@ describe("makeApnsDispatcher", () => {
     nextResponse = {
       sent: [],
       failed: [
-        { device: "dead", status: "410", response: { reason: "Unregistered" } },
-        { device: "busy", status: "429", response: { reason: "TooManyRequests" } },
+        { device: "dead", status: 410, response: { reason: "Unregistered" } },
+        { device: "busy", status: 429, response: { reason: "TooManyRequests" } },
       ],
     }
     const { logger, warns } = recordingLogger()

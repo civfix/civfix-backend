@@ -12,14 +12,17 @@
     "typecheck": "tsc --noEmit",
     "lint": "eslint --max-warnings 0 .",
     "test": "vitest run",
+    "test:coverage": "vitest run --coverage",
     "clean": "rimraf .turbo *.tsbuildinfo"
   },
   "dependencies": {
-    "@civfix/contract": "0.67.0-b-feat-dev-console-contract.gee137fa"
+    "@civfix/contract": "0.67.0-b-integration-dev-console.g2105680"
   },
   "devDependencies": {
     "@civfix/config": "workspace:*",
+    "@civfix/testing": "workspace:*",
     "@types/node": "^22.20.5",
+    "@vitest/coverage-v8": "^4.1.12",
     "eslint": "^9.39.5",
     "rimraf": "^6.1.3",
     "typescript": "^5.9.3",

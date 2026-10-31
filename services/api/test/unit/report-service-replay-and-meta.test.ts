@@ -22,7 +22,7 @@ function createReq(): CreateReportRequest {
 function makeHarness(over: Partial<Parameters<typeof makeReportService>[0]> = {}) {
   const repo = new InMemoryReportRepository()
   let issued = 0
-  const warnings: { obj: unknown; msg?: string }[] = []
+  const warnings: { obj: unknown; msg?: string | undefined }[] = []
   const service = makeReportService({
     repo,
     resolveJurisdictionGeoid: () => Promise.resolve(null),
