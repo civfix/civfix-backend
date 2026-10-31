@@ -63,7 +63,7 @@ export async function registerInboundMailWebhook(
       "/webhooks/inbound-mail",
       { bodyLimit: INBOUND_WEBHOOK_BODY_LIMIT, config: { rateLimit: INBOUND_WEBHOOK_RATE_LIMIT } },
       async (request, reply) => {
-        await handleInbound(request, reply, container, app, expectedSecret)
+        return handleInbound(request, reply, container, app, expectedSecret)
       },
     )
   })
@@ -75,7 +75,7 @@ async function handleInbound(
   container: Container,
   app: FastifyInstance,
   expectedSecret: string | undefined,
-): Promise<void> {
+): Promise<FastifyReply> {
   const rawBuf = request.body instanceof Buffer ? request.body : null
   assertSignature(request, rawBuf, expectedSecret)
 
@@ -186,6 +186,6 @@ function readKey(rawBuf: Buffer | null): string | null {
   return key
 }
 
-function ack(reply: FastifyReply, body: Record<string, unknown>): void {
-  reply.status(202).send({ accepted: true, ...body })
+function ack(reply: FastifyReply, body: Record<string, unknown>): FastifyReply {
+  return reply.status(202).send({ accepted: true, ...body })
 }

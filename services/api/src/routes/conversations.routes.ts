@@ -127,7 +127,7 @@ export async function registerConversationRoutes(
       }
       await getRepo().setMuted(userId, body.roomKind, body.roomId, body.muted)
       const payload: ToggleMuteResponse = { muted: body.muted }
-      reply.status(200).send(payload)
+      return reply.status(200).send(payload)
     },
   )
 
@@ -147,7 +147,7 @@ export async function registerConversationRoutes(
       await getHidesRepo().setHidden(userId, body.roomKind, body.roomId, body.hidden)
       nudgeThread(userId, body.roomId)
       const payload: ToggleHiddenResponse = { hidden: body.hidden }
-      reply.status(200).send(payload)
+      return reply.status(200).send(payload)
     },
   )
 
@@ -164,7 +164,7 @@ export async function registerConversationRoutes(
       await getMarkRoomRead()(body.roomKind, body.roomId, userId)
       nudgeThread(userId, body.roomId)
       const payload: MarkThreadReadResponse = { ok: true }
-      reply.status(200).send(payload)
+      return reply.status(200).send(payload)
     },
   )
 }

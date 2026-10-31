@@ -1,10 +1,11 @@
 /**
  * THE HIGHEST-VALUE TEST IN THIS FILE is `presignGet(key, 900, { forceSigned: true })`. `FakeStorage`
- * declares `presignGet(key, _ttlSec)` and always returns `memory://<key>`, so asserting on the returned
- * STRING proves nothing about the third argument, and in production `R2_PUBLIC_BASE` is set, so a
- * missing `forceSigned` makes `R2Storage.presignGet` hand back an UNSIGNED, PERMANENT CDN URL. That
- * would publish every volunteer's itemised service record forever, with no expiry and no revocation.
- * A thin recording wrapper is therefore injected and its ARGUMENTS are asserted.
+ * declares `presignGet(key, _ttlSec)` and always returns `https://fake-storage.invalid/<key>`, so
+ * asserting on the returned STRING proves nothing about the third argument, and in production
+ * `R2_PUBLIC_BASE` is set, so a missing `forceSigned` makes `R2Storage.presignGet` hand back an
+ * UNSIGNED, PERMANENT CDN URL. That would publish every volunteer's itemised service record forever,
+ * with no expiry and no revocation. A thin recording wrapper is therefore injected and its ARGUMENTS
+ * are asserted.
  *
  * The other rules pinned here: an empty ledger is a 409 (no empty official-looking documents), a repeat
  * tap reuses one document rather than minting a second, an edited ledger row mints a genuinely new one,

@@ -20,7 +20,7 @@ export async function registerLegalRoutes(
         documents: legalDocumentVersions(),
         generatedAt: new Date().toISOString(),
       }
-      reply
+      return reply
         .header("cache-control", `public, max-age=${LEGAL_VERSIONS_CACHE_SECONDS}`)
         .status(200)
         .send(payload)
