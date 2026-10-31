@@ -69,3 +69,15 @@ overrides:
   uuid@9: ">=11.1.1 <12"
   uuid@10: ">=11.1.1 <12"
   vite>esbuild: ">=0.28.1 <0.29"
+
+# No untrusted input reaches any ignored advisory; each entry says when it can go.
+auditConfig:
+  ignoreGhsas:
+    # minimatch pattern-amplification DoS and glob's AbortSignal cancellation bypass, fixed only in the new majors
+    # (minimatch 11.0.1, glob 14.0.2) that no parent accepts yet. In production they arrive only under
+    # firebase-admin's firestore (google-gax 5 and gaxios > rimraf), which the API never loads: it imports just
+    # firebase-admin/app and firebase-admin/messaging. Everywhere else they are dev tooling (eslint, rimraf clean
+    # scripts, testcontainers' archiver) matching patterns written in this repo, and none of it passes an
+    # AbortSignal to bound a walk. Remove once the lockfile resolves glob >=14.0.2 and minimatch >=11.0.1 everywhere.
+    - GHSA-g3hv-75wg-m249
+    - GHSA-3g3m-2fjr-6pw4
