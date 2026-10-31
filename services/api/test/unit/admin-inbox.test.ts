@@ -292,9 +292,11 @@ describe("GET /admin/inbox/:id (detail)", () => {
     const dto = res.json() as { attachments: MailAttachment[]; hasAttachments: boolean }
     expect(dto.hasAttachments).toBe(true)
     expect(dto.attachments).toHaveLength(ATTACHMENT_CAP)
-    expect(dto.attachments[0]?.key).toBe("memory://inbound-emails/cap/part-0.bin")
+    expect(dto.attachments[0]?.key).toBe(
+      "https://fake-storage.invalid/inbound-emails/cap/part-0.bin",
+    )
     expect(dto.attachments[ATTACHMENT_CAP - 1]?.key).toBe(
-      `memory://inbound-emails/cap/part-${ATTACHMENT_CAP - 1}.bin`,
+      `https://fake-storage.invalid/inbound-emails/cap/part-${ATTACHMENT_CAP - 1}.bin`,
     )
     expect(harness.storage.signed).toHaveLength(ATTACHMENT_CAP)
     expect(harness.storage.signed.map((s) => s.key)).not.toContain(

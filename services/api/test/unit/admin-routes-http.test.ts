@@ -713,7 +713,9 @@ describe("F092: GET /admin/mail/:id presigns inbound attachment keys", () => {
     const dto = res.json() as { messages: { attachments: { key: string }[] }[] }
     const inbound = dto.messages.at(-1)!
     expect(inbound.attachments).toHaveLength(50)
-    expect(inbound.attachments.every((a) => a.key.startsWith("memory://"))).toBe(true)
+    expect(
+      inbound.attachments.every((a) => a.key.startsWith("https://fake-storage.invalid/")),
+    ).toBe(true)
   })
 })
 

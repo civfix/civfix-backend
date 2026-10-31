@@ -36,9 +36,9 @@ export interface CertificateOverrides {
   hours?: Pick<VolunteerHoursRepository, "entriesForCertificate">
   /**
    * Injected so a test can wrap the storage adapter and ASSERT the presign arguments. `FakeStorage`
-   * ignores its third parameter and always returns `memory://<key>`, so asserting on the returned string
-   * proves nothing about `forceSigned`, and getting `forceSigned` wrong publishes every transcript
-   * permanently.
+   * ignores its third parameter and always returns `https://fake-storage.invalid/<key>`, so asserting
+   * on the returned string proves nothing about `forceSigned`, and getting `forceSigned` wrong
+   * publishes every transcript permanently.
    */
   storage?: CertificateStorage
 }
