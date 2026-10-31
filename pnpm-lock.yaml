@@ -155,8 +155,8 @@ importers:
         specifier: ^2.2.2
         version: 2.2.2
       '@parse/node-apn':
-        specifier: ^8.1.0
-        version: 8.1.0
+        specifier: ^8.1.1
+        version: 8.1.1
       '@sentry/node':
         specifier: ^10.76.1
         version: 10.76.1(@opentelemetry/core@2.12.0(@opentelemetry/api@1.9.1))
@@ -1668,8 +1668,8 @@ packages:
     cpu: [x64]
     os: [win32]
 
-  '@parse/node-apn@8.1.0':
-    resolution: {integrity: sha512-LowcdkKPDikbbzIr3zwEdoFW5wfEbbTzpYQeen3S8kKLePG0AQK586Li+OLC7bonyLmlk//Yk3smHZOLSV6TZA==}
+  '@parse/node-apn@8.1.1':
+    resolution: {integrity: sha512-PXhWpSZiMSwxqJm9bR88bYcZGfe8JhauEEcUSbPlgwEEzGExK23Zxfj1a/9zy9/JWxP5VcULUVCvezJqV9mwUw==}
     engines: {node: 20 || 22 || 24}
 
   '@pinojs/redact@0.4.0':
@@ -3531,8 +3531,8 @@ packages:
     resolution: {integrity: sha512-dRB78srN/l6gqWulah9SrxeYnxeddIG30+GOqK/9OlLVyLg3HPnr6SqOWTWOXKRwC2eGYCkZ59NNuSgvSrpgOA==}
     engines: {node: ^12.20.0 || ^14.13.1 || >=16.0.0}
 
-  node-forge@1.4.0:
-    resolution: {integrity: sha512-LarFH0+6VfriEhqMMcLX2F7SwSXeWwnEAJEsYm5QKWchiVYVvJyV9v7UDvUv+w5HO23ZpQTXDv/GxdDdMyOuoQ==}
+  node-forge@1.4.2:
+    resolution: {integrity: sha512-rRtAR5XLJ8gCKd9du4qrKAsgCG1ObGP4gLeNJMa4vYSeq4bmBMOJk5IHkrviBV0q7uoAJlVd8HEQYQSVUb4FGQ==}
     engines: {node: '>= 6.13.0'}
 
   nodemailer@10.2.1:
@@ -5599,11 +5599,11 @@ snapshots:
   '@oxc-resolver/binding-win32-x64-msvc@11.24.2':
     optional: true
 
-  '@parse/node-apn@8.1.0':
+  '@parse/node-apn@8.1.1':
     dependencies:
       debug: 4.4.3
       jsonwebtoken: 9.0.3
-      node-forge: 1.4.0
+      node-forge: 1.4.2
       verror: 1.10.1
     transitivePeerDependencies:
       - supports-color
@@ -7561,7 +7561,7 @@ snapshots:
       fetch-blob: 3.2.0
       formdata-polyfill: 4.0.10
 
-  node-forge@1.4.0: {}
+  node-forge@1.4.2: {}
 
   nodemailer@10.2.1: {}
 
