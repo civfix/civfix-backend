@@ -92,7 +92,7 @@ export async function registerHostPortfolioRoutes(
         ...(validated.cursor !== undefined ? { cursor: validated.cursor } : {}),
         limit: validated.limit ?? HOSTED_EVENTS_DEFAULT_LIMIT,
       })
-      reply.status(200).send(payload)
+      return reply.status(200).send(payload)
     },
   )
 }

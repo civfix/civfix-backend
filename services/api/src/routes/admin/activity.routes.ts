@@ -44,6 +44,6 @@ export async function registerAdminActivityRoutes(
   route(app, "adminActivity", async (request, reply) => {
     const query = parse(ActivityListQuerySchema, request.query)
     const payload: ActivityListResponse = await service().list(query)
-    reply.status(200).send(payload)
+    return reply.status(200).send(payload)
   })
 }

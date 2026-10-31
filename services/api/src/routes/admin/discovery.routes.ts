@@ -60,13 +60,13 @@ export async function registerAdminDiscoveryRoutes(
   route(app, "listDiscovery", async (request, reply) => {
     const query = parse(DiscoveryListQuerySchema, request.query)
     const payload: DiscoveryListResponse = await service().list(query)
-    reply.status(200).send(payload)
+    return reply.status(200).send(payload)
   })
 
   route(app, "getDiscoveryTask", async (request, reply) => {
     const { id } = idParam(request)
     const payload: DiscoveryTaskDetailDTO = await service().getTask(id)
-    reply.status(200).send(payload)
+    return reply.status(200).send(payload)
   })
 
   route(app, "addDiscoveryNote", { preHandler: csrfProtect }, async (request, reply) => {
@@ -75,14 +75,14 @@ export async function registerAdminDiscoveryRoutes(
     const who = await operatorLabel(app, actorId)
     // The note IS its audit_log row, so there is no separate insertAuditRow here.
     await service().addNote(id, { text: body.text, actorId, who })
-    sendOk(reply)
+    return sendOk(reply)
   })
 
   route(app, "flagDiscovery", { preHandler: csrfProtect }, async (request, reply) => {
     const actorId = requireOperator(request)
     const { id, body } = parseBodyWithId(FlagDiscoveryRequestSchema, request)
     await service().flag(id, { reason: body.reason ?? null, actorId })
-    sendOk(reply)
+    return sendOk(reply)
   })
 
   route(app, "saveDiscoveryDraft", { preHandler: csrfProtect }, async (request, reply) => {
@@ -95,7 +95,7 @@ export async function registerAdminDiscoveryRoutes(
       formUrl: httpUrlField(body.formUrl, "formUrl"),
       actorId,
     })
-    sendOk(reply)
+    return sendOk(reply)
   })
 }
 
