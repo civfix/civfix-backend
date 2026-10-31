@@ -2,8 +2,8 @@
  * GH#209, second slice: chat, events, orgs, the leaderboard and admin show the one resolved avatar URL (the
  * ready avatar media's thumbnail, else its served copy, else the stored avatar_url), and saving a profile
  * photo no longer writes users.avatar_url. Runs through the real Fastify app on PostGIS. Storage is the
- * seams fake, so keys presign to memory://<key>. The users P, S, V, R, O and N are the shared fixtures in
- * test/helpers/avatar-fixtures.ts; every case seeds its own set.
+ * seams fake, so keys presign to https://fake-storage.invalid/<key>. The users P, S, V, R, O and N are
+ * the shared fixtures in test/helpers/avatar-fixtures.ts; every case seeds its own set.
  */
 
 import { randomUUID } from "node:crypto"
@@ -226,8 +226,8 @@ describe.skipIf(!pg)("user avatar URLs on chat, event, org and admin routes (int
       avatars[name] = message!.from.avatarUrl
     }
     expect(avatars).toEqual({
-      P: "memory://thumbs/uploads/2026/10/p1.jpg",
-      S: "memory://processed/uploads/2026/10/s1",
+      P: "https://fake-storage.invalid/thumbs/uploads/2026/10/p1.jpg",
+      S: "https://fake-storage.invalid/processed/uploads/2026/10/s1",
       O: "https://lh3.googleusercontent.com/a/o",
     })
   })
@@ -246,8 +246,8 @@ describe.skipIf(!pg)("user avatar URLs on chat, event, org and admin routes (int
     const fromP = page.items.filter((m) => m.from.id === u.P.id)
     expect(fromP).toHaveLength(2)
     expect(fromP.map((m) => m.from.avatarUrl)).toEqual([
-      "memory://thumbs/uploads/2026/10/p1.jpg",
-      "memory://thumbs/uploads/2026/10/p1.jpg",
+      "https://fake-storage.invalid/thumbs/uploads/2026/10/p1.jpg",
+      "https://fake-storage.invalid/thumbs/uploads/2026/10/p1.jpg",
     ])
   })
 
@@ -260,7 +260,9 @@ describe.skipIf(!pg)("user avatar URLs on chat, event, org and admin routes (int
     )
     const thread = page.items.find((t) => t.id === threadId)
     expect(thread, "the DM is listed").toBeDefined()
-    expect(thread!.peer?.avatarUrl).toBe("memory://thumbs/uploads/2026/10/p1.jpg")
+    expect(thread!.peer?.avatarUrl).toBe(
+      "https://fake-storage.invalid/thumbs/uploads/2026/10/p1.jpg",
+    )
   })
 
   it("T4: POST /dm answers N with peer P's thumbnail URL", async () => {
@@ -271,7 +273,9 @@ describe.skipIf(!pg)("user avatar URLs on chat, event, org and admin routes (int
       "/v1/dm",
       { userId: u.P.id },
     )
-    expect(body.thread.peer?.avatarUrl).toBe("memory://thumbs/uploads/2026/10/p1.jpg")
+    expect(body.thread.peer?.avatarUrl).toBe(
+      "https://fake-storage.invalid/thumbs/uploads/2026/10/p1.jpg",
+    )
   })
 
   it("T5: GET /groups/:id/members lists P with the thumbnail and V with the stored URL", async () => {
@@ -291,7 +295,7 @@ describe.skipIf(!pg)("user avatar URLs on chat, event, org and admin routes (int
     )
     const users = body.members.map((m) => m.user)
     expect({ P: avatarOf(users, u.P), V: avatarOf(users, u.V) }).toEqual({
-      P: "memory://thumbs/uploads/2026/10/p1.jpg",
+      P: "https://fake-storage.invalid/thumbs/uploads/2026/10/p1.jpg",
       V: "https://lh3.googleusercontent.com/a/v-old",
     })
   })
@@ -318,8 +322,8 @@ describe.skipIf(!pg)("user avatar URLs on chat, event, org and admin routes (int
     const listed = list.items.find((c) => c.id === cleanupId)
     expect(listed, "the event is listed").toBeDefined()
     expect({ detail: detail.organizer.avatarUrl, list: listed!.organizer.avatarUrl }).toEqual({
-      detail: "memory://thumbs/uploads/2026/10/p1.jpg",
-      list: "memory://thumbs/uploads/2026/10/p1.jpg",
+      detail: "https://fake-storage.invalid/thumbs/uploads/2026/10/p1.jpg",
+      list: "https://fake-storage.invalid/thumbs/uploads/2026/10/p1.jpg",
     })
   })
 
@@ -347,8 +351,8 @@ describe.skipIf(!pg)("user avatar URLs on chat, event, org and admin routes (int
       events: events.items.find((c) => c.id === cleanupId)?.organizer.avatarUrl,
       post: shared.event?.organizer.avatarUrl,
     }).toEqual({
-      events: "memory://thumbs/uploads/2026/10/p1.jpg",
-      post: "memory://thumbs/uploads/2026/10/p1.jpg",
+      events: "https://fake-storage.invalid/thumbs/uploads/2026/10/p1.jpg",
+      post: "https://fake-storage.invalid/thumbs/uploads/2026/10/p1.jpg",
     })
   })
 
@@ -362,8 +366,8 @@ describe.skipIf(!pg)("user avatar URLs on chat, event, org and admin routes (int
       `/v1/cleanups/${cleanupId}/attendees`,
     )
     expect({ P: avatarOf(body.attendees, u.P), S: avatarOf(body.attendees, u.S) }).toEqual({
-      P: "memory://thumbs/uploads/2026/10/p1.jpg",
-      S: "memory://processed/uploads/2026/10/s1",
+      P: "https://fake-storage.invalid/thumbs/uploads/2026/10/p1.jpg",
+      S: "https://fake-storage.invalid/processed/uploads/2026/10/s1",
     })
   })
 
@@ -396,7 +400,9 @@ describe.skipIf(!pg)("user avatar URLs on chat, event, org and admin routes (int
     )
     const row = body.items.find((r) => r.id === registration!.id)
     expect(row, "P's registration is listed").toBeDefined()
-    expect(row!.person?.avatarUrl).toBe("memory://thumbs/uploads/2026/10/p1.jpg")
+    expect(row!.person?.avatarUrl).toBe(
+      "https://fake-storage.invalid/thumbs/uploads/2026/10/p1.jpg",
+    )
   })
 
   it("T10: GET /cleanups/:id/team shows team member P with the thumbnail URL", async () => {
@@ -408,7 +414,7 @@ describe.skipIf(!pg)("user avatar URLs on chat, event, org and admin routes (int
       `/v1/cleanups/${cleanupId}/team`,
     )
     const people = body.members.map((m) => m.person)
-    expect(avatarOf(people, u.P)).toBe("memory://thumbs/uploads/2026/10/p1.jpg")
+    expect(avatarOf(people, u.P)).toBe("https://fake-storage.invalid/thumbs/uploads/2026/10/p1.jpg")
   })
 
   it("T11: GET /cleanups/:id/announcements shows P's own announcement with P's thumbnail URL", async () => {
@@ -423,7 +429,9 @@ describe.skipIf(!pg)("user avatar URLs on chat, event, org and admin routes (int
       `/v1/cleanups/${cleanupId}/announcements`,
     )
     expect(body.items).toHaveLength(1)
-    expect(body.items[0]!.author?.avatarUrl).toBe("memory://thumbs/uploads/2026/10/p1.jpg")
+    expect(body.items[0]!.author?.avatarUrl).toBe(
+      "https://fake-storage.invalid/thumbs/uploads/2026/10/p1.jpg",
+    )
   })
 
   it("T12: GET /cleanups/:id/insights lists top volunteer P with the thumbnail URL", async () => {
@@ -443,7 +451,7 @@ describe.skipIf(!pg)("user avatar URLs on chat, event, org and admin routes (int
     )
     const top = body.topVolunteers.find((v) => v.userId === u.P.id)
     expect(top, "P is a top volunteer").toBeDefined()
-    expect(top!.avatarUrl).toBe("memory://thumbs/uploads/2026/10/p1.jpg")
+    expect(top!.avatarUrl).toBe("https://fake-storage.invalid/thumbs/uploads/2026/10/p1.jpg")
   })
 
   it("T13: GET /orgs/:id/members lists member P with the thumbnail URL", async () => {
@@ -458,7 +466,7 @@ describe.skipIf(!pg)("user avatar URLs on chat, event, org and admin routes (int
       `/v1/orgs/${orgId}/members`,
     )
     const people = body.items.map((m) => m.person)
-    expect(avatarOf(people, u.P)).toBe("memory://thumbs/uploads/2026/10/p1.jpg")
+    expect(avatarOf(people, u.P)).toBe("https://fake-storage.invalid/thumbs/uploads/2026/10/p1.jpg")
   })
 
   it("T14: GET /orgs/:id/invites shows S invited by P, each with their resolved URL", async () => {
@@ -482,8 +490,8 @@ describe.skipIf(!pg)("user avatar URLs on chat, event, org and admin routes (int
       user: body.items[0]!.user?.avatarUrl,
       invitedBy: body.items[0]!.invitedBy?.avatarUrl,
     }).toEqual({
-      user: "memory://processed/uploads/2026/10/s1",
-      invitedBy: "memory://thumbs/uploads/2026/10/p1.jpg",
+      user: "https://fake-storage.invalid/processed/uploads/2026/10/s1",
+      invitedBy: "https://fake-storage.invalid/thumbs/uploads/2026/10/p1.jpg",
     })
   })
 
@@ -499,7 +507,7 @@ describe.skipIf(!pg)("user avatar URLs on chat, event, org and admin routes (int
     )
     const entry = body.entries.find((e) => e.userId === u.P.id)
     expect(entry, "P is on the board").toBeDefined()
-    expect(entry!.avatarUrl).toBe("memory://thumbs/uploads/2026/10/p1.jpg")
+    expect(entry!.avatarUrl).toBe("https://fake-storage.invalid/thumbs/uploads/2026/10/p1.jpg")
   })
 
   it("T16: GET /admin/users and GET /admin/users/:id show P with the thumbnail URL", async () => {
@@ -517,8 +525,8 @@ describe.skipIf(!pg)("user avatar URLs on chat, event, org and admin routes (int
     )
     const detail = await getJson<WithAvatar>(session, `/v1/admin/users/${u.P.id}`)
     expect({ list: avatarOf(list.items, u.P), detail: detail.avatarUrl }).toEqual({
-      list: "memory://thumbs/uploads/2026/10/p1.jpg",
-      detail: "memory://thumbs/uploads/2026/10/p1.jpg",
+      list: "https://fake-storage.invalid/thumbs/uploads/2026/10/p1.jpg",
+      detail: "https://fake-storage.invalid/thumbs/uploads/2026/10/p1.jpg",
     })
   })
 
@@ -548,13 +556,13 @@ describe.skipIf(!pg)("user avatar URLs on chat, event, org and admin routes (int
   it("T21: POST /admin/auth/access/exchange answers P with the thumbnail URL", async () => {
     const u = await seedAvatarUsers(h.sql)
     const user = await exchangeAs(u.P, EXCHANGE_EMAILS.T21)
-    expect(user.avatarUrl).toBe("memory://thumbs/uploads/2026/10/p1.jpg")
+    expect(user.avatarUrl).toBe("https://fake-storage.invalid/thumbs/uploads/2026/10/p1.jpg")
   })
 
   it("T22: POST /admin/auth/access/exchange answers S with the served copy", async () => {
     const u = await seedAvatarUsers(h.sql)
     const user = await exchangeAs(u.S, EXCHANGE_EMAILS.T22)
-    expect(user.avatarUrl).toBe("memory://processed/uploads/2026/10/s1")
+    expect(user.avatarUrl).toBe("https://fake-storage.invalid/processed/uploads/2026/10/s1")
   })
 
   it("T23: POST /admin/auth/access/exchange answers V, whose avatar is validating, with the stored URL", async () => {
@@ -599,7 +607,7 @@ describe.skipIf(!pg)("user avatar URLs on chat, event, org and admin routes (int
   it("T17: PUT /me/profile with a ready upload answers with its thumbnail and keeps avatar_url", async () => {
     const u = await seedAvatarUsers(h.sql)
     const saved = await saveProfilePhoto(u.O, "ready")
-    expect(saved.avatarUrl).toBe("memory://thumbs/uploads/2026/10/o2.jpg")
+    expect(saved.avatarUrl).toBe("https://fake-storage.invalid/thumbs/uploads/2026/10/o2.jpg")
     expect(await storedAvatarOf(u.O)).toEqual({
       avatar_url: "https://lh3.googleusercontent.com/a/o",
       avatar_media_id: saved.mediaId,
@@ -628,6 +636,6 @@ describe.skipIf(!pg)("user avatar URLs on chat, event, org and admin routes (int
       await signIn(u.V),
       "/v1/auth/session",
     )
-    expect(body.user.avatarUrl).toBe(`memory://${thumbKey}`)
+    expect(body.user.avatarUrl).toBe(`https://fake-storage.invalid/${thumbKey}`)
   })
 })
