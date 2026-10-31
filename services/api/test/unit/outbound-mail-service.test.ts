@@ -397,12 +397,18 @@ describe("OutboundMailService (F109): a delivered send never throws post-deliver
     const repo = new InMemoryMailRepository()
     const mailer = new FakeMailer()
     repo.getThreadRecord = () => Promise.reject(new Error("db down"))
-    const svc = makeOutboundMailService({ repo, mailer, env: ENV })
+    const warnings: (string | undefined)[] = []
+    const logger = { warn: (_obj: unknown, msg?: string) => warnings.push(msg) }
+    const svc = makeOutboundMailService({ repo, mailer, env: ENV, logger })
 
     await expect(
       svc.sendToCity({ geoid: null, toAddr: "clerk@city.gov", subject: "Digest", body: "hi" }),
     ).resolves.toBeDefined()
     expect(mailer.sent).toHaveLength(1)
+    expect(warnings).toEqual([
+      "outbound mail delivered but clearing the thread's failure status failed",
+      "outbound mail: thread re-read threw after delivery; using stale record",
+    ])
   })
 })
 

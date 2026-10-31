@@ -1,4 +1,4 @@
-import type { Notification, Provider } from "node-apn"
+import type { Notification, Provider } from "@parse/node-apn"
 import type { PushSenderConfig, PushLogger, PlatformDispatcher } from "./push-sender.js"
 import { hashForLog } from "./push-sender.js"
 
@@ -23,7 +23,7 @@ export function makeApnsDispatcher(
 
   async function getProvider() {
     providerPromise ??= (async () => {
-      const apn = await import("node-apn")
+      const apn = await import("@parse/node-apn")
       const provider = new apn.Provider({
         token: { key: apns.privateKey, keyId: apns.keyId, teamId: apns.teamId },
         production: apns.production,
@@ -78,7 +78,7 @@ export function makeApnsDispatcher(
     if (!providerPromise) return
     try {
       const { provider } = await providerPromise
-      provider.shutdown?.()
+      await provider.shutdown()
     } catch (err) {
       logger.warn({ err }, "push(apns): provider shutdown failed")
     }

@@ -355,7 +355,8 @@ describe("processInboundObject: jurisdiction reply -> report side-effects (#40)"
     })
     const threadFull = c.mailRepo.seedThread({ threadToken: TOKEN, reportId, status: "sent" })
     seedContact(c, threadFull.id, "publicworks@lacity.gov")
-    const calls: { kind?: string; body?: string | null; note: string }[] = []
+    const calls: { kind?: string | undefined; body?: string | null | undefined; note: string }[] =
+      []
     const orig = c.adminReportRepo.setStatus.bind(c.adminReportRepo)
     c.adminReportRepo.setStatus = (id, input) => {
       calls.push({ kind: input.kind, body: input.body, note: input.note })
@@ -452,7 +453,8 @@ describe("processInboundObject: jurisdiction reply -> report side-effects (#40)"
     c.adminReportRepo.seedReport({ id: reportId, status: "published", reporter: null })
     const thread = c.mailRepo.seedThread({ threadToken: TOKEN, reportId, status: "sent" })
     seedContact(c, thread.id, "publicworks@lacity.gov")
-    const calls: { kind?: string; body?: string | null; note: string }[] = []
+    const calls: { kind?: string | undefined; body?: string | null | undefined; note: string }[] =
+      []
     const orig = c.adminReportRepo.setStatus.bind(c.adminReportRepo)
     c.adminReportRepo.setStatus = (id, input) => {
       calls.push({ kind: input.kind, body: input.body, note: input.note })
@@ -645,8 +647,8 @@ describe("cityReplyChatBody (what a city reply publishes into the report chat)",
 describe("processInboundObject: unaffiliated thread joiners (H5)", () => {
   const WITHHELD_WARNING = "inbound: reply withheld from public effects pending operator review"
 
-  function captureWarns(c: Ctx): { obj: unknown; msg?: string }[] {
-    const warns: { obj: unknown; msg?: string }[] = []
+  function captureWarns(c: Ctx): { obj: unknown; msg?: string | undefined }[] {
+    const warns: { obj: unknown; msg?: string | undefined }[] = []
     c.deps.logger = { warn: (obj, msg) => warns.push({ obj, msg }), error: () => {} }
     return warns
   }

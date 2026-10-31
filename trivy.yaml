@@ -1,0 +1,16 @@
+# The image-scan gate CI holds both images to (ci.yml on PRs, build-images.yml before a release image is
+# tagged). Trivy reads this file from the directory it runs in, the repo root in every workflow: a HIGH or
+# CRITICAL vulnerability with a fixed version available fails the run. Anything accepted on purpose goes in
+# .trivyignore with the reason and the fix that removes it. Triage, the .trivyignore rules and who approves an
+# entry: docs/image-scan-runbook.md.
+exit-code: 1
+severity:
+  - HIGH
+  - CRITICAL
+scan:
+  scanners:
+    - vuln
+vulnerability:
+  ignore-unfixed: true
+db:
+  no-progress: true

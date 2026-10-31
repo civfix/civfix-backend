@@ -35,7 +35,7 @@ function mail(over: Partial<OutboundMailService>): OutboundMailService {
 }
 
 function capture() {
-  const lines: { obj: unknown; msg?: string }[] = []
+  const lines: { obj: unknown; msg?: string | undefined }[] = []
   return { lines, logger: { warn: (obj: unknown, msg?: string) => lines.push({ obj, msg }) } }
 }
 

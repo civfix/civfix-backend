@@ -1,6 +1,6 @@
 {
   "name": "@civfix/media-worker",
-  "version": "1.4.0",
+  "version": "1.4.1",
   "private": true,
   "description": "civfix media worker. Consumes the Jobs seam (pg-boss) to run sandboxed, untrusted-byte media checks: decode-guard, EXIF/location strip, thumbnail, pHash, NSFW seam, video probe/remux, plus orphan-sweep and chat-partition cron.",
   "license": "AGPL-3.0-only",
@@ -17,13 +17,14 @@
     "typecheck": "tsc --noEmit",
     "lint": "eslint --max-warnings 0 .",
     "test": "vitest run",
+    "test:coverage": "vitest run --coverage",
     "clean": "rimraf dist .turbo *.tsbuildinfo"
   },
   "dependencies": {
     "@aws-sdk/client-s3": "^3.1147.0",
     "@aws-sdk/s3-request-presigner": "^3.1147.0",
     "@civfix/api": "workspace:*",
-    "@civfix/contract": "0.67.0-b-feat-dev-console-contract.gee137fa",
+    "@civfix/contract": "0.67.0-b-integration-dev-console.g2105680",
     "@sentry/node": "^10.76.1",
     "@smithy/node-http-handler": "4.7.5",
     "drizzle-orm": "^0.45.3",
@@ -39,9 +40,11 @@
   "devDependencies": {
     "@civfix/config": "workspace:*",
     "@civfix/seams": "workspace:*",
+    "@civfix/testing": "workspace:*",
     "@testcontainers/postgresql": "^11.14.0",
     "@types/ffprobe-static": "^2.0.3",
     "@types/node": "^22.20.5",
+    "@vitest/coverage-v8": "^4.1.12",
     "eslint": "^9.39.5",
     "ffmpeg-static": "^5.3.0",
     "ffprobe-static": "^3.1.0",

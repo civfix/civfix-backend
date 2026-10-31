@@ -49,7 +49,7 @@ const WHITESPACE = "   "
 const ROOM_ID = "11111111-1111-4111-8111-111111111111"
 const NEXT_WEEK = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString()
 
-function rejects(schema: ZodType, data: unknown, field: string): void {
+function expectRejected(schema: ZodType, data: unknown, field: string): void {
   try {
     parse(schema, data)
   } catch (err) {
@@ -100,8 +100,8 @@ function report(over: Record<string, unknown> = {}): Record<string, unknown> {
 
 describe("group name/description (CVX-002a, CVX-002d)", () => {
   it("rejects a whitespace-only name on create and on rename", () => {
-    rejects(CreateChatGroupBodySchema, group({ name: WHITESPACE }), "name")
-    rejects(UpdateChatGroupBodySchema, { id: ROOM_ID, name: WHITESPACE }, "name")
+    expectRejected(CreateChatGroupBodySchema, group({ name: WHITESPACE }), "name")
+    expectRejected(UpdateChatGroupBodySchema, { id: ROOM_ID, name: WHITESPACE }, "name")
   })
 
   it("stores the trimmed name and description", () => {
@@ -116,11 +116,11 @@ describe("group name/description (CVX-002a, CVX-002d)", () => {
   it("measures the length caps on the trimmed value, and still rejects an oversized name", () => {
     const padded = parse(CreateChatGroupBodySchema, group({ name: ` ${"x".repeat(80)} ` }))
     expect(padded.name).toHaveLength(80)
-    rejects(CreateChatGroupBodySchema, group({ name: "x".repeat(81) }), "name")
+    expectRejected(CreateChatGroupBodySchema, group({ name: "x".repeat(81) }), "name")
   })
 
   it("keeps the strict() unknown-key rejection", () => {
-    rejects(CreateChatGroupBodySchema, group({ smuggled: true }), "_")
+    expectRejected(CreateChatGroupBodySchema, group({ smuggled: true }), "_")
   })
 })
 
@@ -128,8 +128,8 @@ describe("message edit body (CVX-002b)", () => {
   const edit = { roomKind: "group", roomId: ROOM_ID, messageId: ROOM_ID }
 
   it("rejects a whitespace-only body on both edit routes", () => {
-    rejects(EditMessageBodySchema, { ...edit, body: WHITESPACE }, "body")
-    rejects(
+    expectRejected(EditMessageBodySchema, { ...edit, body: WHITESPACE }, "body")
+    expectRejected(
       EditDmMessageBodySchema,
       { threadId: ROOM_ID, messageId: ROOM_ID, body: WHITESPACE },
       "body",
@@ -145,14 +145,18 @@ describe("message edit body (CVX-002b)", () => {
 
 describe("poll question and options (CVX-002c, CVX-009)", () => {
   it("rejects a whitespace-only question or option", () => {
-    rejects(CreatePollBodySchema, poll({ question: WHITESPACE }), "question")
-    rejects(CreatePollBodySchema, poll({ options: [WHITESPACE, "Santa Monica"] }), "options.0")
+    expectRejected(CreatePollBodySchema, poll({ question: WHITESPACE }), "question")
+    expectRejected(
+      CreatePollBodySchema,
+      poll({ options: [WHITESPACE, "Santa Monica"] }),
+      "options.0",
+    )
   })
 
   it("rejects duplicate options, including ones that differ only by surrounding whitespace", () => {
-    rejects(CreatePollBodySchema, poll({ options: ["A", "A"] }), "options.1")
-    rejects(CreatePollBodySchema, poll({ options: [" A", "A "] }), "options.1")
-    rejects(CreatePollBodySchema, poll({ options: ["A", "B", "A"] }), "options.2")
+    expectRejected(CreatePollBodySchema, poll({ options: ["A", "A"] }), "options.1")
+    expectRejected(CreatePollBodySchema, poll({ options: [" A", "A "] }), "options.1")
+    expectRejected(CreatePollBodySchema, poll({ options: ["A", "B", "A"] }), "options.2")
   })
 
   it("accepts distinct options and stores them trimmed", () => {
@@ -161,8 +165,8 @@ describe("poll question and options (CVX-002c, CVX-009)", () => {
   })
 
   it("keeps the min-2 / max-10 caps green", () => {
-    rejects(CreatePollBodySchema, poll({ options: ["only one"] }), "options")
-    rejects(
+    expectRejected(CreatePollBodySchema, poll({ options: ["only one"] }), "options")
+    expectRejected(
       CreatePollBodySchema,
       poll({ options: Array.from({ length: 11 }, (_, i) => `option ${i}`) }),
       "options",
@@ -172,8 +176,8 @@ describe("poll question and options (CVX-002c, CVX-009)", () => {
 
 describe("cleanup title, description, spot label and bring list (CVX-002)", () => {
   it("rejects a whitespace-only title on create and on update", () => {
-    rejects(CreateCleanupBodySchema, cleanup({ title: WHITESPACE }), "title")
-    rejects(UpdateCleanupBodySchema, { title: WHITESPACE }, "title")
+    expectRejected(CreateCleanupBodySchema, cleanup({ title: WHITESPACE }), "title")
+    expectRejected(UpdateCleanupBodySchema, { title: WHITESPACE }, "title")
   })
 
   it("trims the description, the spot label and each bring item", () => {
@@ -204,7 +208,7 @@ describe("cleanup title, description, spot label and bring list (CVX-002)", () =
   })
 
   it("leaves the scheduledAt bounds in force", () => {
-    rejects(
+    expectRejected(
       CreateCleanupBodySchema,
       cleanup({ scheduledAt: "1999-01-01T00:00:00.000Z" }),
       "scheduledAt",
@@ -214,7 +218,7 @@ describe("cleanup title, description, spot label and bring list (CVX-002)", () =
   it("trims the cancel reason and rejects a blank resource-request message", () => {
     const cancel = parse(CancelCleanupBodySchema, { id: ROOM_ID, reason: "  rained out  " })
     expect(cancel.reason).toBe("rained out")
-    rejects(RequestEventResourcesBodySchema, { id: ROOM_ID, message: WHITESPACE }, "message")
+    expectRejected(RequestEventResourcesBodySchema, { id: ROOM_ID, message: WHITESPACE }, "message")
   })
 })
 
@@ -248,12 +252,12 @@ describe("report free text (CVX-002)", () => {
 
 describe("free-text search queries (CVX-002)", () => {
   it("rejects a whitespace-only mention query and trims a padded one", () => {
-    rejects(MentionSearchQuerySchema, { q: WHITESPACE }, "q")
+    expectRejected(MentionSearchQuerySchema, { q: WHITESPACE }, "q")
     expect(parse(MentionSearchQuerySchema, { q: "  @jane  " }).q).toBe("@jane")
   })
 
   it("rejects a whitespace-only place query and trims a padded one", () => {
-    rejects(SuggestPlacesBodySchema, { q: WHITESPACE }, "q")
+    expectRejected(SuggestPlacesBodySchema, { q: WHITESPACE }, "q")
     expect(parse(SuggestPlacesBodySchema, { q: "  Ocean Ave  " }).q).toBe("Ocean Ave")
   })
 })
@@ -269,7 +273,7 @@ describe("mark-notifications-read id cap (CVX-015)", () => {
   })
 
   it("rejects one id over the cap", () => {
-    rejects(
+    expectRejected(
       MarkNotificationsReadBodySchema,
       { ids: ids(MARK_NOTIFICATIONS_READ_MAX_IDS + 1) },
       "ids",
@@ -277,7 +281,7 @@ describe("mark-notifications-read id cap (CVX-015)", () => {
   })
 
   it("still rejects a malformed id", () => {
-    rejects(MarkNotificationsReadBodySchema, { ids: ["not-a-uuid"] }, "ids.0")
+    expectRejected(MarkNotificationsReadBodySchema, { ids: ["not-a-uuid"] }, "ids.0")
   })
 })
 
