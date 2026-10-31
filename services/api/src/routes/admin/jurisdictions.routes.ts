@@ -93,19 +93,19 @@ export async function registerAdminJurisdictionsRoutes(
       },
       actorId,
     )
-    sendOk(reply)
+    return sendOk(reply)
   })
 
   route(app, "listJurisdictions", async (request, reply) => {
     const query = parse(JurisdictionListQuerySchema, request.query)
     const payload: JurisdictionDirectoryResponse = await service().listDirectory(query)
-    reply.status(200).send(payload)
+    return reply.status(200).send(payload)
   })
 
   route(app, "getJurisdictionGeometry", async (request, reply) => {
     const geoid = geoidParam(request)
     const payload: JurisdictionGeometryResponse = await service().getGeometry(geoid)
-    reply.status(200).send(payload)
+    return reply.status(200).send(payload)
   })
 
   route(app, "patchJurisdiction", { preHandler: csrfProtect }, async (request, reply) => {
@@ -132,6 +132,6 @@ export async function registerAdminJurisdictionsRoutes(
       },
       actorId,
     )
-    sendOk(reply)
+    return sendOk(reply)
   })
 }

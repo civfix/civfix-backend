@@ -65,13 +65,13 @@ export async function registerAdminInboxRoutes(
   route(app, "listInbox", async (request, reply) => {
     const query = parse(InboxListQuerySchema, request.query)
     const payload: InboxListResponse = await repo().list(query)
-    reply.status(200).send(payload)
+    return reply.status(200).send(payload)
   })
 
   route(app, "listInboxFeed", async (request, reply) => {
     const query = parse(InboxFeedQuerySchema, request.query)
     const payload: InboxFeedResponse = await feed().list(query)
-    reply.status(200).send(payload)
+    return reply.status(200).send(payload)
   })
 
   // A per-subject read (one citizen<->city email with its full body and fetchable attachments), audited
@@ -101,7 +101,7 @@ export async function registerAdminInboxRoutes(
       async (att) => ({ ...att, key: await store.presignGet(att.key, MEDIA_GET_URL_TTL_SEC) }),
     )
     const payload: InboundEmailDTO = { ...dto, attachments }
-    reply.status(200).send(payload)
+    return reply.status(200).send(payload)
   })
 
   // The repo writes the inbox.status_changed audit row in the same transaction as the UPDATE.
@@ -110,6 +110,6 @@ export async function registerAdminInboxRoutes(
     const { id, body } = parseBodyWithId(SetInboxStatusRequestSchema, request)
     const ok = await repo().setStatus(id, body.status, operatorId)
     if (!ok) throw AppError.notFound(INBOUND_EMAIL_NOT_FOUND)
-    sendOk(reply)
+    return sendOk(reply)
   })
 }

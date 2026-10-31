@@ -69,7 +69,7 @@ export async function registerHostAnnouncementRoutes(
         },
         request.log,
       )
-      reply.status(200).send(payload)
+      return reply.status(200).send(payload)
     },
   )
 
@@ -86,7 +86,7 @@ export async function registerHostAnnouncementRoutes(
         query,
         projection,
       )
-      reply.status(200).send(payload)
+      return reply.status(200).send(payload)
     },
   )
 
@@ -103,7 +103,7 @@ export async function registerHostAnnouncementRoutes(
         params.announcementId,
         projection,
       )
-      reply.status(200).send(payload)
+      return reply.status(200).send(payload)
     },
   )
 }

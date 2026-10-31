@@ -52,6 +52,6 @@ export async function registerAdminSystemRoutes(
 
   route(app, "adminSystemHealth", async (_request, reply) => {
     const payload: SystemHealthResponse = await service().health()
-    reply.status(200).send(payload)
+    return reply.status(200).send(payload)
   })
 }

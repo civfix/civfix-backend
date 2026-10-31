@@ -46,7 +46,7 @@ export function registerHostCheckinRoutes(
       const { id } = parse(CleanupIdParamsSchema, request.params)
       const query = parse(GetMyEventTicketRequestSchema, { id })
       const payload: GetMyEventTicketResponse = await ctx.services().checkin.myTicket(query, userId)
-      reply.status(200).send(payload)
+      return reply.status(200).send(payload)
     },
   )
 
@@ -57,7 +57,7 @@ export function registerHostCheckinRoutes(
     async (request, reply) => {
       const body = parse(GetGuestEventTicketRequestSchema, request.body)
       const payload: GetGuestEventTicketResponse = await ctx.services().checkin.guestTicket(body)
-      reply.status(200).send(payload)
+      return reply.status(200).send(payload)
     },
   )
 
@@ -71,7 +71,7 @@ export function registerHostCheckinRoutes(
       await ctx.guards().requireCapability(id, userId, "check_in")
       const body = parse(ScanEventTicketRequestSchema, bodyWith(request, { id }))
       const payload: ScanEventTicketResponse = await ctx.services().checkin.scan(body, userId)
-      reply.status(200).send(payload)
+      return reply.status(200).send(payload)
     },
   )
 
@@ -85,7 +85,7 @@ export function registerHostCheckinRoutes(
       await ctx.guards().requireCapability(id, userId, "check_in")
       const body = parse(CheckInEventSeatRequestSchema, bodyWith(request, { id }))
       const payload: CheckInEventSeatResponse = await ctx.services().checkin.checkIn(body, userId)
-      reply.status(200).send(payload)
+      return reply.status(200).send(payload)
     },
   )
 
@@ -101,7 +101,7 @@ export function registerHostCheckinRoutes(
       const payload: MarkEventNoShowsResponse = await ctx
         .services()
         .checkin.markNoShows(body, userId)
-      reply.status(200).send(payload)
+      return reply.status(200).send(payload)
     },
   )
 
@@ -115,7 +115,7 @@ export function registerHostCheckinRoutes(
       await ctx.guards().requireCapability(id, userId, "check_in")
       const body = parse(UndoEventCheckInRequestSchema, { id, seatId })
       const payload: UndoEventCheckInResponse = await ctx.services().checkin.undo(body, userId)
-      reply.status(200).send(payload)
+      return reply.status(200).send(payload)
     },
   )
 
@@ -129,7 +129,7 @@ export function registerHostCheckinRoutes(
       await ctx.guards().requireCapability(id, userId, "check_in")
       const query = parse(GetEventCheckinCountersRequestSchema, { id })
       const payload: GetEventCheckinCountersResponse = await ctx.services().checkin.counters(query)
-      reply.status(200).send(payload)
+      return reply.status(200).send(payload)
     },
   )
 }

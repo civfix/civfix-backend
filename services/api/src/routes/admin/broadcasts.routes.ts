@@ -91,7 +91,7 @@ export async function registerAdminBroadcastRoutes(
       })),
       nextCursor: page.nextCursor,
     }
-    reply.status(200).send(payload)
+    return reply.status(200).send(payload)
   })
 
   route(app, "adminListHosts", async (request, reply) => {
@@ -137,7 +137,7 @@ export async function registerAdminBroadcastRoutes(
       })),
       nextCursor: page.nextCursor,
     }
-    reply.status(200).send(payload)
+    return reply.status(200).send(payload)
   })
 
   route(
@@ -155,7 +155,7 @@ export async function registerAdminBroadcastRoutes(
       })
       if (!found) throw AppError.notFound("User not found.")
       const payload: SetHostMessagingSuspendedResponse = { ok: true, suspended: body.suspended }
-      reply.status(200).send(payload)
+      return reply.status(200).send(payload)
     },
   )
 }
