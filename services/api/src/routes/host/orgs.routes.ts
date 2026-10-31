@@ -175,7 +175,7 @@ export async function registerHostOrgRoutes(
       const userId = requireAuth(request)
       const body = parse(CreateOrganizationBodySchema, request.body)
       const dto: GetOrganizationResponse = await service().createOrganization(body, userId)
-      reply.status(201).send(dto)
+      return reply.status(201).send(dto)
     },
   )
 
@@ -184,7 +184,7 @@ export async function registerHostOrgRoutes(
     const payload: ListMyOrganizationsResponse = {
       items: await service().listMyOrganizations(userId),
     }
-    reply.status(200).send(payload)
+    return reply.status(200).send(payload)
   })
 
   route(
@@ -198,7 +198,7 @@ export async function registerHostOrgRoutes(
         slug,
         request.auth?.userId ?? null,
       )
-      reply.status(200).send(dto)
+      return reply.status(200).send(dto)
     },
   )
 
@@ -227,7 +227,7 @@ export async function registerHostOrgRoutes(
           limit: validated.limit ?? CLEANUPS_DEFAULT_LIMIT,
         },
       )
-      reply.status(200).send(payload)
+      return reply.status(200).send(payload)
     },
   )
 
@@ -240,7 +240,7 @@ export async function registerHostOrgRoutes(
       const { id } = parse(OrgIdParamsSchema, request.params)
       const body = parse(UpdateOrganizationBodySchema, { ...(request.body as object), id })
       const dto: UpdateOrganizationResponse = await service().updateOrganization(id, body, userId)
-      reply.status(200).send(dto)
+      return reply.status(200).send(dto)
     },
   )
 
@@ -257,7 +257,7 @@ export async function registerHostOrgRoutes(
       cursor: validated.cursor ?? null,
       limit: validated.limit ?? ORG_MEMBERS_DEFAULT_LIMIT,
     })
-    reply.status(200).send(payload)
+    return reply.status(200).send(payload)
   })
 
   route(
@@ -276,7 +276,7 @@ export async function registerHostOrgRoutes(
         userId,
         body,
       )
-      reply.status(200).send(payload)
+      return reply.status(200).send(payload)
     },
   )
 
@@ -285,7 +285,7 @@ export async function registerHostOrgRoutes(
     const { id } = parse(OrgIdParamsSchema, request.params)
     parse(ListOrganizationInvitesRequestSchema, { id })
     const payload: ListOrganizationInvitesResponse = await service().listInvites(id, userId)
-    reply.status(200).send(payload)
+    return reply.status(200).send(payload)
   })
 
   route(
@@ -301,7 +301,7 @@ export async function registerHostOrgRoutes(
         userId,
         inviteId,
       )
-      reply.status(200).send(payload)
+      return reply.status(200).send(payload)
     },
   )
 
@@ -318,7 +318,7 @@ export async function registerHostOrgRoutes(
         userId,
         body.token,
       )
-      reply.status(200).send(payload)
+      return reply.status(200).send(payload)
     },
   )
 
@@ -327,7 +327,7 @@ export async function registerHostOrgRoutes(
   route(app, "listMyOrgInvites", async (request, reply) => {
     const userId = requireAuth(request)
     const payload: ListMyOrgInvitesResponse = await service().listMyInvites(userId)
-    reply.status(200).send(payload)
+    return reply.status(200).send(payload)
   })
 
   route(
@@ -342,7 +342,7 @@ export async function registerHostOrgRoutes(
         userId,
         body.inviteId,
       )
-      reply.status(200).send(payload)
+      return reply.status(200).send(payload)
     },
   )
 
@@ -358,7 +358,7 @@ export async function registerHostOrgRoutes(
         userId,
         body.inviteId,
       )
-      reply.status(200).send(payload)
+      return reply.status(200).send(payload)
     },
   )
 
@@ -380,7 +380,7 @@ export async function registerHostOrgRoutes(
         body.userId,
         body.role,
       )
-      reply.status(200).send(payload)
+      return reply.status(200).send(payload)
     },
   )
 
@@ -397,7 +397,7 @@ export async function registerHostOrgRoutes(
         actorId,
         body.userId,
       )
-      reply.status(200).send(payload)
+      return reply.status(200).send(payload)
     },
   )
 
@@ -417,7 +417,7 @@ export async function registerHostOrgRoutes(
         userId,
         body,
       )
-      reply.status(200).send(dto)
+      return reply.status(200).send(dto)
     },
   )
 
@@ -426,6 +426,6 @@ export async function registerHostOrgRoutes(
     const { id } = parse(OrgIdParamsSchema, request.params)
     parse(GetOrganizationVerificationRequestSchema, { id })
     const dto: GetOrganizationVerificationResponse = await service().getVerification(id, userId)
-    reply.status(200).send(dto)
+    return reply.status(200).send(dto)
   })
 }

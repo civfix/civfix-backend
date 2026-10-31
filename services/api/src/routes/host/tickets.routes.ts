@@ -46,7 +46,7 @@ export function registerHostTicketRoutes(
       const payload: ListEventTicketTypesResponse = await ctx
         .services()
         .tickets.list(query, { userId, canManage })
-      reply.status(200).send(payload)
+      return reply.status(200).send(payload)
     },
   )
 
@@ -62,7 +62,7 @@ export function registerHostTicketRoutes(
       const payload: CreateEventTicketTypeResponse = await ctx
         .services()
         .tickets.create(body, userId)
-      reply.status(201).send(payload)
+      return reply.status(201).send(payload)
     },
   )
 
@@ -76,7 +76,7 @@ export function registerHostTicketRoutes(
       await ctx.guards().requireCapability(id, userId, "manage_tickets")
       const body = parse(ReorderEventTicketTypesRequestSchema, bodyWith(request, { id }))
       const payload: ReorderEventTicketTypesResponse = await ctx.services().tickets.reorder(body)
-      reply.status(200).send(payload)
+      return reply.status(200).send(payload)
     },
   )
 
@@ -95,7 +95,7 @@ export function registerHostTicketRoutes(
       const payload: UpdateEventTicketTypeResponse = await ctx
         .services()
         .tickets.update(body, userId)
-      reply.status(200).send(payload)
+      return reply.status(200).send(payload)
     },
   )
 
@@ -109,7 +109,7 @@ export function registerHostTicketRoutes(
       await ctx.guards().requireCapability(id, userId, "manage_tickets")
       const body = parse(DeleteEventTicketTypeRequestSchema, { id, ticketTypeId })
       const payload: DeleteEventTicketTypeResponse = await ctx.services().tickets.remove(body)
-      reply.status(200).send(payload)
+      return reply.status(200).send(payload)
     },
   )
 }

@@ -39,7 +39,7 @@ export function registerHostQuestionRoutes(
       const payload: ListEventQuestionsResponse = await ctx
         .services()
         .questions.list(query, { canManage })
-      reply.status(200).send(payload)
+      return reply.status(200).send(payload)
     },
   )
 
@@ -53,7 +53,7 @@ export function registerHostQuestionRoutes(
       await ctx.guards().requireCapability(id, userId, "manage_tickets")
       const body = parse(SaveEventQuestionsRequestSchema, bodyWith(request, { id }))
       const payload: SaveEventQuestionsResponse = await ctx.services().questions.save(body)
-      reply.status(200).send(payload)
+      return reply.status(200).send(payload)
     },
   )
 }

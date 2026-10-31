@@ -143,13 +143,13 @@ export async function registerAdminAuthRoutes(
         reply,
         operator,
       )
-      reply.status(200).send(payload)
+      return reply.status(200).send(payload)
     },
   )
 
   route(app, "adminSession", async (request, reply) => {
     const payload = await buildAdminSession(services, csrf, env, request, reply)
-    reply.status(200).send(payload)
+    return reply.status(200).send(payload)
   })
 
   route(
@@ -176,7 +176,7 @@ export async function registerAdminAuthRoutes(
         })
       }
       const payload: AdminLogoutResponse = { ok: true }
-      reply.status(200).send(payload)
+      return reply.status(200).send(payload)
     },
   )
 }

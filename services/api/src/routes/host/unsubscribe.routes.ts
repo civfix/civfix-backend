@@ -67,13 +67,11 @@ export async function registerUnsubscribeRoutes(
       async (request, reply) => {
         const token = tokenFrom(request)
         if (token === null) {
-          reply.status(200).send(OK)
-          return
+          return reply.status(200).send(OK)
         }
         const parsed = UnsubscribeBroadcastsRequestSchema.safeParse({ token })
         if (!parsed.success) {
-          reply.status(200).send(OK)
-          return
+          return reply.status(200).send(OK)
         }
         try {
           await runtime().broadcasts.unsubscribe(parsed.data.token)
@@ -88,7 +86,7 @@ export async function registerUnsubscribeRoutes(
             }),
           )
         }
-        reply.status(200).send(OK)
+        return reply.status(200).send(OK)
       },
     )
 
@@ -102,7 +100,7 @@ export async function registerUnsubscribeRoutes(
         const target = parsed.success
           ? `${webBaseUrl()}/unsubscribe?t=${encodeURIComponent(parsed.data.t)}`
           : `${webBaseUrl()}/unsubscribe`
-        reply.redirect(target, 302)
+        return reply.redirect(target, 302)
       },
     )
   })

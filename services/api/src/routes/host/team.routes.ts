@@ -127,7 +127,7 @@ export async function registerHostTeamRoutes(
     const { id } = parse(CleanupIdParamsSchema, request.params)
     parse(ListEventTeamRequestSchema, { id })
     const payload: ListEventTeamResponse = await service().listTeam(id, userId)
-    reply.status(200).send(payload)
+    return reply.status(200).send(payload)
   })
 
   route(
@@ -139,7 +139,7 @@ export async function registerHostTeamRoutes(
       const { id } = parse(CleanupIdParamsSchema, request.params)
       const body = parse(InviteEventTeamMemberRequestSchema, { ...(request.body as object), id })
       const payload: InviteEventTeamMemberResponse = await service().inviteMember(id, userId, body)
-      reply.status(201).send(payload)
+      return reply.status(201).send(payload)
     },
   )
 
@@ -156,7 +156,7 @@ export async function registerHostTeamRoutes(
         userId,
         body.inviteId,
       )
-      reply.status(200).send(payload)
+      return reply.status(200).send(payload)
     },
   )
 
@@ -173,7 +173,7 @@ export async function registerHostTeamRoutes(
         userId,
         body.token,
       )
-      reply.status(200).send(payload)
+      return reply.status(200).send(payload)
     },
   )
 
@@ -192,7 +192,7 @@ export async function registerHostTeamRoutes(
         ...(validated.cursor !== undefined ? { cursor: validated.cursor } : {}),
         limit: validated.limit ?? MY_EVENT_INVITES_DEFAULT_LIMIT,
       })
-      reply.status(200).send(payload)
+      return reply.status(200).send(payload)
     },
   )
 
@@ -208,7 +208,7 @@ export async function registerHostTeamRoutes(
         userId,
         body.inviteId,
       )
-      reply.status(200).send(payload)
+      return reply.status(200).send(payload)
     },
   )
 
@@ -224,7 +224,7 @@ export async function registerHostTeamRoutes(
         userId,
         body.inviteId,
       )
-      reply.status(200).send(payload)
+      return reply.status(200).send(payload)
     },
   )
 }

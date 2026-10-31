@@ -102,7 +102,7 @@ export async function registerAdminReportChatRoutes(
     const query = parse(AdminReportMessagesRequestSchema, { ...(request.query as object), id })
     const viewerUserId = request.auth?.userId ?? null
     const payload: ChatHistoryResponse = await service().history(id, query, viewerUserId)
-    reply.status(200).send(payload)
+    return reply.status(200).send(payload)
   })
 
   route(
@@ -120,7 +120,7 @@ export async function registerAdminReportChatRoutes(
         body: body.body,
         actorId,
       })
-      reply.status(200).send(payload)
+      return reply.status(200).send(payload)
     },
   )
 
@@ -140,7 +140,7 @@ export async function registerAdminReportChatRoutes(
         reason: body.reason ?? null,
         actorId,
       })
-      sendOk(reply)
+      return sendOk(reply)
     },
   )
 }
