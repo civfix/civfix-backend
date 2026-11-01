@@ -512,13 +512,13 @@ describe("POST /v1/admin/reports/:id/messages refuses a slur", () => {
     return { send, tokenFor, post }
   }
 
-  it("T5: an operator gets 400 VALIDATION on body and nothing happens", async () => {
+  it("T5: an operator gets 422 VALIDATION on body and nothing happens", async () => {
     const h = await routeHarness()
     const token = await h.tokenFor(OPERATOR_EMAIL, "operator")
 
     const res = await h.post("you retard", token)
 
-    expect(res.statusCode).toBe(400)
+    expect(res.statusCode).toBe(422)
     expect(res.json()).toMatchObject(SLUR_REJECTION)
     expect(h.send.persisted).toEqual([])
     expect(h.send.broadcasts).toEqual([])
