@@ -96,6 +96,21 @@ describe("CSRF pairing: every mutation runs csrfProtect or is a reviewed excepti
     }
   })
 
+  it("T60: the developer console's mutations all run csrfProtect", () => {
+    const devConsole = [
+      "adminSetRuntimeFlag",
+      "adminDevRunJob",
+      "adminDevSetForceUpdate",
+      "adminDevTestPush",
+      "adminDevTestEmail",
+      "adminDevResetFirstRun",
+    ]
+    for (const name of devConsole) {
+      expect(name in CSRF_EXEMPT, name).toBe(false)
+      expect(preHandlersOf(name).includes(harness.container.csrf.protect), name).toBe(true)
+    }
+  })
+
   it("lists only real mutations as exemptions", () => {
     const stale = Object.keys(CSRF_EXEMPT).filter((name) => !mutations.includes(name))
     expect(stale).toEqual([])

@@ -389,7 +389,7 @@ function makeContainerReportService(
     presignMedia: makeMediaPresigner(container.storage),
     presignPrivateMedia: makePrivateMediaPresigner(container.storage),
     jobs: container.jobs,
-    autoForwardEnabled: container.env.REPORT_AUTOFORWARD_ENABLED,
+    autoForwardEnabled: () => container.getRuntimeFlags().get("report_autoforward_enabled"),
     isReportVerified: (userId) => reportChatRepo.isReportVerified(userId),
     joinReportChatAsOwner: (reportId, userId) => reportChatRepo.join(reportId, userId, "owner"),
     reportChatEmitter: makeContainerReportChatEmitter(container, log),
@@ -404,9 +404,10 @@ function makeDiscussionMetaLoader(
   const discussionRepo = makeDrizzleDiscussionRepository(sql)
   const chatRepo = makeDrizzleChatRepository(sql)
   return async (reportId) => {
-    const [count, report] = await Promise.all([
+    const [count, report, autoForwardEnabled] = await Promise.all([
       chatRepo.countReportMessages(reportId),
       discussionRepo.findReportForDiscussion(reportId),
+      container.getRuntimeFlags().get("report_autoforward_enabled"),
     ])
     const jurisdiction = report?.jurisdiction ?? null
     return {
@@ -420,7 +421,7 @@ function makeDiscussionMetaLoader(
           : null,
       cityName: jurisdiction?.name ?? null,
       canForwardToCity:
-        container.env.REPORT_AUTOFORWARD_ENABLED &&
+        autoForwardEnabled &&
         jurisdiction !== null &&
         jurisdiction.contactEmail !== null &&
         jurisdiction.contactEmail !== "",

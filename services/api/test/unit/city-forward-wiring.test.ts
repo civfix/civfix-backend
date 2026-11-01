@@ -24,6 +24,7 @@ import {
   CITY_FORWARD_PER_SENDER_PER_HOUR,
   CITY_FORWARD_PER_GEOID_PER_HOUR,
 } from "../../src/services/report-city-forward.js"
+import { flagHarness } from "../helpers/runtime-flags.js"
 
 const { captured, sent } = vi.hoisted(() => ({
   // eslint-disable-next-line @typescript-eslint/no-unnecessary-type-assertion -- the assertion is the field's declared type: vi.hoisted infers the record from this literal
@@ -96,6 +97,9 @@ const { wireChatGateway } = await import("../../src/routes/chat-gateway-wiring.j
 
 const ACTOR = "11111111-1111-1111-1111-111111111111"
 
+// Env unset and no override: report_autoforward_enabled is off, and the @city forward must not care.
+const autoForwardOff = flagHarness().flags
+
 function reportId(n: number): string {
   return `${String(n).padStart(8, "0")}-0000-0000-0000-000000000000`
 }
@@ -151,8 +155,8 @@ function wire(counters: InMemoryCounterStore): OnReportMessage {
       WEB_ORIGINS: [],
       MAIL_FROM_OUTREACH: "a@b",
       MAIL_REPLY_DOMAIN: "b",
-      REPORT_AUTOFORWARD_ENABLED: false,
     },
+    getRuntimeFlags: () => autoForwardOff,
     storage: { presignGet: () => Promise.resolve("") },
     mailer: {},
     chatService: {},
@@ -172,7 +176,8 @@ describe("chat-gateway-wiring: the LIVE @city forward gate is the durable thrott
     captured.onReportMessage = undefined
   })
 
-  it("forwards an @city mention into the report's existing mail thread with REPORT_AUTOFORWARD_ENABLED off", async () => {
+  it("T16: forwards an @city mention into the report's existing mail thread with report_autoforward_enabled off", async () => {
+    expect(await autoForwardOff.get("report_autoforward_enabled")).toBe(false)
     const onReportMessage = wire(new InMemoryCounterStore())
 
     await onReportMessage(reportId(1), message(1), ACTOR)

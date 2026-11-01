@@ -174,6 +174,8 @@ describe("makeContainer characterization: Container surface", () => {
       "getCache",
       "getByteMeter",
       "getTicketTokenSigner",
+      "getRuntimeFlags",
+      "getDevTestTools",
       "close",
     ])
   })
@@ -357,6 +359,8 @@ describe("makeContainer characterization: memoized getters", () => {
     expect(c.getAffiliationLoader()).toBe(c.getAffiliationLoader())
     expect(c.getPostRepo()).toBe(c.getPostRepo())
     expect(c.getPostService()).toBe(c.getPostService())
+    expect(c.getRuntimeFlags()).toBe(c.getRuntimeFlags())
+    expect(c.getDevTestTools()).toBe(c.getDevTestTools())
     expect(connectSpy).not.toHaveBeenCalled()
   })
 

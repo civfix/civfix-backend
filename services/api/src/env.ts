@@ -2,6 +2,7 @@ import { z } from "zod"
 import type { Env } from "./env/types.js"
 import { loadCommsEnv } from "./env/comms-env.js"
 import { loadRegistrationEnv } from "./env/registration-env.js"
+import { loadDevConsoleEnv } from "./env/dev-console-env.js"
 import { makeEnvReader, type EnvReader } from "./env/reader.js"
 import {
   checkDatabaseTls,
@@ -67,6 +68,9 @@ const OPTIONAL_STRING_KEYS: ReadonlyArray<keyof Env> = [
   "EXPO_ACCESS_TOKEN",
   "GLITCHTIP_DSN",
   "GLITCHTIP_DATABASE_URL",
+  "CIVFIX_RELEASE_REF",
+  "CIVFIX_API_IMAGE_REF",
+  "CIVFIX_WORKER_IMAGE_REF",
 ]
 
 export const FAKE_SEAM_FLAGS: ReadonlyArray<{ flag: keyof FakeFlags; consequence: string }> = [
@@ -144,6 +148,11 @@ export function loadEnv(source: NodeJS.ProcessEnv = process.env): Env {
   const apns = loadApnsProduction(r)
   const comms = loadCommsEnv(source, errors)
   const registration = loadRegistrationEnv(source, errors)
+  const accessLists = loadAccessLists(r)
+  const devConsole = loadDevConsoleEnv(r, {
+    publicApiUrl: core.PUBLIC_API_URL,
+    adminEmails: accessLists.ADMIN_EMAILS,
+  })
 
   if (errors.length > 0) {
     const header =
@@ -168,12 +177,13 @@ export function loadEnv(source: NodeJS.ProcessEnv = process.env): Env {
     ...schedules,
     ...authFlags,
     ...tuning,
-    ...loadAccessLists(r),
+    ...accessLists,
     ...optionalStrings(source, OPTIONAL_STRING_KEYS),
     ...apns,
     ...fakeFlags,
     ...comms,
     ...registration,
+    ...devConsole,
   }
 }
 
