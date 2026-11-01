@@ -519,7 +519,10 @@ describe("POST /v1/admin/reports/:id/messages refuses a slur", () => {
     const res = await h.post("you retard", token)
 
     expect(res.statusCode).toBe(422)
-    expect(res.json()).toMatchObject(SLUR_REJECTION)
+    expect(res.json()).toMatchObject({
+      ...SLUR_REJECTION,
+      message: "This contains language that isn't allowed.",
+    })
     expect(h.send.persisted).toEqual([])
     expect(h.send.broadcasts).toEqual([])
     expect(h.send.forwarded).toEqual([])
