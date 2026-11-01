@@ -155,7 +155,7 @@ export async function registerVolunteerHoursRoutes(
     const userId = requireAuth(request)
     const hours = await service().getMyHours(userId)
     const payload: GetMyHoursResponse = { hours }
-    reply.status(200).send(payload)
+    return reply.status(200).send(payload)
   })
 
   route(app, "getMyHoursEntries", async (request, reply) => {
@@ -165,7 +165,7 @@ export async function registerVolunteerHoursRoutes(
       userId,
       query,
     )
-    reply.status(200).send(payload)
+    return reply.status(200).send(payload)
   })
 
   route(
@@ -182,7 +182,7 @@ export async function registerVolunteerHoursRoutes(
       const payload: PublicVolunteerHoursResponse = await service().getPublicHours(query, viewerId)
 
       setViewerCacheHeaders(reply, viewerId)
-      reply.status(200).send(payload)
+      return reply.status(200).send(payload)
     },
   )
 
@@ -199,7 +199,7 @@ export async function registerVolunteerHoursRoutes(
         actorId: userId,
         entries: body.entries,
       })
-      reply.status(200).send(payload)
+      return reply.status(200).send(payload)
     },
   )
 
@@ -211,7 +211,7 @@ export async function registerVolunteerHoursRoutes(
       id,
     })
     const payload: EventHoursResponse = await service().getEventHours(query.id, userId)
-    reply.status(200).send(payload)
+    return reply.status(200).send(payload)
   })
 
   route(
@@ -228,7 +228,7 @@ export async function registerVolunteerHoursRoutes(
       const payload: LeaderboardResponse = await service().leaderboard(geoid, query, viewerId)
 
       setViewerCacheHeaders(reply, viewerId)
-      reply.status(200).send(payload)
+      return reply.status(200).send(payload)
     },
   )
 }

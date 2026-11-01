@@ -148,7 +148,7 @@ describe.skipIf(!pg)("media routes (integration)", () => {
     expect(ready.statusCode).toBe(200)
     const dto = ready.json()
     expect(dto.status).toBe("ready")
-    expect(dto.url).toBe(`memory://${servedKey}`)
+    expect(dto.url).toBe(`https://fake-storage.invalid/${servedKey}`)
     expect(dto.width).toBe(800)
   })
 })

@@ -127,7 +127,7 @@ export async function registerSocialRoutes(
       throw AppError.validation({ q: "A non-empty search query is required." })
     }
     const payload: ListPeopleResponse = await service().listPeople(validated, { userId })
-    reply.status(200).send(payload)
+    return reply.status(200).send(payload)
   })
 
   route(
@@ -141,7 +141,7 @@ export async function registerSocialRoutes(
         userId,
         q.limit ?? FOLLOW_SUGGESTIONS_DEFAULT_LIMIT,
       )
-      reply.status(200).send(payload)
+      return reply.status(200).send(payload)
     },
   )
 
@@ -153,7 +153,7 @@ export async function registerSocialRoutes(
       const userId = requireAuth(request)
       const { id } = parse(PersonIdParamsSchema, request.params)
       const payload: FollowPersonResponse = await service(true).followPerson(userId, id)
-      reply.status(200).send(payload)
+      return reply.status(200).send(payload)
     },
   )
 
@@ -165,7 +165,7 @@ export async function registerSocialRoutes(
       const userId = requireAuth(request)
       const { id } = parse(PersonIdParamsSchema, request.params)
       const payload: FollowPersonResponse = await service().unfollowPerson(userId, id)
-      reply.status(200).send(payload)
+      return reply.status(200).send(payload)
     },
   )
 
@@ -175,7 +175,7 @@ export async function registerSocialRoutes(
     const payload: GetProfileResponse = isUuid(id)
       ? await svc.getProfile(id, viewerOf(request))
       : await svc.getProfileByHandle(id, viewerOf(request))
-    reply.status(200).send(payload)
+    return reply.status(200).send(payload)
   })
 
   route(app, "getProfileEvents", async (request, reply) => {
@@ -186,13 +186,13 @@ export async function registerSocialRoutes(
       viewerOf(request),
       input,
     )
-    reply.status(200).send(payload)
+    return reply.status(200).send(payload)
   })
 
   route(app, "myProfile", async (request, reply) => {
     const userId = requireAuth(request)
     const payload: GetProfileResponse = await service().getMyProfile(userId)
-    reply.status(200).send(payload)
+    return reply.status(200).send(payload)
   })
 
   route(app, "listFollowers", async (request, reply) => {
@@ -203,7 +203,7 @@ export async function registerSocialRoutes(
       viewerOf(request),
       input,
     )
-    reply.status(200).send(payload)
+    return reply.status(200).send(payload)
   })
 
   route(app, "listFollowing", async (request, reply) => {
@@ -214,7 +214,7 @@ export async function registerSocialRoutes(
       viewerOf(request),
       input,
     )
-    reply.status(200).send(payload)
+    return reply.status(200).send(payload)
   })
 }
 

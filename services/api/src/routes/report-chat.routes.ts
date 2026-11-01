@@ -107,7 +107,7 @@ export async function registerReportChatRoutes(
       q,
       limit,
     )
-    reply.status(200).send(payload)
+    return reply.status(200).send(payload)
   })
 
   const resolveChatPowers = wireChatPowers(app, container)
@@ -134,7 +134,7 @@ export async function registerReportChatRoutes(
         chat: container.chatService,
         legacyBroadcast: true,
       })
-      reply.status(200).send(tombstone)
+      return reply.status(200).send(tombstone)
     },
   )
 
@@ -170,7 +170,7 @@ export async function registerReportChatRoutes(
           message: neutralizeChatViewerFields(updated),
         }),
       ).catch(() => {})
-      reply.status(200).send(updated)
+      return reply.status(200).send(updated)
     },
   )
 
@@ -185,7 +185,7 @@ export async function registerReportChatRoutes(
       await requireVisibleReport(id, userId)
       await getReportChatRepo().join(id, userId, "member")
       nudgeThreads(container.userChannel, userId)
-      reply.status(200).send({ ok: true })
+      return reply.status(200).send({ ok: true })
     },
   )
 
@@ -210,7 +210,7 @@ export async function registerReportChatRoutes(
       user: withAffiliation(m.user, affiliations),
     }))
     const payload: ReportChatParticipantsResponse = { participants, total }
-    reply.status(200).send(payload)
+    return reply.status(200).send(payload)
   })
 
   route(
@@ -223,7 +223,7 @@ export async function registerReportChatRoutes(
       parse(LeaveReportChatRequestSchema, { id })
       await getReportChatRepo().leave(id, userId)
       nudgeThreads(container.userChannel, userId)
-      reply.status(200).send({ ok: true })
+      return reply.status(200).send({ ok: true })
     },
   )
 }

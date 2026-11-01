@@ -210,21 +210,21 @@ export async function registerReportRoutes(
         userId,
         guestAnonSessionId: request.auth.guestAnonSessionId,
       })
-      reply.status(201).send(dto)
+      return reply.status(201).send(dto)
     },
   )
 
   route(app, "getReport", async (request, reply) => {
     const { id } = parse(ReportRefOrIdParamsSchema, request.params)
     const dto: GetReportResponse = await service().getReport(id, ownerOf(request))
-    reply.status(200).send(dto)
+    return reply.status(200).send(dto)
   })
 
   route(app, "listMyReports", async (request, reply) => {
     const userId = requireAuth(request)
     const pagination = parse(PaginationQuerySchema, request.query)
     const payload: ListMyReportsResponse = await service().listMyReports(userId, pagination)
-    reply.status(200).send(payload)
+    return reply.status(200).send(payload)
   })
 
   route(
@@ -243,7 +243,7 @@ export async function registerReportRoutes(
         validated.zoom,
       )
       reply.header("Cache-Control", MAP_REPORTS_CACHE_CONTROL)
-      reply.status(200).send(payload)
+      return reply.status(200).send(payload)
     },
   )
 
@@ -254,7 +254,7 @@ export async function registerReportRoutes(
     async (request, reply) => {
       const validated = parse(SearchReportsQuerySchema, request.query)
       const payload: ListReportsSearchResponse = await service().searchReports(validated)
-      reply.status(200).send(payload)
+      return reply.status(200).send(payload)
     },
   )
 
@@ -266,7 +266,7 @@ export async function registerReportRoutes(
       const { bbox } = parse(PressingReportsQuerySchema, request.query)
       const payload: PressingReportsResponse = await service().pressingReports(bbox)
       reply.header("Cache-Control", MAP_REPORTS_CACHE_CONTROL)
-      reply.status(200).send(payload)
+      return reply.status(200).send(payload)
     },
   )
 
@@ -278,7 +278,7 @@ export async function registerReportRoutes(
       const userId = requireAuth(request)
       const { id } = parse(ReportConfirmRequestSchema, request.params)
       const payload: ReportConfirmResponse = await service().confirmReport(userId, id)
-      reply.status(200).send(payload)
+      return reply.status(200).send(payload)
     },
   )
 
@@ -290,7 +290,7 @@ export async function registerReportRoutes(
       const userId = requireAuth(request)
       const { id } = parse(ReportConfirmRequestSchema, request.params)
       const payload: ReportConfirmResponse = await service().unconfirmReport(userId, id)
-      reply.status(200).send(payload)
+      return reply.status(200).send(payload)
     },
   )
 
@@ -302,7 +302,7 @@ export async function registerReportRoutes(
       const userId = requireAuth(request)
       const { id } = parse(ReportConfirmRequestSchema, request.params)
       const payload: ReportConfirmResponse = await service().markReportFixed(userId, id)
-      reply.status(200).send(payload)
+      return reply.status(200).send(payload)
     },
   )
 
@@ -314,7 +314,7 @@ export async function registerReportRoutes(
       const userId = requireAuth(request)
       const { id } = parse(ReportConfirmRequestSchema, request.params)
       const payload: ReportConfirmResponse = await service().unmarkReportFixed(userId, id)
-      reply.status(200).send(payload)
+      return reply.status(200).send(payload)
     },
   )
 
@@ -323,7 +323,7 @@ export async function registerReportRoutes(
     const { id } = parse(ReportIdParamsSchema, request.params)
     const body = parse(ResolveReportRequestSchema, { ...(request.body as object), id })
     const dto: ReportDTO = await service().resolveReport(userId, id, body.resolved)
-    reply.status(200).send(dto)
+    return reply.status(200).send(dto)
   })
 
   route(app, "unlistReport", { preHandler: csrfProtect }, async (request, reply) => {
@@ -331,7 +331,7 @@ export async function registerReportRoutes(
     const { id } = parse(ReportIdParamsSchema, request.params)
     const body = parse(UnlistReportRequestSchema, { ...(request.body as object), id })
     const dto: ReportDTO = await service().unlistReport(userId, id, body.unlisted)
-    reply.status(200).send(dto)
+    return reply.status(200).send(dto)
   })
 }
 

@@ -40,8 +40,8 @@ describe("resolveUserAvatarUrl", () => {
       resolved[name] = await resolveUserAvatarUrl(presign, avatarFixtureSource(name))
     }
     expect(resolved).toEqual({
-      P: "memory://thumbs/uploads/2026/10/p1.jpg",
-      S: "memory://processed/uploads/2026/10/s1",
+      P: "https://fake-storage.invalid/thumbs/uploads/2026/10/p1.jpg",
+      S: "https://fake-storage.invalid/processed/uploads/2026/10/s1",
       V: "https://lh3.googleusercontent.com/a/v-old",
       R: "https://lh3.googleusercontent.com/a/r-old",
       O: "https://lh3.googleusercontent.com/a/o",

@@ -54,6 +54,9 @@ importers:
       '@eslint/js':
         specifier: ^9.39.5
         version: 9.39.5
+      '@vitest/coverage-v8':
+        specifier: ^4.1.12
+        version: 4.1.12(vitest@4.1.12)
       '@vitest/eslint-plugin':
         specifier: 1.6.27
         version: 1.6.27(@typescript-eslint/eslint-plugin@8.71.1(@typescript-eslint/parser@8.71.1(eslint@9.39.5(jiti@2.7.0))(typescript@5.9.3))(eslint@9.39.5(jiti@2.7.0))(typescript@5.9.3))(eslint@9.39.5(jiti@2.7.0))(typescript@5.9.3)(vitest@4.1.12)
@@ -66,12 +69,15 @@ importers:
       typescript-eslint:
         specifier: ^8.71.1
         version: 8.71.1(eslint@9.39.5(jiti@2.7.0))(typescript@5.9.3)
+      vitest:
+        specifier: ^4.1.12
+        version: 4.1.12(@opentelemetry/api@1.9.1)(@types/node@22.20.5)(@vitest/coverage-v8@4.1.12)(vite@7.3.7(@types/node@22.20.5)(jiti@2.7.0)(tsx@4.23.15)(yaml@2.9.1))
 
   packages/seams:
     dependencies:
       '@civfix/contract':
-        specifier: 0.67.0-b-integration-dev-console.g2105680
-        version: 0.67.0-b-integration-dev-console.g2105680
+        specifier: 0.68.0-b-integration-dev-console.g43ac5d9
+        version: 0.68.0-b-integration-dev-console.g43ac5d9
     devDependencies:
       '@civfix/config':
         specifier: workspace:*
@@ -131,8 +137,8 @@ importers:
         specifier: ^3.1147.0
         version: 3.1147.0
       '@civfix/contract':
-        specifier: 0.67.0-b-integration-dev-console.g2105680
-        version: 0.67.0-b-integration-dev-console.g2105680
+        specifier: 0.68.0-b-integration-dev-console.g43ac5d9
+        version: 0.68.0-b-integration-dev-console.g43ac5d9
       '@civfix/tokens':
         specifier: ^0.1.1
         version: 0.1.1
@@ -288,8 +294,8 @@ importers:
         specifier: workspace:*
         version: link:../api
       '@civfix/contract':
-        specifier: 0.67.0-b-integration-dev-console.g2105680
-        version: 0.67.0-b-integration-dev-console.g2105680
+        specifier: 0.68.0-b-integration-dev-console.g43ac5d9
+        version: 0.68.0-b-integration-dev-console.g43ac5d9
       '@sentry/node':
         specifier: ^10.76.1
         version: 10.76.1(@opentelemetry/core@2.12.0(@opentelemetry/api@1.9.1))
@@ -472,8 +478,8 @@ packages:
     resolution: {integrity: sha512-6zABk/ECA/QYSCQ1NGiVwwbQerUCZ+TQbp64Q3AgmfNvurHH0j8TtXa1qbShXA6qqkpAj4V5W8pP6mLe1mcMqA==}
     engines: {node: '>=18'}
 
-  '@civfix/contract@0.67.0-b-integration-dev-console.g2105680':
-    resolution: {integrity: sha512-4z7VQ6DPmZV19+nXBOLUdJTK4Wete3UNNnkdd5avP5GbMZ556pKV2UAfjr9n71v7UA4Y94bLxaJcP6z5DAQCZg==}
+  '@civfix/contract@0.68.0-b-integration-dev-console.g43ac5d9':
+    resolution: {integrity: sha512-bA/B0cquqqg5InHwGhoVesNzfEt4QGOBUkZR/faXs+s4YIPRA/LTWH2o17uFHI9jykBHaP8yQ5D596hMxCei+g==}
     engines: {node: '>=20'}
 
   '@civfix/tokens@0.1.1':
@@ -4675,7 +4681,7 @@ snapshots:
 
   '@bcoe/v8-coverage@1.0.2': {}
 
-  '@civfix/contract@0.67.0-b-integration-dev-console.g2105680':
+  '@civfix/contract@0.68.0-b-integration-dev-console.g43ac5d9':
     dependencies:
       zod: 4.6.7
 

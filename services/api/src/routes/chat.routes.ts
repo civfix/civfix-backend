@@ -133,7 +133,7 @@ export async function registerChatRoutes(
       ...(pagination.cursor !== undefined ? { cursor: pagination.cursor } : {}),
     })
     const payload: ListThreadsResponse = { items: result.items, nextCursor: result.nextCursor }
-    reply.status(200).send(payload)
+    return reply.status(200).send(payload)
   })
 
   route(
@@ -168,7 +168,7 @@ export async function registerChatRoutes(
           message: neutralizeChatViewerFields(updated),
         }),
       ).catch(() => {})
-      reply.status(200).send(updated)
+      return reply.status(200).send(updated)
     },
   )
 
@@ -197,7 +197,7 @@ export async function registerChatRoutes(
         chat: container.chatService,
         legacyBroadcast: true,
       })
-      reply.status(200).send(tombstone)
+      return reply.status(200).send(tombstone)
     },
   )
 }

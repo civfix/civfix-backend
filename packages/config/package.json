@@ -11,13 +11,20 @@
   },
   "files": [
     "eslint.config.js",
-    "prettier.config.js"
+    "prettier.config.js",
+    "rules/"
   ],
+  "scripts": {
+    "test": "vitest run",
+    "test:coverage": "vitest run --coverage"
+  },
   "devDependencies": {
     "@eslint/js": "^9.39.5",
+    "@vitest/coverage-v8": "^4.1.12",
     "@vitest/eslint-plugin": "1.6.27",
     "eslint": "^9.39.5",
     "globals": "^15.15.0",
-    "typescript-eslint": "^8.71.1"
+    "typescript-eslint": "^8.71.1",
+    "vitest": "^4.1.12"
   }
 }

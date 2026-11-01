@@ -238,7 +238,7 @@ describe("GET /media/:id", () => {
     const dto = res.json()
     expect(dto.id).toBe(row!.id)
     expect(dto.status).toBe("ready")
-    expect(dto.url).toBe(`memory://processed/${row!.r2Key}`)
+    expect(dto.url).toBe(`https://fake-storage.invalid/processed/${row!.r2Key}`)
     expect(dto.width).toBe(640)
   })
 
