@@ -86,7 +86,7 @@ export function makeJurisdictionContactsService(
   // Best-effort throttling: the worker's outreach_state stamp is the real guard, so a lost race here only
   // risks a redundant enqueue (deduped by singletonKey), never a missed send.
   async function maybeEnqueueOutreach(geoid: string): Promise<boolean> {
-    if (!deps.outreachDigestEnabled) return false
+    if (!(await deps.outreachDigestEnabled())) return false
     const state = await deps.repo.getOutreachState(geoid)
     if (state?.suppressed) return false
     if (isThrottled(state?.lastOutreachAt ?? null, now(), deps.throttleDays)) return false

@@ -1,6 +1,6 @@
 import type { FastifyInstance } from "fastify"
 import { FakeJobs } from "@civfix/seams"
-import { describe, expect, it, vi } from "vitest"
+import { beforeEach, describe, expect, it, vi } from "vitest"
 
 const stubRegistration = vi.hoisted(
   () => (exportName: string) => async (importOriginal: () => Promise<Record<string, unknown>>) => ({
@@ -47,6 +47,10 @@ function fakeApp() {
 }
 
 describe("startBackgroundJobs", () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+  })
+
   it("hands the app logger to the outreach job registration so a failed claim release is logged", async () => {
     const { app, container, log } = fakeApp()
     const env = loadEnv({ NODE_ENV: "test", DATABASE_URL: "postgres://u:p@localhost/db" })

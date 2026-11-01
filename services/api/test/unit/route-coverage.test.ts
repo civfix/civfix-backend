@@ -235,8 +235,8 @@ describe("route-coverage: every shared endpoint is registered (offline boot smok
     })
   }
 
-  it("T42: covers ALL 351 endpoints in the registry (only NOT_YET_ROUTED skipped)", () => {
-    expect(Object.keys(endpoints).length).toBe(351)
+  it("T59: covers ALL 362 endpoints in the registry (only NOT_YET_ROUTED skipped)", () => {
+    expect(Object.keys(endpoints).length).toBe(362)
   })
 
   it("the discriminator is not vacuous: a bogus path IS detected as route-missing", async () => {

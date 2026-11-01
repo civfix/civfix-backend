@@ -117,6 +117,12 @@ export type AdminAuditAction =
   | "filing.manual_recorded"
   | "filing.settings_changed"
   | "filing.routes_saved"
+  | "dev.flag_set"
+  | "dev.job_run"
+  | "dev.force_update_set"
+  | "dev.test_push"
+  | "dev.test_email"
+  | "dev.reset_first_run"
 
 export const AUDIT_READ_ACTIONS: readonly AdminAuditAction[] = [
   "user.detail_viewed",

@@ -269,7 +269,7 @@ const HOST = "00000000-0000-0000-0000-0000000000aa"
 const PREVIEW_CAP = 3
 
 const PREVIEW_CONFIG: BroadcastConfig = {
-  killSwitch: false,
+  killSwitch: () => Promise.resolve(false),
   perEventPerDay: 2,
   recipientsPerDay: 10,
   cooldownSec: 900,

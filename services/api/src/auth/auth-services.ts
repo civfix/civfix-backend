@@ -9,6 +9,7 @@ import {
   type OtpAuditSink,
   type OtpLogger,
   type ReviewerOtpConfig,
+  type DevTestOtpConfig,
 } from "./otp.js"
 import { OAuthService, type OAuthConfig } from "./oauth.js"
 import type { JwksVerifier } from "./jwks.js"
@@ -51,6 +52,7 @@ export interface MakeAuthServicesOptions {
   now?: () => number
   logger?: OtpLogger & SessionLogger
   reviewer?: ReviewerOtpConfig
+  testAccounts?: DevTestOtpConfig
   supportEmail?: string
   audit?: OtpAuditSink
 }
@@ -73,6 +75,7 @@ export function makeAuthServices(opts: MakeAuthServicesOptions): AuthServices {
     ...(now ? { now } : {}),
     ...(opts.logger ? { logger: opts.logger } : {}),
     ...(opts.reviewer ? { reviewer: opts.reviewer } : {}),
+    ...(opts.testAccounts ? { testAccounts: opts.testAccounts } : {}),
     ...(opts.supportEmail !== undefined ? { supportEmail: opts.supportEmail } : {}),
     ...(opts.audit ? { audit: opts.audit } : {}),
   })
@@ -104,6 +107,7 @@ export function makeAuthServicesFromContainer(
   })
   const cache = new RedisCacheClient(container.getRedis())
   const reviewerConfig = reviewerOtpConfigFromEnv(container.env)
+  const testAccounts = devTestOtpConfigFromEnv(container.env)
   return makeAuthServices({
     stores,
     cache,
@@ -115,6 +119,7 @@ export function makeAuthServicesFromContainer(
     },
     ...(opts.logger ? { logger: opts.logger } : {}),
     ...(reviewerConfig !== null ? { reviewer: reviewerConfig } : {}),
+    ...(testAccounts !== null ? { testAccounts } : {}),
   })
 }
 
@@ -127,6 +132,14 @@ export function reviewerOtpConfigFromEnv(env: Container["env"]): ReviewerOtpConf
   const trimmed = code.trim()
   if (trimmed.length < REVIEWER_OTP_CODE_MIN_LENGTH) return null
   return { email: REVIEWER_OTP_EMAIL, code: trimmed }
+}
+
+// Independent of the reviewer bypass: the env loader already refused any overlap with the reviewer
+// address or ADMIN_EMAILS, and DEV_TEST_EMAILS is empty unless dev tools are on.
+export function devTestOtpConfigFromEnv(env: Container["env"]): DevTestOtpConfig | null {
+  const code = env.DEV_TEST_OTP_CODE
+  if (!env.devToolsEnabled || code === undefined || env.DEV_TEST_EMAILS.length === 0) return null
+  return { emails: env.DEV_TEST_EMAILS, code }
 }
 
 export function oauthConfigFromEnv(env: Container["env"]): OAuthConfig {
