@@ -6,7 +6,7 @@ import {
   type RoomKind,
 } from "@civfix/contract"
 import type { FastifyBaseLogger } from "fastify"
-import { assertNoSlur } from "../../abuse/slur-filter.js"
+import { containsSlur, SLUR_MESSAGE } from "../../abuse/slur-filter.js"
 import { neutralizeChatViewerFields } from "../chat-viewer-fields.js"
 import {
   chatHistoryPayload,
@@ -87,7 +87,7 @@ export function makeAdminReportChatService(
       const body = input.body.trim()
       if (body === "") throw AppError.validation({ body: "A message needs text." })
       await assertReportExists(reportId)
-      assertNoSlur(body, "body")
+      if (containsSlur(body)) throw AppError.validation({ body: SLUR_MESSAGE }, SLUR_MESSAGE)
       const message = await sendReportChatMessage(deps.send, {
         reportId,
         senderId: CIVFIX_OFFICIAL_USER_ID,
