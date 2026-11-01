@@ -248,9 +248,11 @@ describe("DM gateway routing (join/send/ack/block)", () => {
   it("T9: a slur in a REPORT room send is BLOCKED and never reaches the city forward", async () => {
     const REPORT = "55555555-5555-5555-5555-555555555555"
     const conn = new MockConnection("A")
-    const session = sessionFor(ALICE, conn)
     const onReportMessage = vi.fn(() => Promise.resolve())
-    session.deps = { ...session.deps, onReportMessage }
+    const session: GatewaySession = {
+      ...sessionFor(ALICE, conn),
+      deps: { ...depsFor(), onReportMessage },
+    }
     const persist = vi.spyOn(chat, "persist")
 
     await handleClientFrame(
