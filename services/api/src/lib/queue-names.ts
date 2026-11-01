@@ -36,8 +36,7 @@ export const MEDIA_STUCK_SWEEP_JOB = "media.stuck.sweep"
 export const MEDIA_UPLOAD_REAP_JOB = "media.upload.reap"
 
 /** Every queue above, API and worker, in the order they are declared. */
-export const ALL_QUEUE_NAMES: readonly string[  PUSH_CLEAR_JOB,
-] = [
+export const ALL_QUEUE_NAMES: readonly string[] = [
   MEDIA_CHECKS_JOB,
   ANON_HOLD_RELEASE_JOB,
   JURISDICTION_DISCOVERY_JOB,
@@ -66,4 +65,5 @@ export const ALL_QUEUE_NAMES: readonly string[  PUSH_CLEAR_JOB,
   RETENTION_SWEEP_JOB,
   MEDIA_STUCK_SWEEP_JOB,
   MEDIA_UPLOAD_REAP_JOB,
+  PUSH_CLEAR_JOB,
 ]
