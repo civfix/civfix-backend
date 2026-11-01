@@ -7,11 +7,11 @@ export function makeDrizzleSystemHealthRepository(sql: Sql): SystemHealthReposit
       return sql<CountRow[]>`SELECT COUNT(*)::text AS n FROM jurisdictions`
     },
 
-    countMailEventsLast7Days() {
+    countSentMailLast7Days() {
       return sql<CountRow[]>`
         SELECT COUNT(*)::text AS n
         FROM mail_events
-        WHERE created_at >= now() - make_interval(days => 7)
+        WHERE type = 'sent' AND created_at >= now() - make_interval(days => 7)
       `
     },
   }

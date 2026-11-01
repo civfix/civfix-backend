@@ -19,7 +19,7 @@ import { makeNotificationService } from "../../src/services/notification-service
 const pg = await withPg()
 
 const CONFIG: BroadcastConfig = {
-  killSwitch: false,
+  killSwitch: () => Promise.resolve(false),
   perEventPerDay: 3,
   recipientsPerDay: 2000,
   cooldownSec: 900,

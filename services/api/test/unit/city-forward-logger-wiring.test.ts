@@ -123,7 +123,6 @@ function containerWith(counters: InMemoryCounterStore): Container {
       WEB_ORIGINS: [],
       MAIL_FROM_OUTREACH: "a@b",
       MAIL_REPLY_DOMAIN: "b",
-      REPORT_AUTOFORWARD_ENABLED: false,
     },
     storage: { presignGet: () => Promise.resolve("") },
     mailer: {},

@@ -26,7 +26,7 @@ function u(n: number): string {
 }
 
 const CONFIG: BroadcastConfig = {
-  killSwitch: false,
+  killSwitch: () => Promise.resolve(false),
   perEventPerDay: 3,
   recipientsPerDay: 2000,
   cooldownSec: 900,
@@ -86,7 +86,7 @@ interface Harness {
   counters: InMemoryCounterStore
   notifications: NotificationService & { calls: unknown[] }
   chunks: Array<{ broadcastId: string; chunkNo: number; startAfterSec?: number }>
-  audits: Array<{ action: string; meta: Record<string, unknown> }>
+  audits: Array<{ action: string; target: string; meta: Record<string, unknown> }>
   service: ReturnType<typeof makeBroadcastService>
   pipeline: ReturnType<typeof makeBroadcastPipeline>
 }
@@ -118,7 +118,7 @@ function harness(
     overrides.notificationsFailedRecipients,
   )
   const chunks: Array<{ broadcastId: string; chunkNo: number; startAfterSec?: number }> = []
-  const audits: Array<{ action: string; meta: Record<string, unknown> }> = []
+  const audits: Array<{ action: string; target: string; meta: Record<string, unknown> }> = []
   const config = { ...CONFIG, ...overrides.config }
   const plans: string[] = []
   const service = makeBroadcastService({
@@ -148,8 +148,8 @@ function harness(
       })
       return Promise.resolve()
     },
-    audit: (action, _actorId, _target, meta) => {
-      audits.push({ action, meta })
+    audit: (action, _actorId, target, meta) => {
+      audits.push({ action, target, meta })
       return Promise.resolve()
     },
     ...(overrides.clock !== undefined ? { now: () => new Date(clock()) } : {}),
@@ -562,6 +562,60 @@ describe("broadcast chunk", () => {
  * the planner ever stopped filtering, a guest would get a delivery row on a channel that can never be
  * processed and the broadcast would sit unfinished.
  */
+describe("broadcast kill switch read at each check", () => {
+  it("T2: plan follows a kill switch flipped after the pipeline was built", async () => {
+    let on = true
+    const h = harness({ config: { killSwitch: () => Promise.resolve(on) } })
+    const a = await draftSending(h)
+    const b = await draftSending(h)
+
+    expect(await h.pipeline.plan(a)).toEqual({ kind: "killed" })
+    expect((await h.repo.findById(a))?.status).toBe("cancelled")
+    expect(h.audits).toContainEqual(
+      expect.objectContaining({
+        action: "event.broadcast_killed",
+        target: `broadcast:${a}`,
+        meta: expect.objectContaining({ reason: "kill_switch" }),
+      }),
+    )
+
+    on = false
+    expect(await h.pipeline.plan(b)).toMatchObject({ kind: "planned" })
+    expect((await h.repo.findById(b))?.status).toBe("sending")
+  })
+
+  it("T3: a kill switch flipped on between chunks stops the send at its next chunk", async () => {
+    let on = false
+    const h = harness({ members: 5, config: { killSwitch: () => Promise.resolve(on) } })
+    const a = await draftSending(h)
+    const planned = await h.pipeline.plan(a)
+    expect(planned.kind).toBe("planned")
+    expect(planned.chunks).toBeGreaterThanOrEqual(2)
+
+    await h.pipeline.runChunk(a, 0)
+    on = true
+    await h.pipeline.runChunk(a, 1)
+
+    const rows = h.repo.allDeliveries()
+    const chunk0 = rows.filter((d) => d.chunkNo === 0)
+    const rest = rows.filter((d) => d.chunkNo !== 0)
+    expect(chunk0.length).toBeGreaterThan(0)
+    expect(chunk0.every((d) => d.status === "sent")).toBe(true)
+    expect(rows.filter((d) => d.chunkNo === 1).some((d) => d.status === "sent")).toBe(false)
+    expect(h.mailer.sent).toHaveLength(chunk0.length)
+    expect((await h.repo.findById(a))?.status).toBe("cancelled")
+    expect(rest.length).toBeGreaterThan(0)
+    expect(rest.every((d) => d.suppressionReason === "kill_switch")).toBe(true)
+    expect(h.audits).toContainEqual(
+      expect.objectContaining({
+        action: "event.broadcast_killed",
+        target: `broadcast:${a}`,
+        meta: expect.objectContaining({ reason: "kill_switch_mid_send" }),
+      }),
+    )
+  })
+})
+
 describe("broadcast to guests", () => {
   const GUEST_A = u(101)
   const GUEST_B = u(102)
