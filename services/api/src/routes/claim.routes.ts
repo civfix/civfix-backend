@@ -96,7 +96,7 @@ export async function registerClaimRoutes(
       throw AppError.forbidden("Origin not allowed.")
     }
     const payload: ClaimNudgeResponse = await service().claimNudge(anonToken)
-    reply.status(200).send(payload)
+    return reply.status(200).send(payload)
   })
 
   route(
@@ -107,7 +107,7 @@ export async function registerClaimRoutes(
       const userId = requireAuth(request)
       const body = parse(ClaimReportRequestSchema, request.body)
       const payload: ClaimReportResponse = await service().claimReport(body.claimCode, userId)
-      reply.status(200).send(payload)
+      return reply.status(200).send(payload)
     },
   )
 }

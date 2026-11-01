@@ -102,7 +102,7 @@ export async function registerNotificationRoutes(
         userId,
         pagination,
       )
-      reply.status(200).send(payload)
+      return reply.status(200).send(payload)
     },
   )
 
@@ -110,20 +110,20 @@ export async function registerNotificationRoutes(
     const userId = requireAuth(request)
     const body = parse(MarkNotificationsReadBodySchema, request.body)
     const payload: MarkReadResponse = await service().markRead(userId, body.ids)
-    reply.status(200).send(payload)
+    return reply.status(200).send(payload)
   })
 
   route(app, "getNotificationPrefs", async (request, reply) => {
     const userId = requireAuth(request)
     const payload: GetNotificationPrefsResponse = await service().getPrefs(userId)
-    reply.status(200).send(payload)
+    return reply.status(200).send(payload)
   })
 
   route(app, "updateNotificationPrefs", { preHandler: csrfProtect }, async (request, reply) => {
     const userId = requireAuth(request)
     const body = parse(UpdateNotificationPrefsRequestSchema, request.body)
     const payload: NotificationPrefsDTO = await service().updatePrefs(userId, body)
-    reply.status(200).send(payload)
+    return reply.status(200).send(payload)
   })
 
   route(
@@ -145,7 +145,7 @@ export async function registerNotificationRoutes(
         ...rest,
         ...(deviceId !== undefined ? { deviceId } : {}),
       })
-      reply.status(200).send(payload)
+      return reply.status(200).send(payload)
     },
   )
 
@@ -157,7 +157,7 @@ export async function registerNotificationRoutes(
       const userId = requireAuth(request)
       const body = parse(UnregisterPushTokenRequestSchema, request.body)
       const payload: RegisterPushTokenResponse = await service().unregisterPushToken(userId, body)
-      reply.status(200).send(payload)
+      return reply.status(200).send(payload)
     },
   )
 }

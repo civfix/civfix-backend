@@ -102,7 +102,7 @@ export async function registerLocalStorageRoutes(
           throw AppError.mediaRejected(SIZE_MISMATCH)
         }
         await grant.storage.put(grant.key, body, { contentType: grant.contentType })
-        reply.status(200).send({ ok: true })
+        return reply.status(200).send({ ok: true })
       },
     )
 

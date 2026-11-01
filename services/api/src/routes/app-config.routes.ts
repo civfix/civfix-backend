@@ -29,16 +29,15 @@ export async function registerAppConfigRoutes(
       announcement: text === null ? null : { text, level },
     }
     if (!container.env.devToolsEnabled) {
-      reply
+      return reply
         .header("cache-control", `public, max-age=${APP_CONFIG_CACHE_SECONDS}`)
         .status(200)
         .send(payload)
-      return
     }
     const userId = request.auth?.userId ?? null
     if (userId !== null && (await container.getDevTestTools().hasForceUpdate(userId))) {
       payload.minAppVersion = { ios: FORCED_MIN_APP_VERSION, android: FORCED_MIN_APP_VERSION }
     }
-    reply.header("cache-control", "no-store").status(200).send(payload)
+    return reply.header("cache-control", "no-store").status(200).send(payload)
   })
 }

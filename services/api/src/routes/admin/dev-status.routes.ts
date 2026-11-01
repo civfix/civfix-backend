@@ -97,12 +97,12 @@ export async function registerDevStatusRoutes(
 
   route(app, "adminDevOverview", async (_request, reply) => {
     const payload: AdminDevOverviewResponse = await services().overview.overview()
-    reply.status(200).send(payload)
+    return reply.status(200).send(payload)
   })
 
   route(app, "adminDevJobs", async (_request, reply) => {
     const payload: AdminDevJobsResponse = await services().jobs.view()
-    reply.status(200).send(payload)
+    return reply.status(200).send(payload)
   })
 
   route(
@@ -113,7 +113,7 @@ export async function registerDevStatusRoutes(
       const actorId = requireOperator(request)
       const { name } = request.params as { name: string }
       const payload: AdminDevRunJobResponse = await services().jobs.runNow(name, actorId)
-      reply.status(200).send(payload)
+      return reply.status(200).send(payload)
     },
   )
 }
