@@ -2412,10 +2412,10 @@ SELECT g.id FROM cleanup_guests g WHERE g.cleanup_id = $1 AND g.id > $2 AND g.ca
 
 exports[`sql transcripts > makeDrizzleBroadcastRepository.applyDeliveryOutcomes 1`] = `
 "-- empty
-UPDATE broadcast_deliveries d SET status = t.status, suppression_reason = t.suppression_reason, failure_kind = t.failure_kind, provider_message_id = t.provider_message_id, sent_at = t.sent_at, updated_at = now() FROM unnest( $1::uuid[], $2::text[], $3::text[], $4::text[], $5::text[], $6::timestamptz[] ) AS t(id, status, suppression_reason, failure_kind, provider_message_id, sent_at) WHERE d.id = t.id -- [["id-1"],["sent"],["banned"],["unknown"],["providerMessageId-1"],["2026-03-04T05:06:07.000Z"]]
+UPDATE broadcast_deliveries d SET status = t.status, suppression_reason = t.suppression_reason, failure_kind = t.failure_kind, provider_message_id = t.provider_message_id, sent_at = t.sent_at, updated_at = now() FROM unnest( $1::uuid[], $2::text[], $3::text[], $4::text[], $5::text[], $6::timestamptz[] ) AS t(id, status, suppression_reason, failure_kind, provider_message_id, sent_at) WHERE d.id = t.id -- [["id-1"],["sent"],["banned"],["permanent"],["providerMessageId-1"],["2026-03-04T05:06:07.000Z"]]
 => undefined
 -- row
-UPDATE broadcast_deliveries d SET status = t.status, suppression_reason = t.suppression_reason, failure_kind = t.failure_kind, provider_message_id = t.provider_message_id, sent_at = t.sent_at, updated_at = now() FROM unnest( $1::uuid[], $2::text[], $3::text[], $4::text[], $5::text[], $6::timestamptz[] ) AS t(id, status, suppression_reason, failure_kind, provider_message_id, sent_at) WHERE d.id = t.id -- [["id-1"],["sent"],["banned"],["unknown"],["providerMessageId-1"],["2026-03-04T05:06:07.000Z"]]
+UPDATE broadcast_deliveries d SET status = t.status, suppression_reason = t.suppression_reason, failure_kind = t.failure_kind, provider_message_id = t.provider_message_id, sent_at = t.sent_at, updated_at = now() FROM unnest( $1::uuid[], $2::text[], $3::text[], $4::text[], $5::text[], $6::timestamptz[] ) AS t(id, status, suppression_reason, failure_kind, provider_message_id, sent_at) WHERE d.id = t.id -- [["id-1"],["sent"],["banned"],["permanent"],["providerMessageId-1"],["2026-03-04T05:06:07.000Z"]]
 => undefined"
 `;
 
@@ -3432,15 +3432,6 @@ SELECT s.cleanup_id, s.id, s.title, s.description, s.capacity, s.starts_at, s.en
 -- row
 SELECT s.cleanup_id, s.id, s.title, s.description, s.capacity, s.starts_at, s.ends_at, s.sort_order, COALESCE(c.n, 0)::int AS claimed, (mine.user_id IS NOT NULL) AS mine FROM cleanup_slots s LEFT JOIN ( SELECT cl.slot_id, count(*) AS n FROM cleanup_slot_claims cl WHERE cl.cleanup_id = ANY($1::uuid[]) GROUP BY cl.slot_id ) c ON c.slot_id = s.id LEFT JOIN cleanup_slot_claims mine ON mine.slot_id = s.id AND mine.user_id = $2 WHERE s.cleanup_id = ANY($3::uuid[]) ORDER BY s.cleanup_id, s.sort_order, s.id -- [["cleanupId-1"],"viewerId-1",["cleanupId-1"]]
 => []"
-`;
-
-exports[`sql transcripts > makeDrizzleCleanupRepository.listUnregisteredMemberIds 1`] = `
-"-- empty
-SELECT m.user_id FROM cleanup_members m WHERE m.cleanup_id = $1 AND NOT EXISTS ( SELECT 1 FROM cleanup_registrations r WHERE r.cleanup_id = m.cleanup_id AND r.user_id = m.user_id AND r.status = 'registered' ) ORDER BY m.joined_at ASC, m.user_id ASC LIMIT $2 -- ["cleanupId-1",3]
-=> []
--- row
-SELECT m.user_id FROM cleanup_members m WHERE m.cleanup_id = $1 AND NOT EXISTS ( SELECT 1 FROM cleanup_registrations r WHERE r.cleanup_id = m.cleanup_id AND r.user_id = m.user_id AND r.status = 'registered' ) ORDER BY m.joined_at ASC, m.user_id ASC LIMIT $2 -- ["cleanupId-1",3]
-=> ["user_id-row"]"
 `;
 
 exports[`sql transcripts > makeDrizzleCleanupRepository.loadLinkedEventsForReports 1`] = `

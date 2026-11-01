@@ -354,8 +354,6 @@ export interface CleanupRepository {
   isBanned(cleanupId: string, userId: string): Promise<boolean>
   unbanMember(cleanupId: string, userId: string): Promise<boolean>
   listMemberIds(cleanupId: string, limit: number): Promise<string[]>
-  /** Members with no live registration: team and waitlisted people a broadcast to registrants misses. */
-  listUnregisteredMemberIds(cleanupId: string, limit: number): Promise<string[]>
   goingCount(cleanupId: string): Promise<number>
   organizerOf(cleanupId: string): Promise<string | null>
   joinCleanupTx(cleanupId: string, userId: string, seat: SignupSeat): Promise<JoinCleanupOutcome>

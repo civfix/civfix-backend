@@ -2532,13 +2532,6 @@ export const cases: TranscriptCase[] = [
         .listSlots("cleanupId-1", "viewerId-1"),
   },
   {
-    key: "makeDrizzleCleanupRepository.listUnregisteredMemberIds",
-    run: async (sql: any) =>
-      (m43 as any)
-        .makeDrizzleCleanupRepository(sql, () => Promise.resolve("presignAvatarResult-1"))
-        .listUnregisteredMemberIds("cleanupId-1", 3),
-  },
-  {
     key: "makeDrizzleCleanupRepository.loadLinkedEventsForReports",
     run: async (sql: any) =>
       (m43 as any)
@@ -3975,7 +3968,7 @@ export const cases: TranscriptCase[] = [
           id: "id-1",
           status: "sent",
           suppressionReason: "banned",
-          failureKind: "unknown",
+          failureKind: "permanent",
           providerMessageId: "providerMessageId-1",
           sentAt: new Date("2026-03-04T05:06:07.000Z"),
         },

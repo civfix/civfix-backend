@@ -1979,39 +1979,6 @@ describe("F157: cancellation fan-out leaves the request path", () => {
     ).rejects.toThrow("guest roster read failed")
   })
 
-  it("rings only unregistered members when the attendee broadcast reaches the registered ones", async () => {
-    repo.seedUser({ id: ALICE, displayName: "Alice" })
-    repo.seedUser({ id: BOB, displayName: "Bob" })
-    const bells: string[] = []
-    const svc = makeCleanupService({
-      tickets: TEST_TICKET_SIGNER,
-      repo: Object.assign(Object.create(repo) as typeof repo, {
-        listUnregisteredMemberIds: () => Promise.resolve([BOB]),
-      }),
-      counters: new InMemoryCounterStore(),
-      attendeeNotifier: { eventCancelled: () => Promise.resolve(null) },
-      notifier: {
-        createNotification: (userId, input) => {
-          bells.push(userId)
-          return Promise.resolve({
-            id: "n1",
-            type: input.type,
-            title: "",
-            read: false,
-            createdAt: new Date().toISOString(),
-          })
-        },
-      },
-    })
-    const created = await svc.createCleanup(baseInput(), ORG)
-    await svc.joinCleanup(created.id, ALICE)
-    await svc.joinCleanup(created.id, BOB)
-
-    await svc.runCancelFanout({ cleanupId: created.id, reason: null, actorId: ORG })
-
-    expect(bells).toEqual([BOB])
-  })
-
   it("the enqueued job delivers exactly the bells the inline path used to", async () => {
     repo.seedUser({ id: ALICE, displayName: "Alice" })
     repo.seedUser({ id: BOB, displayName: "Bob" })

@@ -1218,20 +1218,6 @@ export function makeDrizzleCleanupRepository(
       return rows.map((r) => r.user_id)
     },
 
-    async listUnregisteredMemberIds(cleanupId: string, limit: number): Promise<string[]> {
-      const rows = await sql<{ user_id: string }[]>`
-        SELECT m.user_id FROM cleanup_members m
-        WHERE m.cleanup_id = ${cleanupId}
-          AND NOT EXISTS (
-            SELECT 1 FROM cleanup_registrations r
-            WHERE r.cleanup_id = m.cleanup_id AND r.user_id = m.user_id AND r.status = 'registered'
-          )
-        ORDER BY m.joined_at ASC, m.user_id ASC
-        LIMIT ${limit}
-      `
-      return rows.map((r) => r.user_id)
-    },
-
     async goingCount(cleanupId: string): Promise<number> {
       const rows = await sql<{ count: number }[]>`
         SELECT
