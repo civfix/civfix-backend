@@ -226,7 +226,7 @@ describe("createReport auto-forward enqueue gate (D9)", () => {
 
   function createHarness(
     verifiedUserIds: Set<string>,
-    opts: { autoForwardEnabled?: boolean } = {},
+    opts: { autoForwardEnabled?: () => Promise<boolean> } = {},
   ) {
     const repo = new InMemoryReportRepository()
     const jobs = new FakeJobs()
@@ -236,7 +236,7 @@ describe("createReport auto-forward enqueue gate (D9)", () => {
       presignMedia: (r2Key, thumbKey) =>
         Promise.resolve(thumbKey === null ? { url: r2Key } : { url: r2Key, thumbUrl: thumbKey }),
       jobs,
-      autoForwardEnabled: opts.autoForwardEnabled ?? true,
+      autoForwardEnabled: opts.autoForwardEnabled ?? (() => Promise.resolve(true)),
       isReportVerified: (userId: string) => Promise.resolve(verifiedUserIds.has(userId)),
     })
     return { jobs, service }
@@ -253,9 +253,32 @@ describe("createReport auto-forward enqueue gate (D9)", () => {
   })
 
   it("does NOT enqueue when REPORT_AUTOFORWARD_ENABLED is off (operators route by hand)", async () => {
-    const { jobs, service } = createHarness(new Set([VERIFIED_UID]), { autoForwardEnabled: false })
+    const { jobs, service } = createHarness(new Set([VERIFIED_UID]), {
+      autoForwardEnabled: () => Promise.resolve(false),
+    })
     await service.createReport(createReq(), { userId: VERIFIED_UID })
     expect(jobs.jobsFor(REPORT_AUTOFORWARD_JOB)).toHaveLength(0)
+  })
+
+  it("T13: follows autoForwardEnabled flipped after the service was built", async () => {
+    let on = false
+    const { jobs, service } = createHarness(new Set([VERIFIED_UID]), {
+      autoForwardEnabled: () => Promise.resolve(on),
+    })
+
+    await service.createReport(createReq(), { userId: VERIFIED_UID })
+    expect(jobs.jobsFor(REPORT_AUTOFORWARD_JOB)).toHaveLength(0)
+
+    on = true
+    const second = await service.createReport(createReq(), { userId: VERIFIED_UID })
+    const enqueued = jobs.jobsFor(REPORT_AUTOFORWARD_JOB)
+    expect(enqueued).toHaveLength(1)
+    expect(enqueued[0]?.data).toEqual({ reportId: second.id })
+    expect(enqueued[0]?.opts?.singletonKey).toBe(second.id)
+
+    on = false
+    await service.createReport(createReq(), { userId: VERIFIED_UID })
+    expect(jobs.jobsFor(REPORT_AUTOFORWARD_JOB)).toHaveLength(1)
   })
 
   it("does NOT enqueue for an unverified reporter", async () => {
@@ -284,7 +307,7 @@ describe("createReport auto-forward enqueue gate (D9)", () => {
       resolveJurisdictionGeoid: () => Promise.resolve("0644000"),
       presignMedia: (r2Key) => Promise.resolve({ url: r2Key }),
       jobs,
-      autoForwardEnabled: true,
+      autoForwardEnabled: () => Promise.resolve(true),
       isReportVerified: () => Promise.reject(new Error("gate read failed")),
       logger: { warn: () => {} },
     })

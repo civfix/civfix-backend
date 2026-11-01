@@ -22,7 +22,6 @@ export interface SystemHealthProbes {
 
 export interface SystemHealthEnv {
   glitchTipConfigured: boolean
-  tileCdnConfigured: boolean
   mailerIsFake: boolean
   jobsIsFake: boolean
 }
@@ -40,8 +39,6 @@ export interface SystemHealthService {
 export const MEDIA_WORKER_BACKLOG_WARN = 50
 
 const NO_PROBE: { status: HealthStatus; val: string } = { status: "down", val: "No probe" }
-
-const ROUTING_NOT_DEPLOYED_VAL = "Phase 3"
 
 async function probeRow(
   name: string,
@@ -97,19 +94,7 @@ export function makeSystemHealthService(deps: SystemHealthServiceDeps): SystemHe
         ? { name: "GlitchTip", status: "ok", val: "Tracking errors" }
         : { name: "GlitchTip", status: "warn", val: "Not configured" }
 
-      const tileCdn: SystemService = env.tileCdnConfigured
-        ? { name: "Basemap", status: "ok", val: "CARTO raster (client default)" }
-        : { name: "Basemap", status: "warn", val: "No basemap source" }
-
-      const routing: SystemService = {
-        name: "Routing (VRP)",
-        status: "not_deployed",
-        val: ROUTING_NOT_DEPLOYED_VAL,
-      }
-
-      return {
-        services: [api, postgres, redis, mediaWorker, ociEmailRow, glitchTip, tileCdn, routing],
-      }
+      return { services: [api, postgres, redis, mediaWorker, ociEmailRow, glitchTip] }
     },
   }
 }

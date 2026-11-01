@@ -94,6 +94,13 @@ import {
   notificationEmailConfigOf,
   type NotificationEmailDeps,
 } from "./services/notification-email.js"
+import { makeDrizzleRuntimeFlagRepository } from "./services/admin/runtime-flag-repository.drizzle.js"
+import {
+  makeRuntimeFlagService,
+  type RuntimeFlagService,
+} from "./services/admin/runtime-flag-service.js"
+import { makeDrizzleDevTestRepository } from "./services/admin/dev-test-repository.drizzle.js"
+import { makeDevTestTools, type DevTestTools } from "./services/admin/dev-test-tools.js"
 
 export interface Container {
   readonly env: Env
@@ -138,6 +145,9 @@ export interface Container {
   getCache(): CacheClient
   getByteMeter(): ByteMeter
   getTicketTokenSigner(): TicketTokenSigner
+  /** One per process, so a write through this process's API refreshes every reader at once. */
+  getRuntimeFlags(): RuntimeFlagService
+  getDevTestTools(): DevTestTools
 
   close(): Promise<void>
 }
@@ -432,6 +442,13 @@ export function makeContainer(env: Env): Container {
     add: (subject, bytes) => redisByteMeter.get().add(subject, bytes),
   }
   const ticketTokenSigner = lazy(() => makeTicketTokenSigner(env.TICKET_TOKEN_SECRET.trim()))
+  const runtimeFlags = lazy(() =>
+    makeRuntimeFlagService({
+      repo: makeDrizzleRuntimeFlagRepository(getDb().sql),
+      envFallbacks: env.runtimeFlagEnvFallbacks,
+      logger: adapterLogger,
+    }),
+  )
 
   const feedPresence = lazy(() =>
     makeFeedPresence({
@@ -473,6 +490,16 @@ export function makeContainer(env: Env): Container {
           logger: adapterLogger,
           clears: { jobs, pending: new RedisPendingClears(getRedis) },
         }),
+  )
+  const devTestTools = lazy(() =>
+    makeDevTestTools({
+      repo: makeDrizzleDevTestRepository(getDb().sql),
+      cache: cacheClient.get(),
+      pushSender: pushSender.get(),
+      mailer: seams.mailer,
+      mailFrom: env.MAIL_FROM_NOREPLY,
+      testEmails: env.DEV_TEST_EMAILS,
+    }),
   )
 
   // One per container: the in-memory throttle only limits anything if every service shares it.
@@ -538,6 +565,8 @@ export function makeContainer(env: Env): Container {
     postService,
     userChannel,
     pushSender,
+    runtimeFlags,
+    devTestTools,
   ]
 
   async function close(): Promise<void> {
@@ -604,6 +633,8 @@ export function makeContainer(env: Env): Container {
     getCache: cacheClient.get,
     getByteMeter: () => lazyByteMeter,
     getTicketTokenSigner: ticketTokenSigner.get,
+    getRuntimeFlags: runtimeFlags.get,
+    getDevTestTools: devTestTools.get,
     close,
   }
 }
