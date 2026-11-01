@@ -29,7 +29,7 @@ export interface NotifiedCleanup {
 }
 
 export interface CleanupNotificationsDeps {
-  repo: Pick<CleanupRepository, "listMemberIds">
+  repo: Pick<CleanupRepository, "listMemberIds" | "listUnregisteredMemberIds">
   notifier?: Pick<NotificationService, "createNotification">
   attendeeNotifier?: { eventCancelled(cleanupId: string, reason: string | null): Promise<unknown> }
   jobs?: Jobs
@@ -87,7 +87,13 @@ export function makeCleanupNotifications(deps: CleanupNotificationsDeps): Cleanu
     reason: string | null,
     actorId: string,
   ): Promise<void> {
-    await notifyMembersOfCancellation(cleanup, reason, actorId)
+    // The attendee broadcast already reaches registered members in-app, by push and by email, so the
+    // bell here covers only the members it misses; two would mean two pushes and two emails per person.
+    const roster =
+      deps.attendeeNotifier === undefined
+        ? deps.repo.listMemberIds.bind(deps.repo)
+        : deps.repo.listUnregisteredMemberIds.bind(deps.repo)
+    await notifyMembersOfCancellation(cleanup, reason, actorId, roster)
     await notifyAttendeesOfCancellation(cleanup.id, reason)
   }
 
@@ -125,12 +131,13 @@ export function makeCleanupNotifications(deps: CleanupNotificationsDeps): Cleanu
     cleanup: NotifiedCleanup,
     reason: string | null,
     actorId: string,
+    roster: (cleanupId: string, limit: number) => Promise<string[]>,
   ): Promise<void> {
     const notifier = deps.notifier
     if (notifier === undefined) return
     let memberIds: string[]
     try {
-      memberIds = await deps.repo.listMemberIds(cleanup.id, CANCEL_FANOUT_MEMBER_CAP)
+      memberIds = await roster(cleanup.id, CANCEL_FANOUT_MEMBER_CAP)
     } catch (err) {
       deps.logger?.warn(
         { err, cleanupId: cleanup.id },
@@ -182,7 +189,12 @@ export function makeCleanupNotifications(deps: CleanupNotificationsDeps): Cleanu
       }
     }
     try {
-      await notifyMembersOfCancellation(cleanup, reason, actorId)
+      await notifyMembersOfCancellation(
+        cleanup,
+        reason,
+        actorId,
+        deps.repo.listMemberIds.bind(deps.repo),
+      )
     } catch (err) {
       deps.logger?.warn(
         { err, cleanupId: cleanup.id },

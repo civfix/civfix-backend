@@ -1208,6 +1208,11 @@ export class InMemoryCleanupRepository implements CleanupRepository {
     return Promise.resolve(ids)
   }
 
+  // This fake models no registrations, so every member counts as unregistered.
+  listUnregisteredMemberIds(cleanupId: string, limit: number): Promise<string[]> {
+    return this.listMemberIds(cleanupId, limit)
+  }
+
   goingCount(cleanupId: string): Promise<number> {
     return Promise.resolve(this.goingOf(cleanupId))
   }
