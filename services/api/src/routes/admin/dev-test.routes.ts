@@ -35,13 +35,13 @@ export async function registerDevTestRoutes(
 
   route(app, "adminDevListForceUpdate", limited, async (request, reply) => {
     servedOperator(request)
-    reply.status(200).send(await container.getDevTestTools().listForceUpdate())
+    return reply.status(200).send(await container.getDevTestTools().listForceUpdate())
   })
 
   route(app, "adminDevSetForceUpdate", mutation, async (request, reply) => {
     const actorId = servedOperator(request)
     const body = parse(AdminDevSetForceUpdateRequestSchema, request.body)
-    reply
+    return reply
       .status(200)
       .send(await container.getDevTestTools().setForceUpdate(actorId, body.email, body.enabled))
   })
@@ -49,18 +49,18 @@ export async function registerDevTestRoutes(
   route(app, "adminDevTestPush", mutation, async (request, reply) => {
     const actorId = servedOperator(request)
     const body = parse(AdminDevTestPushRequestSchema, request.body)
-    reply.status(200).send(await container.getDevTestTools().sendTestPush(actorId, body))
+    return reply.status(200).send(await container.getDevTestTools().sendTestPush(actorId, body))
   })
 
   route(app, "adminDevTestEmail", mutation, async (request, reply) => {
     const actorId = servedOperator(request)
     parse(AdminDevTestEmailRequestSchema, request.body)
-    reply.status(200).send(await container.getDevTestTools().sendTestEmail(actorId))
+    return reply.status(200).send(await container.getDevTestTools().sendTestEmail(actorId))
   })
 
   route(app, "adminDevResetFirstRun", mutation, async (request, reply) => {
     const actorId = servedOperator(request)
     const body = parse(AdminDevResetFirstRunRequestSchema, request.body)
-    reply.status(200).send(await container.getDevTestTools().resetFirstRun(actorId, body.email))
+    return reply.status(200).send(await container.getDevTestTools().resetFirstRun(actorId, body.email))
   })
 }

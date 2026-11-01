@@ -28,7 +28,7 @@ export async function registerDevFlagRoutes(
     const payload: AdminListRuntimeFlagsResponse = {
       flags: await container.getRuntimeFlags().list(),
     }
-    reply.status(200).send(payload)
+    return reply.status(200).send(payload)
   })
 
   route(
@@ -43,7 +43,7 @@ export async function registerDevFlagRoutes(
       const payload: RuntimeFlagStateDTO = await container
         .getRuntimeFlags()
         .set(key, body.value, actorId)
-      reply.status(200).send(payload)
+      return reply.status(200).send(payload)
     },
   )
 }
