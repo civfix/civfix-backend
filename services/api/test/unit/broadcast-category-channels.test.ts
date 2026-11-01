@@ -36,7 +36,7 @@ const C = "cccccccc-0000-4000-8000-000000000003"
 const GUEST = "99999999-0000-4000-8000-000000000009"
 
 const CONFIG: BroadcastConfig = {
-  killSwitch: false,
+  killSwitch: () => Promise.resolve(false),
   perEventPerDay: 3,
   recipientsPerDay: 2000,
   cooldownSec: 900,

@@ -32,7 +32,7 @@ function harness(): {
     repo,
     jobs,
     throttleDays: THROTTLE_DAYS,
-    outreachDigestEnabled: true,
+    outreachDigestEnabled: () => Promise.resolve(true),
     now: () => NOW,
   })
   return { repo, jobs, svc }
@@ -158,7 +158,7 @@ describe("saveAndRoute", () => {
       repo,
       jobs,
       throttleDays: THROTTLE_DAYS,
-      outreachDigestEnabled: false,
+      outreachDigestEnabled: () => Promise.resolve(false),
       now: () => NOW,
     })
     repo.seedJurisdiction({ geoid: "0644000", name: "Los Angeles" })
@@ -174,6 +174,49 @@ describe("saveAndRoute", () => {
     expect(repo.jurisdictions.get("0644000")?.categoryContacts.get("trash")).toBe(
       "trash@lacity.gov",
     )
+  })
+
+  it("T9: follows outreachDigestEnabled flipped after the service was built", async () => {
+    const repo = new InMemoryJurisdictionContactsRepository()
+    repo.now = NOW
+    const jobs = new FakeJobs()
+    let on = false
+    const svc = makeJurisdictionContactsService({
+      repo,
+      jobs,
+      throttleDays: THROTTLE_DAYS,
+      outreachDigestEnabled: () => Promise.resolve(on),
+      now: () => NOW,
+    })
+    for (const geoid of ["0600001", "0600002", "0600003"]) {
+      repo.seedJurisdiction({ geoid, name: `City ${geoid}` })
+    }
+    const save = (geoid: string) =>
+      svc.saveAndRoute(
+        geoid,
+        { contacts: { trash: `trash@${geoid}.gov` }, defaultEmails: [], formUrl: null },
+        "op-1",
+      )
+
+    expect((await save("0600001")).outreachEnqueued).toBe(false)
+    expect(jobs.jobsFor(OUTREACH_DIGEST_JOB)).toHaveLength(0)
+
+    on = true
+    expect((await save("0600002")).outreachEnqueued).toBe(true)
+    const enqueued = jobs.jobsFor(OUTREACH_DIGEST_JOB)
+    expect(enqueued).toHaveLength(1)
+    expect(enqueued[0]?.data).toEqual({ geoid: "0600002" })
+    expect(enqueued[0]?.opts?.singletonKey).toBe("0600002")
+
+    on = false
+    expect((await save("0600003")).outreachEnqueued).toBe(false)
+    expect(jobs.jobsFor(OUTREACH_DIGEST_JOB)).toHaveLength(1)
+
+    for (const geoid of ["0600001", "0600002", "0600003"]) {
+      expect(repo.jurisdictions.get(geoid)?.categoryContacts.get("trash")).toBe(
+        `trash@${geoid}.gov`,
+      )
+    }
   })
 
   it("rejects when no contact is provided (nothing to route)", async () => {
@@ -274,7 +317,7 @@ describe("C1/C2: save -> enqueue -> worker send -> stamp -> second save throttle
       repo: contactsRepo,
       jobs,
       throttleDays: THROTTLE_DAYS,
-      outreachDigestEnabled: true,
+      outreachDigestEnabled: () => Promise.resolve(true),
       now: () => NOW,
     })
 

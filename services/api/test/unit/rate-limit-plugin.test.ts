@@ -131,6 +131,9 @@ import {
   ADMIN_OUTBOUND_MAIL_RATE_LIMIT,
 } from "../../src/routes/admin/mail.routes.js"
 import { ADMIN_USER_HOURS_WRITE_RATE_LIMIT } from "../../src/routes/admin/user-hours.routes.js"
+import { ADMIN_RUNTIME_FLAG_RATE_LIMIT } from "../../src/routes/admin/dev-flags.routes.js"
+import { ADMIN_DEV_TEST_RATE_LIMIT } from "../../src/routes/admin/dev-test.routes.js"
+import { ADMIN_DEV_RUN_JOB_RATE_LIMIT } from "../../src/routes/admin/dev-status.routes.js"
 import {
   DISMISS_NOTIFICATION_RATE_LIMIT,
   MARK_ALL_NOTIFICATIONS_READ_RATE_LIMIT,
@@ -496,6 +499,9 @@ const IDENTITY_SCOPED_LIMITS = {
   ADMIN_OUTBOUND_MAIL_RATE_LIMIT,
   ADMIN_MAIL_REPLY_PUBLISH_RATE_LIMIT,
   ADMIN_USER_HOURS_WRITE_RATE_LIMIT,
+  ADMIN_RUNTIME_FLAG_RATE_LIMIT,
+  ADMIN_DEV_TEST_RATE_LIMIT,
+  ADMIN_DEV_RUN_JOB_RATE_LIMIT,
   FOLLOW_RATE_LIMIT,
   FOLLOW_SUGGESTIONS_RATE_LIMIT,
   DATA_EXPORT_RATE_LIMIT,
