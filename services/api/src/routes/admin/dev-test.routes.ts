@@ -61,6 +61,8 @@ export async function registerDevTestRoutes(
   route(app, "adminDevResetFirstRun", mutation, async (request, reply) => {
     const actorId = servedOperator(request)
     const body = parse(AdminDevResetFirstRunRequestSchema, request.body)
-    return reply.status(200).send(await container.getDevTestTools().resetFirstRun(actorId, body.email))
+    return reply
+      .status(200)
+      .send(await container.getDevTestTools().resetFirstRun(actorId, body.email))
   })
 }
