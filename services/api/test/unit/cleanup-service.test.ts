@@ -1979,6 +1979,34 @@ describe("F157: cancellation fan-out leaves the request path", () => {
     ).rejects.toThrow("guest roster read failed")
   })
 
+  it("leaves the cancellation email to the attendee broadcast", async () => {
+    repo.seedUser({ id: ALICE, displayName: "Alice" })
+    const emails: unknown[] = []
+    const svc = makeCleanupService({
+      tickets: TEST_TICKET_SIGNER,
+      repo,
+      counters: new InMemoryCounterStore(),
+      notifier: {
+        createNotification: (_userId, input) => {
+          emails.push(input.email)
+          return Promise.resolve({
+            id: "n1",
+            type: input.type,
+            title: "",
+            read: false,
+            createdAt: new Date().toISOString(),
+          })
+        },
+      },
+    })
+    const created = await svc.createCleanup(baseInput(), ORG)
+    await svc.joinCleanup(created.id, ALICE)
+
+    await svc.runCancelFanout({ cleanupId: created.id, reason: null, actorId: ORG })
+
+    expect(emails).toEqual(["never"])
+  })
+
   it("the enqueued job delivers exactly the bells the inline path used to", async () => {
     repo.seedUser({ id: ALICE, displayName: "Alice" })
     repo.seedUser({ id: BOB, displayName: "Bob" })
