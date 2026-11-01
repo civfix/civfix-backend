@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach } from "vitest"
+import { describe, it, expect, beforeEach, vi } from "vitest"
 import {
   handleClientFrame,
   type GatewayDeps,
@@ -243,6 +243,39 @@ describe("DM gateway routing (join/send/ack/block)", () => {
     expect(aConn.framesOfType("ack")).toHaveLength(0)
     expect(aConn.framesOfType("message")).toHaveLength(0)
     for (const raw of aConn.sent) assertServerFrame(raw)
+  })
+
+  it("T9: a slur in a REPORT room send is BLOCKED and never reaches the city forward", async () => {
+    const REPORT = "55555555-5555-5555-5555-555555555555"
+    const conn = new MockConnection("A")
+    const session = sessionFor(ALICE, conn)
+    const onReportMessage = vi.fn(() => Promise.resolve())
+    session.deps = { ...session.deps, onReportMessage }
+    const persist = vi.spyOn(chat, "persist")
+
+    await handleClientFrame(
+      session,
+      JSON.stringify({
+        type: "send",
+        cleanupId: REPORT,
+        roomKind: "report",
+        clientId: "c1",
+        body: "you retard",
+      }),
+    )
+
+    const errs = conn.framesOfType("error")
+    expect(errs).toHaveLength(1)
+    expect(errs[0]).toMatchObject({
+      code: "BLOCKED",
+      message: "This contains language that isn't allowed.",
+      cleanupId: REPORT,
+    })
+    expect(conn.framesOfType("ack")).toHaveLength(0)
+    expect(conn.framesOfType("message")).toHaveLength(0)
+    expect(persist).not.toHaveBeenCalled()
+    expect(onReportMessage).not.toHaveBeenCalled()
+    for (const raw of conn.sent) assertServerFrame(raw)
   })
 
   it("a clean send is unaffected by the slur gate (general profanity passes)", async () => {
