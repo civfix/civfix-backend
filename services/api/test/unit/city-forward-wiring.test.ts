@@ -189,6 +189,21 @@ describe("chat-gateway-wiring: the LIVE @city forward gate is the durable thrott
     expect(sent[0]!.input.toAddr).toBe("fix@sf.gov")
   })
 
+  it("T8: the forwarded discussion email carries the resident-comment disclaimer in both parts (GH#286)", async () => {
+    const D = "This comment was written by a resident, not by civfix. civfix does not endorse it."
+    const onReportMessage = wire(new InMemoryCounterStore())
+
+    await onReportMessage(reportId(1), message(1), ACTOR)
+
+    expect(sent).toHaveLength(1)
+    expect(sent[0]!.threadId).toBe("thread-1")
+    expect(sent[0]!.input.subject).toBe("Re: [civfix] Tag - SF - ABC123")
+    expect(sent[0]!.input.kind).toBe("discussion")
+    expect(sent[0]!.input.toAddr).toBe("fix@sf.gov")
+    expect(sent[0]!.input.body).toContain(D)
+    expect(sent[0]!.input.html).toContain(D)
+  })
+
   it("caps one sender across DISTINCT reports: rotating report ids no longer buys a fresh email", async () => {
     const onReportMessage = wire(new InMemoryCounterStore())
 
