@@ -3,7 +3,7 @@
 # civfix city filer image (epic civfix/issue-tracker#164, D7). BUILD CONTEXT IS THE REPO ROOT:
 #     docker build -f services/city-filer/Dockerfile -t civfix/city-filer:latest .
 #
-# Built like the media worker's: tsup inlines @civfix/api, @civfix/seams and @civfix/contract, and
+# Built like the media worker's: tsdown inlines @civfix/api, @civfix/seams and @civfix/contract, and
 # `pnpm deploy --prod` carries the external dependencies (playwright-core among them) into /app.
 #
 # TWO USERS. `node` runs the wrapper and holds DATABASE_URL, the R2 keys and the queue. Every portal
@@ -32,7 +32,7 @@
 
 FROM ghcr.io/astral-sh/uv:0.13.5@sha256:32a7bb39b496babbd997b0a39a4d66c126bdaf5661b302bf6f06abda8deca6ff AS uv
 
-FROM node:22-bookworm-slim@sha256:de170b39439eb0e5a3444ad7d60b015614a381e10fecae2e30ec9e735122f38d AS base
+FROM node:24-trixie-slim@sha256:54f84b4cf8432b21aaffd5d3ce8d41e12cea0d10d33c09d2f3c9879d49d6b446 AS base
 ENV PNPM_HOME="/pnpm" \
     PATH="/pnpm:$PATH" \
     CI=true
@@ -51,7 +51,7 @@ RUN pnpm --filter @civfix/city-filer... build
 RUN --mount=type=cache,id=pnpm-store,target=/pnpm/store \
     pnpm --filter @civfix/city-filer --prod deploy /out
 
-FROM node:22-bookworm-slim@sha256:de170b39439eb0e5a3444ad7d60b015614a381e10fecae2e30ec9e735122f38d AS runtime
+FROM node:24-trixie-slim@sha256:54f84b4cf8432b21aaffd5d3ce8d41e12cea0d10d33c09d2f3c9879d49d6b446 AS runtime
 ARG SERVICE_VERSION=0.0.0
 ENV NODE_ENV=production \
     SERVICE_VERSION=${SERVICE_VERSION} \

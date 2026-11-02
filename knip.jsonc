@@ -1,5 +1,5 @@
 {
-  "$schema": "https://unpkg.com/knip@5/schema-jsonc.json",
+  "$schema": "https://unpkg.com/knip@6/schema-jsonc.json",
   // A type that appears in an exported signature stays exported so callers can name it.
   "ignoreExportsUsedInFile": { "interface": true, "type": true },
   "workspaces": {
@@ -7,8 +7,11 @@
       // check-dynamic-sql.d.mts types the .mjs guard for the api tests that import its matchers.
       "entry": ["scripts/*.mjs", "scripts/check-dynamic-sql.d.mts"],
       "project": ["scripts/**"],
+      // Declared in every package so `pnpm exec tsc` is TypeScript 7 everywhere (issue-tracker#288 D22),
+      // though nothing at the root runs it.
+      "ignoreDependencies": ["@typescript/native"],
     },
-    // The package.json scripts, the tsup entries, the vitest globalSetup and drizzle.config.ts are entries
+    // The package.json scripts, the tsdown entries, the vitest globalSetup and drizzle.config.ts are entries
     // through knip's plugins; listed here are only the hand-run CLIs nothing else names.
     "services/api": {
       "entry": [
@@ -29,22 +32,19 @@
       // Nothing imports ws directly: @fastify/websocket's typings do, and without these the socket
       // type it hands the /ws handler resolves to `any`.
       "ignoreDependencies": ["@types/ws"],
+      // GDAL's converter, which the hand-run boundary scripts require on the machine that runs them.
+      "ignoreBinaries": ["ogr2ogr"],
     },
     "services/media-worker": {
       "project": ["src/**/*.ts", "test/**/*.ts"],
-      // tsup inlines @civfix/api (noExternal) but keeps these external, so the bundled api code
-      // resolves them from the worker's own node_modules at runtime.
+      // tsdown inlines @civfix/api (alwaysBundle) but keeps these external, so the bundled api code
+      // resolves them from the worker's own node_modules at runtime. knip reads the named externals from
+      // tsdown.config.ts itself; these are the ones its /^@aws-sdk\// pattern covers.
       "ignoreDependencies": [
         // @civfix/api/adapters/storage (R2 client)
         "@aws-sdk/client-s3",
         // @civfix/api/adapters/storage (presigned URLs)
         "@aws-sdk/s3-request-presigner",
-        // @civfix/api/errors (GlitchTip reporting)
-        "@sentry/node",
-        // @civfix/api/adapters/storage (R2 request timeouts and egress proxy)
-        "@smithy/node-http-handler",
-        // @civfix/api/adapters/storage (egress proxy agent)
-        "https-proxy-agent",
       ],
     },
     "services/city-filer": {
@@ -52,28 +52,26 @@
       // script's import, never from src.
       "entry": ["kit/**/*.mjs", "test/fixtures/**/*.mjs"],
       "project": ["src/**/*.ts", "kit/**/*.mjs", "test/**/*.ts", "test/fixtures/**"],
+      // coreutils, which the tests use to put a FIFO where a file is expected.
+      "ignoreBinaries": ["mkfifo"],
       "ignoreDependencies": [
         // A workspace script's import, resolved through /workspace/node_modules (the image's link; the
         // test harness makes the same one).
         "@civfix/filer-kit",
-        // tsup inlines @civfix/api (noExternal) but keeps these external, so the bundled api code
-        // resolves them from the filer's own node_modules at runtime.
+        // tsdown inlines @civfix/api (alwaysBundle) but keeps these external, so the bundled api code
+        // resolves them from the filer's own node_modules at runtime. knip reads the named externals
+        // from tsdown.config.ts itself; these are the ones its /^@aws-sdk\// pattern covers.
         // @civfix/api/adapters/storage (R2 client)
         "@aws-sdk/client-s3",
         // @civfix/api/adapters/storage (presigned URLs)
         "@aws-sdk/s3-request-presigner",
-        // @civfix/api/errors (GlitchTip reporting)
-        "@sentry/node",
-        // @civfix/api/adapters/storage (R2 request timeouts and egress proxy)
-        "@smithy/node-http-handler",
-        // @civfix/api/adapters/storage (egress proxy agent)
-        "https-proxy-agent",
-        // @civfix/api/db (the Drizzle client over postgres-js)
-        "drizzle-orm",
-        "postgres",
       ],
     },
-    "packages/config": {},
+    "packages/config": {
+      // Declared so `pnpm exec tsc` is TypeScript 7 here too (issue-tracker#288 D22), though nothing here
+      // runs it.
+      "ignoreDependencies": ["@typescript/native"],
+    },
     // Outside pnpm-workspace.yaml (it deploys with wrangler from its own lockfile); CI installs it before
     // knip runs so its dependencies resolve.
     "infra/email-worker": {},

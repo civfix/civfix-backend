@@ -244,7 +244,7 @@ async function correlateThread(
   mail: ParsedMail,
   authVerdict: MailAuthVerdict,
 ): Promise<MailThreadRecord | null> {
-  let token: string | null = null
+  let token: string | null
   try {
     token = inboundMail.extractThreadToken(mail)
   } catch {

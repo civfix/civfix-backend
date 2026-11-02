@@ -5,9 +5,9 @@
   "description": "civfix backend monorepo: Fastify API + media worker (VPS infra lives in the civfix-infra repo). Depends on @civfix/contract and @civfix/tokens (from the private npm registry) as the single contract source.",
   "license": "AGPL-3.0-only",
   "type": "module",
-  "packageManager": "pnpm@10.34.9+sha512.f49b5a8ea0fdedb44bb3c0c1d6575092a53c2950d95b7ad15df11f17974877a2de3a01c07e934e9b28ce716e51c09a94962c7306d09be2e1e4b18a8c8762fd32",
+  "packageManager": "pnpm@12.17.0+sha512.b8d223ebec04b580a89ed206daa71d1bccb6a1ee1d52efa95cc3b0db75271561df8f0d8e2c43add39c5ec08018af7a8a95108e7090f95a29f88727b7a40fd53d",
   "engines": {
-    "node": ">=22"
+    "node": "^24.15"
   },
   "scripts": {
     "build": "turbo run build",
@@ -25,10 +25,11 @@
     "clean": "turbo run clean"
   },
   "devDependencies": {
+    "@typescript/native": "npm:typescript@^7.0.2",
     "jscpd": "^5.3.2",
-    "knip": "^5.88.1",
+    "knip": "^6.44.1",
     "prettier": "^3.9.9",
     "turbo": "^2.11.7",
-    "typescript": "^5.9.3"
+    "typescript": "npm:@typescript/typescript6@^6.0.2"
   }
 }

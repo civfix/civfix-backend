@@ -1,5 +1,5 @@
 /**
- * Guard-free (no runIfMain) because tsup (`splitting: false`) would inline the CLI's run-as-main guard
+ * Guard-free (no runIfMain) because tsdown (`codeSplitting: false`) would inline the CLI's run-as-main guard
  * into any bundled entry that imported it, firing it at boot; see ingest-jurisdictions-core.ts. The
  * refresh tool's prune lives here too so it can be tested without running that script's main().
  */

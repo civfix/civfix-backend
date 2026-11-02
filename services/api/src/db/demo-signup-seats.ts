@@ -1,5 +1,5 @@
 /**
- * Guard-free module (no runIfMain), shared by both demo CLIs: tsup (splitting: false) inlines imports
+ * Guard-free module (no runIfMain), shared by both demo CLIs: tsdown (codeSplitting: false) inlines imports
  * into each bundled entry, so a guard in an imported CLI would fire inside the importing bundle and run
  * the wrong main.
  */

@@ -48,15 +48,15 @@ civfix-backend/
 
 ## Requirements
 
-- Node >= 22 (see `.nvmrc`)
-- pnpm 10.34.9, pinned by `packageManager` (this repo is pnpm-only; `corepack enable` picks it up)
+- Node 24 (`^24.15`, see `.nvmrc`)
+- pnpm 12.17.0, pinned by `packageManager` (this repo is pnpm-only; `corepack enable` picks it up)
 - Docker is needed only for the integration suites; it is not required to build or test.
   The Docker-gated suites SKIP themselves on a machine with no Docker so `pnpm test` stays green, but
   only there: with `CI` (set by GitHub Actions) or `CIVFIX_REQUIRE_PG=1` in the environment, a failed
   container start FAILS the run instead of silently dropping every integration test from it. Set
   `CIVFIX_ALLOW_PG_SKIP=1` to opt a CI job back into skipping.
 - `CIVFIX_TEST_PG_IMAGE` overrides the integration suites' PostGIS image (default
-  `postgis/postgis:16-3.4`, which publishes no arm64 tag). On an arm64 host, build the infra image from
+  `postgis/postgis:18-3.6`, which publishes no arm64 tag). On an arm64 host, build the infra image from
   the umbrella root with `docker build -t civfix/postgis:16-local civfix-infra/postgres` and set
   `CIVFIX_TEST_PG_IMAGE=civfix/postgis:16-local`.
 
@@ -95,7 +95,7 @@ prebuilt `@civfix/contract` and `@civfix/tokens` from the registry; nothing in t
 ## Common tasks (run from the repo root; delegated to turbo)
 
 ```
-pnpm build        # tsup build of api + media-worker
+pnpm build        # tsdown build of api + media-worker
 pnpm typecheck    # tsc --noEmit in both services
 pnpm lint         # eslint in both services
 pnpm test         # vitest in both services: unit + the Docker-gated integration suites
@@ -192,7 +192,7 @@ postgres-js client, the R2 adapter, or the GlitchTip reporter. It depends on `@c
   `@civfix/api/migrate` - the R2 adapter, the real AbuseChecks adapter, the GlitchTip helper, and the
   migration runner (the last reused only by the Docker-gated worker integration harness).
 
-The worker's `tsup` build inlines `@civfix/api`, `@civfix/seams` and `@civfix/contract` source into a self-contained
+The worker's `tsdown` build inlines `@civfix/api`, `@civfix/seams` and `@civfix/contract` source into a self-contained
 `dist`, keeping only native/heavy deps external (`sharp`, `ffmpeg-static`, `ffprobe-static`, `execa`,
 `exifr`, `pg-boss`, `postgres`, `drizzle-orm`, `@sentry/node`, `undici`, `https-proxy-agent`,
 `@smithy/node-http-handler`, `@aws-sdk/*`).
@@ -411,7 +411,7 @@ docker build -f services/media-worker/Dockerfile -t civfix/media-worker:latest .
 
 ffmpeg/sharp in-container: the worker image compiles a minimal ffmpeg + ffprobe from the signed official
 FFmpeg source release (`ffmpeg-static` / `ffprobe-static` are dev-only and pruned from the image) and uses
-`sharp`'s prebuilt linux binaries (glibc, which the Debian bookworm base provides). Both are built or
+`sharp`'s prebuilt linux binaries (glibc, which the Debian trixie base provides). Both are built or
 installed INSIDE the linux image (never copied from the host) so the platform is correct. See the
 Dockerfile header and `docs/media-pipeline-hardening.md` §3.
 

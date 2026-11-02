@@ -14,7 +14,7 @@ import { PUSH_CLEAR_JOB } from "../lib/queue-names.js"
 import type { CounterStore } from "../abuse/counter-store.js"
 import { isExpoPushToken, type PushAddressResolver } from "../services/push-token-policy.js"
 
-export type { ClearMessage, NotificationMessage, PushMessage } from "./push-message.js"
+export type { NotificationMessage, PushMessage } from "./push-message.js"
 
 export interface PushSenderConfig {
   apns?: {

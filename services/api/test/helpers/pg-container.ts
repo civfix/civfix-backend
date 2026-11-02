@@ -24,7 +24,7 @@ import { applyMigrations } from "../../src/db/migrate.js"
 import { seedJurisdictions } from "../../src/db/seed.js"
 
 /** The PostGIS image CI runs. Pinned so spatial behavior is reproducible. */
-export const DEFAULT_POSTGIS_IMAGE = "postgis/postgis:16-3.4"
+export const DEFAULT_POSTGIS_IMAGE = "postgis/postgis:18-3.6"
 
 /**
  * postgis/postgis publishes no arm64 tag, so an arm64 host points CIVFIX_TEST_PG_IMAGE at a local build

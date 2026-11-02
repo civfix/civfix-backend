@@ -648,6 +648,7 @@ export async function assertRedisReachable(container: Container): Promise<void> 
     throw new Error(
       `Redis is unreachable at boot (REDIS_URL): rate limiting, OTP throttles and sessions all depend on ` +
         `it, so refusing to serve. Cause: ${err instanceof Error ? err.message : String(err)}`,
+      { cause: err },
     )
   }
   if (pong !== "PONG") {

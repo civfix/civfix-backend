@@ -946,10 +946,9 @@ function addThreadReplies(
   )
   const threadRepliers = new Set<string>()
   const threadBodies = new Set<string>()
-  let parent: SeedPost = root
   for (let i = 0; i < n; i++) {
     const latest = posts.at(-1)
-    parent = chance(0.75)
+    let parent: SeedPost = chance(0.75)
       ? root
       : latest !== undefined && latest.depth > 0 && chance(0.5)
         ? latest

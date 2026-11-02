@@ -385,8 +385,8 @@ pnpm --filter @civfix/media-worker exec vitest run test/integration
 Notes that cost time to rediscover:
 
 - `--no-file-parallelism` is not optional on a 4-CPU VM: with vitest `isolate:true` every file boots its own postgis container, and running them in parallel starves the VM into health-check timeouts.
-- Ryuk disabled means containers **leak between runs**. Reap them: `docker rm -f $(docker ps -aq --filter ancestor=postgis/postgis:16-3.4)`.
-- `postgis/postgis:16-3.4` has a native arm64 image, so **Rosetta is not needed** for it. Only reach for `colima start --vm-type=vz --vz-rosetta` if some other image is amd64-only; emulated Postgres is slow enough to cause spurious timeouts.
+- Ryuk disabled means containers **leak between runs**. Reap them: `docker rm -f $(docker ps -aq --filter ancestor="${CIVFIX_TEST_PG_IMAGE:-postgis/postgis:18-3.6}")`.
+- `postgis/postgis:18-3.6` publishes no arm64 image: set `CIVFIX_TEST_PG_IMAGE` to an arm64 build (see the README) rather than reaching for `colima start --vm-type=vz --vz-rosetta`; emulated Postgres is slow enough to cause spurious timeouts.
 - `colima stop` when done: the VM holds 6 GiB.
 
 ## 6. Denormalized follow counters (`0059`): apply BEFORE the API image
