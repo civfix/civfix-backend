@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it } from "vitest"
 import { randomUUID } from "node:crypto"
-import { AppError, currentVersion } from "@civfix/contract"
+import { AppError } from "@civfix/contract"
 import type { RegisterForEventRequest } from "@civfix/contract"
 import { InMemoryCounterStore } from "../../../src/abuse/counter-store.js"
 import { sha256Hex } from "../../../src/auth/crypto.js"
@@ -305,22 +305,6 @@ describe("registration service", () => {
     expect(h.repo.registrations.size).toBe(0)
   })
 
-  it("rejects a stale consent version rather than storing it", async () => {
-    h.repo.seedTicketType({ cleanupId: EVENT })
-    await expect(
-      h.service.register(
-        request({
-          consent: {
-            termsVersion: "1900-01-01",
-            disclosureVersion: currentVersion("privacy"),
-            hostContactOptIn: true,
-          },
-        }),
-        { kind: "user", userId: USER },
-      ),
-    ).rejects.toBeInstanceOf(AppError)
-  })
-
   it("cancels, releases the seats and audits a host-driven removal", async () => {
     const type = h.repo.seedTicketType({ cleanupId: EVENT, capacity: 5 })
     const registered = await h.service.register(request({ partySize: 2 }), {
@@ -476,16 +460,6 @@ describe("registration service", () => {
 
     const second = await h.service.register(request(), { kind: "user", userId: OTHER })
     expect(second.outcome).toBe("full")
-  })
-
-  it("persists the consent surface alongside the versions", () => {
-    const write = h.service.consentWriteOf({
-      termsVersion: currentVersion("terms"),
-      disclosureVersion: currentVersion("privacy"),
-      hostContactOptIn: true,
-      surface: "web_register",
-    })
-    expect(write?.surface).toBe("web_register")
   })
 
   it("caps registration flips per identity and fails closed on a broken counter", async () => {

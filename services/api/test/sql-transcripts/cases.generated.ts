@@ -96,36 +96,38 @@ import * as m92 from "../../src/services/host/registration-sql.js"
 import * as m93 from "../../src/services/host/retention-lanes.js"
 import * as m94 from "../../src/services/jurisdiction-repository.drizzle.js"
 import * as m95 from "../../src/services/jurisdiction-service.js"
-import * as m96 from "../../src/services/media-authorization-repository.drizzle.js"
-import * as m97 from "../../src/services/media-authorization.js"
-import * as m98 from "../../src/services/media-bindings.js"
-import * as m99 from "../../src/services/media-claim-repository.drizzle.js"
-import * as m100 from "../../src/services/media-served-key.js"
-import * as m101 from "../../src/services/media-worker-repository.drizzle.js"
-import * as m102 from "../../src/services/mention-targets-repository.drizzle.js"
-import * as m103 from "../../src/services/message-attachments-repository.drizzle.js"
-import * as m104 from "../../src/services/message-mentions-repository.drizzle.js"
-import * as m105 from "../../src/services/message-reactions-repository.drizzle.js"
-import * as m106 from "../../src/services/notification-repository.drizzle.js"
-import * as m107 from "../../src/services/notification-settings-repository.drizzle.js"
-import * as m108 from "../../src/services/post-repository.drizzle.js"
-import * as m109 from "../../src/services/post-service.js"
-import * as m110 from "../../src/services/read-watermark-repository.drizzle.js"
-import * as m111 from "../../src/services/reference-code-repository.drizzle.js"
-import * as m112 from "../../src/services/reply-targets-repository.drizzle.js"
-import * as m113 from "../../src/services/report-chat-repository.drizzle.js"
-import * as m114 from "../../src/services/report-forward-audit-repository.drizzle.js"
-import * as m115 from "../../src/services/report-repository.drizzle.js"
-import * as m116 from "../../src/services/report-sql.js"
-import * as m117 from "../../src/services/retention-repository.drizzle.js"
-import * as m118 from "../../src/services/room-messages-repository.drizzle.js"
-import * as m119 from "../../src/services/social-repository.drizzle.js"
-import * as m120 from "../../src/services/threads-repository.drizzle.js"
-import * as m121 from "../../src/services/user-avatar.js"
-import * as m122 from "../../src/services/user-search-repository.drizzle.js"
-import * as m123 from "../../src/services/users-repository.drizzle.js"
-import * as m124 from "../../src/services/volunteer-hours-credit.drizzle.js"
-import * as m125 from "../../src/services/volunteer-hours-repository.drizzle.js"
+import * as m96 from "../../src/services/legal-acceptance-repository.drizzle.js"
+import * as m97 from "../../src/services/legal-documents-repository.drizzle.js"
+import * as m98 from "../../src/services/media-authorization-repository.drizzle.js"
+import * as m99 from "../../src/services/media-authorization.js"
+import * as m100 from "../../src/services/media-bindings.js"
+import * as m101 from "../../src/services/media-claim-repository.drizzle.js"
+import * as m102 from "../../src/services/media-served-key.js"
+import * as m103 from "../../src/services/media-worker-repository.drizzle.js"
+import * as m104 from "../../src/services/mention-targets-repository.drizzle.js"
+import * as m105 from "../../src/services/message-attachments-repository.drizzle.js"
+import * as m106 from "../../src/services/message-mentions-repository.drizzle.js"
+import * as m107 from "../../src/services/message-reactions-repository.drizzle.js"
+import * as m108 from "../../src/services/notification-repository.drizzle.js"
+import * as m109 from "../../src/services/notification-settings-repository.drizzle.js"
+import * as m110 from "../../src/services/post-repository.drizzle.js"
+import * as m111 from "../../src/services/post-service.js"
+import * as m112 from "../../src/services/read-watermark-repository.drizzle.js"
+import * as m113 from "../../src/services/reference-code-repository.drizzle.js"
+import * as m114 from "../../src/services/reply-targets-repository.drizzle.js"
+import * as m115 from "../../src/services/report-chat-repository.drizzle.js"
+import * as m116 from "../../src/services/report-forward-audit-repository.drizzle.js"
+import * as m117 from "../../src/services/report-repository.drizzle.js"
+import * as m118 from "../../src/services/report-sql.js"
+import * as m119 from "../../src/services/retention-repository.drizzle.js"
+import * as m120 from "../../src/services/room-messages-repository.drizzle.js"
+import * as m121 from "../../src/services/social-repository.drizzle.js"
+import * as m122 from "../../src/services/threads-repository.drizzle.js"
+import * as m123 from "../../src/services/user-avatar.js"
+import * as m124 from "../../src/services/user-search-repository.drizzle.js"
+import * as m125 from "../../src/services/users-repository.drizzle.js"
+import * as m126 from "../../src/services/volunteer-hours-credit.drizzle.js"
+import * as m127 from "../../src/services/volunteer-hours-repository.drizzle.js"
 
 export interface TranscriptCase {
   key: string
@@ -2770,12 +2772,14 @@ export const cases: TranscriptCase[] = [
               code: "UNAUTHORIZED",
               httpStatus: 3,
               fields: { fieldsKey: "fields-1" },
+              details: { detailsKey: "details-any" },
               requestId: "requestId-1",
               toJSON: () => ({
                 code: "UNAUTHORIZED",
                 message: "message-1",
                 requestId: "requestId-1",
                 fields: { fieldsKey: undefined },
+                details: { detailsKey: undefined },
               }),
               name: "name-1",
               message: "message-1",
@@ -2908,6 +2912,11 @@ export const cases: TranscriptCase[] = [
     key: "makeDrizzleDataExportRepository.cleanupsOrganized",
     run: async (sql: any) =>
       (m49 as any).makeDrizzleDataExportRepository(sql).cleanupsOrganized("userId-1", 3),
+  },
+  {
+    key: "makeDrizzleDataExportRepository.consentRecords",
+    run: async (sql: any) =>
+      (m49 as any).makeDrizzleDataExportRepository(sql).consentRecords("userId-1", 3),
   },
   {
     key: "makeDrizzleDataExportRepository.dmMessages",
@@ -4406,25 +4415,6 @@ export const cases: TranscriptCase[] = [
     key: "makeDrizzleEventAnalyticsRepository.reportStatuses",
     run: async (sql: any) =>
       (m62 as any).makeDrizzleEventAnalyticsRepository(sql).reportStatuses("cleanupId-1"),
-  },
-  {
-    key: "insertConsent",
-    run: async (sql: any) =>
-      (m63 as any).insertConsent(sql, {
-        cleanupId: "cleanupId-1",
-        subjectType: "user",
-        userId: "userId-1",
-        guestId: "guestId-1",
-        registrationId: "registrationId-1",
-        consent: {
-          termsVersion: "termsVersion-1",
-          disclosureVersion: "disclosureVersion-1",
-          hostContactOptIn: true,
-          smsOptIn: true,
-          surface: "web_register",
-        },
-        now: new Date("2026-03-04T05:06:07.000Z"),
-      }),
   },
   {
     key: "listConsentsForUser",
@@ -5974,6 +5964,7 @@ export const cases: TranscriptCase[] = [
             hostContactOptIn: true,
             smsOptIn: true,
             surface: "web_register",
+            documents: [{ type: "terms", version: "version-1", sha256: "sha256-1" }],
           },
           slotId: "slotId-1",
           source: "waitlist",
@@ -6005,6 +5996,7 @@ export const cases: TranscriptCase[] = [
             hostContactOptIn: true,
             smsOptIn: true,
             surface: "web_register",
+            documents: [{ type: "terms", version: "version-1", sha256: "sha256-1" }],
           },
           slotId: "slotId-1",
           source: "waitlist",
@@ -6036,6 +6028,7 @@ export const cases: TranscriptCase[] = [
             hostContactOptIn: true,
             smsOptIn: true,
             surface: "web_register",
+            documents: [{ type: "terms", version: "version-1", sha256: "sha256-1" }],
           },
           slotId: "slotId-1",
           source: "waitlist",
@@ -6676,6 +6669,7 @@ export const cases: TranscriptCase[] = [
             hostContactOptIn: true,
             smsOptIn: true,
             surface: "web_register",
+            documents: [{ type: "terms", version: "version-1", sha256: "sha256-1" }],
           },
           slotId: "slotId-1",
           source: "waitlist",
@@ -6953,82 +6947,156 @@ export const cases: TranscriptCase[] = [
         .resolveForPoint(3, 3),
   },
   {
+    key: "insertConsentRecords",
+    run: async (sql: any) =>
+      (m96 as any).insertConsentRecords(
+        sql,
+        "userId-1",
+        [
+          {
+            action: "acknowledged",
+            surface: "signup",
+            type: "terms",
+            version: "version-1",
+            sha256: "sha256-1",
+          },
+        ],
+        new Date("2026-03-04T05:06:07.000Z"),
+      ),
+  },
+  {
+    key: "makeLegalAcceptanceRepository.acceptanceCounts",
+    run: async (sql: any) =>
+      (m96 as any)
+        .makeLegalAcceptanceRepository(sql)
+        .acceptanceCounts([{ type: "terms", version: "version-1" }]),
+  },
+  {
+    key: "makeLegalAcceptanceRepository.versionsFor",
+    run: async (sql: any) =>
+      (m96 as any)
+        .makeLegalAcceptanceRepository(sql)
+        .versionsFor("userId-1", new Date("2026-03-04T05:06:07.000Z")),
+  },
+  {
+    key: "makeLegalAcceptanceRepository.withUserLock",
+    run: async (sql: any) =>
+      (m96 as any)
+        .makeLegalAcceptanceRepository(sql)
+        .withUserLock("userId-1", () => Promise.resolve("fnResult-unsupported")),
+  },
+  {
+    key: "makeLegalDocumentsRepository.current",
+    run: async (sql: any) =>
+      (m97 as any).makeLegalDocumentsRepository(sql).current(new Date("2026-03-04T05:06:07.000Z")),
+  },
+  {
+    key: "makeLegalDocumentsRepository.find",
+    run: async (sql: any) =>
+      (m97 as any).makeLegalDocumentsRepository(sql).find("terms", "version-1"),
+  },
+  {
+    key: "makeLegalDocumentsRepository.insert",
+    run: async (sql: any) =>
+      (m97 as any).makeLegalDocumentsRepository(sql).insert([
+        {
+          type: "terms",
+          version: "version-1",
+          sha256: "sha256-1",
+          effectiveAt: new Date("2026-03-04T05:06:07.000Z"),
+          url: "url-1",
+          title: "title-1",
+          summary: "summary-1",
+          material: true,
+          blocks: [{ kind: "heading", level: 2, text: "text-1" }],
+        },
+      ]),
+  },
+  {
+    key: "makeLegalDocumentsRepository.listAll",
+    run: async (sql: any) => (m97 as any).makeLegalDocumentsRepository(sql).listAll(),
+  },
+  {
+    key: "makeLegalDocumentsRepository.listVersions",
+    run: async (sql: any) => (m97 as any).makeLegalDocumentsRepository(sql).listVersions(),
+  },
+  {
     key: "makeDrizzleMediaAuthorizationRepository.activeUserExists",
     run: async (sql: any) =>
-      (m96 as any).makeDrizzleMediaAuthorizationRepository(sql).activeUserExists("userId-1"),
+      (m98 as any).makeDrizzleMediaAuthorizationRepository(sql).activeUserExists("userId-1"),
   },
   {
     key: "makeDrizzleMediaAuthorizationRepository.findChatMessageRoom",
     run: async (sql: any) =>
-      (m96 as any).makeDrizzleMediaAuthorizationRepository(sql).findChatMessageRoom("messageId-1"),
+      (m98 as any).makeDrizzleMediaAuthorizationRepository(sql).findChatMessageRoom("messageId-1"),
   },
   {
     key: "makeDrizzleMediaAuthorizationRepository.findChatMessageScope",
     run: async (sql: any) =>
-      (m96 as any).makeDrizzleMediaAuthorizationRepository(sql).findChatMessageScope("messageId-1"),
+      (m98 as any).makeDrizzleMediaAuthorizationRepository(sql).findChatMessageScope("messageId-1"),
   },
   {
     key: "makeDrizzleMediaAuthorizationRepository.findDmMessage",
     run: async (sql: any) =>
-      (m96 as any).makeDrizzleMediaAuthorizationRepository(sql).findDmMessage("messageId-1"),
+      (m98 as any).makeDrizzleMediaAuthorizationRepository(sql).findDmMessage("messageId-1"),
   },
   {
     key: "makeDrizzleMediaAuthorizationRepository.findDmMessageThread",
     run: async (sql: any) =>
-      (m96 as any).makeDrizzleMediaAuthorizationRepository(sql).findDmMessageThread("messageId-1"),
+      (m98 as any).makeDrizzleMediaAuthorizationRepository(sql).findDmMessageThread("messageId-1"),
   },
   {
     key: "makeDrizzleMediaAuthorizationRepository.findEventAccess",
     run: async (sql: any) =>
-      (m96 as any)
+      (m98 as any)
         .makeDrizzleMediaAuthorizationRepository(sql)
         .findEventAccess("mediaId-1", "viewerId-1"),
   },
   {
     key: "makeDrizzleMediaAuthorizationRepository.findGroupAccess",
     run: async (sql: any) =>
-      (m96 as any)
+      (m98 as any)
         .makeDrizzleMediaAuthorizationRepository(sql)
         .findGroupAccess("groupId-1", "userId-1"),
   },
   {
     key: "makeDrizzleMediaAuthorizationRepository.findPostAccess",
     run: async (sql: any) =>
-      (m96 as any).makeDrizzleMediaAuthorizationRepository(sql).findPostAccess("postId-1"),
+      (m98 as any).makeDrizzleMediaAuthorizationRepository(sql).findPostAccess("postId-1"),
   },
   {
     key: "makeDrizzleMediaAuthorizationRepository.findReportAccess",
     run: async (sql: any) =>
-      (m96 as any).makeDrizzleMediaAuthorizationRepository(sql).findReportAccess("reportId-1"),
+      (m98 as any).makeDrizzleMediaAuthorizationRepository(sql).findReportAccess("reportId-1"),
   },
   {
     key: "makeDrizzleMediaAuthorizationRepository.isAvatarMedia",
     run: async (sql: any) =>
-      (m96 as any).makeDrizzleMediaAuthorizationRepository(sql).isAvatarMedia("mediaId-1"),
+      (m98 as any).makeDrizzleMediaAuthorizationRepository(sql).isAvatarMedia("mediaId-1"),
   },
   {
     key: "makeDrizzleMediaAuthorizationRepository.isCleanupMember",
     run: async (sql: any) =>
-      (m96 as any)
+      (m98 as any)
         .makeDrizzleMediaAuthorizationRepository(sql)
         .isCleanupMember("cleanupId-1", "userId-1"),
   },
   {
     key: "makeDrizzleMediaAuthorizationRepository.isDmParticipant",
     run: async (sql: any) =>
-      (m96 as any)
+      (m98 as any)
         .makeDrizzleMediaAuthorizationRepository(sql)
         .isDmParticipant("threadId-1", "userId-1"),
   },
   {
     key: "makeDrizzleMediaAuthorizationRepository.isLiveOrgLogo",
     run: async (sql: any) =>
-      (m96 as any).makeDrizzleMediaAuthorizationRepository(sql).isLiveOrgLogo("mediaId-1"),
+      (m98 as any).makeDrizzleMediaAuthorizationRepository(sql).isLiveOrgLogo("mediaId-1"),
   },
   {
     key: "makeDrizzleMediaViewAuthorizer.authorize",
     run: async (sql: any) =>
-      (m97 as any)
+      (m99 as any)
         .makeDrizzleMediaViewAuthorizer(sql, () => new Date("2026-03-04T05:06:07.000Z"))
         .authorize(
           {
@@ -7061,32 +7129,32 @@ export const cases: TranscriptCase[] = [
   },
   {
     key: "mediaBoundElsewhere",
-    run: async (sql: any) => (m98 as any).mediaBoundElsewhere(sql, "exceptCleanupId-1"),
+    run: async (sql: any) => (m100 as any).mediaBoundElsewhere(sql, "exceptCleanupId-1"),
   },
   {
     key: "claimableAsReportMedia",
-    run: async (sql: any) => (m98 as any).claimableAsReportMedia(sql, ["uploader-1"]),
+    run: async (sql: any) => (m100 as any).claimableAsReportMedia(sql, ["uploader-1"]),
   },
   {
     key: "claimableAsAttachment",
-    run: async (sql: any) => (m98 as any).claimableAsAttachment(sql, ["uploader-1"]),
+    run: async (sql: any) => (m100 as any).claimableAsAttachment(sql, ["uploader-1"]),
   },
   {
     key: "uploadedByClaimant",
-    run: async (sql: any) => (m98 as any).uploadedByClaimant(sql, ["uploader-1"]),
+    run: async (sql: any) => (m100 as any).uploadedByClaimant(sql, ["uploader-1"]),
   },
   {
     key: "eventsBindingMedia",
-    run: async (sql: any) => (m98 as any).eventsBindingMedia(sql, "mediaId-1"),
+    run: async (sql: any) => (m100 as any).eventsBindingMedia(sql, "mediaId-1"),
   },
   {
     key: "mediaBoundToCleanup",
-    run: async (sql: any) => (m98 as any).mediaBoundToCleanup(sql, "cleanupId-1"),
+    run: async (sql: any) => (m100 as any).mediaBoundToCleanup(sql, "cleanupId-1"),
   },
   {
     key: "findClaimableAvatarIn",
     run: async (sql: any) =>
-      (m99 as any).findClaimableAvatarIn(sql, "uploadId-1", {
+      (m101 as any).findClaimableAvatarIn(sql, "uploadId-1", {
         uploader: "uploader-1",
         userId: "userId-1",
         groupId: "groupId-1",
@@ -7094,44 +7162,44 @@ export const cases: TranscriptCase[] = [
   },
   {
     key: "lockUploadsForClaimIn",
-    run: async (sql: any) => (m99 as any).lockUploadsForClaimIn(sql, ["uploadId-1"]),
+    run: async (sql: any) => (m101 as any).lockUploadsForClaimIn(sql, ["uploadId-1"]),
   },
-  { key: "servedKeyExpr", run: async (sql: any) => (m100 as any).servedKeyExpr(sql, "m") },
+  { key: "servedKeyExpr", run: async (sql: any) => (m102 as any).servedKeyExpr(sql, "m") },
   {
     key: "publicServedKeyExpr",
-    run: async (sql: any) => (m100 as any).publicServedKeyExpr(sql, "m"),
+    run: async (sql: any) => (m102 as any).publicServedKeyExpr(sql, "m"),
   },
   {
     key: "servableMediaFilter",
-    run: async (sql: any) => (m100 as any).servableMediaFilter(sql, "m"),
+    run: async (sql: any) => (m102 as any).servableMediaFilter(sql, "m"),
   },
   {
     key: "moderationMediaKeyExpr",
-    run: async (sql: any) => (m100 as any).moderationMediaKeyExpr(sql, "m"),
+    run: async (sql: any) => (m102 as any).moderationMediaKeyExpr(sql, "m"),
   },
   {
     key: "moderationMediaFilter",
-    run: async (sql: any) => (m100 as any).moderationMediaFilter(sql, "m"),
+    run: async (sql: any) => (m102 as any).moderationMediaFilter(sql, "m"),
   },
   {
     key: "uploaderServedKeyExpr",
-    run: async (sql: any) => (m100 as any).uploaderServedKeyExpr(sql, "m", "viewerUploader-1"),
+    run: async (sql: any) => (m102 as any).uploaderServedKeyExpr(sql, "m", "viewerUploader-1"),
   },
   {
     key: "uploaderServableFilter",
-    run: async (sql: any) => (m100 as any).uploaderServableFilter(sql, "m", "viewerUploader-1"),
+    run: async (sql: any) => (m102 as any).uploaderServableFilter(sql, "m", "viewerUploader-1"),
   },
   {
     key: "makeDrizzleMediaWorkerRepository.adoptLegacyServedKeys",
     run: async (sql: any) =>
-      (m101 as any)
+      (m103 as any)
         .makeDrizzleMediaWorkerRepository("db-unsupported", sql)
         .adoptLegacyServedKeys(new Date("2026-03-04T05:06:07.000Z"), 3),
   },
   {
     key: "makeDrizzleMediaWorkerRepository.applyResult",
     run: async (sql: any) =>
-      (m101 as any).makeDrizzleMediaWorkerRepository("db-unsupported", sql).applyResult("id-1", {
+      (m103 as any).makeDrizzleMediaWorkerRepository("db-unsupported", sql).applyResult("id-1", {
         status: "ready",
         codec: "codec-1",
         width: 3,
@@ -7145,21 +7213,21 @@ export const cases: TranscriptCase[] = [
   {
     key: "makeDrizzleMediaWorkerRepository.clearLeakedObject",
     run: async (sql: any) =>
-      (m101 as any)
+      (m103 as any)
         .makeDrizzleMediaWorkerRepository("db-unsupported", sql)
         .clearLeakedObject("r2Key-1"),
   },
   {
     key: "makeDrizzleMediaWorkerRepository.deleteOrphan",
     run: async (sql: any) =>
-      (m101 as any)
+      (m103 as any)
         .makeDrizzleMediaWorkerRepository("db-unsupported", sql)
         .deleteOrphan("id-1", new Date("2026-03-04T05:06:07.000Z")),
   },
   {
     key: "makeDrizzleMediaWorkerRepository.enqueueHeldModerationItem",
     run: async (sql: any) =>
-      (m101 as any)
+      (m103 as any)
         .makeDrizzleMediaWorkerRepository("db-unsupported", sql)
         .enqueueHeldModerationItem({
           reportId: "reportId-1",
@@ -7171,26 +7239,26 @@ export const cases: TranscriptCase[] = [
   {
     key: "makeDrizzleMediaWorkerRepository.findById",
     run: async (sql: any) =>
-      (m101 as any).makeDrizzleMediaWorkerRepository("db-unsupported", sql).findById("id-1"),
+      (m103 as any).makeDrizzleMediaWorkerRepository("db-unsupported", sql).findById("id-1"),
   },
   {
     key: "makeDrizzleMediaWorkerRepository.findByUploadId",
     run: async (sql: any) =>
-      (m101 as any)
+      (m103 as any)
         .makeDrizzleMediaWorkerRepository("db-unsupported", sql)
         .findByUploadId("uploadId-1"),
   },
   {
     key: "makeDrizzleMediaWorkerRepository.findOrphans",
     run: async (sql: any) =>
-      (m101 as any)
+      (m103 as any)
         .makeDrizzleMediaWorkerRepository("db-unsupported", sql)
         .findOrphans(new Date("2026-03-04T05:06:07.000Z"), 3),
   },
   {
     key: "makeDrizzleMediaWorkerRepository.findPhashDuplicate",
     run: async (sql: any) =>
-      (m101 as any)
+      (m103 as any)
         .makeDrizzleMediaWorkerRepository("db-unsupported", sql)
         .findPhashDuplicate("hash-1", {
           excludeAssetId: "excludeAssetId-1",
@@ -7200,81 +7268,81 @@ export const cases: TranscriptCase[] = [
   {
     key: "makeDrizzleMediaWorkerRepository.findStuckValidating",
     run: async (sql: any) =>
-      (m101 as any)
+      (m103 as any)
         .makeDrizzleMediaWorkerRepository("db-unsupported", sql)
         .findStuckValidating(new Date("2026-03-04T05:06:07.000Z"), 3),
   },
   {
     key: "makeDrizzleMediaWorkerRepository.insertAbuseFlag",
     run: async (sql: any) =>
-      (m101 as any)
+      (m103 as any)
         .makeDrizzleMediaWorkerRepository("db-unsupported", sql)
         .insertAbuseFlag({ subjectId: "subjectId-1", reason: "gps", source: "user_report" }),
   },
   {
     key: "makeDrizzleMediaWorkerRepository.listLeakedObjects",
     run: async (sql: any) =>
-      (m101 as any).makeDrizzleMediaWorkerRepository("db-unsupported", sql).listLeakedObjects(3, 3),
+      (m103 as any).makeDrizzleMediaWorkerRepository("db-unsupported", sql).listLeakedObjects(3, 3),
   },
   {
     key: "makeDrizzleMediaWorkerRepository.r2KeyReferencedByOthers",
     run: async (sql: any) =>
-      (m101 as any)
+      (m103 as any)
         .makeDrizzleMediaWorkerRepository("db-unsupported", sql)
         .r2KeyReferencedByOthers("id-1", "r2Key-1"),
   },
   {
     key: "makeDrizzleMediaWorkerRepository.recordLeakedObjects",
     run: async (sql: any) =>
-      (m101 as any)
+      (m103 as any)
         .makeDrizzleMediaWorkerRepository("db-unsupported", sql)
         .recordLeakedObjects({ mediaId: "mediaId-1", keys: ["key-1"], error: "error-1" }),
   },
   {
     key: "makeDrizzleMediaWorkerRepository.terminalizeStuck",
     run: async (sql: any) =>
-      (m101 as any)
+      (m103 as any)
         .makeDrizzleMediaWorkerRepository("db-unsupported", sql)
         .terminalizeStuck("id-1"),
   },
   {
     key: "orphanPredicate",
     run: async (sql: any) =>
-      (m101 as any).orphanPredicate(sql, new Date("2026-03-04T05:06:07.000Z")),
+      (m103 as any).orphanPredicate(sql, new Date("2026-03-04T05:06:07.000Z")),
   },
   {
     key: "ensureNextMonthChatPartition",
     run: async (sql: any) =>
-      (m101 as any).ensureNextMonthChatPartition(sql, new Date("2026-03-04T05:06:07.000Z")),
+      (m103 as any).ensureNextMonthChatPartition(sql, new Date("2026-03-04T05:06:07.000Z")),
   },
   {
     key: "ensureNextMonthDmPartition",
     run: async (sql: any) =>
-      (m101 as any).ensureNextMonthDmPartition(sql, new Date("2026-03-04T05:06:07.000Z")),
+      (m103 as any).ensureNextMonthDmPartition(sql, new Date("2026-03-04T05:06:07.000Z")),
   },
   {
     key: "ensureChatPartitionWindow",
     run: async (sql: any) =>
-      (m101 as any).ensureChatPartitionWindow(sql, new Date("2026-03-04T05:06:07.000Z"), 3),
+      (m103 as any).ensureChatPartitionWindow(sql, new Date("2026-03-04T05:06:07.000Z"), 3),
   },
   {
     key: "ensureDmPartitionWindow",
     run: async (sql: any) =>
-      (m101 as any).ensureDmPartitionWindow(sql, new Date("2026-03-04T05:06:07.000Z"), 3),
+      (m103 as any).ensureDmPartitionWindow(sql, new Date("2026-03-04T05:06:07.000Z"), 3),
   },
   {
     key: "resolveHandles",
-    run: async (sql: any) => (m102 as any).resolveHandles(sql, ["handle-1"], "selfUserId-1"),
+    run: async (sql: any) => (m104 as any).resolveHandles(sql, ["handle-1"], "selfUserId-1"),
   },
   {
     key: "resolveUserIdsToMentions",
     run: async (sql: any) =>
-      (m102 as any).resolveUserIdsToMentions(sql, ["userId-1"], "selfUserId-1"),
+      (m104 as any).resolveUserIdsToMentions(sql, ["userId-1"], "selfUserId-1"),
   },
   {
     key: "resolveMentionTargets",
     run: async (sql: any) =>
-      (m102 as any).resolveMentionTargets(sql, {
+      (m104 as any).resolveMentionTargets(sql, {
         handles: ["handle-1"],
         userIds: ["userId-1"],
         authorUserId: "authorUserId-1",
@@ -7283,7 +7351,7 @@ export const cases: TranscriptCase[] = [
   {
     key: "loadServableAttachmentsFor",
     run: async (sql: any) =>
-      (m103 as any).loadServableAttachmentsFor(
+      (m105 as any).loadServableAttachmentsFor(
         sql,
         "chat_message_id",
         ["messageId-1"],
@@ -7294,40 +7362,40 @@ export const cases: TranscriptCase[] = [
   {
     key: "makeMessageMentionRepository.loadFor",
     run: async (sql: any) =>
-      (m104 as any)
+      (m106 as any)
         .makeMessageMentionRepository(sql, "chat_message_mentions", "post_id")
         .loadFor(["messageId-1"]),
   },
   {
     key: "makeMessageMentionRepository.recordFor",
     run: async (sql: any) =>
-      (m104 as any)
+      (m106 as any)
         .makeMessageMentionRepository(sql, "chat_message_mentions", "post_id")
         .recordFor(sql, "messageId-1", ["mentionedUserId-1"]),
   },
   {
     key: "loadMentionsFor",
     run: async (sql: any) =>
-      (m104 as any).loadMentionsFor(sql, "chat_message_mentions", ["messageId-1"], "post_id"),
+      (m106 as any).loadMentionsFor(sql, "chat_message_mentions", ["messageId-1"], "post_id"),
   },
   {
     key: "makeMessageReactionRepository.loadFor",
     run: async (sql: any) =>
-      (m105 as any)
+      (m107 as any)
         .makeMessageReactionRepository(sql, "chat_message_reactions")
         .loadFor(["messageId-1"], "viewerUserId-1"),
   },
   {
     key: "makeMessageReactionRepository.toggle",
     run: async (sql: any) =>
-      (m105 as any)
+      (m107 as any)
         .makeMessageReactionRepository(sql, "chat_message_reactions")
         .toggle("messageId-1", "userId-1", "like"),
   },
   {
     key: "loadReactionsFor",
     run: async (sql: any) =>
-      (m105 as any).loadReactionsFor(
+      (m107 as any).loadReactionsFor(
         sql,
         "chat_message_reactions",
         ["messageId-1"],
@@ -7336,75 +7404,75 @@ export const cases: TranscriptCase[] = [
   },
   {
     key: "explainHasUnread",
-    run: async (sql: any) => (m106 as any).explainHasUnread(sql, "userId-1"),
+    run: async (sql: any) => (m108 as any).explainHasUnread(sql, "userId-1"),
   },
   {
     key: "explainMarkAllRead",
-    run: async (sql: any) => (m106 as any).explainMarkAllRead(sql, "userId-1"),
+    run: async (sql: any) => (m108 as any).explainMarkAllRead(sql, "userId-1"),
   },
   {
     key: "makeDrizzleNotificationRepository.clearByTypeAndLink",
     run: async (sql: any) =>
-      (m106 as any)
+      (m108 as any)
         .makeDrizzleNotificationRepository(sql)
         .clearByTypeAndLink("userId-1", "system", "link-1"),
   },
   {
     key: "makeDrizzleNotificationRepository.createDefaultPrefs",
     run: async (sql: any) =>
-      (m106 as any).makeDrizzleNotificationRepository(sql).createDefaultPrefs("userId-1"),
+      (m108 as any).makeDrizzleNotificationRepository(sql).createDefaultPrefs("userId-1"),
   },
   {
     key: "makeDrizzleNotificationRepository.deleteAllNotificationsForUser",
     run: async (sql: any) =>
-      (m106 as any)
+      (m108 as any)
         .makeDrizzleNotificationRepository(sql)
         .deleteAllNotificationsForUser("userId-1"),
   },
   {
     key: "makeDrizzleNotificationRepository.deleteNotification",
     run: async (sql: any) =>
-      (m106 as any).makeDrizzleNotificationRepository(sql).deleteNotification("userId-1", "id-1"),
+      (m108 as any).makeDrizzleNotificationRepository(sql).deleteNotification("userId-1", "id-1"),
   },
   {
     key: "makeDrizzleNotificationRepository.deletePushTokensForUser",
     run: async (sql: any) =>
-      (m106 as any).makeDrizzleNotificationRepository(sql).deletePushTokensForUser("userId-1"),
+      (m108 as any).makeDrizzleNotificationRepository(sql).deletePushTokensForUser("userId-1"),
   },
   {
     key: "makeDrizzleNotificationRepository.findEmailRecipients",
     run: async (sql: any) =>
-      (m106 as any).makeDrizzleNotificationRepository(sql).findEmailRecipients(["userId-1"]),
+      (m108 as any).makeDrizzleNotificationRepository(sql).findEmailRecipients(["userId-1"]),
   },
   {
     key: "makeDrizzleNotificationRepository.findPrefs",
     run: async (sql: any) =>
-      (m106 as any).makeDrizzleNotificationRepository(sql).findPrefs("userId-1"),
+      (m108 as any).makeDrizzleNotificationRepository(sql).findPrefs("userId-1"),
   },
   {
     key: "makeDrizzleNotificationRepository.findPrefsMany",
     run: async (sql: any) =>
-      (m106 as any).makeDrizzleNotificationRepository(sql).findPrefsMany(["userId-1"]),
+      (m108 as any).makeDrizzleNotificationRepository(sql).findPrefsMany(["userId-1"]),
   },
   {
     key: "makeDrizzleNotificationRepository.findUserLocale",
     run: async (sql: any) =>
-      (m106 as any).makeDrizzleNotificationRepository(sql).findUserLocale("userId-1"),
+      (m108 as any).makeDrizzleNotificationRepository(sql).findUserLocale("userId-1"),
   },
   {
     key: "makeDrizzleNotificationRepository.findUserLocaleMany",
     run: async (sql: any) =>
-      (m106 as any).makeDrizzleNotificationRepository(sql).findUserLocaleMany(["userId-1"]),
+      (m108 as any).makeDrizzleNotificationRepository(sql).findUserLocaleMany(["userId-1"]),
   },
   {
     key: "makeDrizzleNotificationRepository.hasUnread",
     run: async (sql: any) =>
-      (m106 as any).makeDrizzleNotificationRepository(sql).hasUnread("userId-1"),
+      (m108 as any).makeDrizzleNotificationRepository(sql).hasUnread("userId-1"),
   },
   {
     key: "makeDrizzleNotificationRepository.insertNotification",
     run: async (sql: any) =>
-      (m106 as any).makeDrizzleNotificationRepository(sql).insertNotification({
+      (m108 as any).makeDrizzleNotificationRepository(sql).insertNotification({
         userId: "userId-1",
         type: "system",
         title: "title-1",
@@ -7415,31 +7483,31 @@ export const cases: TranscriptCase[] = [
   {
     key: "makeDrizzleNotificationRepository.insertUnlessRecentDuplicate",
     run: async (sql: any) =>
-      (m106 as any)
+      (m108 as any)
         .makeDrizzleNotificationRepository(sql)
         .insertUnlessRecentDuplicate("args-unsupported"),
   },
   {
     key: "makeDrizzleNotificationRepository.listNotifications",
     run: async (sql: any) =>
-      (m106 as any)
+      (m108 as any)
         .makeDrizzleNotificationRepository(sql)
         .listNotifications("userId-1", "cursor-1", 3),
   },
   {
     key: "makeDrizzleNotificationRepository.markAllRead",
     run: async (sql: any) =>
-      (m106 as any).makeDrizzleNotificationRepository(sql).markAllRead("userId-1"),
+      (m108 as any).makeDrizzleNotificationRepository(sql).markAllRead("userId-1"),
   },
   {
     key: "makeDrizzleNotificationRepository.markRead",
     run: async (sql: any) =>
-      (m106 as any).makeDrizzleNotificationRepository(sql).markRead("userId-1", ["id-1"]),
+      (m108 as any).makeDrizzleNotificationRepository(sql).markRead("userId-1", ["id-1"]),
   },
   {
     key: "makeDrizzleNotificationRepository.refreshUnreadNotification",
     run: async (sql: any) =>
-      (m106 as any).makeDrizzleNotificationRepository(sql).refreshUnreadNotification({
+      (m108 as any).makeDrizzleNotificationRepository(sql).refreshUnreadNotification({
         userId: "userId-1",
         type: "system",
         link: "link-1",
@@ -7451,14 +7519,14 @@ export const cases: TranscriptCase[] = [
   {
     key: "makeDrizzleNotificationRepository.revokeToken",
     run: async (sql: any) =>
-      (m106 as any)
+      (m108 as any)
         .makeDrizzleNotificationRepository(sql)
         .revokeToken("userId-1", "ios", "token-1"),
   },
   {
     key: "makeDrizzleNotificationRepository.upsertCoalescedNotification",
     run: async (sql: any) =>
-      (m106 as any).makeDrizzleNotificationRepository(sql).upsertCoalescedNotification({
+      (m108 as any).makeDrizzleNotificationRepository(sql).upsertCoalescedNotification({
         userId: "userId-1",
         type: "system",
         link: "link-1",
@@ -7470,7 +7538,7 @@ export const cases: TranscriptCase[] = [
   {
     key: "makeDrizzleNotificationRepository.upsertPrefs",
     run: async (sql: any) =>
-      (m106 as any).makeDrizzleNotificationRepository(sql).upsertPrefs("userId-1", {
+      (m108 as any).makeDrizzleNotificationRepository(sql).upsertPrefs("userId-1", {
         push: true,
         cleanupChat: true,
         reportUpdates: true,
@@ -7484,7 +7552,7 @@ export const cases: TranscriptCase[] = [
   {
     key: "makeDrizzleNotificationRepository.upsertPushToken",
     run: async (sql: any) =>
-      (m106 as any).makeDrizzleNotificationRepository(sql).upsertPushToken({
+      (m108 as any).makeDrizzleNotificationRepository(sql).upsertPushToken({
         userId: "userId-1",
         platform: "ios",
         token: "token-1",
@@ -7494,7 +7562,7 @@ export const cases: TranscriptCase[] = [
   {
     key: "makeDrizzleNotificationRepository.usersNotifiedSince",
     run: async (sql: any) =>
-      (m106 as any).makeDrizzleNotificationRepository(sql).usersNotifiedSince({
+      (m108 as any).makeDrizzleNotificationRepository(sql).usersNotifiedSince({
         userIds: ["userId-1"],
         type: "system",
         link: "link-1",
@@ -7504,24 +7572,24 @@ export const cases: TranscriptCase[] = [
   {
     key: "makeDrizzleNotificationSettingsRepository.disableEmail",
     run: async (sql: any) =>
-      (m107 as any)
+      (m109 as any)
         .makeDrizzleNotificationSettingsRepository(sql)
         .disableEmail("userId-1", "followers"),
   },
   {
     key: "makeDrizzleNotificationSettingsRepository.getSettings",
     run: async (sql: any) =>
-      (m107 as any).makeDrizzleNotificationSettingsRepository(sql).getSettings("userId-1"),
+      (m109 as any).makeDrizzleNotificationSettingsRepository(sql).getSettings("userId-1"),
   },
   {
     key: "makeDrizzleNotificationSettingsRepository.getSettingsMany",
     run: async (sql: any) =>
-      (m107 as any).makeDrizzleNotificationSettingsRepository(sql).getSettingsMany(["userId-1"]),
+      (m109 as any).makeDrizzleNotificationSettingsRepository(sql).getSettingsMany(["userId-1"]),
   },
   {
     key: "makeDrizzleNotificationSettingsRepository.upsertSettings",
     run: async (sql: any) =>
-      (m107 as any).makeDrizzleNotificationSettingsRepository(sql).upsertSettings("userId-1", {
+      (m109 as any).makeDrizzleNotificationSettingsRepository(sql).upsertSettings("userId-1", {
         followers: "followers-any",
         mentions: "mentions-any",
         events: "events-any",
@@ -7537,12 +7605,12 @@ export const cases: TranscriptCase[] = [
   },
   {
     key: "tombstonePostInTx",
-    run: async (sql: any) => (m108 as any).tombstonePostInTx(sql, "postId-1"),
+    run: async (sql: any) => (m110 as any).tombstonePostInTx(sql, "postId-1"),
   },
   {
     key: "explainFeedCandidates",
     run: async (sql: any) =>
-      (m108 as any).explainFeedCandidates(sql, {
+      (m110 as any).explainFeedCandidates(sql, {
         viewerId: "viewerId-1",
         filter: "events",
         fallbackLat: 3,
@@ -7555,7 +7623,7 @@ export const cases: TranscriptCase[] = [
   {
     key: "makeDrizzlePostRepository.actorNameOf",
     run: async (sql: any) =>
-      (m108 as any)
+      (m110 as any)
         .makeDrizzlePostRepository(sql, {
           presignMedia: () => Promise.resolve({ url: "url-1", thumbUrl: "thumbUrl-1" }),
           presignAvatar: () => Promise.resolve("presignAvatarResult-1"),
@@ -7581,7 +7649,7 @@ export const cases: TranscriptCase[] = [
   {
     key: "makeDrizzlePostRepository.canPostAsOrganization",
     run: async (sql: any) =>
-      (m108 as any)
+      (m110 as any)
         .makeDrizzlePostRepository(sql, {
           presignMedia: () => Promise.resolve({ url: "url-1", thumbUrl: "thumbUrl-1" }),
           presignAvatar: () => Promise.resolve("presignAvatarResult-1"),
@@ -7607,7 +7675,7 @@ export const cases: TranscriptCase[] = [
   {
     key: "makeDrizzlePostRepository.createPost",
     run: async (sql: any) =>
-      (m108 as any)
+      (m110 as any)
         .makeDrizzlePostRepository(sql, {
           presignMedia: () => Promise.resolve({ url: "url-1", thumbUrl: "thumbUrl-1" }),
           presignAvatar: () => Promise.resolve("presignAvatarResult-1"),
@@ -7645,7 +7713,7 @@ export const cases: TranscriptCase[] = [
   {
     key: "makeDrizzlePostRepository.feedCandidates",
     run: async (sql: any) =>
-      (m108 as any)
+      (m110 as any)
         .makeDrizzlePostRepository(sql, {
           presignMedia: () => Promise.resolve({ url: "url-1", thumbUrl: "thumbUrl-1" }),
           presignAvatar: () => Promise.resolve("presignAvatarResult-1"),
@@ -7679,7 +7747,7 @@ export const cases: TranscriptCase[] = [
   {
     key: "makeDrizzlePostRepository.followerIdsOf",
     run: async (sql: any) =>
-      (m108 as any)
+      (m110 as any)
         .makeDrizzlePostRepository(sql, {
           presignMedia: () => Promise.resolve({ url: "url-1", thumbUrl: "thumbUrl-1" }),
           presignAvatar: () => Promise.resolve("presignAvatarResult-1"),
@@ -7705,7 +7773,7 @@ export const cases: TranscriptCase[] = [
   {
     key: "makeDrizzlePostRepository.getPostBrief",
     run: async (sql: any) =>
-      (m108 as any)
+      (m110 as any)
         .makeDrizzlePostRepository(sql, {
           presignMedia: () => Promise.resolve({ url: "url-1", thumbUrl: "thumbUrl-1" }),
           presignAvatar: () => Promise.resolve("presignAvatarResult-1"),
@@ -7731,7 +7799,7 @@ export const cases: TranscriptCase[] = [
   {
     key: "makeDrizzlePostRepository.getPostDTO",
     run: async (sql: any) =>
-      (m108 as any)
+      (m110 as any)
         .makeDrizzlePostRepository(sql, {
           presignMedia: () => Promise.resolve({ url: "url-1", thumbUrl: "thumbUrl-1" }),
           presignAvatar: () => Promise.resolve("presignAvatarResult-1"),
@@ -7757,7 +7825,7 @@ export const cases: TranscriptCase[] = [
   {
     key: "makeDrizzlePostRepository.homeFeedChronological",
     run: async (sql: any) =>
-      (m108 as any)
+      (m110 as any)
         .makeDrizzlePostRepository(sql, {
           presignMedia: () => Promise.resolve({ url: "url-1", thumbUrl: "thumbUrl-1" }),
           presignAvatar: () => Promise.resolve("presignAvatarResult-1"),
@@ -7788,7 +7856,7 @@ export const cases: TranscriptCase[] = [
   {
     key: "makeDrizzlePostRepository.hydrateByIds",
     run: async (sql: any) =>
-      (m108 as any)
+      (m110 as any)
         .makeDrizzlePostRepository(sql, {
           presignMedia: () => Promise.resolve({ url: "url-1", thumbUrl: "thumbUrl-1" }),
           presignAvatar: () => Promise.resolve("presignAvatarResult-1"),
@@ -7814,7 +7882,7 @@ export const cases: TranscriptCase[] = [
   {
     key: "makeDrizzlePostRepository.isEventMember",
     run: async (sql: any) =>
-      (m108 as any)
+      (m110 as any)
         .makeDrizzlePostRepository(sql, {
           presignMedia: () => Promise.resolve({ url: "url-1", thumbUrl: "thumbUrl-1" }),
           presignAvatar: () => Promise.resolve("presignAvatarResult-1"),
@@ -7840,7 +7908,7 @@ export const cases: TranscriptCase[] = [
   {
     key: "makeDrizzlePostRepository.isReportAttachable",
     run: async (sql: any) =>
-      (m108 as any)
+      (m110 as any)
         .makeDrizzlePostRepository(sql, {
           presignMedia: () => Promise.resolve({ url: "url-1", thumbUrl: "thumbUrl-1" }),
           presignAvatar: () => Promise.resolve("presignAvatarResult-1"),
@@ -7866,7 +7934,7 @@ export const cases: TranscriptCase[] = [
   {
     key: "makeDrizzlePostRepository.like",
     run: async (sql: any) =>
-      (m108 as any)
+      (m110 as any)
         .makeDrizzlePostRepository(sql, {
           presignMedia: () => Promise.resolve({ url: "url-1", thumbUrl: "thumbUrl-1" }),
           presignAvatar: () => Promise.resolve("presignAvatarResult-1"),
@@ -7892,7 +7960,7 @@ export const cases: TranscriptCase[] = [
   {
     key: "makeDrizzlePostRepository.listReplies",
     run: async (sql: any) =>
-      (m108 as any)
+      (m110 as any)
         .makeDrizzlePostRepository(sql, {
           presignMedia: () => Promise.resolve({ url: "url-1", thumbUrl: "thumbUrl-1" }),
           presignAvatar: () => Promise.resolve("presignAvatarResult-1"),
@@ -7923,7 +7991,7 @@ export const cases: TranscriptCase[] = [
   {
     key: "makeDrizzlePostRepository.listSaves",
     run: async (sql: any) =>
-      (m108 as any)
+      (m110 as any)
         .makeDrizzlePostRepository(sql, {
           presignMedia: () => Promise.resolve({ url: "url-1", thumbUrl: "thumbUrl-1" }),
           presignAvatar: () => Promise.resolve("presignAvatarResult-1"),
@@ -7949,7 +8017,7 @@ export const cases: TranscriptCase[] = [
   {
     key: "makeDrizzlePostRepository.listUserPosts",
     run: async (sql: any) =>
-      (m108 as any)
+      (m110 as any)
         .makeDrizzlePostRepository(sql, {
           presignMedia: () => Promise.resolve({ url: "url-1", thumbUrl: "thumbUrl-1" }),
           presignAvatar: () => Promise.resolve("presignAvatarResult-1"),
@@ -7975,7 +8043,7 @@ export const cases: TranscriptCase[] = [
   {
     key: "makeDrizzlePostRepository.publicFeed",
     run: async (sql: any) =>
-      (m108 as any)
+      (m110 as any)
         .makeDrizzlePostRepository(sql, {
           presignMedia: () => Promise.resolve({ url: "url-1", thumbUrl: "thumbUrl-1" }),
           presignAvatar: () => Promise.resolve("presignAvatarResult-1"),
@@ -8001,7 +8069,7 @@ export const cases: TranscriptCase[] = [
   {
     key: "makeDrizzlePostRepository.readableCounts",
     run: async (sql: any) =>
-      (m108 as any)
+      (m110 as any)
         .makeDrizzlePostRepository(sql, {
           presignMedia: () => Promise.resolve({ url: "url-1", thumbUrl: "thumbUrl-1" }),
           presignAvatar: () => Promise.resolve("presignAvatarResult-1"),
@@ -8027,7 +8095,7 @@ export const cases: TranscriptCase[] = [
   {
     key: "makeDrizzlePostRepository.repost",
     run: async (sql: any) =>
-      (m108 as any)
+      (m110 as any)
         .makeDrizzlePostRepository(sql, {
           presignMedia: () => Promise.resolve({ url: "url-1", thumbUrl: "thumbUrl-1" }),
           presignAvatar: () => Promise.resolve("presignAvatarResult-1"),
@@ -8053,7 +8121,7 @@ export const cases: TranscriptCase[] = [
   {
     key: "makeDrizzlePostRepository.save",
     run: async (sql: any) =>
-      (m108 as any)
+      (m110 as any)
         .makeDrizzlePostRepository(sql, {
           presignMedia: () => Promise.resolve({ url: "url-1", thumbUrl: "thumbUrl-1" }),
           presignAvatar: () => Promise.resolve("presignAvatarResult-1"),
@@ -8079,7 +8147,7 @@ export const cases: TranscriptCase[] = [
   {
     key: "makeDrizzlePostRepository.softDeletePost",
     run: async (sql: any) =>
-      (m108 as any)
+      (m110 as any)
         .makeDrizzlePostRepository(sql, {
           presignMedia: () => Promise.resolve({ url: "url-1", thumbUrl: "thumbUrl-1" }),
           presignAvatar: () => Promise.resolve("presignAvatarResult-1"),
@@ -8105,7 +8173,7 @@ export const cases: TranscriptCase[] = [
   {
     key: "makeDrizzlePostRepository.unlike",
     run: async (sql: any) =>
-      (m108 as any)
+      (m110 as any)
         .makeDrizzlePostRepository(sql, {
           presignMedia: () => Promise.resolve({ url: "url-1", thumbUrl: "thumbUrl-1" }),
           presignAvatar: () => Promise.resolve("presignAvatarResult-1"),
@@ -8131,7 +8199,7 @@ export const cases: TranscriptCase[] = [
   {
     key: "makeDrizzlePostRepository.unrepost",
     run: async (sql: any) =>
-      (m108 as any)
+      (m110 as any)
         .makeDrizzlePostRepository(sql, {
           presignMedia: () => Promise.resolve({ url: "url-1", thumbUrl: "thumbUrl-1" }),
           presignAvatar: () => Promise.resolve("presignAvatarResult-1"),
@@ -8157,7 +8225,7 @@ export const cases: TranscriptCase[] = [
   {
     key: "makeDrizzlePostRepository.unsave",
     run: async (sql: any) =>
-      (m108 as any)
+      (m110 as any)
         .makeDrizzlePostRepository(sql, {
           presignMedia: () => Promise.resolve({ url: "url-1", thumbUrl: "thumbUrl-1" }),
           presignAvatar: () => Promise.resolve("presignAvatarResult-1"),
@@ -8183,7 +8251,7 @@ export const cases: TranscriptCase[] = [
   {
     key: "makePostService.createPost",
     run: async (sql: any) =>
-      (m109 as any)
+      (m111 as any)
         .makePostService({
           repo: {
             getPostBrief: () =>
@@ -8323,7 +8391,7 @@ export const cases: TranscriptCase[] = [
   {
     key: "makePostService.deletePost",
     run: async (sql: any) =>
-      (m109 as any)
+      (m111 as any)
         .makePostService({
           repo: {
             getPostBrief: () =>
@@ -8449,7 +8517,7 @@ export const cases: TranscriptCase[] = [
   {
     key: "makePostService.getFeedCounts",
     run: async (sql: any) =>
-      (m109 as any)
+      (m111 as any)
         .makePostService({
           repo: {
             getPostBrief: () =>
@@ -8575,7 +8643,7 @@ export const cases: TranscriptCase[] = [
   {
     key: "makePostService.getPost",
     run: async (sql: any) =>
-      (m109 as any)
+      (m111 as any)
         .makePostService({
           repo: {
             getPostBrief: () =>
@@ -8701,7 +8769,7 @@ export const cases: TranscriptCase[] = [
   {
     key: "makePostService.homeFeed",
     run: async (sql: any) =>
-      (m109 as any)
+      (m111 as any)
         .makePostService({
           repo: {
             getPostBrief: () =>
@@ -8831,7 +8899,7 @@ export const cases: TranscriptCase[] = [
   {
     key: "makePostService.likePost",
     run: async (sql: any) =>
-      (m109 as any)
+      (m111 as any)
         .makePostService({
           repo: {
             getPostBrief: () =>
@@ -8957,7 +9025,7 @@ export const cases: TranscriptCase[] = [
   {
     key: "makePostService.listReplies",
     run: async (sql: any) =>
-      (m109 as any)
+      (m111 as any)
         .makePostService({
           repo: {
             getPostBrief: () =>
@@ -9083,7 +9151,7 @@ export const cases: TranscriptCase[] = [
   {
     key: "makePostService.listSaves",
     run: async (sql: any) =>
-      (m109 as any)
+      (m111 as any)
         .makePostService({
           repo: {
             getPostBrief: () =>
@@ -9209,7 +9277,7 @@ export const cases: TranscriptCase[] = [
   {
     key: "makePostService.listUserPosts",
     run: async (sql: any) =>
-      (m109 as any)
+      (m111 as any)
         .makePostService({
           repo: {
             getPostBrief: () =>
@@ -9335,7 +9403,7 @@ export const cases: TranscriptCase[] = [
   {
     key: "makePostService.publicFeed",
     run: async (sql: any) =>
-      (m109 as any)
+      (m111 as any)
         .makePostService({
           repo: {
             getPostBrief: () =>
@@ -9461,7 +9529,7 @@ export const cases: TranscriptCase[] = [
   {
     key: "makePostService.repostPost",
     run: async (sql: any) =>
-      (m109 as any)
+      (m111 as any)
         .makePostService({
           repo: {
             getPostBrief: () =>
@@ -9587,7 +9655,7 @@ export const cases: TranscriptCase[] = [
   {
     key: "makePostService.savePost",
     run: async (sql: any) =>
-      (m109 as any)
+      (m111 as any)
         .makePostService({
           repo: {
             getPostBrief: () =>
@@ -9713,7 +9781,7 @@ export const cases: TranscriptCase[] = [
   {
     key: "makePostService.unlikePost",
     run: async (sql: any) =>
-      (m109 as any)
+      (m111 as any)
         .makePostService({
           repo: {
             getPostBrief: () =>
@@ -9839,7 +9907,7 @@ export const cases: TranscriptCase[] = [
   {
     key: "makePostService.unrepostPost",
     run: async (sql: any) =>
-      (m109 as any)
+      (m111 as any)
         .makePostService({
           repo: {
             getPostBrief: () =>
@@ -9965,7 +10033,7 @@ export const cases: TranscriptCase[] = [
   {
     key: "makePostService.unsavePost",
     run: async (sql: any) =>
-      (m109 as any)
+      (m111 as any)
         .makePostService({
           repo: {
             getPostBrief: () =>
@@ -10091,7 +10159,7 @@ export const cases: TranscriptCase[] = [
   {
     key: "monotonicReadWatermark",
     run: async (sql: any) =>
-      (m110 as any).monotonicReadWatermark(
+      (m112 as any).monotonicReadWatermark(
         sql,
         "table-1",
         { keysKey: "keys-1" },
@@ -10101,7 +10169,7 @@ export const cases: TranscriptCase[] = [
   {
     key: "monotonicReadWatermarkUpdate",
     run: async (sql: any) =>
-      (m110 as any).monotonicReadWatermarkUpdate(
+      (m112 as any).monotonicReadWatermarkUpdate(
         sql,
         "table-1",
         { keysKey: "keys-1" },
@@ -10111,27 +10179,27 @@ export const cases: TranscriptCase[] = [
   {
     key: "makeDrizzleChatReadState.lastReadAt",
     run: async (sql: any) =>
-      (m110 as any).makeDrizzleChatReadState(sql).lastReadAt("cleanupId-1", "userId-1"),
+      (m112 as any).makeDrizzleChatReadState(sql).lastReadAt("cleanupId-1", "userId-1"),
   },
   {
     key: "makeDrizzleChatReadState.markRead",
     run: async (sql: any) =>
-      (m110 as any)
+      (m112 as any)
         .makeDrizzleChatReadState(sql)
         .markRead("cleanupId-1", "userId-1", new Date("2026-03-04T05:06:07.000Z")),
   },
   {
     key: "jurisdictionCodeIn",
-    run: async (sql: any) => (m111 as any).jurisdictionCodeIn(sql, "geoid-1"),
+    run: async (sql: any) => (m113 as any).jurisdictionCodeIn(sql, "geoid-1"),
   },
   {
     key: "allocateNextSeqIn",
-    run: async (sql: any) => (m111 as any).allocateNextSeqIn(sql, "scopeKey-1"),
+    run: async (sql: any) => (m113 as any).allocateNextSeqIn(sql, "scopeKey-1"),
   },
   {
     key: "findReplyTarget",
     run: async (sql: any) =>
-      (m112 as any).findReplyTarget(
+      (m114 as any).findReplyTarget(
         sql,
         "chat_messages",
         { column: "cleanup_id", id: "id-1" },
@@ -10141,12 +10209,12 @@ export const cases: TranscriptCase[] = [
   {
     key: "loadReplyTargetRows",
     run: async (sql: any) =>
-      (m112 as any).loadReplyTargetRows(sql, "chat_messages", ["distinctItem-1"]),
+      (m114 as any).loadReplyTargetRows(sql, "chat_messages", ["distinctItem-1"]),
   },
   {
     key: "makeReportChatRepository.advanceReadWatermark",
     run: async (sql: any) =>
-      (m113 as any)
+      (m115 as any)
         .makeReportChatRepository(
           sql,
           () => Promise.resolve({ url: "url-1", thumbUrl: "thumbUrl-1" }),
@@ -10157,7 +10225,7 @@ export const cases: TranscriptCase[] = [
   {
     key: "makeReportChatRepository.countMembers",
     run: async (sql: any) =>
-      (m113 as any)
+      (m115 as any)
         .makeReportChatRepository(
           sql,
           () => Promise.resolve({ url: "url-1", thumbUrl: "thumbUrl-1" }),
@@ -10168,7 +10236,7 @@ export const cases: TranscriptCase[] = [
   {
     key: "makeReportChatRepository.insertSystemMessage",
     run: async (sql: any) =>
-      (m113 as any)
+      (m115 as any)
         .makeReportChatRepository(
           sql,
           () => Promise.resolve({ url: "url-1", thumbUrl: "thumbUrl-1" }),
@@ -10185,7 +10253,7 @@ export const cases: TranscriptCase[] = [
   {
     key: "makeReportChatRepository.isMember",
     run: async (sql: any) =>
-      (m113 as any)
+      (m115 as any)
         .makeReportChatRepository(
           sql,
           () => Promise.resolve({ url: "url-1", thumbUrl: "thumbUrl-1" }),
@@ -10196,7 +10264,7 @@ export const cases: TranscriptCase[] = [
   {
     key: "makeReportChatRepository.isReportVerified",
     run: async (sql: any) =>
-      (m113 as any)
+      (m115 as any)
         .makeReportChatRepository(
           sql,
           () => Promise.resolve({ url: "url-1", thumbUrl: "thumbUrl-1" }),
@@ -10207,7 +10275,7 @@ export const cases: TranscriptCase[] = [
   {
     key: "makeReportChatRepository.join",
     run: async (sql: any) =>
-      (m113 as any)
+      (m115 as any)
         .makeReportChatRepository(
           sql,
           () => Promise.resolve({ url: "url-1", thumbUrl: "thumbUrl-1" }),
@@ -10218,7 +10286,7 @@ export const cases: TranscriptCase[] = [
   {
     key: "makeReportChatRepository.leave",
     run: async (sql: any) =>
-      (m113 as any)
+      (m115 as any)
         .makeReportChatRepository(
           sql,
           () => Promise.resolve({ url: "url-1", thumbUrl: "thumbUrl-1" }),
@@ -10229,7 +10297,7 @@ export const cases: TranscriptCase[] = [
   {
     key: "makeReportChatRepository.listMemberIds",
     run: async (sql: any) =>
-      (m113 as any)
+      (m115 as any)
         .makeReportChatRepository(
           sql,
           () => Promise.resolve({ url: "url-1", thumbUrl: "thumbUrl-1" }),
@@ -10240,7 +10308,7 @@ export const cases: TranscriptCase[] = [
   {
     key: "makeReportChatRepository.listMembers",
     run: async (sql: any) =>
-      (m113 as any)
+      (m115 as any)
         .makeReportChatRepository(
           sql,
           () => Promise.resolve({ url: "url-1", thumbUrl: "thumbUrl-1" }),
@@ -10251,7 +10319,7 @@ export const cases: TranscriptCase[] = [
   {
     key: "makeReportChatRepository.loadChatMeta",
     run: async (sql: any) =>
-      (m113 as any)
+      (m115 as any)
         .makeReportChatRepository(
           sql,
           () => Promise.resolve({ url: "url-1", thumbUrl: "thumbUrl-1" }),
@@ -10262,7 +10330,7 @@ export const cases: TranscriptCase[] = [
   {
     key: "makeReportChatRepository.markRead",
     run: async (sql: any) =>
-      (m113 as any)
+      (m115 as any)
         .makeReportChatRepository(
           sql,
           () => Promise.resolve({ url: "url-1", thumbUrl: "thumbUrl-1" }),
@@ -10273,7 +10341,7 @@ export const cases: TranscriptCase[] = [
   {
     key: "makeReportChatRepository.roleOf",
     run: async (sql: any) =>
-      (m113 as any)
+      (m115 as any)
         .makeReportChatRepository(
           sql,
           () => Promise.resolve({ url: "url-1", thumbUrl: "thumbUrl-1" }),
@@ -10284,35 +10352,35 @@ export const cases: TranscriptCase[] = [
   {
     key: "makeDrizzleReportForwardAuditRepository.markForwarded",
     run: async (sql: any) =>
-      (m114 as any)
+      (m116 as any)
         .makeDrizzleReportForwardAuditRepository(sql)
         .markForwarded("messageId-1", "geoid-1"),
   },
   {
     key: "makeDrizzleReportForwardAuditRepository.recordMention",
     run: async (sql: any) =>
-      (m114 as any)
+      (m116 as any)
         .makeDrizzleReportForwardAuditRepository(sql)
         .recordMention("messageId-1", "geoid-1"),
   },
   {
     key: "isReportOwnedBy",
-    run: async (sql: any) => (m115 as any).isReportOwnedBy(sql, "reportId-1", "userId-1"),
+    run: async (sql: any) => (m117 as any).isReportOwnedBy(sql, "reportId-1", "userId-1"),
   },
   {
     key: "explainPressing",
     run: async (sql: any) =>
-      (m115 as any).explainPressing(sql, { west: 3, south: 3, east: 3, north: 3 }, 3),
+      (m117 as any).explainPressing(sql, { west: 3, south: 3, east: 3, north: 3 }, 3),
   },
   {
     key: "makeDrizzleReportRepository.countMediaStatesForReport",
     run: async (sql: any) =>
-      (m115 as any).makeDrizzleReportRepository(sql).countMediaStatesForReport("reportId-1"),
+      (m117 as any).makeDrizzleReportRepository(sql).countMediaStatesForReport("reportId-1"),
   },
   {
     key: "makeDrizzleReportRepository.createReportTx",
     run: async (sql: any) =>
-      (m115 as any).makeDrizzleReportRepository(sql).createReportTx({
+      (m117 as any).makeDrizzleReportRepository(sql).createReportTx({
         reportId: "reportId-1",
         reporterUserId: "reporterUserId-1",
         guestAnonSessionId: "guestAnonSessionId-1",
@@ -10381,74 +10449,74 @@ export const cases: TranscriptCase[] = [
   {
     key: "makeDrizzleReportRepository.findIdempotentSnapshot",
     run: async (sql: any) =>
-      (m115 as any)
+      (m117 as any)
         .makeDrizzleReportRepository(sql)
         .findIdempotentSnapshot("key-1", "scope-1", "userOrAnon-1"),
   },
   {
     key: "makeDrizzleReportRepository.findMapCandidates",
     run: async (sql: any) =>
-      (m115 as any)
+      (m117 as any)
         .makeDrizzleReportRepository(sql)
         .findMapCandidates({ west: 3, south: 3, east: 3, north: 3 }, ["trash"], ["graffiti"], 3),
   },
   {
     key: "makeDrizzleReportRepository.findMediaForReport",
     run: async (sql: any) =>
-      (m115 as any).makeDrizzleReportRepository(sql).findMediaForReport("reportId-1", true),
+      (m117 as any).makeDrizzleReportRepository(sql).findMediaForReport("reportId-1", true),
   },
   {
     key: "makeDrizzleReportRepository.findMediaForReports",
     run: async (sql: any) =>
-      (m115 as any).makeDrizzleReportRepository(sql).findMediaForReports(["reportId-1"], true),
+      (m117 as any).makeDrizzleReportRepository(sql).findMediaForReports(["reportId-1"], true),
   },
   {
     key: "makeDrizzleReportRepository.findPressing",
     run: async (sql: any) =>
-      (m115 as any)
+      (m117 as any)
         .makeDrizzleReportRepository(sql)
         .findPressing({ west: 3, south: 3, east: 3, north: 3 }, 3),
   },
   {
     key: "makeDrizzleReportRepository.findReportById",
-    run: async (sql: any) => (m115 as any).makeDrizzleReportRepository(sql).findReportById("id-1"),
+    run: async (sql: any) => (m117 as any).makeDrizzleReportRepository(sql).findReportById("id-1"),
   },
   {
     key: "makeDrizzleReportRepository.findReportByReferenceCode",
     run: async (sql: any) =>
-      (m115 as any).makeDrizzleReportRepository(sql).findReportByReferenceCode("code-1"),
+      (m117 as any).makeDrizzleReportRepository(sql).findReportByReferenceCode("code-1"),
   },
   {
     key: "makeDrizzleReportRepository.findTimelineForReport",
     run: async (sql: any) =>
-      (m115 as any).makeDrizzleReportRepository(sql).findTimelineForReport("reportId-1"),
+      (m117 as any).makeDrizzleReportRepository(sql).findTimelineForReport("reportId-1"),
   },
   {
     key: "makeDrizzleReportRepository.findTimelineForReports",
     run: async (sql: any) =>
-      (m115 as any).makeDrizzleReportRepository(sql).findTimelineForReports(["reportId-1"]),
+      (m117 as any).makeDrizzleReportRepository(sql).findTimelineForReports(["reportId-1"]),
   },
   {
     key: "makeDrizzleReportRepository.findVote",
     run: async (sql: any) =>
-      (m115 as any).makeDrizzleReportRepository(sql).findVote("reportId-1", "userId-1"),
+      (m117 as any).makeDrizzleReportRepository(sql).findVote("reportId-1", "userId-1"),
   },
   {
     key: "makeDrizzleReportRepository.listMyReports",
     run: async (sql: any) =>
-      (m115 as any).makeDrizzleReportRepository(sql).listMyReports("userId-1", "cursor-1", 3),
+      (m117 as any).makeDrizzleReportRepository(sql).listMyReports("userId-1", "cursor-1", 3),
   },
   {
     key: "makeDrizzleReportRepository.resolveByOwner",
     run: async (sql: any) =>
-      (m115 as any)
+      (m117 as any)
         .makeDrizzleReportRepository(sql)
         .resolveByOwner("reportId-1", "userId-1", { status: "published", note: "note-1" }),
   },
   {
     key: "makeDrizzleReportRepository.searchReports",
     run: async (sql: any) =>
-      (m115 as any).makeDrizzleReportRepository(sql).searchReports({
+      (m117 as any).makeDrizzleReportRepository(sql).searchReports({
         q: "q-1",
         categories: ["trash"],
         types: ["graffiti"],
@@ -10459,14 +10527,14 @@ export const cases: TranscriptCase[] = [
   {
     key: "makeDrizzleReportRepository.setConfirmation",
     run: async (sql: any) =>
-      (m115 as any)
+      (m117 as any)
         .makeDrizzleReportRepository(sql)
         .setConfirmation("reportId-1", "userId-1", "seen", "remove"),
   },
   {
     key: "makeDrizzleReportRepository.setVisibilityByOwner",
     run: async (sql: any) =>
-      (m115 as any)
+      (m117 as any)
         .makeDrizzleReportRepository(sql)
         .setVisibilityByOwner("reportId-1", "userId-1", {
           visibility: "public",
@@ -10474,63 +10542,63 @@ export const cases: TranscriptCase[] = [
           kind: "hidden",
         }),
   },
-  { key: "reportColumns", run: async (sql: any) => (m116 as any).reportColumns(sql) },
-  { key: "publicReportFilter", run: async (sql: any) => (m116 as any).publicReportFilter(sql) },
+  { key: "reportColumns", run: async (sql: any) => (m118 as any).reportColumns(sql) },
+  { key: "publicReportFilter", run: async (sql: any) => (m118 as any).publicReportFilter(sql) },
   {
     key: "firstReadyStillLateral",
-    run: async (sql: any) => (m116 as any).firstReadyStillLateral(sql),
+    run: async (sql: any) => (m118 as any).firstReadyStillLateral(sql),
   },
   {
     key: "selectPublicPins",
     run: async (sql: any) =>
-      (m116 as any).selectPublicPins(sql, sql`TRUE /* extraFilters */`, sql`TRUE /* order */`, 3),
+      (m118 as any).selectPublicPins(sql, sql`TRUE /* extraFilters */`, sql`TRUE /* order */`, 3),
   },
   {
     key: "makeDrizzleRetentionRepository.deleteExpiredAnonTokens",
     run: async (sql: any) =>
-      (m117 as any)
+      (m119 as any)
         .makeDrizzleRetentionRepository(sql)
         .deleteExpiredAnonTokens(new Date("2026-03-04T05:06:07.000Z"), 3),
   },
   {
     key: "makeDrizzleRetentionRepository.deleteExpiredOtps",
     run: async (sql: any) =>
-      (m117 as any)
+      (m119 as any)
         .makeDrizzleRetentionRepository(sql)
         .deleteExpiredOtps(new Date("2026-03-04T05:06:07.000Z"), 3),
   },
   {
     key: "makeDrizzleRetentionRepository.deleteExpiredSessions",
     run: async (sql: any) =>
-      (m117 as any)
+      (m119 as any)
         .makeDrizzleRetentionRepository(sql)
         .deleteExpiredSessions(new Date("2026-03-04T05:06:07.000Z"), 3),
   },
   {
     key: "makeDrizzleRetentionRepository.deleteOldIdempotencyKeys",
     run: async (sql: any) =>
-      (m117 as any)
+      (m119 as any)
         .makeDrizzleRetentionRepository(sql)
         .deleteOldIdempotencyKeys(new Date("2026-03-04T05:06:07.000Z"), 3),
   },
   {
     key: "makeDrizzleRetentionRepository.deleteOldNotifications",
     run: async (sql: any) =>
-      (m117 as any)
+      (m119 as any)
         .makeDrizzleRetentionRepository(sql)
         .deleteOldNotifications(new Date("2026-03-04T05:06:07.000Z"), 3),
   },
   {
     key: "makeDrizzleRetentionRepository.deleteStaleGeocodeCache",
     run: async (sql: any) =>
-      (m117 as any)
+      (m119 as any)
         .makeDrizzleRetentionRepository(sql)
         .deleteStaleGeocodeCache(new Date("2026-03-04T05:06:07.000Z"), 3),
   },
   {
     key: "makeDrizzleRoomMessagesRepository.findMessage",
     run: async (sql: any) =>
-      (m118 as any)
+      (m120 as any)
         .makeDrizzleRoomMessagesRepository(sql, {
           table: "chat_messages",
           alias: "dm",
@@ -10627,7 +10695,7 @@ export const cases: TranscriptCase[] = [
   {
     key: "makeDrizzleRoomMessagesRepository.history",
     run: async (sql: any) =>
-      (m118 as any)
+      (m120 as any)
         .makeDrizzleRoomMessagesRepository(sql, {
           table: "chat_messages",
           alias: "dm",
@@ -10724,7 +10792,7 @@ export const cases: TranscriptCase[] = [
   {
     key: "makeDrizzleRoomMessagesRepository.historyAround",
     run: async (sql: any) =>
-      (m118 as any)
+      (m120 as any)
         .makeDrizzleRoomMessagesRepository(sql, {
           table: "chat_messages",
           alias: "dm",
@@ -10821,7 +10889,7 @@ export const cases: TranscriptCase[] = [
   {
     key: "makeDrizzleRoomMessagesRepository.listPins",
     run: async (sql: any) =>
-      (m118 as any)
+      (m120 as any)
         .makeDrizzleRoomMessagesRepository(sql, {
           table: "chat_messages",
           alias: "dm",
@@ -10918,7 +10986,7 @@ export const cases: TranscriptCase[] = [
   {
     key: "makeDrizzleRoomMessagesRepository.setPinned",
     run: async (sql: any) =>
-      (m118 as any)
+      (m120 as any)
         .makeDrizzleRoomMessagesRepository(sql, {
           table: "chat_messages",
           alias: "dm",
@@ -11015,117 +11083,117 @@ export const cases: TranscriptCase[] = [
   {
     key: "explainSuggestFollows",
     run: async (sql: any) =>
-      (m119 as any).explainSuggestFollows(sql, { viewerId: "viewerId-1", limit: 3 }),
+      (m121 as any).explainSuggestFollows(sql, { viewerId: "viewerId-1", limit: 3 }),
   },
   {
     key: "makeDrizzleSocialRepository.addFollow",
     run: async (sql: any) =>
-      (m119 as any)
+      (m121 as any)
         .makeDrizzleSocialRepository(sql, () => Promise.resolve("presignAvatarResult-1"))
         .addFollow("followerId-1", "followeeId-1"),
   },
   {
     key: "makeDrizzleSocialRepository.findPersonByHandle",
     run: async (sql: any) =>
-      (m119 as any)
+      (m121 as any)
         .makeDrizzleSocialRepository(sql, () => Promise.resolve("presignAvatarResult-1"))
         .findPersonByHandle("handle-1"),
   },
   {
     key: "makeDrizzleSocialRepository.findPersonById",
     run: async (sql: any) =>
-      (m119 as any)
+      (m121 as any)
         .makeDrizzleSocialRepository(sql, () => Promise.resolve("presignAvatarResult-1"))
         .findPersonById("id-1"),
   },
   {
     key: "makeDrizzleSocialRepository.followerCount",
     run: async (sql: any) =>
-      (m119 as any)
+      (m121 as any)
         .makeDrizzleSocialRepository(sql, () => Promise.resolve("presignAvatarResult-1"))
         .followerCount("userId-1"),
   },
   {
     key: "makeDrizzleSocialRepository.isFollowing",
     run: async (sql: any) =>
-      (m119 as any)
+      (m121 as any)
         .makeDrizzleSocialRepository(sql, () => Promise.resolve("presignAvatarResult-1"))
         .isFollowing("followerId-1", "followeeId-1"),
   },
   {
     key: "makeDrizzleSocialRepository.listFollowers",
     run: async (sql: any) =>
-      (m119 as any)
+      (m121 as any)
         .makeDrizzleSocialRepository(sql, () => Promise.resolve("presignAvatarResult-1"))
         .listFollowers({ id: "id-1", viewerId: "viewerId-1", cursor: "cursor-1", limit: 3 }),
   },
   {
     key: "makeDrizzleSocialRepository.listFollowing",
     run: async (sql: any) =>
-      (m119 as any)
+      (m121 as any)
         .makeDrizzleSocialRepository(sql, () => Promise.resolve("presignAvatarResult-1"))
         .listFollowing({ id: "id-1", viewerId: "viewerId-1", cursor: "cursor-1", limit: 3 }),
   },
   {
     key: "makeDrizzleSocialRepository.listPeople",
     run: async (sql: any) =>
-      (m119 as any)
+      (m121 as any)
         .makeDrizzleSocialRepository(sql, () => Promise.resolve("presignAvatarResult-1"))
         .listPeople({ viewerId: "viewerId-1", q: "q-1", cursor: "cursor-1", limit: 3 }),
   },
   {
     key: "makeDrizzleSocialRepository.pastEventsPageFor",
     run: async (sql: any) =>
-      (m119 as any)
+      (m121 as any)
         .makeDrizzleSocialRepository(sql, () => Promise.resolve("presignAvatarResult-1"))
         .pastEventsPageFor("userId-1", { cursor: "cursor-1", limit: 3 }),
   },
   {
     key: "makeDrizzleSocialRepository.removeFollow",
     run: async (sql: any) =>
-      (m119 as any)
+      (m121 as any)
         .makeDrizzleSocialRepository(sql, () => Promise.resolve("presignAvatarResult-1"))
         .removeFollow("followerId-1", "followeeId-1"),
   },
   {
     key: "makeDrizzleSocialRepository.statsFor",
     run: async (sql: any) =>
-      (m119 as any)
+      (m121 as any)
         .makeDrizzleSocialRepository(sql, () => Promise.resolve("presignAvatarResult-1"))
         .statsFor("userId-1"),
   },
   {
     key: "makeDrizzleSocialRepository.suggestFollows",
     run: async (sql: any) =>
-      (m119 as any)
+      (m121 as any)
         .makeDrizzleSocialRepository(sql, () => Promise.resolve("presignAvatarResult-1"))
         .suggestFollows({ viewerId: "viewerId-1", limit: 3 }),
   },
   {
     key: "makeDrizzleSocialRepository.upcomingEventsFor",
     run: async (sql: any) =>
-      (m119 as any)
+      (m121 as any)
         .makeDrizzleSocialRepository(sql, () => Promise.resolve("presignAvatarResult-1"))
         .upcomingEventsFor("userId-1", { includeAttending: true, limit: 3 }),
   },
   {
     key: "makeDrizzleThreadsRepository.countUnread",
     run: async (sql: any) =>
-      (m120 as any)
+      (m122 as any)
         .makeDrizzleThreadsRepository(sql)
         .countUnread("cleanupId-1", "userId-1", new Date("2026-03-04T05:06:07.000Z")),
   },
   {
     key: "makeDrizzleThreadsRepository.listThreadsFor",
     run: async (sql: any) =>
-      (m120 as any)
+      (m122 as any)
         .makeDrizzleThreadsRepository(sql)
         .listThreadsFor("userId-1", 3, { at: new Date("2026-03-04T05:06:07.000Z"), id: "id-1" }),
   },
   {
     key: "makeDrizzleReportThreadsSource.listReportThreadsFor",
     run: async (sql: any) =>
-      (m120 as any).makeDrizzleReportThreadsSource(sql).listReportThreadsFor("userId-1", 3, {
+      (m122 as any).makeDrizzleReportThreadsSource(sql).listReportThreadsFor("userId-1", 3, {
         at: new Date("2026-03-04T05:06:07.000Z"),
         id: "id-1",
       }),
@@ -11133,54 +11201,54 @@ export const cases: TranscriptCase[] = [
   {
     key: "makeDrizzleGroupThreadsSource.listGroupThreadsFor",
     run: async (sql: any) =>
-      (m120 as any).makeDrizzleGroupThreadsSource(sql).listGroupThreadsFor("userId-1", 3, {
+      (m122 as any).makeDrizzleGroupThreadsSource(sql).listGroupThreadsFor("userId-1", 3, {
         at: new Date("2026-03-04T05:06:07.000Z"),
         id: "id-1",
       }),
   },
   {
     key: "userAvatarColumns",
-    run: async (sql: any) => (m121 as any).userAvatarColumns(sql, "userAlias-1", "m", "prefix-1"),
+    run: async (sql: any) => (m123 as any).userAvatarColumns(sql, "userAlias-1", "m", "prefix-1"),
   },
   {
     key: "makeDrizzleUserSearchRepository.searchByHandlePrefix",
     run: async (sql: any) =>
-      (m122 as any)
+      (m124 as any)
         .makeDrizzleUserSearchRepository(sql, () => Promise.resolve("presignAvatarResult-1"))
         .searchByHandlePrefix("q-1", "viewerId-1", 3),
   },
   {
     key: "makeDrizzleUserSearchRepository.searchMentionable",
     run: async (sql: any) =>
-      (m122 as any)
+      (m124 as any)
         .makeDrizzleUserSearchRepository(sql, () => Promise.resolve("presignAvatarResult-1"))
         .searchMentionable("q-1", "viewerId-1", 3),
   },
   {
     key: "makeDrizzleUsersRepository.findRoleAndEmail",
     run: async (sql: any) =>
-      (m123 as any).makeDrizzleUsersRepository(sql).findRoleAndEmail("userId-1"),
+      (m125 as any).makeDrizzleUsersRepository(sql).findRoleAndEmail("userId-1"),
   },
   {
     key: "lockEventCredits",
-    run: async (sql: any) => (m124 as any).lockEventCredits(sql, "cleanupId-1", ["userId-1"]),
+    run: async (sql: any) => (m126 as any).lockEventCredits(sql, "cleanupId-1", ["userId-1"]),
   },
   {
     key: "lockUserCredits",
-    run: async (sql: any) => (m124 as any).lockUserCredits(sql, ["userId-1"]),
+    run: async (sql: any) => (m126 as any).lockUserCredits(sql, ["userId-1"]),
   },
   {
     key: "sameDayEventHours",
-    run: async (sql: any) => (m124 as any).sameDayEventHours(sql, "cleanupId-1", ["userId-1"]),
+    run: async (sql: any) => (m126 as any).sameDayEventHours(sql, "cleanupId-1", ["userId-1"]),
   },
   {
     key: "hoursHeldOnServiceDate",
-    run: async (sql: any) => (m124 as any).hoursHeldOnServiceDate(sql, "userId-1", "serviceDate-1"),
+    run: async (sql: any) => (m126 as any).hoursHeldOnServiceDate(sql, "userId-1", "serviceDate-1"),
   },
   {
     key: "writeEventCredits",
     run: async (sql: any) =>
-      (m124 as any).writeEventCredits(sql, {
+      (m126 as any).writeEventCredits(sql, {
         cleanupId: "cleanupId-1",
         geoid: "geoid-1",
         actorId: "actorId-1",
@@ -11193,7 +11261,7 @@ export const cases: TranscriptCase[] = [
   {
     key: "makeDrizzleVolunteerHoursRepository.creditEventAsOperator",
     run: async (sql: any) =>
-      (m125 as any)
+      (m127 as any)
         .makeDrizzleVolunteerHoursRepository(sql, () => Promise.resolve("presignAvatarResult-1"))
         .creditEventAsOperator({
           operatorId: "operatorId-1",
@@ -11208,7 +11276,7 @@ export const cases: TranscriptCase[] = [
   {
     key: "makeDrizzleVolunteerHoursRepository.creditManual",
     run: async (sql: any) =>
-      (m125 as any)
+      (m127 as any)
         .makeDrizzleVolunteerHoursRepository(sql, () => Promise.resolve("presignAvatarResult-1"))
         .creditManual({
           operatorId: "operatorId-1",
@@ -11222,7 +11290,7 @@ export const cases: TranscriptCase[] = [
   {
     key: "makeDrizzleVolunteerHoursRepository.entriesForCertificate",
     run: async (sql: any) =>
-      (m125 as any)
+      (m127 as any)
         .makeDrizzleVolunteerHoursRepository(sql, () => Promise.resolve("presignAvatarResult-1"))
         .entriesForCertificate({
           userId: "userId-1",
@@ -11235,21 +11303,21 @@ export const cases: TranscriptCase[] = [
   {
     key: "makeDrizzleVolunteerHoursRepository.hoursVisibilityFor",
     run: async (sql: any) =>
-      (m125 as any)
+      (m127 as any)
         .makeDrizzleVolunteerHoursRepository(sql, () => Promise.resolve("presignAvatarResult-1"))
         .hoursVisibilityFor("userId-1"),
   },
   {
     key: "makeDrizzleVolunteerHoursRepository.leaderboard",
     run: async (sql: any) =>
-      (m125 as any)
+      (m127 as any)
         .makeDrizzleVolunteerHoursRepository(sql, () => Promise.resolve("presignAvatarResult-1"))
         .leaderboard("geoid-1", 3, 3, "viewerId-1", true),
   },
   {
     key: "makeDrizzleVolunteerHoursRepository.listEntries",
     run: async (sql: any) =>
-      (m125 as any)
+      (m127 as any)
         .makeDrizzleVolunteerHoursRepository(sql, () => Promise.resolve("presignAvatarResult-1"))
         .listEntries({
           userId: "userId-1",
@@ -11261,14 +11329,14 @@ export const cases: TranscriptCase[] = [
   {
     key: "makeDrizzleVolunteerHoursRepository.listEventHours",
     run: async (sql: any) =>
-      (m125 as any)
+      (m127 as any)
         .makeDrizzleVolunteerHoursRepository(sql, () => Promise.resolve("presignAvatarResult-1"))
         .listEventHours("cleanupId-1", "viewerId-1"),
   },
   {
     key: "makeDrizzleVolunteerHoursRepository.listOperatorLedger",
     run: async (sql: any) =>
-      (m125 as any)
+      (m127 as any)
         .makeDrizzleVolunteerHoursRepository(sql, () => Promise.resolve("presignAvatarResult-1"))
         .listOperatorLedger({
           userId: "userId-1",
@@ -11279,7 +11347,7 @@ export const cases: TranscriptCase[] = [
   {
     key: "makeDrizzleVolunteerHoursRepository.logEventHours",
     run: async (sql: any) =>
-      (m125 as any)
+      (m127 as any)
         .makeDrizzleVolunteerHoursRepository(sql, () => Promise.resolve("presignAvatarResult-1"))
         .logEventHours({
           actorId: "actorId-1",
@@ -11293,28 +11361,28 @@ export const cases: TranscriptCase[] = [
   {
     key: "makeDrizzleVolunteerHoursRepository.operatorLedgerTotals",
     run: async (sql: any) =>
-      (m125 as any)
+      (m127 as any)
         .makeDrizzleVolunteerHoursRepository(sql, () => Promise.resolve("presignAvatarResult-1"))
         .operatorLedgerTotals("userId-1"),
   },
   {
     key: "makeDrizzleVolunteerHoursRepository.totalHoursFor",
     run: async (sql: any) =>
-      (m125 as any)
+      (m127 as any)
         .makeDrizzleVolunteerHoursRepository(sql, () => Promise.resolve("presignAvatarResult-1"))
         .totalHoursFor("userId-1"),
   },
   {
     key: "makeDrizzleVolunteerHoursRepository.totalsFor",
     run: async (sql: any) =>
-      (m125 as any)
+      (m127 as any)
         .makeDrizzleVolunteerHoursRepository(sql, () => Promise.resolve("presignAvatarResult-1"))
         .totalsFor("userId-1"),
   },
   {
     key: "makeDrizzleVolunteerHoursRepository.voidEntry",
     run: async (sql: any) =>
-      (m125 as any)
+      (m127 as any)
         .makeDrizzleVolunteerHoursRepository(sql, () => Promise.resolve("presignAvatarResult-1"))
         .voidEntry({
           operatorId: "operatorId-1",

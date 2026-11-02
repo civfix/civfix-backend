@@ -237,8 +237,8 @@ describe("route-coverage: every shared endpoint is registered (offline boot smok
     })
   }
 
-  it("T59: covers ALL 360 endpoints in the registry (no endpoint skipped)", () => {
-    expect(Object.keys(endpoints).length).toBe(360)
+  it("T59: covers ALL 364 endpoints in the registry (no endpoint skipped)", () => {
+    expect(Object.keys(endpoints).length).toBe(364)
   })
 
   it("T13: getNotificationSettings and updateNotificationSettings are registered", async () => {
