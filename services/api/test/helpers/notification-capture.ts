@@ -1,12 +1,13 @@
 import { FakePushSender } from "@civfix/seams"
 import { NotificationCategorySchema } from "@civfix/contract"
-import type { NotificationCategory } from "@civfix/contract"
+import type { NotificationCategory, NotificationDTO } from "@civfix/contract"
 import {
   makeNotificationService,
   type CreateNotificationInput,
   type NotificationService,
 } from "../../src/services/notification-service.js"
 import { categoryForType } from "../../src/services/notification-categories.js"
+import type { NotificationEmailDeps } from "../../src/services/notification-email.js"
 import type { NotificationSettingRecord } from "../../src/services/notification-settings-repository.js"
 import {
   InMemoryNotificationRepository,
@@ -26,20 +27,35 @@ export interface CapturedInput {
  * The real notification service over the in-memory repositories, recording the input of every
  * create call so a test can assert what a send site asked for as well as what was stored.
  */
-export function captureNotifications(now: () => Date = () => new Date()) {
+export function captureNotifications(
+  now: () => Date = () => new Date(),
+  opts: { email?: NotificationEmailDeps } = {},
+) {
   const repo = new InMemoryNotificationRepository()
   repo.now = now
   const settings = new InMemoryNotificationSettingsRepository()
   settings.now = now
   const push = new FakePushSender()
-  const real = makeNotificationService({ repo, settingsRepo: settings, pushSender: push, now })
+  const warnings: unknown[][] = []
+  const record = (...args: unknown[]) => void warnings.push(args)
+  const real = makeNotificationService({
+    repo,
+    settingsRepo: settings,
+    pushSender: push,
+    logger: { warn: record, error: record },
+    now,
+    ...(opts.email !== undefined ? { email: opts.email } : {}),
+  })
   const inputs: CapturedInput[] = []
+  const created: Promise<NotificationDTO | null>[] = []
 
   const service: NotificationService = {
     ...real,
     createNotification: (userId, input) => {
       inputs.push({ userIds: [userId], input })
-      return real.createNotification(userId, input)
+      const result = real.createNotification(userId, input)
+      created.push(result)
+      return result
     },
     createNotifications: (userIds, input) => {
       inputs.push({ userIds, input })
@@ -66,6 +82,8 @@ export function captureNotifications(now: () => Date = () => new Date()) {
     push,
     service,
     inputs,
+    created,
+    warnings,
     set,
     setAll,
     rows: (userId: string) => repo.notifications.filter((n) => n.userId === userId),
