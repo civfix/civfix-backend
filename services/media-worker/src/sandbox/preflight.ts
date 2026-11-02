@@ -208,6 +208,7 @@ export async function assertVideoLaneRuns(): Promise<void> {
           `(${String(err)}). Every ${codec} upload would be rejected or published without a ` +
           "poster frame. Check that FFMPEG_PATH/FFPROBE_PATH point at the image's ffmpeg build and " +
           "that its configure line still enables what src/sandbox uses.",
+        { cause: err },
       )
     }
     if (probedCodec !== codec || remuxed.byteLength === 0 || frame.byteLength === 0) {
@@ -234,6 +235,7 @@ async function assertImageLaneRuns(): Promise<void> {
       `media-worker: the sandboxed image lane cannot process a 1x1 PNG (${String(err)}). Every image ` +
         "upload would be rejected and its bytes deleted. Check MEDIA_IMAGE_LANE_ENTRY / " +
         "dist/image-lane.js and that the sandbox uid can read node_modules.",
+      { cause: err },
     )
   }
   if (result.strippedBytes.byteLength === 0 || result.thumbnailBytes.byteLength === 0) {
@@ -249,6 +251,7 @@ async function assertScratchHandover(identity: SandboxIdentity): Promise<void> {
     throw new Error(
       `media-worker: cannot hand a job scratch directory to gid ${identity.gid} (${String(err)}). ` +
         "The image must create the sandbox group and add `node` to it (usermod -aG mediatools node).",
+      { cause: err },
     )
   }
 }
@@ -279,6 +282,7 @@ async function assertUnprivilegedChild(identity: SandboxIdentity): Promise<void>
         `(${String(err)}). The container needs cap_add SETUID,SETGID, an entrypoint that keeps them ` +
         "ambient (services/media-worker/docker-entrypoint.sh), setpriv from util-linux, and the uid " +
         "must exist in the image.",
+      { cause: err },
     )
   }
 

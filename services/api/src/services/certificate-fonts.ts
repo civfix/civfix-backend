@@ -6,7 +6,7 @@
  * --prod deploy` copies the whole package directory, exactly how `drizzle/*.sql` reaches the migrate
  * container. If a `files` field is ever added it MUST list `assets` (and keep listing `drizzle`).
  *
- * THE PATH TRAP. `tsup.config.ts` has `splitting: false`, so this module is bundled INTO
+ * THE PATH TRAP. `tsdown.config.ts` sets `codeSplitting: false`, so this module is bundled INTO
  * `dist/main.js` (depth 1 under the package root), while under tsx/vitest it runs from `src/services/`
  * at depth 2. An `import.meta.url`-relative path is therefore different in dev and prod, so the directory
  * is found by PROBING for `MANIFEST.json` and memoized.

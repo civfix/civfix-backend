@@ -4,7 +4,7 @@
 #
 # BUILD CONTEXT MUST BE THE REPO ROOT (civfix-backend/). The worker is a pnpm workspace package that
 # (a) inlines @civfix/api + @civfix/seams (workspace source) + @civfix/contract (from the private registry repo.civfix.org)
-# at BUILD time (tsup noExternal), and
+# at BUILD time (tsdown deps.alwaysBundle), and
 # (b) keeps the native / heavy runtime deps EXTERNAL (sharp, execa, exifr, pg-boss, postgres,
 # drizzle-orm, undici, @sentry/node, @aws-sdk/*). So the build needs the root
 # manifests + lockfile + .npmrc + services/api/ (its source) in the context, and the runtime needs the
@@ -43,7 +43,7 @@
 #     https://code.videolan.org/videolan/x264/-/commits/stable, download
 #     https://code.videolan.org/videolan/x264/-/archive/<commit>/x264-<commit>.tar.gz and set both ARGs.
 #   * sharp 0.33.x ships prebuilt linux binaries (@img/sharp-linux-*) that run on glibc, which the
-#     Debian bookworm base provides. No build toolchain or libvips apt package is required.
+#     Debian trixie base provides. No build toolchain or libvips apt package is required.
 #   Both are installed INSIDE this linux image (never copied from the host), so the platform is correct.
 #
 # DECODER PRIVILEGE SEPARATION: the runtime stage provisions a SECOND, credential-less user
@@ -62,18 +62,18 @@
 # read-only rootfs and a noexec tmpfs /tmp. The boot preflight proves all of it (src/sandbox/preflight.ts).
 #
 # Stages:
-#   base    pinned Node 22 (bookworm-slim, glibc) with corepack enabled.
+#   base    pinned Node 24 (trixie-slim, glibc) with corepack enabled.
 #   ffmpeg  verify the pinned FFmpeg source release and compile the minimal ffmpeg + ffprobe.
 #   build   install the FULL workspace, build api(src is inlined) -> worker, then
 #           `pnpm deploy --prod` the worker into a self-contained, dev-pruned /out.
-#   runtime plain Node 22 with no package manager: copy /out + the pinned binaries, provision the
+#   runtime plain Node 24 with no package manager: copy /out + the pinned binaries, provision the
 #           sandbox user, drop privileges in the entrypoint, run the worker. (No port / no HTTP
 #           healthcheck: the worker is a queue consumer; liveness is observed via pg-boss + logs.
 #           Docker restarts it on exit.)
 
 # The digest is the multi-arch index (it carries linux/arm64 and linux/amd64), so a rebuild of the same
 # commit gets the same base; the tag only tells a reader which line it is. Move both together.
-FROM node:22-bookworm-slim@sha256:de170b39439eb0e5a3444ad7d60b015614a381e10fecae2e30ec9e735122f38d AS base
+FROM node:24-trixie-slim@sha256:54f84b4cf8432b21aaffd5d3ce8d41e12cea0d10d33c09d2f3c9879d49d6b446 AS base
 ENV PNPM_HOME="/pnpm" \
     PATH="/pnpm:$PATH" \
     CI=true
@@ -163,7 +163,7 @@ RUN --mount=type=cache,id=pnpm-store,target=/pnpm/store \
 # From the plain Node image, not `base`: the runtime needs no package manager, and corepack and the pnpm it
 # installs carry their own bundled dependency trees (tar, glob, minimatch, cross-spawn, ...) that the image
 # scan flags. Same digest as `base`, so both move together.
-FROM node:22-bookworm-slim@sha256:de170b39439eb0e5a3444ad7d60b015614a381e10fecae2e30ec9e735122f38d AS runtime
+FROM node:24-trixie-slim@sha256:54f84b4cf8432b21aaffd5d3ce8d41e12cea0d10d33c09d2f3c9879d49d6b446 AS runtime
 # Same contract as the api image: the release identity is a property of the promoted artifact, not of the
 # deploy that placed it. Read by src/seams.ts as the GlitchTip `release`.
 ARG SERVICE_VERSION=0.0.0

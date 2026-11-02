@@ -669,7 +669,7 @@ export function makeOrganizationService(deps: OrganizationServiceDeps): Organiza
     reason: string,
   ): Promise<void> {
     if (deps.mailer === undefined && deps.notifier === undefined) return
-    let owner: OrganizationOwnerRecord | null = null
+    let owner: OrganizationOwnerRecord | null
     try {
       owner = await deps.repo.findOwner(org.id)
     } catch (err) {

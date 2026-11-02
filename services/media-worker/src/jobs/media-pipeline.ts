@@ -95,7 +95,7 @@ async function applyAbuseSeams(
 
   const scorerAvailable = hasNsfwScorer(deps.abuseChecks)
 
-  let nsfw = 0
+  let nsfw: number
   try {
     nsfw = await deps.abuseChecks.nsfwScore(bytes)
   } catch (err) {

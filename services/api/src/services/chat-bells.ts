@@ -122,7 +122,7 @@ export function makeChatReplyNotifier(deps: ChatBellDeps): OnChatReply {
     if (!(await isGroupMember(deps, kind, roomId, targetUserId))) return
     if (await deps.isBlockedEitherWay(actorUserId, targetUserId)) return
     if (deps.presence) {
-      let online: string[] = []
+      let online: string[]
       try {
         online = await deps.presence.online(deps.roomKeyFor(kind, roomId))
       } catch {
