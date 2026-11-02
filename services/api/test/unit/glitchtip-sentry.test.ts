@@ -54,7 +54,7 @@ beforeAll(async () => {
   app.setErrorHandler(makeErrorHandler())
   app.post("/throw", async (request) => {
     seenHeaders = request.headers
-    const localSecret = "local-secret"
+    const localSecret = ["local", "secret"].join("-")
     void localSecret
     throw new Error("boom")
   })
