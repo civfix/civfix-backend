@@ -1,15 +1,15 @@
-/** One queue's rows in the job table and the archive window. A queue with no rows has no entry. */
+/** One queue's rows in pg-boss's job table. A queue with no live job and no completion has no entry. */
 export interface QueueJobStats {
   name: string
   created: number
   retry: number
   active: number
   failed: number
-  /** Failed in the last 24 hours, in the job table or the archive window. */
+  /** Failed in the last 24 hours. */
   failedLast24h: number
   /** When the oldest created or retry job that is already due became due; null when none is. */
   oldestDueAt: Date | null
-  /** The newest completion in the job table or the archive window; null when none. */
+  /** The newest completion still in the job table (pg-boss keeps them 7 days); null when none. */
   lastCompletedAt: Date | null
 }
 

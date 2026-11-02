@@ -24,6 +24,9 @@ export default defineConfig(
       "db/backfill-user-activity": "src/db/backfill-user-activity.ts",
       "db/backfill-signup-seats": "src/db/backfill-signup-seats.ts",
       "db/backfill-post-geom": "src/db/backfill-post-geom.ts",
+      // db/pgboss-move-to-v12.ts: run by hand after each environment's switch to pg-boss 12
+      //   (`node dist/db/pgboss-move-to-v12.js`, then `--apply`); see docs/operator-runbook.md §7.
+      "db/pgboss-move-to-v12": "src/db/pgboss-move-to-v12.ts",
       // db/seed-demo-la.ts: the LA demo-community seeder, emitted so an operator can run
       //   `node dist/db/seed-demo-la.js [--yes|--purge --yes]` INSIDE the api container (which already
       //   carries DATABASE_URL) WITHOUT tsx or handling credentials. NEVER wired into the deploy

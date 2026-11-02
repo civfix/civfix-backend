@@ -76,11 +76,11 @@ describe("makeDevJobsService view", () => {
     }
   })
 
-  it("T20: failedLast24h counts failures in the job table and the archive window", async () => {
+  it("T20: failedLast24h counts the failures of the last 24 hours", async () => {
     const { repo, service } = setup()
     repo.addJob("outreach.digest", "failed", { completedOn: ago(2 * HOUR) })
-    repo.addArchived("outreach.digest", "failed", ago(20 * HOUR), ago(8 * HOUR))
-    repo.addArchived("outreach.digest", "failed", ago(30 * HOUR), ago(8 * HOUR))
+    repo.addJob("outreach.digest", "failed", { completedOn: ago(20 * HOUR) })
+    repo.addJob("outreach.digest", "failed", { completedOn: ago(30 * HOUR) })
     repo.addJob("outreach.digest", "failed", { completedOn: ago(25 * HOUR) })
     expect((await queue(service, "outreach.digest")).failedLast24h).toBe(2)
   })
@@ -99,10 +99,10 @@ describe("makeDevJobsService view", () => {
     expect((await queue(later.service, "inbound.sweep")).oldestPendingSeconds).toBe(0)
   })
 
-  it("T22: lastCompletedAt is the newest completion in the job table or archive window", async () => {
+  it("T22: lastCompletedAt is the newest completion", async () => {
     const { repo, service } = setup()
     repo.addJob("event.metrics.rollup", "completed", { completedOn: ago(2 * HOUR) })
-    repo.addArchived("event.metrics.rollup", "completed", ago(HOUR), ago(HOUR))
+    repo.addJob("event.metrics.rollup", "completed", { completedOn: ago(HOUR) })
     repo.addJob("event.metrics.rollup", "failed", { completedOn: ago(MINUTE) })
     expect((await queue(service, "event.metrics.rollup")).lastCompletedAt).toBe(
       ago(HOUR).toISOString(),

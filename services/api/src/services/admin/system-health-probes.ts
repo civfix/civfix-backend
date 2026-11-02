@@ -77,7 +77,7 @@ export function makeSystemHealthProbes(deps: SystemProbeDeps): SystemHealthProbe
         const rows = await withQueryTimeout(
           sql<{ n: string }[]>`
             SELECT COUNT(*)::text AS n
-            FROM pgboss.job
+            FROM pgboss_v12.job
             WHERE state IN ('created', 'active', 'retry')
               AND name LIKE ${MEDIA_QUEUE_LIKE}
           `,

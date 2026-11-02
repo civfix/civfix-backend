@@ -3,7 +3,7 @@ import { afterEach, describe, expect, it, vi } from "vitest"
 const bossErrorHandlers: ((err: Error) => void)[] = []
 
 vi.mock("pg-boss", () => ({
-  default: class {
+  PgBoss: class {
     on(event: string, handler: (err: Error) => void): void {
       if (event === "error") bossErrorHandlers.push(handler)
     }
