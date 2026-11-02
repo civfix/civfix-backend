@@ -145,30 +145,36 @@ describe("assertPgSkipAllowed", () => {
     expect(() => assertPgSkipAllowed("no docker", {})).not.toThrow()
   })
 
-  it("names the image it tried and points an arm64 host at the override", () => {
+  it("T4: names the default image it tried and points an arm64 host at the override", () => {
+    expect(() =>
+      assertPgSkipAllowed("no matching manifest for linux/arm64", { CIVFIX_REQUIRE_PG: "1" }),
+    ).toThrow(/\(postgis\/postgis:18-3\.6\)[\s\S]*arm64 host, set CIVFIX_TEST_PG_IMAGE/)
+  })
+
+  it("names the override image when one is set", () => {
     expect(() =>
       assertPgSkipAllowed("no matching manifest for linux/arm64", {
         CIVFIX_REQUIRE_PG: "1",
-        CIVFIX_TEST_PG_IMAGE: "civfix/postgis:16-local",
+        CIVFIX_TEST_PG_IMAGE: "civfix/postgis:18-local",
       }),
-    ).toThrow(/\(civfix\/postgis:16-local\)[\s\S]*arm64 host, set CIVFIX_TEST_PG_IMAGE/)
+    ).toThrow(/\(civfix\/postgis:18-local\)[\s\S]*arm64 host, set CIVFIX_TEST_PG_IMAGE/)
   })
 })
 
 describe("postgisImage", () => {
-  it("defaults to the pinned postgis/postgis image CI runs", () => {
-    expect(postgisImage({})).toBe("postgis/postgis:16-3.4")
-    expect(DEFAULT_POSTGIS_IMAGE).toBe("postgis/postgis:16-3.4")
+  it("T1: defaults to the pinned postgis/postgis image CI runs", () => {
+    expect(postgisImage({})).toBe("postgis/postgis:18-3.6")
+    expect(DEFAULT_POSTGIS_IMAGE).toBe("postgis/postgis:18-3.6")
   })
 
-  it("uses CIVFIX_TEST_PG_IMAGE when set", () => {
-    expect(postgisImage({ CIVFIX_TEST_PG_IMAGE: "civfix/postgis:16-local" })).toBe(
-      "civfix/postgis:16-local",
+  it("T2: uses CIVFIX_TEST_PG_IMAGE when set", () => {
+    expect(postgisImage({ CIVFIX_TEST_PG_IMAGE: "civfix/postgis:18-local" })).toBe(
+      "civfix/postgis:18-local",
     )
   })
 
-  it("treats a blank override as unset rather than handing testcontainers an empty image name", () => {
-    expect(postgisImage({ CIVFIX_TEST_PG_IMAGE: "  " })).toBe(DEFAULT_POSTGIS_IMAGE)
+  it("T3: treats a blank override as unset rather than handing testcontainers an empty image name", () => {
+    expect(postgisImage({ CIVFIX_TEST_PG_IMAGE: "  " })).toBe("postgis/postgis:18-3.6")
   })
 })
 
