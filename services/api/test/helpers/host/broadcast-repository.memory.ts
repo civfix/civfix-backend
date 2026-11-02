@@ -12,9 +12,9 @@ import type {
   DeliveryListQuery,
   DeliveryListRow,
   KeysetRow,
+  QuietHoursRecord,
 } from "../../../src/services/host/broadcast-repository.js"
-import { DEFAULT_PREFS } from "../../../src/services/notification-helpers.js"
-import type { NotificationPrefsRecord } from "../../../src/services/notification-repository.js"
+import type { InMemoryNotificationSettingsRepository } from "../notifications.js"
 import type { WriteAuditInput } from "../../../src/services/admin/audit.js"
 import type { KeysetCursor } from "../../../src/db/cursor-helpers.js"
 import type {
@@ -36,9 +36,9 @@ import type {
 } from "../../../src/services/host/broadcast-types.js"
 import {
   ANNOUNCEMENT_VISIBLE_STATUSES,
+  BROADCAST_KIND_CATEGORY,
   CRITICAL_BROADCAST_KINDS,
   DEFAULT_BROADCAST_CHUNK_SIZE,
-  HOST_COMPOSED_BROADCAST_KINDS,
 } from "../../../src/services/host/broadcast-types.js"
 
 type AudienceScopeQuery = Pick<AudiencePageQuery, "cleanupId" | "segment" | "kind">
@@ -66,8 +66,6 @@ export interface MemoryMember {
   banned?: boolean
   deleted?: boolean
   suspended?: boolean
-  hostBroadcastsPref?: boolean
-  pushPref?: boolean
   quietHours?: { start: string; end: string; tz: string }
   contact?: Partial<MemberContact>
 }
@@ -138,6 +136,8 @@ export class InMemoryBroadcastRepository implements BroadcastRepository {
   private readonly hosts = new Map<string, HostMessagingState>()
   private readonly deletedHosts = new Set<string>()
   private dueReminders: DueReminder[] = []
+  /** The audience reads account holders' category settings from here, as the SQL joins them. */
+  notificationSettings: InMemoryNotificationSettingsRepository | undefined
   readonly audits: WriteAuditInput[] = []
 
   seedEvent(
@@ -674,19 +674,13 @@ export class InMemoryBroadcastRepository implements BroadcastRepository {
     return Promise.resolve(out)
   }
 
-  pushPrefs(userIds: readonly string[]): Promise<Map<string, NotificationPrefsRecord>> {
-    const out = new Map<string, NotificationPrefsRecord>()
+  quietHours(userIds: readonly string[]): Promise<Map<string, QuietHoursRecord>> {
+    const out = new Map<string, QuietHoursRecord>()
     for (const rows of this.members.values()) {
       for (const row of rows) {
-        if (!userIds.includes(row.userId)) continue
-        out.set(row.userId, {
-          ...DEFAULT_PREFS,
-          push: row.pushPref ?? true,
-          hostBroadcasts: row.hostBroadcastsPref ?? true,
-          quietStart: row.quietHours?.start ?? null,
-          quietEnd: row.quietHours?.end ?? null,
-          tz: row.quietHours?.tz ?? null,
-        })
+        if (!userIds.includes(row.userId) || row.quietHours === undefined) continue
+        const { start, end, tz } = row.quietHours
+        out.set(row.userId, { quietStart: start, quietEnd: end, tz })
       }
     }
     return Promise.resolve(out)
@@ -879,8 +873,12 @@ export class InMemoryBroadcastRepository implements BroadcastRepository {
   }
 
   private memberAudible(cleanupId: string, member: MemoryMember, kind: BroadcastKind): boolean {
-    if (CRITICAL_BROADCAST_KINDS.has(kind)) return true
-    if (HOST_COMPOSED_BROADCAST_KINDS.has(kind) && member.hostBroadcastsPref === false) return false
+    const category = BROADCAST_KIND_CATEGORY[kind]
+    const setting =
+      category === null
+        ? undefined
+        : this.notificationSettings?.rows.get(`${member.userId}:${category}`)
+    if (setting?.enabled === false) return false
     if (this.mutes.has(muteKey(cleanupId, member.userId))) return false
     if (this.unsubscribes.has(unsubscribeKey("event", cleanupId, "user", member.userId))) {
       return false

@@ -50,6 +50,7 @@ const EXPECTED_PROJECTIONS: ReadonlyArray<readonly [from: string, columns: strin
     "notification_prefs",
     "user_id, push, cleanup_chat, report_updates, follows, quiet_start, quiet_end, mentions, host_broadcasts",
   ],
+  ["notification_settings", "category, enabled, push, email"],
   ["push_tokens", "id, platform, created_at, revoked_at"],
   [
     "service_hours_certificates",
@@ -91,6 +92,7 @@ const EXPECTED_TOP_LEVEL_KEYS = [
   "followers",
   "blocks",
   "notificationPrefs",
+  "notificationSettings",
   "pushTokens",
   "certificates",
   "organizations",

@@ -1,4 +1,5 @@
 import { TEST_TICKET_SIGNER } from "../helpers/ticket-signer.js"
+import { captureNotifications, categoryOfInput } from "../helpers/notification-capture.js"
 import { describe, it, expect, beforeEach } from "vitest"
 import { FakeJobs } from "@civfix/seams"
 import {
@@ -1487,6 +1488,36 @@ describe("L23: the unbounded `bring` array is clamped", () => {
 })
 
 describe("L24: the cancellation fan-out rides the notification pipeline", () => {
+  it("T50: the direct cleanup_cancelled notice is Events you're going to", async () => {
+    repo.seedUser({ id: ALICE, displayName: "Alice" })
+    const n = captureNotifications()
+    const svc = makeCleanupService({
+      tickets: TEST_TICKET_SIGNER,
+      repo,
+      counters: new InMemoryCounterStore(),
+      notifier: n.service,
+    })
+    const created = await svc.createCleanup(baseInput(), ORG)
+    await svc.joinCleanup(created.id, ALICE)
+    await svc.cancelCleanup(created.id, "Storm warning", ORG)
+    expect(n.inputs.map((c) => categoryOfInput(c.input))).toEqual(["events"])
+  })
+
+  it("T51: a cleanup_role bell is Event team and hours", async () => {
+    repo.seedUser({ id: ALICE, displayName: "Alice" })
+    const n = captureNotifications()
+    const svc = makeCleanupService({
+      tickets: TEST_TICKET_SIGNER,
+      repo,
+      counters: new InMemoryCounterStore(),
+      notifier: n.service,
+    })
+    const created = await svc.createCleanup(baseInput(), ORG)
+    await svc.joinCleanup(created.id, ALICE)
+    await svc.setMemberRole(created.id, ORG, ALICE, "cohost")
+    expect(n.inputs.map((c) => categoryOfInput(c.input))).toEqual(["eventTeam"])
+  })
+
   it("emits one cleanup_cancelled notification per OTHER member, through the service (not raw SQL)", async () => {
     repo.seedUser({ id: ALICE, displayName: "Alice" })
     repo.seedUser({ id: BOB, displayName: "Bob" })
@@ -1543,7 +1574,7 @@ describe("L24: the cancellation fan-out rides the notification pipeline", () => 
     expect(bells.some((b) => b.userId === ORG)).toBe(false)
   })
 
-  it("a cancellation with NO reason selects the reason-less body key and sends no vars", async () => {
+  it("a cancellation with NO reason selects the reason-less body key and names the event", async () => {
     repo.seedUser({ id: ALICE, displayName: "Alice" })
     const bells: { bodyKey?: string; vars?: Record<string, string | number> }[] = []
     const svc = makeCleanupService({
@@ -1571,7 +1602,9 @@ describe("L24: the cancellation fan-out rides the notification pipeline", () => 
 
     await svc.cancelCleanup(created.id, "   ", ORG)
 
-    expect(bells).toEqual([{ bodyKey: "notification.cleanup_cancelled.body" }])
+    expect(bells).toEqual([
+      { bodyKey: "notification.cleanup_cancelled.body", vars: { title: created.title } },
+    ])
   })
 
   it("only a FRESH transition rings the roster: re-cancelling pushes no second bell", async () => {
@@ -1947,6 +1980,34 @@ describe("F157: cancellation fan-out leaves the request path", () => {
     await expect(
       svc.runCancelFanout({ cleanupId: created.id, reason: null, actorId: ORG }),
     ).rejects.toThrow("guest roster read failed")
+  })
+
+  it("leaves the cancellation email to the attendee broadcast", async () => {
+    repo.seedUser({ id: ALICE, displayName: "Alice" })
+    const emails: unknown[] = []
+    const svc = makeCleanupService({
+      tickets: TEST_TICKET_SIGNER,
+      repo,
+      counters: new InMemoryCounterStore(),
+      notifier: {
+        createNotification: (_userId, input) => {
+          emails.push(input.email)
+          return Promise.resolve({
+            id: "n1",
+            type: input.type,
+            title: "",
+            read: false,
+            createdAt: new Date().toISOString(),
+          })
+        },
+      },
+    })
+    const created = await svc.createCleanup(baseInput(), ORG)
+    await svc.joinCleanup(created.id, ALICE)
+
+    await svc.runCancelFanout({ cleanupId: created.id, reason: null, actorId: ORG })
+
+    expect(emails).toEqual(["never"])
   })
 
   it("the enqueued job delivers exactly the bells the inline path used to", async () => {

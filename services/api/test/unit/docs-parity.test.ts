@@ -85,6 +85,11 @@ describe("operator runbook vs drizzle/", () => {
     }
   })
 
+  it("T46: names the unread page index guard", () => {
+    expect(migrationFiles()).toContain("0200_notifications_unread_page_index_guard.sql")
+    expect(doc).toContain("0200_notifications_unread_page_index_guard.sql")
+  })
+
   it("states the real number of migration files", () => {
     const stated = /holds \*\*(\d+) files\*\*/.exec(doc)
     expect(stated, "runbook should state how many files drizzle/ holds").not.toBeNull()
