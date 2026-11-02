@@ -162,6 +162,7 @@ import type { RedisClient } from "../../src/adapters/redis.js"
 
 function brokenRedis(): RedisClient {
   return {
+    defineCommand: () => {},
     rateLimit: (
       _key: string,
       _tw: number,
@@ -446,6 +447,7 @@ function recordingRedis(): RecordingRedis {
   const counts = new Map<string, number>()
   const keys: string[] = []
   const client = {
+    defineCommand: () => {},
     rateLimit: (
       key: string,
       timeWindow: number,
