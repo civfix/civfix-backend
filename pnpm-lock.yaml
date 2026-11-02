@@ -76,8 +76,8 @@ importers:
   packages/seams:
     dependencies:
       '@civfix/contract':
-        specifier: 0.70.0-b-integration-legal-versions.g1c363de
-        version: 0.70.0-b-integration-legal-versions.g1c363de
+        specifier: ^0.70.0
+        version: 0.70.0
     devDependencies:
       '@civfix/config':
         specifier: workspace:*
@@ -137,8 +137,8 @@ importers:
         specifier: ^3.1147.0
         version: 3.1147.0
       '@civfix/contract':
-        specifier: 0.70.0-b-integration-legal-versions.g1c363de
-        version: 0.70.0-b-integration-legal-versions.g1c363de
+        specifier: ^0.70.0
+        version: 0.70.0
       '@civfix/tokens':
         specifier: ^0.1.1
         version: 0.1.1
@@ -291,8 +291,8 @@ importers:
         specifier: workspace:*
         version: link:../api
       '@civfix/contract':
-        specifier: 0.70.0-b-integration-legal-versions.g1c363de
-        version: 0.70.0-b-integration-legal-versions.g1c363de
+        specifier: ^0.70.0
+        version: 0.70.0
       '@sentry/node':
         specifier: ^10.76.1
         version: 10.76.1(@opentelemetry/core@2.12.0(@opentelemetry/api@1.9.1))
@@ -475,8 +475,8 @@ packages:
     resolution: {integrity: sha512-6zABk/ECA/QYSCQ1NGiVwwbQerUCZ+TQbp64Q3AgmfNvurHH0j8TtXa1qbShXA6qqkpAj4V5W8pP6mLe1mcMqA==}
     engines: {node: '>=18'}
 
-  '@civfix/contract@0.70.0-b-integration-legal-versions.g1c363de':
-    resolution: {integrity: sha512-wQauih0yW8uJJA38g9WXSeoGGjeL9BpA1JqtJeJL6S4GBaeQcAaOwePlYjTA/HdeTPmRGuwpGF+UebUocpGVAg==}
+  '@civfix/contract@0.70.0':
+    resolution: {integrity: sha512-F20eUN4u/hfJM4KLIkzKTIol33UWBzWdbrX2eYVLd5p658iTi14SHx8lP/i/ZbHUhcTfg7BOWQYqzp1acNWpGA==}
     engines: {node: '>=20'}
 
   '@civfix/tokens@0.1.1':
@@ -4655,7 +4655,7 @@ snapshots:
 
   '@bcoe/v8-coverage@1.0.2': {}
 
-  '@civfix/contract@0.70.0-b-integration-legal-versions.g1c363de':
+  '@civfix/contract@0.70.0':
     dependencies:
       zod: 4.6.7
 
