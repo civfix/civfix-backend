@@ -8,12 +8,15 @@ import {
   makeDrizzleAnalyticsRepository,
 } from "../../services/admin/analytics-repository.drizzle.js"
 import type { AnalyticsRepository } from "../../services/admin/analytics-repository.js"
+import type { FilingRepository } from "../../services/filings/filing-repository.js"
+import { makeDrizzleFilingRepository } from "../../services/filings/filing-repository.drizzle.js"
 import { route } from "../../versioning/route.js"
 import { overridableService, spreadNow } from "./_route-utils.js"
 
 export interface HomeRouteOverrides {
   repo: HomeRepository
   analytics: AnalyticsRepository
+  filings: Pick<FilingRepository, "countGroups">
   now?: () => Date
 }
 
@@ -37,6 +40,7 @@ export async function registerAdminHomeRoutes(
       makeHomeService({
         repo: overrides.repo,
         analytics: overrides.analytics,
+        filings: overrides.filings,
         ...spreadNow(overrides),
         onSectionError,
       }),
@@ -46,7 +50,12 @@ export async function registerAdminHomeRoutes(
       const analytics: AnalyticsRepository = makeDrizzleAnalyticsRepository(sql, {
         cacheTtlMs: ANALYTICS_CACHE_TTL_MS,
       })
-      return makeHomeService({ repo, analytics, onSectionError })
+      return makeHomeService({
+        repo,
+        analytics,
+        filings: makeDrizzleFilingRepository(sql),
+        onSectionError,
+      })
     },
   )
 

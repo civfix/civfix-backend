@@ -27,6 +27,7 @@ import {
 import type { ModerationRepository } from "../../services/admin/moderation-repository.js"
 import { makeDrizzleModerationRepository } from "../../services/admin/moderation-repository.drizzle.js"
 import { makeContainerReportChatEmitter } from "../../services/report-chat-emitter.js"
+import { makeContainerFilingService } from "../../services/filings/filing-wiring.js"
 import { makePrivateMediaPresigner, type PresignMedia } from "../../services/media-presign.js"
 import type { ReportChatSystemEmitter } from "../../services/report-timeline-event.js"
 
@@ -74,6 +75,7 @@ export async function registerAdminModerationRoutes(
             app.authServices.sessions.applyAccountStatus(userId, status),
         },
         announceMessageUpdate: makeContainerMessageUpdateAnnouncer(container, app.log),
+        filings: makeContainerFilingService(container, app.log),
       })
     },
   )

@@ -26,6 +26,8 @@ export const PRUNE_AFFECTED_TABLES = [
   "jurisdiction_contacts",
   "outreach_state",
   "jurisdiction_discovery_tasks",
+  "filing_routes",
+  "report_filings",
   "jurisdictions",
 ] as const
 
@@ -94,6 +96,9 @@ export async function pruneNonAuthoritativeJurisdictions(
     await tx`DELETE FROM jurisdiction_contacts       WHERE geoid IN ${tx(staleGeoids)}`
     await tx`DELETE FROM outreach_state              WHERE geoid IN ${tx(staleGeoids)}`
     await tx`DELETE FROM jurisdiction_discovery_tasks WHERE geoid IN ${tx(staleGeoids)}`
+    await tx`DELETE FROM filing_routes               WHERE geoid IN ${tx(staleGeoids)}`
+    // A filing is the record of what was sent to a city, so it stays and only loses the boundary.
+    await tx`UPDATE report_filings  SET geoid = NULL WHERE geoid IN ${tx(staleGeoids)}`
     await tx`DELETE FROM jurisdictions               WHERE geoid IN ${tx(staleGeoids)}`
 
     const reportsResolved =
@@ -146,6 +151,8 @@ async function countPruneImpact(
       (SELECT count(*)::int FROM outreach_state WHERE geoid IN ${tx(staleGeoids)}) AS outreach_state,
       (SELECT count(*)::int FROM jurisdiction_discovery_tasks WHERE geoid IN ${tx(staleGeoids)})
         AS jurisdiction_discovery_tasks,
+      (SELECT count(*)::int FROM filing_routes WHERE geoid IN ${tx(staleGeoids)}) AS filing_routes,
+      (SELECT count(*)::int FROM report_filings WHERE geoid IN ${tx(staleGeoids)}) AS report_filings,
       (SELECT count(*)::int FROM jurisdictions WHERE geoid IN ${tx(staleGeoids)}) AS jurisdictions
   `
   return rows[0] ?? noneAffected()

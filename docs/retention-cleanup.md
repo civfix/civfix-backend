@@ -72,6 +72,13 @@ separate **product/counsel retention DECISION**; this sweep only reaps auth
 artifacts that are unambiguously dead once expired. Orphaned media already has its
 own `orphan.sweep`.
 
+City filings (`report_filings`, `filing_evidence`, `filing_messages`, epic #164) are
+never swept: they are the record of what was filed with a city on a resident's
+behalf, kept indefinitely like the reports themselves, and account deletion leaves
+them untouched (`erasure-behavior.md`). Filing evidence in R2 (`filings/<filingId>/`)
+is kept with them. Only the filer's own working copies (`runs/` in its workspace)
+are pruned, after 30 days, by the filer (D16).
+
 ## The official account
 
 The `users` row `00000000-0000-4000-8000-00000000c1f1` (`@civfix`, created by

@@ -53,81 +53,85 @@ import * as m49 from "../../src/services/data-export-repository.drizzle.js"
 import * as m50 from "../../src/services/data-export-service.js"
 import * as m51 from "../../src/services/discussion-repository.drizzle.js"
 import * as m52 from "../../src/services/dm-repository.drizzle.js"
-import * as m53 from "../../src/services/geocode-cache-repository.drizzle.js"
-import * as m54 from "../../src/services/guest-rsvp-repository.drizzle.js"
-import * as m55 from "../../src/services/host/admin-pages-repository.drizzle.js"
-import * as m56 from "../../src/services/host/analytics-repository.drizzle.js"
-import * as m57 from "../../src/services/host/announcement-identity-repository.drizzle.js"
-import * as m58 from "../../src/services/host/authz.js"
-import * as m59 from "../../src/services/host/broadcast-audience-repository.drizzle.js"
-import * as m60 from "../../src/services/host/broadcast-repository.drizzle.js"
-import * as m61 from "../../src/services/host/comms-wiring.js"
-import * as m62 from "../../src/services/host/event-analytics-repository.drizzle.js"
-import * as m63 from "../../src/services/host/event-consents-repository.drizzle.js"
-import * as m64 from "../../src/services/host/export-repository.drizzle.js"
-import * as m65 from "../../src/services/host/host-audit.js"
-import * as m66 from "../../src/services/host/host-portfolio-repository.drizzle.js"
-import * as m67 from "../../src/services/host/host-standing-repository.drizzle.js"
-import * as m68 from "../../src/services/host/host-team-repository.drizzle.js"
-import * as m69 from "../../src/services/host/host-team-service.js"
-import * as m70 from "../../src/services/host/metrics-repository.drizzle.js"
-import * as m71 from "../../src/services/host/organization-repository-admin.drizzle.js"
-import * as m72 from "../../src/services/host/organization-repository-invites.drizzle.js"
-import * as m73 from "../../src/services/host/organization-repository-members.drizzle.js"
-import * as m74 from "../../src/services/host/organization-repository-profile.drizzle.js"
-import * as m75 from "../../src/services/host/organization-repository-rows.drizzle.js"
-import * as m76 from "../../src/services/host/organization-repository-verification.drizzle.js"
-import * as m77 from "../../src/services/host/organization-repository.drizzle.js"
-import * as m78 from "../../src/services/host/portfolio-counts.js"
-import * as m79 from "../../src/services/host/registration-counts.js"
-import * as m80 from "../../src/services/host/registration-dto.js"
-import * as m81 from "../../src/services/host/registration-repository-checkin.drizzle.js"
-import * as m82 from "../../src/services/host/registration-repository-load.drizzle.js"
-import * as m83 from "../../src/services/host/registration-repository-pages.drizzle.js"
-import * as m84 from "../../src/services/host/registration-repository-questions.drizzle.js"
-import * as m85 from "../../src/services/host/registration-repository-register.drizzle.js"
-import * as m86 from "../../src/services/host/registration-repository-roster.drizzle.js"
-import * as m87 from "../../src/services/host/registration-repository-ticket-types.drizzle.js"
-import * as m88 from "../../src/services/host/registration-repository-waitlist.drizzle.js"
-import * as m89 from "../../src/services/host/registration-repository.drizzle.js"
-import * as m90 from "../../src/services/host/registration-retention-repository.drizzle.js"
-import * as m91 from "../../src/services/host/registration-retention.js"
-import * as m92 from "../../src/services/host/registration-sql.js"
-import * as m93 from "../../src/services/host/retention-lanes.js"
-import * as m94 from "../../src/services/jurisdiction-repository.drizzle.js"
-import * as m95 from "../../src/services/jurisdiction-service.js"
-import * as m96 from "../../src/services/legal-acceptance-repository.drizzle.js"
-import * as m97 from "../../src/services/legal-documents-repository.drizzle.js"
-import * as m98 from "../../src/services/media-authorization-repository.drizzle.js"
-import * as m99 from "../../src/services/media-authorization.js"
-import * as m100 from "../../src/services/media-bindings.js"
-import * as m101 from "../../src/services/media-claim-repository.drizzle.js"
-import * as m102 from "../../src/services/media-served-key.js"
-import * as m103 from "../../src/services/media-worker-repository.drizzle.js"
-import * as m104 from "../../src/services/mention-targets-repository.drizzle.js"
-import * as m105 from "../../src/services/message-attachments-repository.drizzle.js"
-import * as m106 from "../../src/services/message-mentions-repository.drizzle.js"
-import * as m107 from "../../src/services/message-reactions-repository.drizzle.js"
-import * as m108 from "../../src/services/notification-repository.drizzle.js"
-import * as m109 from "../../src/services/notification-settings-repository.drizzle.js"
-import * as m110 from "../../src/services/post-repository.drizzle.js"
-import * as m111 from "../../src/services/post-service.js"
-import * as m112 from "../../src/services/read-watermark-repository.drizzle.js"
-import * as m113 from "../../src/services/reference-code-repository.drizzle.js"
-import * as m114 from "../../src/services/reply-targets-repository.drizzle.js"
-import * as m115 from "../../src/services/report-chat-repository.drizzle.js"
-import * as m116 from "../../src/services/report-forward-audit-repository.drizzle.js"
-import * as m117 from "../../src/services/report-repository.drizzle.js"
-import * as m118 from "../../src/services/report-sql.js"
-import * as m119 from "../../src/services/retention-repository.drizzle.js"
-import * as m120 from "../../src/services/room-messages-repository.drizzle.js"
-import * as m121 from "../../src/services/social-repository.drizzle.js"
-import * as m122 from "../../src/services/threads-repository.drizzle.js"
-import * as m123 from "../../src/services/user-avatar.js"
-import * as m124 from "../../src/services/user-search-repository.drizzle.js"
-import * as m125 from "../../src/services/users-repository.drizzle.js"
-import * as m126 from "../../src/services/volunteer-hours-credit.drizzle.js"
-import * as m127 from "../../src/services/volunteer-hours-repository.drizzle.js"
+import * as m53 from "../../src/services/filings/filing-ingest-sql.drizzle.js"
+import * as m54 from "../../src/services/filings/filing-reopen.drizzle.js"
+import * as m55 from "../../src/services/filings/filing-repository.drizzle.js"
+import * as m56 from "../../src/services/filings/filings-worker.js"
+import * as m57 from "../../src/services/geocode-cache-repository.drizzle.js"
+import * as m58 from "../../src/services/guest-rsvp-repository.drizzle.js"
+import * as m59 from "../../src/services/host/admin-pages-repository.drizzle.js"
+import * as m60 from "../../src/services/host/analytics-repository.drizzle.js"
+import * as m61 from "../../src/services/host/announcement-identity-repository.drizzle.js"
+import * as m62 from "../../src/services/host/authz.js"
+import * as m63 from "../../src/services/host/broadcast-audience-repository.drizzle.js"
+import * as m64 from "../../src/services/host/broadcast-repository.drizzle.js"
+import * as m65 from "../../src/services/host/comms-wiring.js"
+import * as m66 from "../../src/services/host/event-analytics-repository.drizzle.js"
+import * as m67 from "../../src/services/host/event-consents-repository.drizzle.js"
+import * as m68 from "../../src/services/host/export-repository.drizzle.js"
+import * as m69 from "../../src/services/host/host-audit.js"
+import * as m70 from "../../src/services/host/host-portfolio-repository.drizzle.js"
+import * as m71 from "../../src/services/host/host-standing-repository.drizzle.js"
+import * as m72 from "../../src/services/host/host-team-repository.drizzle.js"
+import * as m73 from "../../src/services/host/host-team-service.js"
+import * as m74 from "../../src/services/host/metrics-repository.drizzle.js"
+import * as m75 from "../../src/services/host/organization-repository-admin.drizzle.js"
+import * as m76 from "../../src/services/host/organization-repository-invites.drizzle.js"
+import * as m77 from "../../src/services/host/organization-repository-members.drizzle.js"
+import * as m78 from "../../src/services/host/organization-repository-profile.drizzle.js"
+import * as m79 from "../../src/services/host/organization-repository-rows.drizzle.js"
+import * as m80 from "../../src/services/host/organization-repository-verification.drizzle.js"
+import * as m81 from "../../src/services/host/organization-repository.drizzle.js"
+import * as m82 from "../../src/services/host/portfolio-counts.js"
+import * as m83 from "../../src/services/host/registration-counts.js"
+import * as m84 from "../../src/services/host/registration-dto.js"
+import * as m85 from "../../src/services/host/registration-repository-checkin.drizzle.js"
+import * as m86 from "../../src/services/host/registration-repository-load.drizzle.js"
+import * as m87 from "../../src/services/host/registration-repository-pages.drizzle.js"
+import * as m88 from "../../src/services/host/registration-repository-questions.drizzle.js"
+import * as m89 from "../../src/services/host/registration-repository-register.drizzle.js"
+import * as m90 from "../../src/services/host/registration-repository-roster.drizzle.js"
+import * as m91 from "../../src/services/host/registration-repository-ticket-types.drizzle.js"
+import * as m92 from "../../src/services/host/registration-repository-waitlist.drizzle.js"
+import * as m93 from "../../src/services/host/registration-repository.drizzle.js"
+import * as m94 from "../../src/services/host/registration-retention-repository.drizzle.js"
+import * as m95 from "../../src/services/host/registration-retention.js"
+import * as m96 from "../../src/services/host/registration-sql.js"
+import * as m97 from "../../src/services/host/retention-lanes.js"
+import * as m98 from "../../src/services/jurisdiction-repository.drizzle.js"
+import * as m99 from "../../src/services/jurisdiction-service.js"
+import * as m100 from "../../src/services/legal-acceptance-repository.drizzle.js"
+import * as m101 from "../../src/services/legal-documents-repository.drizzle.js"
+import * as m102 from "../../src/services/media-authorization-repository.drizzle.js"
+import * as m103 from "../../src/services/media-authorization.js"
+import * as m104 from "../../src/services/media-bindings.js"
+import * as m105 from "../../src/services/media-claim-repository.drizzle.js"
+import * as m106 from "../../src/services/media-served-key.js"
+import * as m107 from "../../src/services/media-worker-repository.drizzle.js"
+import * as m108 from "../../src/services/mention-targets-repository.drizzle.js"
+import * as m109 from "../../src/services/message-attachments-repository.drizzle.js"
+import * as m110 from "../../src/services/message-mentions-repository.drizzle.js"
+import * as m111 from "../../src/services/message-reactions-repository.drizzle.js"
+import * as m112 from "../../src/services/notification-repository.drizzle.js"
+import * as m113 from "../../src/services/notification-settings-repository.drizzle.js"
+import * as m114 from "../../src/services/post-repository.drizzle.js"
+import * as m115 from "../../src/services/post-service.js"
+import * as m116 from "../../src/services/read-watermark-repository.drizzle.js"
+import * as m117 from "../../src/services/reference-code-repository.drizzle.js"
+import * as m118 from "../../src/services/reply-targets-repository.drizzle.js"
+import * as m119 from "../../src/services/report-chat-repository.drizzle.js"
+import * as m120 from "../../src/services/report-forward-audit-repository.drizzle.js"
+import * as m121 from "../../src/services/report-repository.drizzle.js"
+import * as m122 from "../../src/services/report-sql.js"
+import * as m123 from "../../src/services/retention-repository.drizzle.js"
+import * as m124 from "../../src/services/room-messages-repository.drizzle.js"
+import * as m125 from "../../src/services/social-repository.drizzle.js"
+import * as m126 from "../../src/services/threads-repository.drizzle.js"
+import * as m127 from "../../src/services/user-avatar.js"
+import * as m128 from "../../src/services/user-search-repository.drizzle.js"
+import * as m129 from "../../src/services/users-repository.drizzle.js"
+import * as m130 from "../../src/services/volunteer-hours-credit.drizzle.js"
+import * as m131 from "../../src/services/volunteer-hours-repository.drizzle.js"
 
 export interface TranscriptCase {
   key: string
@@ -290,7 +294,7 @@ export const cases: TranscriptCase[] = [
     run: async (sql: any) =>
       (m5 as any)
         .makeDrizzleAdminReportRepository(sql, { logger: { warn: () => undefined } })
-        .getOutreach("id-1"),
+        .getOutreach("id-1", { packetsSince: new Date("2026-03-04T05:06:07.000Z") }),
   },
   {
     key: "makeDrizzleAdminReportRepository.getReport",
@@ -844,7 +848,7 @@ export const cases: TranscriptCase[] = [
       (m19 as any).makeDrizzleJurisdictionContactsRepository(sql).listDirectory({
         q: "q-1",
         filter: "all",
-        layer: "place",
+        layer: "state",
         sort: "name",
         cursor: "cursor-1",
         limit: 3,
@@ -926,11 +930,21 @@ export const cases: TranscriptCase[] = [
   { key: "geoidForContact", run: async (sql: any) => (m19 as any).geoidForContact(sql, "email-1") },
   {
     key: "sendInFlightExpr",
-    run: async (sql: any) => (m20 as any).sendInFlightExpr(sql, sql`TRUE /* threadRef */`),
+    run: async (sql: any) =>
+      (m20 as any).sendInFlightExpr(
+        sql,
+        sql`TRUE /* threadRef */`,
+        new Date("2026-03-04T05:06:07.000Z"),
+      ),
   },
   {
     key: "sendFailedExpr",
-    run: async (sql: any) => (m20 as any).sendFailedExpr(sql, sql`TRUE /* threadRef */`),
+    run: async (sql: any) =>
+      (m20 as any).sendFailedExpr(
+        sql,
+        sql`TRUE /* threadRef */`,
+        new Date("2026-03-04T05:06:07.000Z"),
+      ),
   },
   {
     key: "makeDrizzleMailRepository.approveWithheldReply",
@@ -1095,6 +1109,13 @@ export const cases: TranscriptCase[] = [
     key: "makeDrizzleMailRepository.latestOutboundMessageId",
     run: async (sql: any) =>
       (m20 as any).makeDrizzleMailRepository(sql).latestOutboundMessageId("threadId-1"),
+  },
+  {
+    key: "makeDrizzleMailRepository.latestUnsentPacketId",
+    run: async (sql: any) =>
+      (m20 as any)
+        .makeDrizzleMailRepository(sql)
+        .latestUnsentPacketId("threadId-1", new Date("2026-03-04T05:06:07.000Z")),
   },
   {
     key: "makeDrizzleMailRepository.listThreads",
@@ -3564,14 +3585,281 @@ export const cases: TranscriptCase[] = [
         .toggleReaction("messageId-1", "userId-1", "like"),
   },
   {
+    key: "makeDrizzleFilingIngestSql.applyCityUpdate",
+    run: async (sql: any) =>
+      (m53 as any).makeDrizzleFilingIngestSql(sql).applyCityUpdate({
+        messageId: "messageId-1",
+        classification: {
+          caseId: "caseId-1",
+          status: "in_progress",
+          summary: "summary-1",
+          confidence: 3,
+        },
+        plan: () => ({ kind: "none" }),
+      }),
+  },
+  {
+    key: "makeDrizzleFilingIngestSql.reportIdByReferenceCode",
+    run: async (sql: any) =>
+      (m53 as any).makeDrizzleFilingIngestSql(sql).reportIdByReferenceCode("code-1"),
+  },
+  {
+    key: "insertReopenFilingIn",
+    run: async (sql: any) => (m54 as any).insertReopenFilingIn(sql, "reportId-1"),
+  },
+  {
+    key: "makeDrizzleFilingRepository.claim",
+    run: async (sql: any) => (m55 as any).makeDrizzleFilingRepository(sql).claim("id-1", 3),
+  },
+  {
+    key: "makeDrizzleFilingRepository.countGroups",
+    run: async (sql: any) => (m55 as any).makeDrizzleFilingRepository(sql).countGroups(),
+  },
+  {
+    key: "makeDrizzleFilingRepository.create",
+    run: async (sql: any) =>
+      (m55 as any).makeDrizzleFilingRepository(sql).create(
+        {
+          reportId: "reportId-1",
+          geoid: "geoid-1",
+          category: "category-1",
+          routeCategory: "routeCategory-1",
+          channel: "manual",
+          portalHost: "portalHost-1",
+          formUrl: "formUrl-1",
+          status: "submitted",
+          method: "operator",
+          reason: "other",
+          reasonDetail: "reasonDetail-1",
+          caseId: "caseId-1",
+          caseUrl: "caseUrl-1",
+          nextAttemptAt: new Date("2026-03-04T05:06:07.000Z"),
+          scriptVersion: "scriptVersion-1",
+          dryRun: true,
+          ticketText: "ticketText-1",
+          note: "note-1",
+          mailThreadId: "mailThreadId-1",
+          createdBy: "createdBy-1",
+        },
+        {
+          actorId: "actorId-1",
+          action: "auth.otp_refused_unverified_account",
+          target: "target-1",
+          meta: { metaKey: "meta-any" },
+        },
+      ),
+  },
+  {
+    key: "makeDrizzleFilingRepository.findByCaseIds",
+    run: async (sql: any) =>
+      (m55 as any).makeDrizzleFilingRepository(sql).findByCaseIds(["token-1"]),
+  },
+  {
+    key: "makeDrizzleFilingRepository.findRoutes",
+    run: async (sql: any) =>
+      (m55 as any).makeDrizzleFilingRepository(sql).findRoutes("geoid-1", "category-1"),
+  },
+  {
+    key: "makeDrizzleFilingRepository.flagMessage",
+    run: async (sql: any) => (m55 as any).makeDrizzleFilingRepository(sql).flagMessage("id-1"),
+  },
+  {
+    key: "makeDrizzleFilingRepository.getActiveForReport",
+    run: async (sql: any) =>
+      (m55 as any).makeDrizzleFilingRepository(sql).getActiveForReport("reportId-1"),
+  },
+  {
+    key: "makeDrizzleFilingRepository.getById",
+    run: async (sql: any) => (m55 as any).makeDrizzleFilingRepository(sql).getById("id-1"),
+  },
+  {
+    key: "makeDrizzleFilingRepository.getLatestByMailThread",
+    run: async (sql: any) =>
+      (m55 as any).makeDrizzleFilingRepository(sql).getLatestByMailThread("threadId-1"),
+  },
+  {
+    key: "makeDrizzleFilingRepository.getLatestForReport",
+    run: async (sql: any) =>
+      (m55 as any).makeDrizzleFilingRepository(sql).getLatestForReport("reportId-1"),
+  },
+  {
+    key: "makeDrizzleFilingRepository.getLatestSuccessfulForReport",
+    run: async (sql: any) =>
+      (m55 as any).makeDrizzleFilingRepository(sql).getLatestSuccessfulForReport("reportId-1"),
+  },
+  {
+    key: "makeDrizzleFilingRepository.getLatestSuccessfulForReports",
+    run: async (sql: any) =>
+      (m55 as any).makeDrizzleFilingRepository(sql).getLatestSuccessfulForReports(["reportId-1"]),
+  },
+  {
+    key: "makeDrizzleFilingRepository.getMessageByInboundEmailId",
+    run: async (sql: any) =>
+      (m55 as any).makeDrizzleFilingRepository(sql).getMessageByInboundEmailId("inboundEmailId-1"),
+  },
+  {
+    key: "makeDrizzleFilingRepository.getMessageByMailMessageId",
+    run: async (sql: any) =>
+      (m55 as any).makeDrizzleFilingRepository(sql).getMessageByMailMessageId("mailMessageId-1"),
+  },
+  {
+    key: "makeDrizzleFilingRepository.getSettings",
+    run: async (sql: any) => (m55 as any).makeDrizzleFilingRepository(sql).getSettings(),
+  },
+  {
+    key: "makeDrizzleFilingRepository.insertMessageIfAbsent",
+    run: async (sql: any) =>
+      (m55 as any).makeDrizzleFilingRepository(sql).insertMessageIfAbsent("input-unsupported"),
+  },
+  {
+    key: "makeDrizzleFilingRepository.list",
+    run: async (sql: any) =>
+      (m55 as any)
+        .makeDrizzleFilingRepository(sql)
+        .list({ group: "in_progress", cursor: "cursor-1", limit: 3 }),
+  },
+  {
+    key: "makeDrizzleFilingRepository.listDueQueued",
+    run: async (sql: any) =>
+      (m55 as any).makeDrizzleFilingRepository(sql).listDueQueued({
+        now: new Date("2026-03-04T05:06:07.000Z"),
+        updatedBefore: new Date("2026-03-04T05:06:07.000Z"),
+        channels: ["manual"],
+        limit: 3,
+      }),
+  },
+  {
+    key: "makeDrizzleFilingRepository.listEvidence",
+    run: async (sql: any) =>
+      (m55 as any).makeDrizzleFilingRepository(sql).listEvidence("filingId-1"),
+  },
+  {
+    key: "makeDrizzleFilingRepository.listRoutes",
+    run: async (sql: any) => (m55 as any).makeDrizzleFilingRepository(sql).listRoutes("geoid-1"),
+  },
+  {
+    key: "makeDrizzleFilingRepository.listRunningFilings",
+    run: async (sql: any) => (m55 as any).makeDrizzleFilingRepository(sql).listRunningFilings(),
+  },
+  {
+    key: "makeDrizzleFilingRepository.listStaleRunningEmail",
+    run: async (sql: any) =>
+      (m55 as any)
+        .makeDrizzleFilingRepository(sql)
+        .listStaleRunningEmail({ updatedBefore: new Date("2026-03-04T05:06:07.000Z"), limit: 3 }),
+  },
+  {
+    key: "makeDrizzleFilingRepository.recordSuccess",
+    run: async (sql: any) =>
+      (m55 as any).makeDrizzleFilingRepository(sql).recordSuccess("input-unsupported"),
+  },
+  {
+    key: "makeDrizzleFilingRepository.replaceRoutes",
+    run: async (sql: any) =>
+      (m55 as any).makeDrizzleFilingRepository(sql).replaceRoutes(
+        "geoid-1",
+        [
+          {
+            category: "category-1",
+            channel: "manual",
+            formUrl: "formUrl-1",
+            requestTypeHint: "requestTypeHint-1",
+            includeLink: true,
+            statusSenderDomains: ["statusSenderDomain-1"],
+            enabled: true,
+          },
+        ],
+        {
+          actorId: "actorId-1",
+          action: "auth.otp_refused_unverified_account",
+          target: "target-1",
+          meta: { metaKey: "meta-any" },
+        },
+      ),
+  },
+  {
+    key: "makeDrizzleFilingRepository.routeHealth",
+    run: async (sql: any) => (m55 as any).makeDrizzleFilingRepository(sql).routeHealth("geoid-1"),
+  },
+  {
+    key: "makeDrizzleFilingRepository.setPaused",
+    run: async (sql: any) =>
+      (m55 as any).makeDrizzleFilingRepository(sql).setPaused(true, {
+        actorId: "actorId-1",
+        action: "auth.otp_refused_unverified_account",
+        target: "target-1",
+        meta: { metaKey: "meta-any" },
+      }),
+  },
+  {
+    key: "makeDrizzleFilingRepository.transition",
+    run: async (sql: any) =>
+      (m55 as any).makeDrizzleFilingRepository(sql).transition("id-1", {
+        from: ["submitted"],
+        attempts: 3,
+        runId: "runId-1",
+        set: {
+          method: "operator",
+          status: "submitted",
+          note: "note-1",
+          geoid: "geoid-1",
+          reason: "other",
+          channel: "manual",
+          category: "category-1",
+          caseId: "caseId-1",
+          caseUrl: "caseUrl-1",
+          attempts: 3,
+          formUrl: "formUrl-1",
+          routeCategory: "routeCategory-1",
+          portalHost: "portalHost-1",
+          reasonDetail: "reasonDetail-1",
+          cityClosedAt: new Date("2026-03-04T05:06:07.000Z"),
+          runId: "runId-1",
+          nextAttemptAt: new Date("2026-03-04T05:06:07.000Z"),
+          aiWaitSince: new Date("2026-03-04T05:06:07.000Z"),
+          scriptVersion: "scriptVersion-1",
+          dryRun: true,
+          ticketText: "ticketText-1",
+          mailThreadId: "mailThreadId-1",
+        },
+        audit: {
+          actorId: "actorId-1",
+          action: "auth.otp_refused_unverified_account",
+          target: "target-1",
+          meta: { metaKey: "meta-any" },
+        },
+        evidence: [{ r2Key: "r2Key-1", kind: "script", label: "label-1" }],
+      }),
+  },
+  {
+    key: "makeFilingsWorker.claimFiling",
+    run: async (sql: any) => (m56 as any).makeFilingsWorker(sql).claimFiling("filingId-1", 3),
+  },
+  {
+    key: "makeFilingsWorker.getFilingSettings",
+    run: async (sql: any) => (m56 as any).makeFilingsWorker(sql).getFilingSettings(),
+  },
+  {
+    key: "makeFilingsWorker.isReportFileable",
+    run: async (sql: any) => (m56 as any).makeFilingsWorker(sql).isReportFileable("filingId-1"),
+  },
+  {
+    key: "makeFilingsWorker.listRunningFilings",
+    run: async (sql: any) => (m56 as any).makeFilingsWorker(sql).listRunningFilings(),
+  },
+  {
+    key: "makeFilingsWorker.loadRunPacket",
+    run: async (sql: any) => (m56 as any).makeFilingsWorker(sql).loadRunPacket("filingId-1"),
+  },
+  {
     key: "makeDrizzleGeocodeCacheRepository.findByPointKey",
     run: async (sql: any) =>
-      (m53 as any).makeDrizzleGeocodeCacheRepository(sql).findByPointKey("pointKey-1"),
+      (m57 as any).makeDrizzleGeocodeCacheRepository(sql).findByPointKey("pointKey-1"),
   },
   {
     key: "makeDrizzleGeocodeCacheRepository.upsert",
     run: async (sql: any) =>
-      (m53 as any).makeDrizzleGeocodeCacheRepository(sql).upsert(
+      (m57 as any).makeDrizzleGeocodeCacheRepository(sql).upsert(
         "pointKey-1",
         {
           address: "address-1",
@@ -3585,58 +3873,58 @@ export const cases: TranscriptCase[] = [
   {
     key: "makeDrizzleGuestRsvpRepository.cancelGuest",
     run: async (sql: any) =>
-      (m54 as any)
+      (m58 as any)
         .makeDrizzleGuestRsvpRepository(sql)
         .cancelGuest("guestId-1", new Date("2026-03-04T05:06:07.000Z")),
   },
   {
     key: "makeDrizzleGuestRsvpRepository.countActiveGuests",
     run: async (sql: any) =>
-      (m54 as any).makeDrizzleGuestRsvpRepository(sql).countActiveGuests("cleanupId-1"),
+      (m58 as any).makeDrizzleGuestRsvpRepository(sql).countActiveGuests("cleanupId-1"),
   },
   {
     key: "makeDrizzleGuestRsvpRepository.deleteStaleOtps",
     run: async (sql: any) =>
-      (m54 as any)
+      (m58 as any)
         .makeDrizzleGuestRsvpRepository(sql)
         .deleteStaleOtps({ cutoff: new Date("2026-03-04T05:06:07.000Z"), batchSize: 3 }),
   },
   {
     key: "makeDrizzleGuestRsvpRepository.findEvent",
     run: async (sql: any) =>
-      (m54 as any).makeDrizzleGuestRsvpRepository(sql).findEvent("cleanupId-1"),
+      (m58 as any).makeDrizzleGuestRsvpRepository(sql).findEvent("cleanupId-1"),
   },
   {
     key: "makeDrizzleGuestRsvpRepository.findGuestByManageTokenHash",
     run: async (sql: any) =>
-      (m54 as any).makeDrizzleGuestRsvpRepository(sql).findGuestByManageTokenHash("hash-1"),
+      (m58 as any).makeDrizzleGuestRsvpRepository(sql).findGuestByManageTokenHash("hash-1"),
   },
   {
     key: "makeDrizzleGuestRsvpRepository.findGuestForNotice",
     run: async (sql: any) =>
-      (m54 as any).makeDrizzleGuestRsvpRepository(sql).findGuestForNotice("guestId-1"),
+      (m58 as any).makeDrizzleGuestRsvpRepository(sql).findGuestForNotice("guestId-1"),
   },
   {
     key: "makeDrizzleGuestRsvpRepository.findLatestActiveOtp",
     run: async (sql: any) =>
-      (m54 as any)
+      (m58 as any)
         .makeDrizzleGuestRsvpRepository(sql)
         .findLatestActiveOtp("cleanupId-1", "contact-1", new Date("2026-03-04T05:06:07.000Z")),
   },
   {
     key: "makeDrizzleGuestRsvpRepository.goingCount",
     run: async (sql: any) =>
-      (m54 as any).makeDrizzleGuestRsvpRepository(sql).goingCount("cleanupId-1"),
+      (m58 as any).makeDrizzleGuestRsvpRepository(sql).goingCount("cleanupId-1"),
   },
   {
     key: "makeDrizzleGuestRsvpRepository.incrementOtpAttempts",
     run: async (sql: any) =>
-      (m54 as any).makeDrizzleGuestRsvpRepository(sql).incrementOtpAttempts("otpId-1"),
+      (m58 as any).makeDrizzleGuestRsvpRepository(sql).incrementOtpAttempts("otpId-1"),
   },
   {
     key: "makeDrizzleGuestRsvpRepository.insertOtp",
     run: async (sql: any) =>
-      (m54 as any).makeDrizzleGuestRsvpRepository(sql).insertOtp({
+      (m58 as any).makeDrizzleGuestRsvpRepository(sql).insertOtp({
         cleanupId: "cleanupId-1",
         channel: "email",
         contact: "contact-1",
@@ -3648,24 +3936,24 @@ export const cases: TranscriptCase[] = [
   {
     key: "makeDrizzleGuestRsvpRepository.invalidateActiveOtps",
     run: async (sql: any) =>
-      (m54 as any)
+      (m58 as any)
         .makeDrizzleGuestRsvpRepository(sql)
         .invalidateActiveOtps("cleanupId-1", "contact-1", new Date("2026-03-04T05:06:07.000Z")),
   },
   {
     key: "makeDrizzleGuestRsvpRepository.isPhoneOptedOut",
     run: async (sql: any) =>
-      (m54 as any).makeDrizzleGuestRsvpRepository(sql).isPhoneOptedOut("phone-1"),
+      (m58 as any).makeDrizzleGuestRsvpRepository(sql).isPhoneOptedOut("phone-1"),
   },
   {
     key: "makeDrizzleGuestRsvpRepository.listContactableGuests",
     run: async (sql: any) =>
-      (m54 as any).makeDrizzleGuestRsvpRepository(sql).listContactableGuests("cleanupId-1", 3),
+      (m58 as any).makeDrizzleGuestRsvpRepository(sql).listContactableGuests("cleanupId-1", 3),
   },
   {
     key: "makeDrizzleGuestRsvpRepository.listGuests",
     run: async (sql: any) =>
-      (m54 as any).makeDrizzleGuestRsvpRepository(sql).listGuests({
+      (m58 as any).makeDrizzleGuestRsvpRepository(sql).listGuests({
         cleanupId: "cleanupId-1",
         cursor: { atText: "atText-1", at: new Date("2026-03-04T05:06:07.000Z"), id: "id-1" },
         limit: 3,
@@ -3674,19 +3962,19 @@ export const cases: TranscriptCase[] = [
   {
     key: "makeDrizzleGuestRsvpRepository.markOtpConsumed",
     run: async (sql: any) =>
-      (m54 as any)
+      (m58 as any)
         .makeDrizzleGuestRsvpRepository(sql)
         .markOtpConsumed("otpId-1", new Date("2026-03-04T05:06:07.000Z")),
   },
   {
     key: "makeDrizzleGuestRsvpRepository.recordPhoneOptOut",
     run: async (sql: any) =>
-      (m54 as any).makeDrizzleGuestRsvpRepository(sql).recordPhoneOptOut("phone-1"),
+      (m58 as any).makeDrizzleGuestRsvpRepository(sql).recordPhoneOptOut("phone-1"),
   },
   {
     key: "makeDrizzleGuestRsvpRepository.scrubExpiredGuestContacts",
     run: async (sql: any) =>
-      (m54 as any).makeDrizzleGuestRsvpRepository(sql).scrubExpiredGuestContacts({
+      (m58 as any).makeDrizzleGuestRsvpRepository(sql).scrubExpiredGuestContacts({
         cutoff: new Date("2026-03-04T05:06:07.000Z"),
         now: new Date("2026-03-04T05:06:07.000Z"),
         batchSize: 3,
@@ -3695,7 +3983,7 @@ export const cases: TranscriptCase[] = [
   {
     key: "makeDrizzleGuestRsvpRepository.upsertVerifiedGuest",
     run: async (sql: any) =>
-      (m54 as any).makeDrizzleGuestRsvpRepository(sql).upsertVerifiedGuest({
+      (m58 as any).makeDrizzleGuestRsvpRepository(sql).upsertVerifiedGuest({
         cleanupId: "cleanupId-1",
         name: "name-1",
         channel: "email",
@@ -3709,12 +3997,12 @@ export const cases: TranscriptCase[] = [
   {
     key: "makeDrizzleAdminEventPageRepository.get",
     run: async (sql: any) =>
-      (m55 as any).makeDrizzleAdminEventPageRepository(sql).get("cleanupId-1"),
+      (m59 as any).makeDrizzleAdminEventPageRepository(sql).get("cleanupId-1"),
   },
   {
     key: "makeDrizzleAdminEventPageRepository.list",
     run: async (sql: any) =>
-      (m55 as any).makeDrizzleAdminEventPageRepository(sql).list({
+      (m59 as any).makeDrizzleAdminEventPageRepository(sql).list({
         q: "q-1",
         status: "published",
         flagged: true,
@@ -3725,7 +4013,7 @@ export const cases: TranscriptCase[] = [
   {
     key: "makeDrizzleAdminEventPageRepository.setFlagged",
     run: async (sql: any) =>
-      (m55 as any).makeDrizzleAdminEventPageRepository(sql).setFlagged("cleanupId-1", {
+      (m59 as any).makeDrizzleAdminEventPageRepository(sql).setFlagged("cleanupId-1", {
         flagged: true,
         reason: "reason-1",
         operatorId: "operatorId-1",
@@ -3734,12 +4022,12 @@ export const cases: TranscriptCase[] = [
   {
     key: "makeDrizzleAdminEventPageRepository.unpublish",
     run: async (sql: any) =>
-      (m55 as any).makeDrizzleAdminEventPageRepository(sql).unpublish("cleanupId-1"),
+      (m59 as any).makeDrizzleAdminEventPageRepository(sql).unpublish("cleanupId-1"),
   },
   {
     key: "makeDrizzleAnalyticsRepository.activityTotals",
     run: async (sql: any) =>
-      (m56 as any)
+      (m60 as any)
         .makeDrizzleAnalyticsRepository(sql, () => Promise.resolve("presignAvatarResult-1"))
         .activityTotals(
           ["cleanupId-1"],
@@ -3750,70 +4038,70 @@ export const cases: TranscriptCase[] = [
   {
     key: "makeDrizzleAnalyticsRepository.arrivalOffsets",
     run: async (sql: any) =>
-      (m56 as any)
+      (m60 as any)
         .makeDrizzleAnalyticsRepository(sql, () => Promise.resolve("presignAvatarResult-1"))
         .arrivalOffsets("cleanupId-1", 3),
   },
   {
     key: "makeDrizzleAnalyticsRepository.broadcastsForEvent",
     run: async (sql: any) =>
-      (m56 as any)
+      (m60 as any)
         .makeDrizzleAnalyticsRepository(sql, () => Promise.resolve("presignAvatarResult-1"))
         .broadcastsForEvent("cleanupId-1", 3),
   },
   {
     key: "makeDrizzleAnalyticsRepository.broadcastsSent",
     run: async (sql: any) =>
-      (m56 as any)
+      (m60 as any)
         .makeDrizzleAnalyticsRepository(sql, () => Promise.resolve("presignAvatarResult-1"))
         .broadcastsSent("cleanupId-1", "timezone-1", "from-1", "to-1"),
   },
   {
     key: "makeDrizzleAnalyticsRepository.cancellationsByDay",
     run: async (sql: any) =>
-      (m56 as any)
+      (m60 as any)
         .makeDrizzleAnalyticsRepository(sql, () => Promise.resolve("presignAvatarResult-1"))
         .cancellationsByDay("cleanupId-1", "timezone-1", "from-1", "to-1"),
   },
   {
     key: "makeDrizzleAnalyticsRepository.checkinsBySlot",
     run: async (sql: any) =>
-      (m56 as any)
+      (m60 as any)
         .makeDrizzleAnalyticsRepository(sql, () => Promise.resolve("presignAvatarResult-1"))
         .checkinsBySlot("cleanupId-1"),
   },
   {
     key: "makeDrizzleAnalyticsRepository.checkinsByTicketType",
     run: async (sql: any) =>
-      (m56 as any)
+      (m60 as any)
         .makeDrizzleAnalyticsRepository(sql, () => Promise.resolve("presignAvatarResult-1"))
         .checkinsByTicketType("cleanupId-1"),
   },
   {
     key: "makeDrizzleAnalyticsRepository.eventClock",
     run: async (sql: any) =>
-      (m56 as any)
+      (m60 as any)
         .makeDrizzleAnalyticsRepository(sql, () => Promise.resolve("presignAvatarResult-1"))
         .eventClock("cleanupId-1"),
   },
   {
     key: "makeDrizzleAnalyticsRepository.eventHoursTotals",
     run: async (sql: any) =>
-      (m56 as any)
+      (m60 as any)
         .makeDrizzleAnalyticsRepository(sql, () => Promise.resolve("presignAvatarResult-1"))
         .eventHoursTotals("cleanupId-1"),
   },
   {
     key: "makeDrizzleAnalyticsRepository.eventKpis",
     run: async (sql: any) =>
-      (m56 as any)
+      (m60 as any)
         .makeDrizzleAnalyticsRepository(sql, () => Promise.resolve("presignAvatarResult-1"))
         .eventKpis("cleanupId-1"),
   },
   {
     key: "makeDrizzleAnalyticsRepository.heldEventTotals",
     run: async (sql: any) =>
-      (m56 as any)
+      (m60 as any)
         .makeDrizzleAnalyticsRepository(sql, () => Promise.resolve("presignAvatarResult-1"))
         .heldEventTotals(
           ["cleanupId-1"],
@@ -3824,133 +4112,133 @@ export const cases: TranscriptCase[] = [
   {
     key: "makeDrizzleAnalyticsRepository.hostedEventIds",
     run: async (sql: any) =>
-      (m56 as any)
+      (m60 as any)
         .makeDrizzleAnalyticsRepository(sql, () => Promise.resolve("presignAvatarResult-1"))
         .hostedEventIds("userId-1", "organizationId-1", 3),
   },
   {
     key: "makeDrizzleAnalyticsRepository.hoursTotals",
     run: async (sql: any) =>
-      (m56 as any)
+      (m60 as any)
         .makeDrizzleAnalyticsRepository(sql, () => Promise.resolve("presignAvatarResult-1"))
         .hoursTotals(["cleanupId-1"]),
   },
   {
     key: "makeDrizzleAnalyticsRepository.portfolioByEvent",
     run: async (sql: any) =>
-      (m56 as any)
+      (m60 as any)
         .makeDrizzleAnalyticsRepository(sql, () => Promise.resolve("presignAvatarResult-1"))
         .portfolioByEvent(["cleanupId-1"], 3),
   },
   {
     key: "makeDrizzleAnalyticsRepository.portfolioDayTime",
     run: async (sql: any) =>
-      (m56 as any)
+      (m60 as any)
         .makeDrizzleAnalyticsRepository(sql, () => Promise.resolve("presignAvatarResult-1"))
         .portfolioDayTime(["cleanupId-1"]),
   },
   {
     key: "makeDrizzleAnalyticsRepository.portfolioTotals",
     run: async (sql: any) =>
-      (m56 as any)
+      (m60 as any)
         .makeDrizzleAnalyticsRepository(sql, () => Promise.resolve("presignAvatarResult-1"))
         .portfolioTotals(["cleanupId-1"]),
   },
   {
     key: "makeDrizzleAnalyticsRepository.registrationsByAudience",
     run: async (sql: any) =>
-      (m56 as any)
+      (m60 as any)
         .makeDrizzleAnalyticsRepository(sql, () => Promise.resolve("presignAvatarResult-1"))
         .registrationsByAudience("cleanupId-1"),
   },
   {
     key: "makeDrizzleAnalyticsRepository.registrationsByDay",
     run: async (sql: any) =>
-      (m56 as any)
+      (m60 as any)
         .makeDrizzleAnalyticsRepository(sql, () => Promise.resolve("presignAvatarResult-1"))
         .registrationsByDay("cleanupId-1", "timezone-1", "from-1", "to-1"),
   },
   {
     key: "makeDrizzleAnalyticsRepository.registrationsBySource",
     run: async (sql: any) =>
-      (m56 as any)
+      (m60 as any)
         .makeDrizzleAnalyticsRepository(sql, () => Promise.resolve("presignAvatarResult-1"))
         .registrationsBySource("cleanupId-1"),
   },
   {
     key: "makeDrizzleAnalyticsRepository.registrationsByTicketType",
     run: async (sql: any) =>
-      (m56 as any)
+      (m60 as any)
         .makeDrizzleAnalyticsRepository(sql, () => Promise.resolve("presignAvatarResult-1"))
         .registrationsByTicketType("cleanupId-1"),
   },
   {
     key: "makeDrizzleAnalyticsRepository.returningAttendees",
     run: async (sql: any) =>
-      (m56 as any)
+      (m60 as any)
         .makeDrizzleAnalyticsRepository(sql, () => Promise.resolve("presignAvatarResult-1"))
         .returningAttendees("cleanupId-1", ["hostedEventId-1"]),
   },
   {
     key: "makeDrizzleAnalyticsRepository.seatTrend",
     run: async (sql: any) =>
-      (m56 as any)
+      (m60 as any)
         .makeDrizzleAnalyticsRepository(sql, () => Promise.resolve("presignAvatarResult-1"))
         .seatTrend("cleanupId-1", "timezone-1"),
   },
   {
     key: "makeDrizzleAnalyticsRepository.signupsByDayAcross",
     run: async (sql: any) =>
-      (m56 as any)
+      (m60 as any)
         .makeDrizzleAnalyticsRepository(sql, () => Promise.resolve("presignAvatarResult-1"))
         .signupsByDayAcross(["cleanupId-1"], "fromDay-1", "toDay-1"),
   },
   {
     key: "makeDrizzleAnalyticsRepository.topVolunteers",
     run: async (sql: any) =>
-      (m56 as any)
+      (m60 as any)
         .makeDrizzleAnalyticsRepository(sql, () => Promise.resolve("presignAvatarResult-1"))
         .topVolunteers(["cleanupId-1"], 3),
   },
   {
     key: "makeDrizzleAnalyticsRepository.waitlistConversion",
     run: async (sql: any) =>
-      (m56 as any)
+      (m60 as any)
         .makeDrizzleAnalyticsRepository(sql, () => Promise.resolve("presignAvatarResult-1"))
         .waitlistConversion("cleanupId-1"),
   },
   {
     key: "makeDrizzleAnnouncementIdentityRepository.authorsFor",
     run: async (sql: any) =>
-      (m57 as any)
+      (m61 as any)
         .makeDrizzleAnnouncementIdentityRepository(sql, () => Promise.resolve("presignResult-1"))
         .authorsFor(["userId-1"]),
   },
   {
     key: "makeDrizzleAnnouncementIdentityRepository.organizationFor",
     run: async (sql: any) =>
-      (m57 as any)
+      (m61 as any)
         .makeDrizzleAnnouncementIdentityRepository(sql, () => Promise.resolve("presignResult-1"))
         .organizationFor("cleanupId-1"),
   },
   {
     key: "resolveVisibleStanding",
-    run: async (sql: any) => (m58 as any).resolveVisibleStanding(sql, "cleanupId-1", "userId-1"),
+    run: async (sql: any) => (m62 as any).resolveVisibleStanding(sql, "cleanupId-1", "userId-1"),
   },
   {
     key: "requireCapability",
     run: async (sql: any) =>
-      (m58 as any).requireCapability(sql, "cleanupId-1", "userId-1", "view_event_private"),
+      (m62 as any).requireCapability(sql, "cleanupId-1", "userId-1", "view_event_private"),
   },
   {
     key: "requireOrgCapability",
     run: async (sql: any) =>
-      (m58 as any).requireOrgCapability(sql, "organizationId-1", "userId-1", "view_event_private"),
+      (m62 as any).requireOrgCapability(sql, "organizationId-1", "userId-1", "view_event_private"),
   },
   {
     key: "makeDrizzleBroadcastAudienceRepository.audienceCount",
     run: async (sql: any) =>
-      (m59 as any).makeDrizzleBroadcastAudienceRepository(sql).audienceCount({
+      (m63 as any).makeDrizzleBroadcastAudienceRepository(sql).audienceCount({
         cleanupId: "cleanupId-1",
         segment: { kind: "all_registered" },
         kind: "host_broadcast",
@@ -3960,7 +4248,7 @@ export const cases: TranscriptCase[] = [
   {
     key: "makeDrizzleBroadcastAudienceRepository.audiencePage",
     run: async (sql: any) =>
-      (m59 as any).makeDrizzleBroadcastAudienceRepository(sql).audiencePage({
+      (m63 as any).makeDrizzleBroadcastAudienceRepository(sql).audiencePage({
         cleanupId: "cleanupId-1",
         segment: { kind: "all_registered" },
         kind: "host_broadcast",
@@ -3972,7 +4260,7 @@ export const cases: TranscriptCase[] = [
   {
     key: "makeDrizzleBroadcastRepository.applyDeliveryOutcomes",
     run: async (sql: any) =>
-      (m60 as any).makeDrizzleBroadcastRepository(sql).applyDeliveryOutcomes([
+      (m64 as any).makeDrizzleBroadcastRepository(sql).applyDeliveryOutcomes([
         {
           id: "id-1",
           status: "sent",
@@ -3986,7 +4274,7 @@ export const cases: TranscriptCase[] = [
   {
     key: "makeDrizzleBroadcastRepository.audienceCount",
     run: async (sql: any) =>
-      (m60 as any).makeDrizzleBroadcastRepository(sql).audienceCount({
+      (m64 as any).makeDrizzleBroadcastRepository(sql).audienceCount({
         cleanupId: "cleanupId-1",
         segment: { kind: "all_registered" },
         kind: "host_broadcast",
@@ -3996,7 +4284,7 @@ export const cases: TranscriptCase[] = [
   {
     key: "makeDrizzleBroadcastRepository.audiencePage",
     run: async (sql: any) =>
-      (m60 as any).makeDrizzleBroadcastRepository(sql).audiencePage({
+      (m64 as any).makeDrizzleBroadcastRepository(sql).audiencePage({
         cleanupId: "cleanupId-1",
         segment: { kind: "all_registered" },
         kind: "host_broadcast",
@@ -4008,7 +4296,7 @@ export const cases: TranscriptCase[] = [
   {
     key: "makeDrizzleBroadcastRepository.claimChunk",
     run: async (sql: any) =>
-      (m60 as any).makeDrizzleBroadcastRepository(sql).claimChunk({
+      (m64 as any).makeDrizzleBroadcastRepository(sql).claimChunk({
         broadcastId: "broadcastId-1",
         chunkNo: 3,
         staleBefore: new Date("2026-03-04T05:06:07.000Z"),
@@ -4019,14 +4307,14 @@ export const cases: TranscriptCase[] = [
   {
     key: "makeDrizzleBroadcastRepository.countAnnouncementsSince",
     run: async (sql: any) =>
-      (m60 as any)
+      (m64 as any)
         .makeDrizzleBroadcastRepository(sql)
         .countAnnouncementsSince("cleanupId-1", new Date("2026-03-04T05:06:07.000Z")),
   },
   {
     key: "makeDrizzleBroadcastRepository.create",
     run: async (sql: any) =>
-      (m60 as any).makeDrizzleBroadcastRepository(sql).create({
+      (m64 as any).makeDrizzleBroadcastRepository(sql).create({
         cleanupId: "cleanupId-1",
         createdBy: "createdBy-1",
         kind: "host_broadcast",
@@ -4047,7 +4335,7 @@ export const cases: TranscriptCase[] = [
   {
     key: "makeDrizzleBroadcastRepository.createAnnouncementUnderCap",
     run: async (sql: any) =>
-      (m60 as any).makeDrizzleBroadcastRepository(sql).createAnnouncementUnderCap(
+      (m64 as any).makeDrizzleBroadcastRepository(sql).createAnnouncementUnderCap(
         {
           cleanupId: "cleanupId-1",
           createdBy: "createdBy-1",
@@ -4071,7 +4359,7 @@ export const cases: TranscriptCase[] = [
   {
     key: "makeDrizzleBroadcastRepository.createIfAbsent",
     run: async (sql: any) =>
-      (m60 as any).makeDrizzleBroadcastRepository(sql).createIfAbsent({
+      (m64 as any).makeDrizzleBroadcastRepository(sql).createIfAbsent({
         cleanupId: "cleanupId-1",
         createdBy: "createdBy-1",
         kind: "host_broadcast",
@@ -4092,64 +4380,64 @@ export const cases: TranscriptCase[] = [
   {
     key: "makeDrizzleBroadcastRepository.deleteDraft",
     run: async (sql: any) =>
-      (m60 as any).makeDrizzleBroadcastRepository(sql).deleteDraft("cleanupId-1", "broadcastId-1"),
+      (m64 as any).makeDrizzleBroadcastRepository(sql).deleteDraft("cleanupId-1", "broadcastId-1"),
   },
   {
     key: "makeDrizzleBroadcastRepository.deleteOldDeliveries",
     run: async (sql: any) =>
-      (m60 as any)
+      (m64 as any)
         .makeDrizzleBroadcastRepository(sql)
         .deleteOldDeliveries(new Date("2026-03-04T05:06:07.000Z"), 3),
   },
   {
     key: "makeDrizzleBroadcastRepository.deliveryCounts",
     run: async (sql: any) =>
-      (m60 as any).makeDrizzleBroadcastRepository(sql).deliveryCounts("broadcastId-1"),
+      (m64 as any).makeDrizzleBroadcastRepository(sql).deliveryCounts("broadcastId-1"),
   },
   {
     key: "makeDrizzleBroadcastRepository.eventContext",
     run: async (sql: any) =>
-      (m60 as any).makeDrizzleBroadcastRepository(sql).eventContext("cleanupId-1"),
+      (m64 as any).makeDrizzleBroadcastRepository(sql).eventContext("cleanupId-1"),
   },
   {
     key: "makeDrizzleBroadcastRepository.eventContexts",
     run: async (sql: any) =>
-      (m60 as any).makeDrizzleBroadcastRepository(sql).eventContexts(["cleanupId-1"]),
+      (m64 as any).makeDrizzleBroadcastRepository(sql).eventContexts(["cleanupId-1"]),
   },
   {
     key: "makeDrizzleBroadcastRepository.failExhausted",
     run: async (sql: any) =>
-      (m60 as any).makeDrizzleBroadcastRepository(sql).failExhausted("broadcastId-1", 3),
+      (m64 as any).makeDrizzleBroadcastRepository(sql).failExhausted("broadcastId-1", 3),
   },
   {
     key: "makeDrizzleBroadcastRepository.findById",
     run: async (sql: any) =>
-      (m60 as any).makeDrizzleBroadcastRepository(sql).findById("broadcastId-1"),
+      (m64 as any).makeDrizzleBroadcastRepository(sql).findById("broadcastId-1"),
   },
   {
     key: "makeDrizzleBroadcastRepository.findEventCancellation",
     run: async (sql: any) =>
-      (m60 as any).makeDrizzleBroadcastRepository(sql).findEventCancellation("cleanupId-1"),
+      (m64 as any).makeDrizzleBroadcastRepository(sql).findEventCancellation("cleanupId-1"),
   },
   {
     key: "makeDrizzleBroadcastRepository.findForEvent",
     run: async (sql: any) =>
-      (m60 as any).makeDrizzleBroadcastRepository(sql).findForEvent("cleanupId-1", "broadcastId-1"),
+      (m64 as any).makeDrizzleBroadcastRepository(sql).findForEvent("cleanupId-1", "broadcastId-1"),
   },
   {
     key: "makeDrizzleBroadcastRepository.guestContacts",
     run: async (sql: any) =>
-      (m60 as any).makeDrizzleBroadcastRepository(sql).guestContacts(["guestId-1"]),
+      (m64 as any).makeDrizzleBroadcastRepository(sql).guestContacts(["guestId-1"]),
   },
   {
     key: "makeDrizzleBroadcastRepository.hostMessagingState",
     run: async (sql: any) =>
-      (m60 as any).makeDrizzleBroadcastRepository(sql).hostMessagingState("userId-1"),
+      (m64 as any).makeDrizzleBroadcastRepository(sql).hostMessagingState("userId-1"),
   },
   {
     key: "makeDrizzleBroadcastRepository.insertDeliveries",
     run: async (sql: any) =>
-      (m60 as any).makeDrizzleBroadcastRepository(sql).insertDeliveries([
+      (m64 as any).makeDrizzleBroadcastRepository(sql).insertDeliveries([
         {
           broadcastId: "broadcastId-1",
           chunkNo: 3,
@@ -4163,17 +4451,17 @@ export const cases: TranscriptCase[] = [
   {
     key: "makeDrizzleBroadcastRepository.isEmailSuppressed",
     run: async (sql: any) =>
-      (m60 as any).makeDrizzleBroadcastRepository(sql).isEmailSuppressed("emailHash-1"),
+      (m64 as any).makeDrizzleBroadcastRepository(sql).isEmailSuppressed("emailHash-1"),
   },
   {
     key: "makeDrizzleBroadcastRepository.isEventMuted",
     run: async (sql: any) =>
-      (m60 as any).makeDrizzleBroadcastRepository(sql).isEventMuted("cleanupId-1", "userId-1"),
+      (m64 as any).makeDrizzleBroadcastRepository(sql).isEventMuted("cleanupId-1", "userId-1"),
   },
   {
     key: "makeDrizzleBroadcastRepository.list",
     run: async (sql: any) =>
-      (m60 as any).makeDrizzleBroadcastRepository(sql).list({
+      (m64 as any).makeDrizzleBroadcastRepository(sql).list({
         cleanupId: "cleanupId-1",
         status: "sent",
         cursor: { atText: "atText-1", at: new Date("2026-03-04T05:06:07.000Z"), id: "id-1" },
@@ -4183,7 +4471,7 @@ export const cases: TranscriptCase[] = [
   {
     key: "makeDrizzleBroadcastRepository.listAdmin",
     run: async (sql: any) =>
-      (m60 as any).makeDrizzleBroadcastRepository(sql).listAdmin({
+      (m64 as any).makeDrizzleBroadcastRepository(sql).listAdmin({
         status: "sent",
         kind: "kind-1",
         cleanupId: "cleanupId-1",
@@ -4197,7 +4485,7 @@ export const cases: TranscriptCase[] = [
   {
     key: "makeDrizzleBroadcastRepository.listAdminHosts",
     run: async (sql: any) =>
-      (m60 as any).makeDrizzleBroadcastRepository(sql).listAdminHosts({
+      (m64 as any).makeDrizzleBroadcastRepository(sql).listAdminHosts({
         q: "q-1",
         suspended: true,
         windowStart: new Date("2026-03-04T05:06:07.000Z"),
@@ -4208,7 +4496,7 @@ export const cases: TranscriptCase[] = [
   {
     key: "makeDrizzleBroadcastRepository.listAnnouncements",
     run: async (sql: any) =>
-      (m60 as any).makeDrizzleBroadcastRepository(sql).listAnnouncements({
+      (m64 as any).makeDrizzleBroadcastRepository(sql).listAnnouncements({
         cleanupId: "cleanupId-1",
         cursor: { atText: "atText-1", at: new Date("2026-03-04T05:06:07.000Z"), id: "id-1" },
         limit: 3,
@@ -4217,7 +4505,7 @@ export const cases: TranscriptCase[] = [
   {
     key: "makeDrizzleBroadcastRepository.listDeliveries",
     run: async (sql: any) =>
-      (m60 as any).makeDrizzleBroadcastRepository(sql).listDeliveries({
+      (m64 as any).makeDrizzleBroadcastRepository(sql).listDeliveries({
         broadcastId: "broadcastId-1",
         status: "sent",
         channel: "channel-1",
@@ -4228,7 +4516,7 @@ export const cases: TranscriptCase[] = [
   {
     key: "makeDrizzleBroadcastRepository.listDueReminders",
     run: async (sql: any) =>
-      (m60 as any).makeDrizzleBroadcastRepository(sql).listDueReminders({
+      (m64 as any).makeDrizzleBroadcastRepository(sql).listDueReminders({
         now: new Date("2026-03-04T05:06:07.000Z"),
         staleAfter: new Date("2026-03-04T05:06:07.000Z"),
         defaultOffsets: [3],
@@ -4238,26 +4526,26 @@ export const cases: TranscriptCase[] = [
   {
     key: "makeDrizzleBroadcastRepository.listDueScheduled",
     run: async (sql: any) =>
-      (m60 as any)
+      (m64 as any)
         .makeDrizzleBroadcastRepository(sql)
         .listDueScheduled(new Date("2026-03-04T05:06:07.000Z"), 3),
   },
   {
     key: "makeDrizzleBroadcastRepository.listPendingChunks",
     run: async (sql: any) =>
-      (m60 as any).makeDrizzleBroadcastRepository(sql).listPendingChunks("broadcastId-1"),
+      (m64 as any).makeDrizzleBroadcastRepository(sql).listPendingChunks("broadcastId-1"),
   },
   {
     key: "makeDrizzleBroadcastRepository.listStaleSending",
     run: async (sql: any) =>
-      (m60 as any)
+      (m64 as any)
         .makeDrizzleBroadcastRepository(sql)
         .listStaleSending(new Date("2026-03-04T05:06:07.000Z"), 3),
   },
   {
     key: "makeDrizzleBroadcastRepository.markPlanned",
     run: async (sql: any) =>
-      (m60 as any).makeDrizzleBroadcastRepository(sql).markPlanned("broadcastId-1", {
+      (m64 as any).makeDrizzleBroadcastRepository(sql).markPlanned("broadcastId-1", {
         recipientCount: 3,
         plannedAt: new Date("2026-03-04T05:06:07.000Z"),
       }),
@@ -4265,17 +4553,17 @@ export const cases: TranscriptCase[] = [
   {
     key: "makeDrizzleBroadcastRepository.memberContacts",
     run: async (sql: any) =>
-      (m60 as any).makeDrizzleBroadcastRepository(sql).memberContacts(["userId-1"]),
+      (m64 as any).makeDrizzleBroadcastRepository(sql).memberContacts(["userId-1"]),
   },
   {
     key: "makeDrizzleBroadcastRepository.quietHours",
     run: async (sql: any) =>
-      (m60 as any).makeDrizzleBroadcastRepository(sql).quietHours(["userId-1"]),
+      (m64 as any).makeDrizzleBroadcastRepository(sql).quietHours(["userId-1"]),
   },
   {
     key: "makeDrizzleBroadcastRepository.recordUnsubscribe",
     run: async (sql: any) =>
-      (m60 as any).makeDrizzleBroadcastRepository(sql).recordUnsubscribe({
+      (m64 as any).makeDrizzleBroadcastRepository(sql).recordUnsubscribe({
         scope: "event",
         cleanupId: "cleanupId-1",
         subjectKind: "user",
@@ -4286,31 +4574,31 @@ export const cases: TranscriptCase[] = [
   {
     key: "makeDrizzleBroadcastRepository.refreshCounts",
     run: async (sql: any) =>
-      (m60 as any).makeDrizzleBroadcastRepository(sql).refreshCounts("broadcastId-1"),
+      (m64 as any).makeDrizzleBroadcastRepository(sql).refreshCounts("broadcastId-1"),
   },
   {
     key: "makeDrizzleBroadcastRepository.releaseClaims",
     run: async (sql: any) =>
-      (m60 as any).makeDrizzleBroadcastRepository(sql).releaseClaims(["deliveryId-1"]),
+      (m64 as any).makeDrizzleBroadcastRepository(sql).releaseClaims(["deliveryId-1"]),
   },
   {
     key: "makeDrizzleBroadcastRepository.scrubBroadcastContent",
     run: async (sql: any) =>
-      (m60 as any)
+      (m64 as any)
         .makeDrizzleBroadcastRepository(sql)
         .scrubBroadcastContent(new Date("2026-03-04T05:06:07.000Z"), 3),
   },
   {
     key: "makeDrizzleBroadcastRepository.setEventMute",
     run: async (sql: any) =>
-      (m60 as any)
+      (m64 as any)
         .makeDrizzleBroadcastRepository(sql)
         .setEventMute("cleanupId-1", "userId-1", true),
   },
   {
     key: "makeDrizzleBroadcastRepository.setHostMessagingSuspended",
     run: async (sql: any) =>
-      (m60 as any).makeDrizzleBroadcastRepository(sql).setHostMessagingSuspended("userId-1", true, {
+      (m64 as any).makeDrizzleBroadcastRepository(sql).setHostMessagingSuspended("userId-1", true, {
         actorId: "actorId-1",
         action: "auth.otp_refused_unverified_account",
         target: "target-1",
@@ -4320,24 +4608,24 @@ export const cases: TranscriptCase[] = [
   {
     key: "makeDrizzleBroadcastRepository.suppressedEmailHashes",
     run: async (sql: any) =>
-      (m60 as any).makeDrizzleBroadcastRepository(sql).suppressedEmailHashes(["emailHashe-1"]),
+      (m64 as any).makeDrizzleBroadcastRepository(sql).suppressedEmailHashes(["emailHashe-1"]),
   },
   {
     key: "makeDrizzleBroadcastRepository.suppressEmail",
     run: async (sql: any) =>
-      (m60 as any).makeDrizzleBroadcastRepository(sql).suppressEmail("emailHash-1", "manual"),
+      (m64 as any).makeDrizzleBroadcastRepository(sql).suppressEmail("emailHash-1", "manual"),
   },
   {
     key: "makeDrizzleBroadcastRepository.suppressRemaining",
     run: async (sql: any) =>
-      (m60 as any)
+      (m64 as any)
         .makeDrizzleBroadcastRepository(sql)
         .suppressRemaining("broadcastId-1", "reason-1"),
   },
   {
     key: "makeDrizzleBroadcastRepository.ticketTypeNames",
     run: async (sql: any) =>
-      (m60 as any).makeDrizzleBroadcastRepository(sql).ticketTypeNames({
+      (m64 as any).makeDrizzleBroadcastRepository(sql).ticketTypeNames({
         cleanupId: "cleanupId-1",
         userIds: ["userId-1"],
         guestIds: ["guestId-1"],
@@ -4346,7 +4634,7 @@ export const cases: TranscriptCase[] = [
   {
     key: "makeDrizzleBroadcastRepository.transition",
     run: async (sql: any) =>
-      (m60 as any)
+      (m64 as any)
         .makeDrizzleBroadcastRepository(sql)
         .transition("broadcastId-1", ["sent"], "sent", {
           scheduledAt: new Date("2026-03-04T05:06:07.000Z"),
@@ -4358,7 +4646,7 @@ export const cases: TranscriptCase[] = [
   {
     key: "makeDrizzleBroadcastRepository.updateDraft",
     run: async (sql: any) =>
-      (m60 as any).makeDrizzleBroadcastRepository(sql).updateDraft("cleanupId-1", "broadcastId-1", {
+      (m64 as any).makeDrizzleBroadcastRepository(sql).updateDraft("cleanupId-1", "broadcastId-1", {
         subject: "subject-1",
         bodyMd: "bodyMd-1",
         ctaLabel: "ctaLabel-1",
@@ -4370,7 +4658,7 @@ export const cases: TranscriptCase[] = [
   {
     key: "auditBestEffort",
     run: async (sql: any) =>
-      (m61 as any).auditBestEffort(
+      (m65 as any).auditBestEffort(
         sql,
         {
           actorId: "actorId-1",
@@ -4384,22 +4672,22 @@ export const cases: TranscriptCase[] = [
   {
     key: "makeDrizzleEventAnalyticsRepository.comparisonMedians",
     run: async (sql: any) =>
-      (m62 as any).makeDrizzleEventAnalyticsRepository(sql).comparisonMedians(["cleanupId-1"]),
+      (m66 as any).makeDrizzleEventAnalyticsRepository(sql).comparisonMedians(["cleanupId-1"]),
   },
   {
     key: "makeDrizzleEventAnalyticsRepository.facts",
     run: async (sql: any) =>
-      (m62 as any).makeDrizzleEventAnalyticsRepository(sql).facts("cleanupId-1"),
+      (m66 as any).makeDrizzleEventAnalyticsRepository(sql).facts("cleanupId-1"),
   },
   {
     key: "makeDrizzleEventAnalyticsRepository.hoursBuckets",
     run: async (sql: any) =>
-      (m62 as any).makeDrizzleEventAnalyticsRepository(sql).hoursBuckets("cleanupId-1"),
+      (m66 as any).makeDrizzleEventAnalyticsRepository(sql).hoursBuckets("cleanupId-1"),
   },
   {
     key: "makeDrizzleEventAnalyticsRepository.previousCompletedEventIds",
     run: async (sql: any) =>
-      (m62 as any).makeDrizzleEventAnalyticsRepository(sql).previousCompletedEventIds({
+      (m66 as any).makeDrizzleEventAnalyticsRepository(sql).previousCompletedEventIds({
         userId: "userId-1",
         organizationId: "organizationId-1",
         excludeCleanupId: "excludeCleanupId-1",
@@ -4409,21 +4697,21 @@ export const cases: TranscriptCase[] = [
   {
     key: "makeDrizzleEventAnalyticsRepository.registrationsBySlot",
     run: async (sql: any) =>
-      (m62 as any).makeDrizzleEventAnalyticsRepository(sql).registrationsBySlot("cleanupId-1"),
+      (m66 as any).makeDrizzleEventAnalyticsRepository(sql).registrationsBySlot("cleanupId-1"),
   },
   {
     key: "makeDrizzleEventAnalyticsRepository.reportStatuses",
     run: async (sql: any) =>
-      (m62 as any).makeDrizzleEventAnalyticsRepository(sql).reportStatuses("cleanupId-1"),
+      (m66 as any).makeDrizzleEventAnalyticsRepository(sql).reportStatuses("cleanupId-1"),
   },
   {
     key: "listConsentsForUser",
-    run: async (sql: any) => (m63 as any).listConsentsForUser(sql, "userId-1", 3),
+    run: async (sql: any) => (m67 as any).listConsentsForUser(sql, "userId-1", 3),
   },
   {
     key: "hostContactOptInFor",
     run: async (sql: any) =>
-      (m63 as any).hostContactOptInFor(sql, "cleanupId-1", {
+      (m67 as any).hostContactOptInFor(sql, "cleanupId-1", {
         userIds: ["userId-1"],
         guestIds: ["guestId-1"],
       }),
@@ -4431,14 +4719,14 @@ export const cases: TranscriptCase[] = [
   {
     key: "makeDrizzleHostExportRepository.claimForRun",
     run: async (sql: any) =>
-      (m64 as any)
+      (m68 as any)
         .makeDrizzleHostExportRepository(sql)
         .claimForRun("exportId-1", new Date("2026-03-04T05:06:07.000Z")),
   },
   {
     key: "makeDrizzleHostExportRepository.create",
     run: async (sql: any) =>
-      (m64 as any).makeDrizzleHostExportRepository(sql).create(
+      (m68 as any).makeDrizzleHostExportRepository(sql).create(
         {
           cleanupId: "cleanupId-1",
           organizationId: "organizationId-1",
@@ -4457,55 +4745,55 @@ export const cases: TranscriptCase[] = [
   {
     key: "makeDrizzleHostExportRepository.deleteOlderThan",
     run: async (sql: any) =>
-      (m64 as any)
+      (m68 as any)
         .makeDrizzleHostExportRepository(sql)
         .deleteOlderThan(new Date("2026-03-04T05:06:07.000Z"), 3),
   },
   {
     key: "makeDrizzleHostExportRepository.findById",
     run: async (sql: any) =>
-      (m64 as any).makeDrizzleHostExportRepository(sql).findById("exportId-1"),
+      (m68 as any).makeDrizzleHostExportRepository(sql).findById("exportId-1"),
   },
   {
     key: "makeDrizzleHostExportRepository.listExpired",
     run: async (sql: any) =>
-      (m64 as any)
+      (m68 as any)
         .makeDrizzleHostExportRepository(sql)
         .listExpired(new Date("2026-03-04T05:06:07.000Z"), 3),
   },
   {
     key: "makeDrizzleHostExportRepository.listForEvent",
     run: async (sql: any) =>
-      (m64 as any).makeDrizzleHostExportRepository(sql).listForEvent("cleanupId-1", 3),
+      (m68 as any).makeDrizzleHostExportRepository(sql).listForEvent("cleanupId-1", 3),
   },
   {
     key: "makeDrizzleHostExportRepository.listForOrganization",
     run: async (sql: any) =>
-      (m64 as any).makeDrizzleHostExportRepository(sql).listForOrganization("organizationId-1", 3),
+      (m68 as any).makeDrizzleHostExportRepository(sql).listForOrganization("organizationId-1", 3),
   },
   {
     key: "makeDrizzleHostExportRepository.listOrphaned",
     run: async (sql: any) =>
-      (m64 as any)
+      (m68 as any)
         .makeDrizzleHostExportRepository(sql)
         .listOrphaned({ staleBefore: new Date("2026-03-04T05:06:07.000Z"), limit: 3 }),
   },
   {
     key: "makeDrizzleHostExportRepository.markExpired",
     run: async (sql: any) =>
-      (m64 as any).makeDrizzleHostExportRepository(sql).markExpired("exportId-1"),
+      (m68 as any).makeDrizzleHostExportRepository(sql).markExpired("exportId-1"),
   },
   {
     key: "makeDrizzleHostExportRepository.markFailed",
     run: async (sql: any) =>
-      (m64 as any)
+      (m68 as any)
         .makeDrizzleHostExportRepository(sql)
         .markFailed("exportId-1", "errorCode-1", "runToken-1"),
   },
   {
     key: "makeDrizzleHostExportRepository.markReady",
     run: async (sql: any) =>
-      (m64 as any).makeDrizzleHostExportRepository(sql).markReady("exportId-1", {
+      (m68 as any).makeDrizzleHostExportRepository(sql).markReady("exportId-1", {
         r2Key: "r2Key-1",
         rowCount: 3,
         byteSize: 3,
@@ -4517,7 +4805,7 @@ export const cases: TranscriptCase[] = [
   {
     key: "makeDrizzleHostExportRepository.recordObjectKey",
     run: async (sql: any) =>
-      (m64 as any).makeDrizzleHostExportRepository(sql).recordObjectKey("exportId-1", {
+      (m68 as any).makeDrizzleHostExportRepository(sql).recordObjectKey("exportId-1", {
         r2Key: "r2Key-1",
         runToken: "runToken-1",
         replaces: "replaces-1",
@@ -4526,31 +4814,31 @@ export const cases: TranscriptCase[] = [
   {
     key: "makeDrizzleHostExportRepository.releaseObject",
     run: async (sql: any) =>
-      (m64 as any)
+      (m68 as any)
         .makeDrizzleHostExportRepository(sql)
         .releaseObject({ id: "id-1", status: "ready", runToken: "runToken-1" }, "errorCode-1"),
   },
   {
     key: "makeDrizzleHostExportRowsRepository.answerPage",
     run: async (sql: any) =>
-      (m64 as any).makeDrizzleHostExportRowsRepository(sql).answerPage("cleanupId-1", "after-1", 3),
+      (m68 as any).makeDrizzleHostExportRowsRepository(sql).answerPage("cleanupId-1", "after-1", 3),
   },
   {
     key: "makeDrizzleHostExportRowsRepository.checkinPage",
     run: async (sql: any) =>
-      (m64 as any)
+      (m68 as any)
         .makeDrizzleHostExportRowsRepository(sql)
         .checkinPage("cleanupId-1", "after-1", 3),
   },
   {
     key: "makeDrizzleHostExportRowsRepository.rosterPage",
     run: async (sql: any) =>
-      (m64 as any).makeDrizzleHostExportRowsRepository(sql).rosterPage("cleanupId-1", "after-1", 3),
+      (m68 as any).makeDrizzleHostExportRowsRepository(sql).rosterPage("cleanupId-1", "after-1", 3),
   },
   {
     key: "writeHostAudit",
     run: async (sql: any) =>
-      (m65 as any).writeHostAudit(sql, {
+      (m69 as any).writeHostAudit(sql, {
         actorId: "actorId-1",
         action: "org.detail_viewed",
         target: "target-1",
@@ -4560,7 +4848,7 @@ export const cases: TranscriptCase[] = [
   {
     key: "makeHostAuditSink.record",
     run: async (sql: any) =>
-      (m65 as any).makeHostAuditSink(sql, { warn: () => undefined }).record({
+      (m69 as any).makeHostAuditSink(sql, { warn: () => undefined }).record({
         actorId: "actorId-1",
         action: "org.detail_viewed",
         target: "target-1",
@@ -4570,19 +4858,19 @@ export const cases: TranscriptCase[] = [
   {
     key: "hostedRegistrationTotals",
     run: async (sql: any) =>
-      (m66 as any).hostedRegistrationTotals(sql, {
+      (m70 as any).hostedRegistrationTotals(sql, {
         userId: "userId-1",
         organizationId: "organizationId-1",
       }),
   },
   {
     key: "eventHoursByCleanup",
-    run: async (sql: any) => (m66 as any).eventHoursByCleanup(sql, ["cleanupId-1"]),
+    run: async (sql: any) => (m70 as any).eventHoursByCleanup(sql, ["cleanupId-1"]),
   },
   {
     key: "makeDrizzleHostPortfolioRepository.kpisFor",
     run: async (sql: any) =>
-      (m66 as any).makeDrizzleHostPortfolioRepository(sql).kpisFor({
+      (m70 as any).makeDrizzleHostPortfolioRepository(sql).kpisFor({
         userId: "userId-1",
         organizationId: "organizationId-1",
         now: new Date("2026-03-04T05:06:07.000Z"),
@@ -4591,7 +4879,7 @@ export const cases: TranscriptCase[] = [
   {
     key: "makeDrizzleHostPortfolioRepository.listHostedEvents",
     run: async (sql: any) =>
-      (m66 as any).makeDrizzleHostPortfolioRepository(sql).listHostedEvents({
+      (m70 as any).makeDrizzleHostPortfolioRepository(sql).listHostedEvents({
         userId: "userId-1",
         when: "all",
         organizationId: "organizationId-1",
@@ -4601,35 +4889,35 @@ export const cases: TranscriptCase[] = [
   },
   {
     key: "hostStandingOf",
-    run: async (sql: any) => (m67 as any).hostStandingOf(sql, "cleanupId-1", "userId-1"),
+    run: async (sql: any) => (m71 as any).hostStandingOf(sql, "cleanupId-1", "userId-1"),
   },
   {
     key: "hostStandingsOf",
-    run: async (sql: any) => (m67 as any).hostStandingsOf(sql, ["cleanupId-1"], "userId-1"),
+    run: async (sql: any) => (m71 as any).hostStandingsOf(sql, ["cleanupId-1"], "userId-1"),
   },
   {
     key: "orgStandingOf",
-    run: async (sql: any) => (m67 as any).orgStandingOf(sql, "organizationId-1", "userId-1"),
+    run: async (sql: any) => (m71 as any).orgStandingOf(sql, "organizationId-1", "userId-1"),
   },
   {
     key: "makeDrizzleHostStandingRepository.orgRoleOf",
     run: async (sql: any) =>
-      (m67 as any).makeDrizzleHostStandingRepository(sql).orgRoleOf("organizationId-1", "userId-1"),
+      (m71 as any).makeDrizzleHostStandingRepository(sql).orgRoleOf("organizationId-1", "userId-1"),
   },
   {
     key: "makeDrizzleHostStandingRepository.standingOf",
     run: async (sql: any) =>
-      (m67 as any).makeDrizzleHostStandingRepository(sql).standingOf("cleanupId-1", "userId-1"),
+      (m71 as any).makeDrizzleHostStandingRepository(sql).standingOf("cleanupId-1", "userId-1"),
   },
   {
     key: "makeDrizzleHostStandingRepository.standingsOf",
     run: async (sql: any) =>
-      (m67 as any).makeDrizzleHostStandingRepository(sql).standingsOf(["cleanupId-1"], "userId-1"),
+      (m71 as any).makeDrizzleHostStandingRepository(sql).standingsOf(["cleanupId-1"], "userId-1"),
   },
   {
     key: "makeDrizzleHostTeamRepository.acceptInviteByIdTx",
     run: async (sql: any) =>
-      (m68 as any)
+      (m72 as any)
         .makeDrizzleHostTeamRepository(sql, () => Promise.resolve("presignAvatarResult-1"))
         .acceptInviteByIdTx({
           inviteId: "inviteId-1",
@@ -4640,7 +4928,7 @@ export const cases: TranscriptCase[] = [
   {
     key: "makeDrizzleHostTeamRepository.acceptInviteTx",
     run: async (sql: any) =>
-      (m68 as any)
+      (m72 as any)
         .makeDrizzleHostTeamRepository(sql, () => Promise.resolve("presignAvatarResult-1"))
         .acceptInviteTx({
           cleanupId: "cleanupId-1",
@@ -4652,14 +4940,14 @@ export const cases: TranscriptCase[] = [
   {
     key: "makeDrizzleHostTeamRepository.countPendingInvites",
     run: async (sql: any) =>
-      (m68 as any)
+      (m72 as any)
         .makeDrizzleHostTeamRepository(sql, () => Promise.resolve("presignAvatarResult-1"))
         .countPendingInvites("cleanupId-1"),
   },
   {
     key: "makeDrizzleHostTeamRepository.createInviteTx",
     run: async (sql: any) =>
-      (m68 as any)
+      (m72 as any)
         .makeDrizzleHostTeamRepository(sql, () => Promise.resolve("presignAvatarResult-1"))
         .createInviteTx({
           inviteId: "inviteId-1",
@@ -4676,7 +4964,7 @@ export const cases: TranscriptCase[] = [
   {
     key: "makeDrizzleHostTeamRepository.declineInviteTx",
     run: async (sql: any) =>
-      (m68 as any)
+      (m72 as any)
         .makeDrizzleHostTeamRepository(sql, () => Promise.resolve("presignAvatarResult-1"))
         .declineInviteTx({
           inviteId: "inviteId-1",
@@ -4687,21 +4975,21 @@ export const cases: TranscriptCase[] = [
   {
     key: "makeDrizzleHostTeamRepository.eventTitleOf",
     run: async (sql: any) =>
-      (m68 as any)
+      (m72 as any)
         .makeDrizzleHostTeamRepository(sql, () => Promise.resolve("presignAvatarResult-1"))
         .eventTitleOf("cleanupId-1"),
   },
   {
     key: "makeDrizzleHostTeamRepository.expireStaleInvites",
     run: async (sql: any) =>
-      (m68 as any)
+      (m72 as any)
         .makeDrizzleHostTeamRepository(sql, () => Promise.resolve("presignAvatarResult-1"))
         .expireStaleInvites(new Date("2026-03-04T05:06:07.000Z"), 3),
   },
   {
     key: "makeDrizzleHostTeamRepository.findOpenInvite",
     run: async (sql: any) =>
-      (m68 as any)
+      (m72 as any)
         .makeDrizzleHostTeamRepository(sql, () => Promise.resolve("presignAvatarResult-1"))
         .findOpenInvite({
           cleanupId: "cleanupId-1",
@@ -4712,14 +5000,14 @@ export const cases: TranscriptCase[] = [
   {
     key: "makeDrizzleHostTeamRepository.listInvites",
     run: async (sql: any) =>
-      (m68 as any)
+      (m72 as any)
         .makeDrizzleHostTeamRepository(sql, () => Promise.resolve("presignAvatarResult-1"))
         .listInvites("cleanupId-1", 3),
   },
   {
     key: "makeDrizzleHostTeamRepository.listInvitesForUser",
     run: async (sql: any) =>
-      (m68 as any)
+      (m72 as any)
         .makeDrizzleHostTeamRepository(sql, () => Promise.resolve("presignAvatarResult-1"))
         .listInvitesForUser({
           userId: "userId-1",
@@ -4731,80 +5019,80 @@ export const cases: TranscriptCase[] = [
   {
     key: "makeDrizzleHostTeamRepository.listTeam",
     run: async (sql: any) =>
-      (m68 as any)
+      (m72 as any)
         .makeDrizzleHostTeamRepository(sql, () => Promise.resolve("presignAvatarResult-1"))
         .listTeam("cleanupId-1", 3),
   },
   {
     key: "makeDrizzleHostTeamRepository.listTeamUserIds",
     run: async (sql: any) =>
-      (m68 as any)
+      (m72 as any)
         .makeDrizzleHostTeamRepository(sql, () => Promise.resolve("presignAvatarResult-1"))
         .listTeamUserIds("cleanupId-1", 3),
   },
   {
     key: "makeDrizzleHostTeamRepository.resolveUserByHandle",
     run: async (sql: any) =>
-      (m68 as any)
+      (m72 as any)
         .makeDrizzleHostTeamRepository(sql, () => Promise.resolve("presignAvatarResult-1"))
         .resolveUserByHandle("handle-1"),
   },
   {
     key: "makeDrizzleHostTeamRepository.revokeInviteTx",
     run: async (sql: any) =>
-      (m68 as any)
+      (m72 as any)
         .makeDrizzleHostTeamRepository(sql, () => Promise.resolve("presignAvatarResult-1"))
         .revokeInviteTx({ cleanupId: "cleanupId-1", inviteId: "inviteId-1", actorId: "actorId-1" }),
   },
   {
     key: "makeDrizzleHostTeamRepository.scrubInviteEmails",
     run: async (sql: any) =>
-      (m68 as any)
+      (m72 as any)
         .makeDrizzleHostTeamRepository(sql, () => Promise.resolve("presignAvatarResult-1"))
         .scrubInviteEmails(new Date("2026-03-04T05:06:07.000Z"), 3),
   },
-  { key: "makeSqlTeamStanding", run: async (sql: any) => (m69 as any).makeSqlTeamStanding(sql) },
+  { key: "makeSqlTeamStanding", run: async (sql: any) => (m73 as any).makeSqlTeamStanding(sql) },
   {
     key: "makeDrizzleMetricsRepository.eventTimezone",
     run: async (sql: any) =>
-      (m70 as any).makeDrizzleMetricsRepository(sql).eventTimezone("cleanupId-1"),
+      (m74 as any).makeDrizzleMetricsRepository(sql).eventTimezone("cleanupId-1"),
   },
   {
     key: "makeDrizzleMetricsRepository.listRollupEvents",
     run: async (sql: any) =>
-      (m70 as any)
+      (m74 as any)
         .makeDrizzleMetricsRepository(sql)
         .listRollupEvents(new Date("2026-03-04T05:06:07.000Z"), "after-1", 3),
   },
   {
     key: "makeDrizzleMetricsRepository.read",
     run: async (sql: any) =>
-      (m70 as any)
+      (m74 as any)
         .makeDrizzleMetricsRepository(sql)
         .read("cleanupId-1", ["metric-1"], "from-1", "to-1"),
   },
   {
     key: "makeDrizzleMetricsRepository.readMany",
     run: async (sql: any) =>
-      (m70 as any)
+      (m74 as any)
         .makeDrizzleMetricsRepository(sql)
         .readMany(["cleanupId-1"], ["metric-1"], "from-1", "to-1"),
   },
   {
     key: "makeDrizzleMetricsRepository.recomputeFromSource",
     run: async (sql: any) =>
-      (m70 as any)
+      (m74 as any)
         .makeDrizzleMetricsRepository(sql)
         .recomputeFromSource("cleanupId-1", "timezone-1", new Date("2026-03-04T05:06:07.000Z")),
   },
   {
     key: "makeDrizzleMetricsRepository.resolveSlug",
-    run: async (sql: any) => (m70 as any).makeDrizzleMetricsRepository(sql).resolveSlug("slug-1"),
+    run: async (sql: any) => (m74 as any).makeDrizzleMetricsRepository(sql).resolveSlug("slug-1"),
   },
   {
     key: "makeDrizzleMetricsRepository.upsertExact",
     run: async (sql: any) =>
-      (m70 as any).makeDrizzleMetricsRepository(sql).upsertExact([
+      (m74 as any).makeDrizzleMetricsRepository(sql).upsertExact([
         {
           cleanupId: "cleanupId-1",
           day: "day-1",
@@ -4817,7 +5105,7 @@ export const cases: TranscriptCase[] = [
   {
     key: "makeDrizzleMetricsRepository.upsertGreatest",
     run: async (sql: any) =>
-      (m70 as any).makeDrizzleMetricsRepository(sql).upsertGreatest([
+      (m74 as any).makeDrizzleMetricsRepository(sql).upsertGreatest([
         {
           cleanupId: "cleanupId-1",
           day: "day-1",
@@ -4830,12 +5118,12 @@ export const cases: TranscriptCase[] = [
   {
     key: "makeOrganizationAdminMethods.adminFindOrganization",
     run: async (sql: any) =>
-      (m71 as any).makeOrganizationAdminMethods(sql).adminFindOrganization("id-1"),
+      (m75 as any).makeOrganizationAdminMethods(sql).adminFindOrganization("id-1"),
   },
   {
     key: "makeOrganizationAdminMethods.adminListOrganizations",
     run: async (sql: any) =>
-      (m71 as any).makeOrganizationAdminMethods(sql).adminListOrganizations({
+      (m75 as any).makeOrganizationAdminMethods(sql).adminListOrganizations({
         q: "q-1",
         verified: "pending",
         kind: "nonprofit",
@@ -4847,7 +5135,7 @@ export const cases: TranscriptCase[] = [
   {
     key: "makeOrganizationAdminMethods.setSuspendedTx",
     run: async (sql: any) =>
-      (m71 as any).makeOrganizationAdminMethods(sql).setSuspendedTx({
+      (m75 as any).makeOrganizationAdminMethods(sql).setSuspendedTx({
         organizationId: "organizationId-1",
         suspended: true,
         reason: "reason-1",
@@ -4858,7 +5146,7 @@ export const cases: TranscriptCase[] = [
   {
     key: "makeOrganizationInviteMethods.acceptInviteTx",
     run: async (sql: any) =>
-      (m72 as any)
+      (m76 as any)
         .makeOrganizationInviteMethods(sql, () => Promise.resolve("presignAvatarResult-1"))
         .acceptInviteTx({
           by: { tokenHash: "tokenHash-1" },
@@ -4869,14 +5157,14 @@ export const cases: TranscriptCase[] = [
   {
     key: "makeOrganizationInviteMethods.countPendingInvites",
     run: async (sql: any) =>
-      (m72 as any)
+      (m76 as any)
         .makeOrganizationInviteMethods(sql, () => Promise.resolve("presignAvatarResult-1"))
         .countPendingInvites("organizationId-1", new Date("2026-03-04T05:06:07.000Z")),
   },
   {
     key: "makeOrganizationInviteMethods.createInviteTx",
     run: async (sql: any) =>
-      (m72 as any)
+      (m76 as any)
         .makeOrganizationInviteMethods(sql, () => Promise.resolve("presignAvatarResult-1"))
         .createInviteTx({
           inviteId: "inviteId-1",
@@ -4893,7 +5181,7 @@ export const cases: TranscriptCase[] = [
   {
     key: "makeOrganizationInviteMethods.declineInviteTx",
     run: async (sql: any) =>
-      (m72 as any)
+      (m76 as any)
         .makeOrganizationInviteMethods(sql, () => Promise.resolve("presignAvatarResult-1"))
         .declineInviteTx({
           inviteId: "inviteId-1",
@@ -4904,14 +5192,14 @@ export const cases: TranscriptCase[] = [
   {
     key: "makeOrganizationInviteMethods.listInvites",
     run: async (sql: any) =>
-      (m72 as any)
+      (m76 as any)
         .makeOrganizationInviteMethods(sql, () => Promise.resolve("presignAvatarResult-1"))
         .listInvites("organizationId-1", new Date("2026-03-04T05:06:07.000Z"), 3),
   },
   {
     key: "makeOrganizationInviteMethods.listPendingInvitesForUser",
     run: async (sql: any) =>
-      (m72 as any)
+      (m76 as any)
         .makeOrganizationInviteMethods(sql, () => Promise.resolve("presignAvatarResult-1"))
         .listPendingInvitesForUser({
           userId: "userId-1",
@@ -4922,7 +5210,7 @@ export const cases: TranscriptCase[] = [
   {
     key: "makeOrganizationInviteMethods.revokeInviteTx",
     run: async (sql: any) =>
-      (m72 as any)
+      (m76 as any)
         .makeOrganizationInviteMethods(sql, () => Promise.resolve("presignAvatarResult-1"))
         .revokeInviteTx({
           organizationId: "organizationId-1",
@@ -4933,12 +5221,12 @@ export const cases: TranscriptCase[] = [
   },
   {
     key: "lockOrgForActorIn",
-    run: async (sql: any) => (m73 as any).lockOrgForActorIn(sql, "organizationId-1", "actorId-1"),
+    run: async (sql: any) => (m77 as any).lockOrgForActorIn(sql, "organizationId-1", "actorId-1"),
   },
   {
     key: "makeOrganizationMemberMethods.addMemberTx",
     run: async (sql: any) =>
-      (m73 as any)
+      (m77 as any)
         .makeOrganizationMemberMethods(sql, () => Promise.resolve("presignAvatarResult-1"))
         .addMemberTx({
           organizationId: "organizationId-1",
@@ -4951,7 +5239,7 @@ export const cases: TranscriptCase[] = [
   {
     key: "makeOrganizationMemberMethods.adminAddMemberTx",
     run: async (sql: any) =>
-      (m73 as any)
+      (m77 as any)
         .makeOrganizationMemberMethods(sql, () => Promise.resolve("presignAvatarResult-1"))
         .adminAddMemberTx({
           organizationId: "organizationId-1",
@@ -4965,14 +5253,14 @@ export const cases: TranscriptCase[] = [
   {
     key: "makeOrganizationMemberMethods.adminListMembers",
     run: async (sql: any) =>
-      (m73 as any)
+      (m77 as any)
         .makeOrganizationMemberMethods(sql, () => Promise.resolve("presignAvatarResult-1"))
         .adminListMembers({ organizationId: "organizationId-1", cursor: "cursor-1", limit: 3 }),
   },
   {
     key: "makeOrganizationMemberMethods.adminSetMemberRoleTx",
     run: async (sql: any) =>
-      (m73 as any)
+      (m77 as any)
         .makeOrganizationMemberMethods(sql, () => Promise.resolve("presignAvatarResult-1"))
         .adminSetMemberRoleTx({
           organizationId: "organizationId-1",
@@ -4986,35 +5274,35 @@ export const cases: TranscriptCase[] = [
   {
     key: "makeOrganizationMemberMethods.findMember",
     run: async (sql: any) =>
-      (m73 as any)
+      (m77 as any)
         .makeOrganizationMemberMethods(sql, () => Promise.resolve("presignAvatarResult-1"))
         .findMember("organizationId-1", "userId-1"),
   },
   {
     key: "makeOrganizationMemberMethods.findOwner",
     run: async (sql: any) =>
-      (m73 as any)
+      (m77 as any)
         .makeOrganizationMemberMethods(sql, () => Promise.resolve("presignAvatarResult-1"))
         .findOwner("organizationId-1"),
   },
   {
     key: "makeOrganizationMemberMethods.findUser",
     run: async (sql: any) =>
-      (m73 as any)
+      (m77 as any)
         .makeOrganizationMemberMethods(sql, () => Promise.resolve("presignAvatarResult-1"))
         .findUser("userId-1"),
   },
   {
     key: "makeOrganizationMemberMethods.listMembers",
     run: async (sql: any) =>
-      (m73 as any)
+      (m77 as any)
         .makeOrganizationMemberMethods(sql, () => Promise.resolve("presignAvatarResult-1"))
         .listMembers({ organizationId: "organizationId-1", cursor: "cursor-1", limit: 3 }),
   },
   {
     key: "makeOrganizationMemberMethods.removeMemberTx",
     run: async (sql: any) =>
-      (m73 as any)
+      (m77 as any)
         .makeOrganizationMemberMethods(sql, () => Promise.resolve("presignAvatarResult-1"))
         .removeMemberTx({
           organizationId: "organizationId-1",
@@ -5026,21 +5314,21 @@ export const cases: TranscriptCase[] = [
   {
     key: "makeOrganizationMemberMethods.resolveUserByIdentifier",
     run: async (sql: any) =>
-      (m73 as any)
+      (m77 as any)
         .makeOrganizationMemberMethods(sql, () => Promise.resolve("presignAvatarResult-1"))
         .resolveUserByIdentifier({ identifierKind: "handle", identifier: "identifier-1" }),
   },
   {
     key: "makeOrganizationMemberMethods.roleOf",
     run: async (sql: any) =>
-      (m73 as any)
+      (m77 as any)
         .makeOrganizationMemberMethods(sql, () => Promise.resolve("presignAvatarResult-1"))
         .roleOf("organizationId-1", "userId-1"),
   },
   {
     key: "makeOrganizationMemberMethods.setMemberRoleTx",
     run: async (sql: any) =>
-      (m73 as any)
+      (m77 as any)
         .makeOrganizationMemberMethods(sql, () => Promise.resolve("presignAvatarResult-1"))
         .setMemberRoleTx({
           organizationId: "organizationId-1",
@@ -5052,7 +5340,7 @@ export const cases: TranscriptCase[] = [
   {
     key: "makeOrganizationProfileMethods.createOrganizationTx",
     run: async (sql: any) =>
-      (m74 as any).makeOrganizationProfileMethods(sql).createOrganizationTx({
+      (m78 as any).makeOrganizationProfileMethods(sql).createOrganizationTx({
         organizationId: "organizationId-1",
         slug: "slug-1",
         name: "name-1",
@@ -5076,29 +5364,29 @@ export const cases: TranscriptCase[] = [
   {
     key: "makeOrganizationProfileMethods.findOrganizationAccess",
     run: async (sql: any) =>
-      (m74 as any).makeOrganizationProfileMethods(sql).findOrganizationAccess("id-1", "viewerId-1"),
+      (m78 as any).makeOrganizationProfileMethods(sql).findOrganizationAccess("id-1", "viewerId-1"),
   },
   {
     key: "makeOrganizationProfileMethods.findOrganizationById",
     run: async (sql: any) =>
-      (m74 as any).makeOrganizationProfileMethods(sql).findOrganizationById("id-1", "viewerId-1"),
+      (m78 as any).makeOrganizationProfileMethods(sql).findOrganizationById("id-1", "viewerId-1"),
   },
   {
     key: "makeOrganizationProfileMethods.findOrganizationBySlug",
     run: async (sql: any) =>
-      (m74 as any)
+      (m78 as any)
         .makeOrganizationProfileMethods(sql)
         .findOrganizationBySlug("slug-1", "viewerId-1"),
   },
   {
     key: "makeOrganizationProfileMethods.listMyOrganizations",
     run: async (sql: any) =>
-      (m74 as any).makeOrganizationProfileMethods(sql).listMyOrganizations("userId-1", 3),
+      (m78 as any).makeOrganizationProfileMethods(sql).listMyOrganizations("userId-1", 3),
   },
   {
     key: "makeOrganizationProfileMethods.updateOrganizationTx",
     run: async (sql: any) =>
-      (m74 as any).makeOrganizationProfileMethods(sql).updateOrganizationTx(
+      (m78 as any).makeOrganizationProfileMethods(sql).updateOrganizationTx(
         "id-1",
         {
           name: "name-1",
@@ -5122,30 +5410,30 @@ export const cases: TranscriptCase[] = [
   },
   {
     key: "readOrgHours",
-    run: async (sql: any) => (m75 as any).readOrgHours(sql, ["organizationId-1"]),
+    run: async (sql: any) => (m79 as any).readOrgHours(sql, ["organizationId-1"]),
   },
   {
     key: "organizationColumns",
-    run: async (sql: any) => (m75 as any).organizationColumns(sql, "viewerId-1"),
+    run: async (sql: any) => (m79 as any).organizationColumns(sql, "viewerId-1"),
   },
   {
     key: "makeOrganizationVerificationMethods.adminGetVerification",
     run: async (sql: any) =>
-      (m76 as any)
+      (m80 as any)
         .makeOrganizationVerificationMethods(sql)
         .adminGetVerification("organizationId-1"),
   },
   {
     key: "makeOrganizationVerificationMethods.adminGetVerifications",
     run: async (sql: any) =>
-      (m76 as any)
+      (m80 as any)
         .makeOrganizationVerificationMethods(sql)
         .adminGetVerifications(["organizationId-1"]),
   },
   {
     key: "makeOrganizationVerificationMethods.adminListVerifications",
     run: async (sql: any) =>
-      (m76 as any).makeOrganizationVerificationMethods(sql).adminListVerifications({
+      (m80 as any).makeOrganizationVerificationMethods(sql).adminListVerifications({
         status: "pending",
         kind: "nonprofit",
         q: "q-1",
@@ -5156,7 +5444,7 @@ export const cases: TranscriptCase[] = [
   {
     key: "makeOrganizationVerificationMethods.applyVerificationTx",
     run: async (sql: any) =>
-      (m76 as any).makeOrganizationVerificationMethods(sql).applyVerificationTx({
+      (m80 as any).makeOrganizationVerificationMethods(sql).applyVerificationTx({
         verificationId: "verificationId-1",
         organizationId: "organizationId-1",
         kind: "nonprofit",
@@ -5170,7 +5458,7 @@ export const cases: TranscriptCase[] = [
   {
     key: "makeOrganizationVerificationMethods.decideVerificationTx",
     run: async (sql: any) =>
-      (m76 as any).makeOrganizationVerificationMethods(sql).decideVerificationTx({
+      (m80 as any).makeOrganizationVerificationMethods(sql).decideVerificationTx({
         organizationId: "organizationId-1",
         decision: "rejected",
         kind: "nonprofit",
@@ -5182,19 +5470,19 @@ export const cases: TranscriptCase[] = [
   {
     key: "makeOrganizationVerificationMethods.getVerification",
     run: async (sql: any) =>
-      (m76 as any).makeOrganizationVerificationMethods(sql).getVerification("organizationId-1"),
+      (m80 as any).makeOrganizationVerificationMethods(sql).getVerification("organizationId-1"),
   },
   {
     key: "makeOrganizationVerificationMethods.scrubDecidedEins",
     run: async (sql: any) =>
-      (m76 as any)
+      (m80 as any)
         .makeOrganizationVerificationMethods(sql)
         .scrubDecidedEins(new Date("2026-03-04T05:06:07.000Z"), 3),
   },
   {
     key: "makeDrizzleOrganizationRepository.acceptInviteTx",
     run: async (sql: any) =>
-      (m77 as any)
+      (m81 as any)
         .makeDrizzleOrganizationRepository(sql, () => Promise.resolve("presignAvatarResult-1"))
         .acceptInviteTx({
           by: { tokenHash: "tokenHash-1" },
@@ -5205,7 +5493,7 @@ export const cases: TranscriptCase[] = [
   {
     key: "makeDrizzleOrganizationRepository.addMemberTx",
     run: async (sql: any) =>
-      (m77 as any)
+      (m81 as any)
         .makeDrizzleOrganizationRepository(sql, () => Promise.resolve("presignAvatarResult-1"))
         .addMemberTx({
           organizationId: "organizationId-1",
@@ -5218,7 +5506,7 @@ export const cases: TranscriptCase[] = [
   {
     key: "makeDrizzleOrganizationRepository.adminAddMemberTx",
     run: async (sql: any) =>
-      (m77 as any)
+      (m81 as any)
         .makeDrizzleOrganizationRepository(sql, () => Promise.resolve("presignAvatarResult-1"))
         .adminAddMemberTx({
           organizationId: "organizationId-1",
@@ -5232,35 +5520,35 @@ export const cases: TranscriptCase[] = [
   {
     key: "makeDrizzleOrganizationRepository.adminFindOrganization",
     run: async (sql: any) =>
-      (m77 as any)
+      (m81 as any)
         .makeDrizzleOrganizationRepository(sql, () => Promise.resolve("presignAvatarResult-1"))
         .adminFindOrganization("id-1"),
   },
   {
     key: "makeDrizzleOrganizationRepository.adminGetVerification",
     run: async (sql: any) =>
-      (m77 as any)
+      (m81 as any)
         .makeDrizzleOrganizationRepository(sql, () => Promise.resolve("presignAvatarResult-1"))
         .adminGetVerification("organizationId-1"),
   },
   {
     key: "makeDrizzleOrganizationRepository.adminGetVerifications",
     run: async (sql: any) =>
-      (m77 as any)
+      (m81 as any)
         .makeDrizzleOrganizationRepository(sql, () => Promise.resolve("presignAvatarResult-1"))
         .adminGetVerifications(["organizationId-1"]),
   },
   {
     key: "makeDrizzleOrganizationRepository.adminListMembers",
     run: async (sql: any) =>
-      (m77 as any)
+      (m81 as any)
         .makeDrizzleOrganizationRepository(sql, () => Promise.resolve("presignAvatarResult-1"))
         .adminListMembers({ organizationId: "organizationId-1", cursor: "cursor-1", limit: 3 }),
   },
   {
     key: "makeDrizzleOrganizationRepository.adminListOrganizations",
     run: async (sql: any) =>
-      (m77 as any)
+      (m81 as any)
         .makeDrizzleOrganizationRepository(sql, () => Promise.resolve("presignAvatarResult-1"))
         .adminListOrganizations({
           q: "q-1",
@@ -5274,7 +5562,7 @@ export const cases: TranscriptCase[] = [
   {
     key: "makeDrizzleOrganizationRepository.adminListVerifications",
     run: async (sql: any) =>
-      (m77 as any)
+      (m81 as any)
         .makeDrizzleOrganizationRepository(sql, () => Promise.resolve("presignAvatarResult-1"))
         .adminListVerifications({
           status: "pending",
@@ -5287,7 +5575,7 @@ export const cases: TranscriptCase[] = [
   {
     key: "makeDrizzleOrganizationRepository.adminSetMemberRoleTx",
     run: async (sql: any) =>
-      (m77 as any)
+      (m81 as any)
         .makeDrizzleOrganizationRepository(sql, () => Promise.resolve("presignAvatarResult-1"))
         .adminSetMemberRoleTx({
           organizationId: "organizationId-1",
@@ -5301,7 +5589,7 @@ export const cases: TranscriptCase[] = [
   {
     key: "makeDrizzleOrganizationRepository.applyVerificationTx",
     run: async (sql: any) =>
-      (m77 as any)
+      (m81 as any)
         .makeDrizzleOrganizationRepository(sql, () => Promise.resolve("presignAvatarResult-1"))
         .applyVerificationTx({
           verificationId: "verificationId-1",
@@ -5317,14 +5605,14 @@ export const cases: TranscriptCase[] = [
   {
     key: "makeDrizzleOrganizationRepository.countPendingInvites",
     run: async (sql: any) =>
-      (m77 as any)
+      (m81 as any)
         .makeDrizzleOrganizationRepository(sql, () => Promise.resolve("presignAvatarResult-1"))
         .countPendingInvites("organizationId-1", new Date("2026-03-04T05:06:07.000Z")),
   },
   {
     key: "makeDrizzleOrganizationRepository.createInviteTx",
     run: async (sql: any) =>
-      (m77 as any)
+      (m81 as any)
         .makeDrizzleOrganizationRepository(sql, () => Promise.resolve("presignAvatarResult-1"))
         .createInviteTx({
           inviteId: "inviteId-1",
@@ -5341,7 +5629,7 @@ export const cases: TranscriptCase[] = [
   {
     key: "makeDrizzleOrganizationRepository.createOrganizationTx",
     run: async (sql: any) =>
-      (m77 as any)
+      (m81 as any)
         .makeDrizzleOrganizationRepository(sql, () => Promise.resolve("presignAvatarResult-1"))
         .createOrganizationTx({
           organizationId: "organizationId-1",
@@ -5367,7 +5655,7 @@ export const cases: TranscriptCase[] = [
   {
     key: "makeDrizzleOrganizationRepository.decideVerificationTx",
     run: async (sql: any) =>
-      (m77 as any)
+      (m81 as any)
         .makeDrizzleOrganizationRepository(sql, () => Promise.resolve("presignAvatarResult-1"))
         .decideVerificationTx({
           organizationId: "organizationId-1",
@@ -5381,7 +5669,7 @@ export const cases: TranscriptCase[] = [
   {
     key: "makeDrizzleOrganizationRepository.declineInviteTx",
     run: async (sql: any) =>
-      (m77 as any)
+      (m81 as any)
         .makeDrizzleOrganizationRepository(sql, () => Promise.resolve("presignAvatarResult-1"))
         .declineInviteTx({
           inviteId: "inviteId-1",
@@ -5392,77 +5680,77 @@ export const cases: TranscriptCase[] = [
   {
     key: "makeDrizzleOrganizationRepository.findMember",
     run: async (sql: any) =>
-      (m77 as any)
+      (m81 as any)
         .makeDrizzleOrganizationRepository(sql, () => Promise.resolve("presignAvatarResult-1"))
         .findMember("organizationId-1", "userId-1"),
   },
   {
     key: "makeDrizzleOrganizationRepository.findOrganizationAccess",
     run: async (sql: any) =>
-      (m77 as any)
+      (m81 as any)
         .makeDrizzleOrganizationRepository(sql, () => Promise.resolve("presignAvatarResult-1"))
         .findOrganizationAccess("id-1", "viewerId-1"),
   },
   {
     key: "makeDrizzleOrganizationRepository.findOrganizationById",
     run: async (sql: any) =>
-      (m77 as any)
+      (m81 as any)
         .makeDrizzleOrganizationRepository(sql, () => Promise.resolve("presignAvatarResult-1"))
         .findOrganizationById("id-1", "viewerId-1"),
   },
   {
     key: "makeDrizzleOrganizationRepository.findOrganizationBySlug",
     run: async (sql: any) =>
-      (m77 as any)
+      (m81 as any)
         .makeDrizzleOrganizationRepository(sql, () => Promise.resolve("presignAvatarResult-1"))
         .findOrganizationBySlug("slug-1", "viewerId-1"),
   },
   {
     key: "makeDrizzleOrganizationRepository.findOwner",
     run: async (sql: any) =>
-      (m77 as any)
+      (m81 as any)
         .makeDrizzleOrganizationRepository(sql, () => Promise.resolve("presignAvatarResult-1"))
         .findOwner("organizationId-1"),
   },
   {
     key: "makeDrizzleOrganizationRepository.findUser",
     run: async (sql: any) =>
-      (m77 as any)
+      (m81 as any)
         .makeDrizzleOrganizationRepository(sql, () => Promise.resolve("presignAvatarResult-1"))
         .findUser("userId-1"),
   },
   {
     key: "makeDrizzleOrganizationRepository.getVerification",
     run: async (sql: any) =>
-      (m77 as any)
+      (m81 as any)
         .makeDrizzleOrganizationRepository(sql, () => Promise.resolve("presignAvatarResult-1"))
         .getVerification("organizationId-1"),
   },
   {
     key: "makeDrizzleOrganizationRepository.listInvites",
     run: async (sql: any) =>
-      (m77 as any)
+      (m81 as any)
         .makeDrizzleOrganizationRepository(sql, () => Promise.resolve("presignAvatarResult-1"))
         .listInvites("organizationId-1", new Date("2026-03-04T05:06:07.000Z"), 3),
   },
   {
     key: "makeDrizzleOrganizationRepository.listMembers",
     run: async (sql: any) =>
-      (m77 as any)
+      (m81 as any)
         .makeDrizzleOrganizationRepository(sql, () => Promise.resolve("presignAvatarResult-1"))
         .listMembers({ organizationId: "organizationId-1", cursor: "cursor-1", limit: 3 }),
   },
   {
     key: "makeDrizzleOrganizationRepository.listMyOrganizations",
     run: async (sql: any) =>
-      (m77 as any)
+      (m81 as any)
         .makeDrizzleOrganizationRepository(sql, () => Promise.resolve("presignAvatarResult-1"))
         .listMyOrganizations("userId-1", 3),
   },
   {
     key: "makeDrizzleOrganizationRepository.listPendingInvitesForUser",
     run: async (sql: any) =>
-      (m77 as any)
+      (m81 as any)
         .makeDrizzleOrganizationRepository(sql, () => Promise.resolve("presignAvatarResult-1"))
         .listPendingInvitesForUser({
           userId: "userId-1",
@@ -5473,7 +5761,7 @@ export const cases: TranscriptCase[] = [
   {
     key: "makeDrizzleOrganizationRepository.removeMemberTx",
     run: async (sql: any) =>
-      (m77 as any)
+      (m81 as any)
         .makeDrizzleOrganizationRepository(sql, () => Promise.resolve("presignAvatarResult-1"))
         .removeMemberTx({
           organizationId: "organizationId-1",
@@ -5485,14 +5773,14 @@ export const cases: TranscriptCase[] = [
   {
     key: "makeDrizzleOrganizationRepository.resolveUserByIdentifier",
     run: async (sql: any) =>
-      (m77 as any)
+      (m81 as any)
         .makeDrizzleOrganizationRepository(sql, () => Promise.resolve("presignAvatarResult-1"))
         .resolveUserByIdentifier({ identifierKind: "handle", identifier: "identifier-1" }),
   },
   {
     key: "makeDrizzleOrganizationRepository.revokeInviteTx",
     run: async (sql: any) =>
-      (m77 as any)
+      (m81 as any)
         .makeDrizzleOrganizationRepository(sql, () => Promise.resolve("presignAvatarResult-1"))
         .revokeInviteTx({
           organizationId: "organizationId-1",
@@ -5504,21 +5792,21 @@ export const cases: TranscriptCase[] = [
   {
     key: "makeDrizzleOrganizationRepository.roleOf",
     run: async (sql: any) =>
-      (m77 as any)
+      (m81 as any)
         .makeDrizzleOrganizationRepository(sql, () => Promise.resolve("presignAvatarResult-1"))
         .roleOf("organizationId-1", "userId-1"),
   },
   {
     key: "makeDrizzleOrganizationRepository.scrubDecidedEins",
     run: async (sql: any) =>
-      (m77 as any)
+      (m81 as any)
         .makeDrizzleOrganizationRepository(sql, () => Promise.resolve("presignAvatarResult-1"))
         .scrubDecidedEins(new Date("2026-03-04T05:06:07.000Z"), 3),
   },
   {
     key: "makeDrizzleOrganizationRepository.setMemberRoleTx",
     run: async (sql: any) =>
-      (m77 as any)
+      (m81 as any)
         .makeDrizzleOrganizationRepository(sql, () => Promise.resolve("presignAvatarResult-1"))
         .setMemberRoleTx({
           organizationId: "organizationId-1",
@@ -5530,7 +5818,7 @@ export const cases: TranscriptCase[] = [
   {
     key: "makeDrizzleOrganizationRepository.setSuspendedTx",
     run: async (sql: any) =>
-      (m77 as any)
+      (m81 as any)
         .makeDrizzleOrganizationRepository(sql, () => Promise.resolve("presignAvatarResult-1"))
         .setSuspendedTx({
           organizationId: "organizationId-1",
@@ -5543,7 +5831,7 @@ export const cases: TranscriptCase[] = [
   {
     key: "makeDrizzleOrganizationRepository.updateOrganizationTx",
     run: async (sql: any) =>
-      (m77 as any)
+      (m81 as any)
         .makeDrizzleOrganizationRepository(sql, () => Promise.resolve("presignAvatarResult-1"))
         .updateOrganizationTx(
           "id-1",
@@ -5569,16 +5857,16 @@ export const cases: TranscriptCase[] = [
   },
   {
     key: "hostedEventCounts@portfolio-counts",
-    run: async (sql: any) => (m78 as any).hostedEventCounts(sql, ["cleanupId-1"]),
+    run: async (sql: any) => (m82 as any).hostedEventCounts(sql, ["cleanupId-1"]),
   },
   {
     key: "hostedEventCounts@registration-counts",
-    run: async (sql: any) => (m79 as any).hostedEventCounts(sql, ["cleanupId-1"]),
+    run: async (sql: any) => (m83 as any).hostedEventCounts(sql, ["cleanupId-1"]),
   },
   {
     key: "attachRegistrationFields",
     run: async (sql: any) =>
-      (m80 as any).attachRegistrationFields(
+      (m84 as any).attachRegistrationFields(
         sql,
         [
           {
@@ -5719,7 +6007,7 @@ export const cases: TranscriptCase[] = [
   {
     key: "makeCheckinMethods.checkInByToken",
     run: async (sql: any) =>
-      (m81 as any)
+      (m85 as any)
         .makeCheckinMethods(sql, () => Promise.resolve("presignAvatarResult-1"))
         .checkInByToken({
           cleanupId: "cleanupId-1",
@@ -5732,14 +6020,14 @@ export const cases: TranscriptCase[] = [
   {
     key: "makeCheckinMethods.checkinCounters",
     run: async (sql: any) =>
-      (m81 as any)
+      (m85 as any)
         .makeCheckinMethods(sql, () => Promise.resolve("presignAvatarResult-1"))
         .checkinCounters("cleanupId-1"),
   },
   {
     key: "makeCheckinMethods.checkInSeat",
     run: async (sql: any) =>
-      (m81 as any)
+      (m85 as any)
         .makeCheckinMethods(sql, () => Promise.resolve("presignAvatarResult-1"))
         .checkInSeat({
           cleanupId: "cleanupId-1",
@@ -5752,14 +6040,14 @@ export const cases: TranscriptCase[] = [
   {
     key: "makeCheckinMethods.hostedEventCounts",
     run: async (sql: any) =>
-      (m81 as any)
+      (m85 as any)
         .makeCheckinMethods(sql, () => Promise.resolve("presignAvatarResult-1"))
         .hostedEventCounts(["cleanupId-1"]),
   },
   {
     key: "makeCheckinMethods.markNoShows",
     run: async (sql: any) =>
-      (m81 as any)
+      (m85 as any)
         .makeCheckinMethods(sql, () => Promise.resolve("presignAvatarResult-1"))
         .markNoShows({
           cleanupId: "cleanupId-1",
@@ -5770,37 +6058,37 @@ export const cases: TranscriptCase[] = [
   {
     key: "makeCheckinMethods.sweepNoShows",
     run: async (sql: any) =>
-      (m81 as any)
+      (m85 as any)
         .makeCheckinMethods(sql, () => Promise.resolve("presignAvatarResult-1"))
         .sweepNoShows({ now: new Date("2026-03-04T05:06:07.000Z"), limit: 3 }),
   },
   {
     key: "makeCheckinMethods.undoCheckIn",
     run: async (sql: any) =>
-      (m81 as any)
+      (m85 as any)
         .makeCheckinMethods(sql, () => Promise.resolve("presignAvatarResult-1"))
         .undoCheckIn({ cleanupId: "cleanupId-1", seatId: "seatId-1" }),
   },
   {
     key: "subjectIs",
-    run: async (sql: any) => (m82 as any).subjectIs(sql, { kind: "user", userId: "userId-1" }),
+    run: async (sql: any) => (m86 as any).subjectIs(sql, { kind: "user", userId: "userId-1" }),
   },
   {
     key: "isBannedIn",
-    run: async (sql: any) => (m82 as any).isBannedIn(sql, "cleanupId-1", "userId-1"),
+    run: async (sql: any) => (m86 as any).isBannedIn(sql, "cleanupId-1", "userId-1"),
   },
   {
     key: "loadTicketTypes",
-    run: async (sql: any) => (m82 as any).loadTicketTypes(sql, ["cleanupId-1"]),
+    run: async (sql: any) => (m86 as any).loadTicketTypes(sql, ["cleanupId-1"]),
   },
   {
     key: "loadTicketType",
-    run: async (sql: any) => (m82 as any).loadTicketType(sql, "cleanupId-1", "ticketTypeId-1"),
+    run: async (sql: any) => (m86 as any).loadTicketType(sql, "cleanupId-1", "ticketTypeId-1"),
   },
   {
     key: "hydrate",
     run: async (sql: any) =>
-      (m82 as any).hydrate(
+      (m86 as any).hydrate(
         sql,
         [
           {
@@ -5837,43 +6125,43 @@ export const cases: TranscriptCase[] = [
   {
     key: "loadRegistrationById",
     run: async (sql: any) =>
-      (m82 as any).loadRegistrationById(sql, "cleanupId-1", "registrationId-1", () =>
+      (m86 as any).loadRegistrationById(sql, "cleanupId-1", "registrationId-1", () =>
         Promise.resolve("presignAvatarResult-1"),
       ),
   },
   {
     key: "eventContextIn",
-    run: async (sql: any) => (m82 as any).eventContextIn(sql, "cleanupId-1"),
+    run: async (sql: any) => (m86 as any).eventContextIn(sql, "cleanupId-1"),
   },
   {
     key: "loadWaitlistEntry",
     run: async (sql: any) =>
-      (m82 as any).loadWaitlistEntry(sql, "cleanupId-1", "waitlistId-1", () =>
+      (m86 as any).loadWaitlistEntry(sql, "cleanupId-1", "waitlistId-1", () =>
         Promise.resolve("presignAvatarResult-1"),
       ),
   },
-  { key: "loadPage", run: async (sql: any) => (m82 as any).loadPage(sql, "cleanupId-1") },
+  { key: "loadPage", run: async (sql: any) => (m86 as any).loadPage(sql, "cleanupId-1") },
   {
     key: "loadLiveQuestions",
-    run: async (sql: any) => (m82 as any).loadLiveQuestions(sql, "cleanupId-1"),
+    run: async (sql: any) => (m86 as any).loadLiveQuestions(sql, "cleanupId-1"),
   },
   {
     key: "makePageMethods.getPage",
-    run: async (sql: any) => (m83 as any).makePageMethods(sql).getPage("cleanupId-1"),
+    run: async (sql: any) => (m87 as any).makePageMethods(sql).getPage("cleanupId-1"),
   },
   {
     key: "makePageMethods.getPublicPage",
-    run: async (sql: any) => (m83 as any).makePageMethods(sql).getPublicPage("slug-1"),
+    run: async (sql: any) => (m87 as any).makePageMethods(sql).getPublicPage("slug-1"),
   },
   {
     key: "makePageMethods.mediaKeysFor",
     run: async (sql: any) =>
-      (m83 as any).makePageMethods(sql).mediaKeysFor("cleanupId-1", ["mediaId-1"]),
+      (m87 as any).makePageMethods(sql).mediaKeysFor("cleanupId-1", ["mediaId-1"]),
   },
   {
     key: "makePageMethods.publishPage",
     run: async (sql: any) =>
-      (m83 as any).makePageMethods(sql).publishPage({
+      (m87 as any).makePageMethods(sql).publishPage({
         cleanupId: "cleanupId-1",
         published: true,
         actorId: "actorId-1",
@@ -5883,7 +6171,7 @@ export const cases: TranscriptCase[] = [
   {
     key: "makePageMethods.savePage",
     run: async (sql: any) =>
-      (m83 as any).makePageMethods(sql).savePage({
+      (m87 as any).makePageMethods(sql).savePage({
         cleanupId: "cleanupId-1",
         actorUserId: "actorUserId-1",
         slug: "slug-1",
@@ -5906,24 +6194,24 @@ export const cases: TranscriptCase[] = [
   },
   {
     key: "makePageMethods.slugTaken",
-    run: async (sql: any) => (m83 as any).makePageMethods(sql).slugTaken("cleanupId-1", "slug-1"),
+    run: async (sql: any) => (m87 as any).makePageMethods(sql).slugTaken("cleanupId-1", "slug-1"),
   },
   {
     key: "makeQuestionMethods.listAnswers",
     run: async (sql: any) =>
-      (m84 as any).makeQuestionMethods(sql).listAnswers("cleanupId-1", "registrationId-1"),
+      (m88 as any).makeQuestionMethods(sql).listAnswers("cleanupId-1", "registrationId-1"),
   },
   {
     key: "makeQuestionMethods.listQuestions",
     run: async (sql: any) =>
-      (m84 as any)
+      (m88 as any)
         .makeQuestionMethods(sql)
         .listQuestions("cleanupId-1", { ticketTypeId: "ticketTypeId-1", includeArchived: true }),
   },
   {
     key: "makeQuestionMethods.reconcileQuestions",
     run: async (sql: any) =>
-      (m84 as any).makeQuestionMethods(sql).reconcileQuestions(
+      (m88 as any).makeQuestionMethods(sql).reconcileQuestions(
         "cleanupId-1",
         [
           {
@@ -5946,7 +6234,7 @@ export const cases: TranscriptCase[] = [
   {
     key: "registerErrorOutcome",
     run: async (sql: any) =>
-      (m85 as any).registerErrorOutcome(
+      (m89 as any).registerErrorOutcome(
         sql,
         "err-any",
         {
@@ -5979,7 +6267,7 @@ export const cases: TranscriptCase[] = [
   {
     key: "registerIn",
     run: async (sql: any) =>
-      (m85 as any).registerIn(
+      (m89 as any).registerIn(
         sql,
         {
           cleanupId: "cleanupId-1",
@@ -6011,7 +6299,7 @@ export const cases: TranscriptCase[] = [
   {
     key: "makeRegisterMethods.registerTx",
     run: async (sql: any) =>
-      (m85 as any)
+      (m89 as any)
         .makeRegisterMethods(sql, () => Promise.resolve("presignAvatarResult-1"))
         .registerTx({
           cleanupId: "cleanupId-1",
@@ -6041,7 +6329,7 @@ export const cases: TranscriptCase[] = [
   {
     key: "makeRegisterMethods.registerWalkupTx",
     run: async (sql: any) =>
-      (m85 as any)
+      (m89 as any)
         .makeRegisterMethods(sql, () => Promise.resolve("presignAvatarResult-1"))
         .registerWalkupTx({
           cleanupId: "cleanupId-1",
@@ -6058,7 +6346,7 @@ export const cases: TranscriptCase[] = [
   {
     key: "applyBanIn",
     run: async (sql: any) =>
-      (m86 as any).applyBanIn(sql, {
+      (m90 as any).applyBanIn(sql, {
         cleanupId: "cleanupId-1",
         userId: "userId-1",
         actorId: "actorId-1",
@@ -6068,7 +6356,7 @@ export const cases: TranscriptCase[] = [
   {
     key: "makeRosterMethods.cancelRegistration",
     run: async (sql: any) =>
-      (m86 as any)
+      (m90 as any)
         .makeRosterMethods(sql, () => Promise.resolve("presignAvatarResult-1"))
         .cancelRegistration({
           cleanupId: "cleanupId-1",
@@ -6080,28 +6368,28 @@ export const cases: TranscriptCase[] = [
   {
     key: "makeRosterMethods.findMyRegistration",
     run: async (sql: any) =>
-      (m86 as any)
+      (m90 as any)
         .makeRosterMethods(sql, () => Promise.resolve("presignAvatarResult-1"))
         .findMyRegistration("cleanupId-1", { kind: "user", userId: "userId-1" }),
   },
   {
     key: "makeRosterMethods.findRegistration",
     run: async (sql: any) =>
-      (m86 as any)
+      (m90 as any)
         .makeRosterMethods(sql, () => Promise.resolve("presignAvatarResult-1"))
         .findRegistration("cleanupId-1", "registrationId-1"),
   },
   {
     key: "makeRosterMethods.findRegistrationsFor",
     run: async (sql: any) =>
-      (m86 as any)
+      (m90 as any)
         .makeRosterMethods(sql, () => Promise.resolve("presignAvatarResult-1"))
         .findRegistrationsFor(["cleanupId-1"], "userId-1"),
   },
   {
     key: "makeRosterMethods.listRoster",
     run: async (sql: any) =>
-      (m86 as any)
+      (m90 as any)
         .makeRosterMethods(sql, () => Promise.resolve("presignAvatarResult-1"))
         .listRoster({
           cleanupId: "cleanupId-1",
@@ -6118,7 +6406,7 @@ export const cases: TranscriptCase[] = [
   {
     key: "makeRosterMethods.removeRegistration",
     run: async (sql: any) =>
-      (m86 as any)
+      (m90 as any)
         .makeRosterMethods(sql, () => Promise.resolve("presignAvatarResult-1"))
         .removeRegistration({
           cleanupId: "cleanupId-1",
@@ -6131,14 +6419,14 @@ export const cases: TranscriptCase[] = [
   {
     key: "makeRosterMethods.setHostNote",
     run: async (sql: any) =>
-      (m86 as any)
+      (m90 as any)
         .makeRosterMethods(sql, () => Promise.resolve("presignAvatarResult-1"))
         .setHostNote("cleanupId-1", "registrationId-1", "note-1"),
   },
   {
     key: "makeRosterMethods.transferRegistration",
     run: async (sql: any) =>
-      (m86 as any)
+      (m90 as any)
         .makeRosterMethods(sql, () => Promise.resolve("presignAvatarResult-1"))
         .transferRegistration({
           cleanupId: "cleanupId-1",
@@ -6150,7 +6438,7 @@ export const cases: TranscriptCase[] = [
   {
     key: "makeTicketTypeMethods.createTicketType",
     run: async (sql: any) =>
-      (m87 as any).makeTicketTypeMethods(sql).createTicketType({
+      (m91 as any).makeTicketTypeMethods(sql).createTicketType({
         cleanupId: "cleanupId-1",
         name: "name-1",
         description: "description-1",
@@ -6170,26 +6458,26 @@ export const cases: TranscriptCase[] = [
   {
     key: "makeTicketTypeMethods.deleteTicketType",
     run: async (sql: any) =>
-      (m87 as any).makeTicketTypeMethods(sql).deleteTicketType("cleanupId-1", "ticketTypeId-1"),
+      (m91 as any).makeTicketTypeMethods(sql).deleteTicketType("cleanupId-1", "ticketTypeId-1"),
   },
   {
     key: "makeTicketTypeMethods.getTicketType",
     run: async (sql: any) =>
-      (m87 as any).makeTicketTypeMethods(sql).getTicketType("cleanupId-1", "ticketTypeId-1"),
+      (m91 as any).makeTicketTypeMethods(sql).getTicketType("cleanupId-1", "ticketTypeId-1"),
   },
   {
     key: "makeTicketTypeMethods.listTicketTypes",
-    run: async (sql: any) => (m87 as any).makeTicketTypeMethods(sql).listTicketTypes("cleanupId-1"),
+    run: async (sql: any) => (m91 as any).makeTicketTypeMethods(sql).listTicketTypes("cleanupId-1"),
   },
   {
     key: "makeTicketTypeMethods.listTicketTypesFor",
     run: async (sql: any) =>
-      (m87 as any).makeTicketTypeMethods(sql).listTicketTypesFor(["cleanupId-1"]),
+      (m91 as any).makeTicketTypeMethods(sql).listTicketTypesFor(["cleanupId-1"]),
   },
   {
     key: "makeTicketTypeMethods.reorderTicketTypes",
     run: async (sql: any) =>
-      (m87 as any)
+      (m91 as any)
         .makeTicketTypeMethods(sql)
         .reorderTicketTypes(
           "cleanupId-1",
@@ -6200,19 +6488,19 @@ export const cases: TranscriptCase[] = [
   {
     key: "makeTicketTypeMethods.ticketTypeIdsMatchingAccessCode",
     run: async (sql: any) =>
-      (m87 as any)
+      (m91 as any)
         .makeTicketTypeMethods(sql)
         .ticketTypeIdsMatchingAccessCode("cleanupId-1", "accessCodeHash-1"),
   },
   {
     key: "makeTicketTypeMethods.updateTicketType",
     run: async (sql: any) =>
-      (m87 as any).makeTicketTypeMethods(sql).updateTicketType("args-unsupported"),
+      (m91 as any).makeTicketTypeMethods(sql).updateTicketType("args-unsupported"),
   },
   {
     key: "cancelWaitlistEntriesIn",
     run: async (sql: any) =>
-      (m88 as any).cancelWaitlistEntriesIn(sql, {
+      (m92 as any).cancelWaitlistEntriesIn(sql, {
         cleanupId: "cleanupId-1",
         ticketTypeId: "ticketTypeId-1",
         subject: { kind: "user", userId: "userId-1" },
@@ -6222,7 +6510,7 @@ export const cases: TranscriptCase[] = [
   {
     key: "listWaitlistIn",
     run: async (sql: any) =>
-      (m88 as any).listWaitlistIn(
+      (m92 as any).listWaitlistIn(
         sql,
         {
           cleanupId: "cleanupId-1",
@@ -6237,7 +6525,7 @@ export const cases: TranscriptCase[] = [
   {
     key: "makeWaitlistMethods.claimWaitlistOffer",
     run: async (sql: any) =>
-      (m88 as any)
+      (m92 as any)
         .makeWaitlistMethods(sql, () => Promise.resolve("presignAvatarResult-1"))
         .claimWaitlistOffer({
           cleanupId: "cleanupId-1",
@@ -6250,21 +6538,21 @@ export const cases: TranscriptCase[] = [
   {
     key: "makeWaitlistMethods.expireWaitlistOffers",
     run: async (sql: any) =>
-      (m88 as any)
+      (m92 as any)
         .makeWaitlistMethods(sql, () => Promise.resolve("presignAvatarResult-1"))
         .expireWaitlistOffers({ now: new Date("2026-03-04T05:06:07.000Z"), limit: 3 }),
   },
   {
     key: "makeWaitlistMethods.findWaitlistEntry",
     run: async (sql: any) =>
-      (m88 as any)
+      (m92 as any)
         .makeWaitlistMethods(sql, () => Promise.resolve("presignAvatarResult-1"))
         .findWaitlistEntry("cleanupId-1", "waitlistId-1"),
   },
   {
     key: "makeWaitlistMethods.joinWaitlist",
     run: async (sql: any) =>
-      (m88 as any)
+      (m92 as any)
         .makeWaitlistMethods(sql, () => Promise.resolve("presignAvatarResult-1"))
         .joinWaitlist({
           cleanupId: "cleanupId-1",
@@ -6278,7 +6566,7 @@ export const cases: TranscriptCase[] = [
   {
     key: "makeWaitlistMethods.leaveWaitlist",
     run: async (sql: any) =>
-      (m88 as any)
+      (m92 as any)
         .makeWaitlistMethods(sql, () => Promise.resolve("presignAvatarResult-1"))
         .leaveWaitlist({
           cleanupId: "cleanupId-1",
@@ -6290,7 +6578,7 @@ export const cases: TranscriptCase[] = [
   {
     key: "makeWaitlistMethods.listWaitlist",
     run: async (sql: any) =>
-      (m88 as any)
+      (m92 as any)
         .makeWaitlistMethods(sql, () => Promise.resolve("presignAvatarResult-1"))
         .listWaitlist({
           cleanupId: "cleanupId-1",
@@ -6303,7 +6591,7 @@ export const cases: TranscriptCase[] = [
   {
     key: "makeWaitlistMethods.offerNextWaitlistEntry",
     run: async (sql: any) =>
-      (m88 as any)
+      (m92 as any)
         .makeWaitlistMethods(sql, () => Promise.resolve("presignAvatarResult-1"))
         .offerNextWaitlistEntry({
           ticketTypeId: "ticketTypeId-1",
@@ -6314,7 +6602,7 @@ export const cases: TranscriptCase[] = [
   {
     key: "makeWaitlistMethods.offerWaitlistEntry",
     run: async (sql: any) =>
-      (m88 as any)
+      (m92 as any)
         .makeWaitlistMethods(sql, () => Promise.resolve("presignAvatarResult-1"))
         .offerWaitlistEntry({
           cleanupId: "cleanupId-1",
@@ -6326,14 +6614,14 @@ export const cases: TranscriptCase[] = [
   {
     key: "makeWaitlistMethods.ticketTypeIdsWithWaiting",
     run: async (sql: any) =>
-      (m88 as any)
+      (m92 as any)
         .makeWaitlistMethods(sql, () => Promise.resolve("presignAvatarResult-1"))
         .ticketTypeIdsWithWaiting("cleanupId-1"),
   },
   {
     key: "makeDrizzleHostRegistrationRepository.cancelRegistration",
     run: async (sql: any) =>
-      (m89 as any)
+      (m93 as any)
         .makeDrizzleHostRegistrationRepository(sql, () => Promise.resolve("presignAvatarResult-1"))
         .cancelRegistration({
           cleanupId: "cleanupId-1",
@@ -6345,7 +6633,7 @@ export const cases: TranscriptCase[] = [
   {
     key: "makeDrizzleHostRegistrationRepository.checkInByToken",
     run: async (sql: any) =>
-      (m89 as any)
+      (m93 as any)
         .makeDrizzleHostRegistrationRepository(sql, () => Promise.resolve("presignAvatarResult-1"))
         .checkInByToken({
           cleanupId: "cleanupId-1",
@@ -6358,14 +6646,14 @@ export const cases: TranscriptCase[] = [
   {
     key: "makeDrizzleHostRegistrationRepository.checkinCounters",
     run: async (sql: any) =>
-      (m89 as any)
+      (m93 as any)
         .makeDrizzleHostRegistrationRepository(sql, () => Promise.resolve("presignAvatarResult-1"))
         .checkinCounters("cleanupId-1"),
   },
   {
     key: "makeDrizzleHostRegistrationRepository.checkInSeat",
     run: async (sql: any) =>
-      (m89 as any)
+      (m93 as any)
         .makeDrizzleHostRegistrationRepository(sql, () => Promise.resolve("presignAvatarResult-1"))
         .checkInSeat({
           cleanupId: "cleanupId-1",
@@ -6378,7 +6666,7 @@ export const cases: TranscriptCase[] = [
   {
     key: "makeDrizzleHostRegistrationRepository.claimWaitlistOffer",
     run: async (sql: any) =>
-      (m89 as any)
+      (m93 as any)
         .makeDrizzleHostRegistrationRepository(sql, () => Promise.resolve("presignAvatarResult-1"))
         .claimWaitlistOffer({
           cleanupId: "cleanupId-1",
@@ -6391,7 +6679,7 @@ export const cases: TranscriptCase[] = [
   {
     key: "makeDrizzleHostRegistrationRepository.createTicketType",
     run: async (sql: any) =>
-      (m89 as any)
+      (m93 as any)
         .makeDrizzleHostRegistrationRepository(sql, () => Promise.resolve("presignAvatarResult-1"))
         .createTicketType({
           cleanupId: "cleanupId-1",
@@ -6413,84 +6701,84 @@ export const cases: TranscriptCase[] = [
   {
     key: "makeDrizzleHostRegistrationRepository.deleteTicketType",
     run: async (sql: any) =>
-      (m89 as any)
+      (m93 as any)
         .makeDrizzleHostRegistrationRepository(sql, () => Promise.resolve("presignAvatarResult-1"))
         .deleteTicketType("cleanupId-1", "ticketTypeId-1"),
   },
   {
     key: "makeDrizzleHostRegistrationRepository.eventContext",
     run: async (sql: any) =>
-      (m89 as any)
+      (m93 as any)
         .makeDrizzleHostRegistrationRepository(sql, () => Promise.resolve("presignAvatarResult-1"))
         .eventContext("cleanupId-1"),
   },
   {
     key: "makeDrizzleHostRegistrationRepository.expireWaitlistOffers",
     run: async (sql: any) =>
-      (m89 as any)
+      (m93 as any)
         .makeDrizzleHostRegistrationRepository(sql, () => Promise.resolve("presignAvatarResult-1"))
         .expireWaitlistOffers({ now: new Date("2026-03-04T05:06:07.000Z"), limit: 3 }),
   },
   {
     key: "makeDrizzleHostRegistrationRepository.findMyRegistration",
     run: async (sql: any) =>
-      (m89 as any)
+      (m93 as any)
         .makeDrizzleHostRegistrationRepository(sql, () => Promise.resolve("presignAvatarResult-1"))
         .findMyRegistration("cleanupId-1", { kind: "user", userId: "userId-1" }),
   },
   {
     key: "makeDrizzleHostRegistrationRepository.findRegistration",
     run: async (sql: any) =>
-      (m89 as any)
+      (m93 as any)
         .makeDrizzleHostRegistrationRepository(sql, () => Promise.resolve("presignAvatarResult-1"))
         .findRegistration("cleanupId-1", "registrationId-1"),
   },
   {
     key: "makeDrizzleHostRegistrationRepository.findRegistrationsFor",
     run: async (sql: any) =>
-      (m89 as any)
+      (m93 as any)
         .makeDrizzleHostRegistrationRepository(sql, () => Promise.resolve("presignAvatarResult-1"))
         .findRegistrationsFor(["cleanupId-1"], "userId-1"),
   },
   {
     key: "makeDrizzleHostRegistrationRepository.findWaitlistEntry",
     run: async (sql: any) =>
-      (m89 as any)
+      (m93 as any)
         .makeDrizzleHostRegistrationRepository(sql, () => Promise.resolve("presignAvatarResult-1"))
         .findWaitlistEntry("cleanupId-1", "waitlistId-1"),
   },
   {
     key: "makeDrizzleHostRegistrationRepository.getPage",
     run: async (sql: any) =>
-      (m89 as any)
+      (m93 as any)
         .makeDrizzleHostRegistrationRepository(sql, () => Promise.resolve("presignAvatarResult-1"))
         .getPage("cleanupId-1"),
   },
   {
     key: "makeDrizzleHostRegistrationRepository.getPublicPage",
     run: async (sql: any) =>
-      (m89 as any)
+      (m93 as any)
         .makeDrizzleHostRegistrationRepository(sql, () => Promise.resolve("presignAvatarResult-1"))
         .getPublicPage("slug-1"),
   },
   {
     key: "makeDrizzleHostRegistrationRepository.getTicketType",
     run: async (sql: any) =>
-      (m89 as any)
+      (m93 as any)
         .makeDrizzleHostRegistrationRepository(sql, () => Promise.resolve("presignAvatarResult-1"))
         .getTicketType("cleanupId-1", "ticketTypeId-1"),
   },
   {
     key: "makeDrizzleHostRegistrationRepository.hostedEventCounts",
     run: async (sql: any) =>
-      (m89 as any)
+      (m93 as any)
         .makeDrizzleHostRegistrationRepository(sql, () => Promise.resolve("presignAvatarResult-1"))
         .hostedEventCounts(["cleanupId-1"]),
   },
   {
     key: "makeDrizzleHostRegistrationRepository.joinWaitlist",
     run: async (sql: any) =>
-      (m89 as any)
+      (m93 as any)
         .makeDrizzleHostRegistrationRepository(sql, () => Promise.resolve("presignAvatarResult-1"))
         .joinWaitlist({
           cleanupId: "cleanupId-1",
@@ -6504,7 +6792,7 @@ export const cases: TranscriptCase[] = [
   {
     key: "makeDrizzleHostRegistrationRepository.leaveWaitlist",
     run: async (sql: any) =>
-      (m89 as any)
+      (m93 as any)
         .makeDrizzleHostRegistrationRepository(sql, () => Promise.resolve("presignAvatarResult-1"))
         .leaveWaitlist({
           cleanupId: "cleanupId-1",
@@ -6516,21 +6804,21 @@ export const cases: TranscriptCase[] = [
   {
     key: "makeDrizzleHostRegistrationRepository.listAnswers",
     run: async (sql: any) =>
-      (m89 as any)
+      (m93 as any)
         .makeDrizzleHostRegistrationRepository(sql, () => Promise.resolve("presignAvatarResult-1"))
         .listAnswers("cleanupId-1", "registrationId-1"),
   },
   {
     key: "makeDrizzleHostRegistrationRepository.listQuestions",
     run: async (sql: any) =>
-      (m89 as any)
+      (m93 as any)
         .makeDrizzleHostRegistrationRepository(sql, () => Promise.resolve("presignAvatarResult-1"))
         .listQuestions("cleanupId-1", { ticketTypeId: "ticketTypeId-1", includeArchived: true }),
   },
   {
     key: "makeDrizzleHostRegistrationRepository.listRoster",
     run: async (sql: any) =>
-      (m89 as any)
+      (m93 as any)
         .makeDrizzleHostRegistrationRepository(sql, () => Promise.resolve("presignAvatarResult-1"))
         .listRoster({
           cleanupId: "cleanupId-1",
@@ -6547,21 +6835,21 @@ export const cases: TranscriptCase[] = [
   {
     key: "makeDrizzleHostRegistrationRepository.listTicketTypes",
     run: async (sql: any) =>
-      (m89 as any)
+      (m93 as any)
         .makeDrizzleHostRegistrationRepository(sql, () => Promise.resolve("presignAvatarResult-1"))
         .listTicketTypes("cleanupId-1"),
   },
   {
     key: "makeDrizzleHostRegistrationRepository.listTicketTypesFor",
     run: async (sql: any) =>
-      (m89 as any)
+      (m93 as any)
         .makeDrizzleHostRegistrationRepository(sql, () => Promise.resolve("presignAvatarResult-1"))
         .listTicketTypesFor(["cleanupId-1"]),
   },
   {
     key: "makeDrizzleHostRegistrationRepository.listWaitlist",
     run: async (sql: any) =>
-      (m89 as any)
+      (m93 as any)
         .makeDrizzleHostRegistrationRepository(sql, () => Promise.resolve("presignAvatarResult-1"))
         .listWaitlist({
           cleanupId: "cleanupId-1",
@@ -6574,7 +6862,7 @@ export const cases: TranscriptCase[] = [
   {
     key: "makeDrizzleHostRegistrationRepository.markNoShows",
     run: async (sql: any) =>
-      (m89 as any)
+      (m93 as any)
         .makeDrizzleHostRegistrationRepository(sql, () => Promise.resolve("presignAvatarResult-1"))
         .markNoShows({
           cleanupId: "cleanupId-1",
@@ -6585,14 +6873,14 @@ export const cases: TranscriptCase[] = [
   {
     key: "makeDrizzleHostRegistrationRepository.mediaKeysFor",
     run: async (sql: any) =>
-      (m89 as any)
+      (m93 as any)
         .makeDrizzleHostRegistrationRepository(sql, () => Promise.resolve("presignAvatarResult-1"))
         .mediaKeysFor("cleanupId-1", ["mediaId-1"]),
   },
   {
     key: "makeDrizzleHostRegistrationRepository.offerNextWaitlistEntry",
     run: async (sql: any) =>
-      (m89 as any)
+      (m93 as any)
         .makeDrizzleHostRegistrationRepository(sql, () => Promise.resolve("presignAvatarResult-1"))
         .offerNextWaitlistEntry({
           ticketTypeId: "ticketTypeId-1",
@@ -6603,7 +6891,7 @@ export const cases: TranscriptCase[] = [
   {
     key: "makeDrizzleHostRegistrationRepository.offerWaitlistEntry",
     run: async (sql: any) =>
-      (m89 as any)
+      (m93 as any)
         .makeDrizzleHostRegistrationRepository(sql, () => Promise.resolve("presignAvatarResult-1"))
         .offerWaitlistEntry({
           cleanupId: "cleanupId-1",
@@ -6615,7 +6903,7 @@ export const cases: TranscriptCase[] = [
   {
     key: "makeDrizzleHostRegistrationRepository.publishPage",
     run: async (sql: any) =>
-      (m89 as any)
+      (m93 as any)
         .makeDrizzleHostRegistrationRepository(sql, () => Promise.resolve("presignAvatarResult-1"))
         .publishPage({
           cleanupId: "cleanupId-1",
@@ -6627,7 +6915,7 @@ export const cases: TranscriptCase[] = [
   {
     key: "makeDrizzleHostRegistrationRepository.reconcileQuestions",
     run: async (sql: any) =>
-      (m89 as any)
+      (m93 as any)
         .makeDrizzleHostRegistrationRepository(sql, () => Promise.resolve("presignAvatarResult-1"))
         .reconcileQuestions(
           "cleanupId-1",
@@ -6652,7 +6940,7 @@ export const cases: TranscriptCase[] = [
   {
     key: "makeDrizzleHostRegistrationRepository.registerTx",
     run: async (sql: any) =>
-      (m89 as any)
+      (m93 as any)
         .makeDrizzleHostRegistrationRepository(sql, () => Promise.resolve("presignAvatarResult-1"))
         .registerTx({
           cleanupId: "cleanupId-1",
@@ -6682,7 +6970,7 @@ export const cases: TranscriptCase[] = [
   {
     key: "makeDrizzleHostRegistrationRepository.registerWalkupTx",
     run: async (sql: any) =>
-      (m89 as any)
+      (m93 as any)
         .makeDrizzleHostRegistrationRepository(sql, () => Promise.resolve("presignAvatarResult-1"))
         .registerWalkupTx({
           cleanupId: "cleanupId-1",
@@ -6699,7 +6987,7 @@ export const cases: TranscriptCase[] = [
   {
     key: "makeDrizzleHostRegistrationRepository.removeRegistration",
     run: async (sql: any) =>
-      (m89 as any)
+      (m93 as any)
         .makeDrizzleHostRegistrationRepository(sql, () => Promise.resolve("presignAvatarResult-1"))
         .removeRegistration({
           cleanupId: "cleanupId-1",
@@ -6712,7 +7000,7 @@ export const cases: TranscriptCase[] = [
   {
     key: "makeDrizzleHostRegistrationRepository.reorderTicketTypes",
     run: async (sql: any) =>
-      (m89 as any)
+      (m93 as any)
         .makeDrizzleHostRegistrationRepository(sql, () => Promise.resolve("presignAvatarResult-1"))
         .reorderTicketTypes(
           "cleanupId-1",
@@ -6723,7 +7011,7 @@ export const cases: TranscriptCase[] = [
   {
     key: "makeDrizzleHostRegistrationRepository.savePage",
     run: async (sql: any) =>
-      (m89 as any)
+      (m93 as any)
         .makeDrizzleHostRegistrationRepository(sql, () => Promise.resolve("presignAvatarResult-1"))
         .savePage({
           cleanupId: "cleanupId-1",
@@ -6749,42 +7037,42 @@ export const cases: TranscriptCase[] = [
   {
     key: "makeDrizzleHostRegistrationRepository.setHostNote",
     run: async (sql: any) =>
-      (m89 as any)
+      (m93 as any)
         .makeDrizzleHostRegistrationRepository(sql, () => Promise.resolve("presignAvatarResult-1"))
         .setHostNote("cleanupId-1", "registrationId-1", "note-1"),
   },
   {
     key: "makeDrizzleHostRegistrationRepository.slugTaken",
     run: async (sql: any) =>
-      (m89 as any)
+      (m93 as any)
         .makeDrizzleHostRegistrationRepository(sql, () => Promise.resolve("presignAvatarResult-1"))
         .slugTaken("cleanupId-1", "slug-1"),
   },
   {
     key: "makeDrizzleHostRegistrationRepository.sweepNoShows",
     run: async (sql: any) =>
-      (m89 as any)
+      (m93 as any)
         .makeDrizzleHostRegistrationRepository(sql, () => Promise.resolve("presignAvatarResult-1"))
         .sweepNoShows({ now: new Date("2026-03-04T05:06:07.000Z"), limit: 3 }),
   },
   {
     key: "makeDrizzleHostRegistrationRepository.ticketTypeIdsMatchingAccessCode",
     run: async (sql: any) =>
-      (m89 as any)
+      (m93 as any)
         .makeDrizzleHostRegistrationRepository(sql, () => Promise.resolve("presignAvatarResult-1"))
         .ticketTypeIdsMatchingAccessCode("cleanupId-1", "accessCodeHash-1"),
   },
   {
     key: "makeDrizzleHostRegistrationRepository.ticketTypeIdsWithWaiting",
     run: async (sql: any) =>
-      (m89 as any)
+      (m93 as any)
         .makeDrizzleHostRegistrationRepository(sql, () => Promise.resolve("presignAvatarResult-1"))
         .ticketTypeIdsWithWaiting("cleanupId-1"),
   },
   {
     key: "makeDrizzleHostRegistrationRepository.transferRegistration",
     run: async (sql: any) =>
-      (m89 as any)
+      (m93 as any)
         .makeDrizzleHostRegistrationRepository(sql, () => Promise.resolve("presignAvatarResult-1"))
         .transferRegistration({
           cleanupId: "cleanupId-1",
@@ -6796,35 +7084,35 @@ export const cases: TranscriptCase[] = [
   {
     key: "makeDrizzleHostRegistrationRepository.undoCheckIn",
     run: async (sql: any) =>
-      (m89 as any)
+      (m93 as any)
         .makeDrizzleHostRegistrationRepository(sql, () => Promise.resolve("presignAvatarResult-1"))
         .undoCheckIn({ cleanupId: "cleanupId-1", seatId: "seatId-1" }),
   },
   {
     key: "makeDrizzleHostRegistrationRepository.updateTicketType",
     run: async (sql: any) =>
-      (m89 as any)
+      (m93 as any)
         .makeDrizzleHostRegistrationRepository(sql, () => Promise.resolve("presignAvatarResult-1"))
         .updateTicketType("args-unsupported"),
   },
   {
     key: "makeDrizzleRegistrationRetentionRepository.clearAttendeeNames",
     run: async (sql: any) =>
-      (m90 as any)
+      (m94 as any)
         .makeDrizzleRegistrationRetentionRepository(sql)
         .clearAttendeeNames(new Date("2026-03-04T05:06:07.000Z"), 3),
   },
   {
     key: "makeDrizzleRegistrationRetentionRepository.clearHostNotes",
     run: async (sql: any) =>
-      (m90 as any)
+      (m94 as any)
         .makeDrizzleRegistrationRetentionRepository(sql)
         .clearHostNotes(new Date("2026-03-04T05:06:07.000Z"), 3),
   },
   {
     key: "makeDrizzleRegistrationRetentionRepository.coarsenCheckins",
     run: async (sql: any) =>
-      (m90 as any)
+      (m94 as any)
         .makeDrizzleRegistrationRetentionRepository(sql)
         .coarsenCheckins(
           new Date("2026-03-04T05:06:07.000Z"),
@@ -6835,7 +7123,7 @@ export const cases: TranscriptCase[] = [
   {
     key: "makeDrizzleRegistrationRetentionRepository.scrubAnswers",
     run: async (sql: any) =>
-      (m90 as any)
+      (m94 as any)
         .makeDrizzleRegistrationRetentionRepository(sql)
         .scrubAnswers(
           new Date("2026-03-04T05:06:07.000Z"),
@@ -6846,28 +7134,28 @@ export const cases: TranscriptCase[] = [
   {
     key: "runRegistrationRetentionLanes",
     run: async (sql: any) =>
-      (m91 as any).runRegistrationRetentionLanes(sql, new Date("2026-03-04T05:06:07.000Z"), {
+      (m95 as any).runRegistrationRetentionLanes(sql, new Date("2026-03-04T05:06:07.000Z"), {
         warn: () => undefined,
       }),
   },
-  { key: "ticketTypeColumns", run: async (sql: any) => (m92 as any).ticketTypeColumns(sql) },
-  { key: "ticketTypeJoins", run: async (sql: any) => (m92 as any).ticketTypeJoins(sql) },
-  { key: "questionColumns", run: async (sql: any) => (m92 as any).questionColumns(sql) },
-  { key: "seatColumns", run: async (sql: any) => (m92 as any).seatColumns(sql) },
-  { key: "registrationColumns", run: async (sql: any) => (m92 as any).registrationColumns(sql) },
-  { key: "registrationJoins", run: async (sql: any) => (m92 as any).registrationJoins(sql) },
-  { key: "waitlistColumns", run: async (sql: any) => (m92 as any).waitlistColumns(sql) },
+  { key: "ticketTypeColumns", run: async (sql: any) => (m96 as any).ticketTypeColumns(sql) },
+  { key: "ticketTypeJoins", run: async (sql: any) => (m96 as any).ticketTypeJoins(sql) },
+  { key: "questionColumns", run: async (sql: any) => (m96 as any).questionColumns(sql) },
+  { key: "seatColumns", run: async (sql: any) => (m96 as any).seatColumns(sql) },
+  { key: "registrationColumns", run: async (sql: any) => (m96 as any).registrationColumns(sql) },
+  { key: "registrationJoins", run: async (sql: any) => (m96 as any).registrationJoins(sql) },
+  { key: "waitlistColumns", run: async (sql: any) => (m96 as any).waitlistColumns(sql) },
   {
     key: "waitlistEntryNotBanned",
-    run: async (sql: any) => (m92 as any).waitlistEntryNotBanned(sql, "w"),
+    run: async (sql: any) => (m96 as any).waitlistEntryNotBanned(sql, "w"),
   },
-  { key: "waitlistJoins", run: async (sql: any) => (m92 as any).waitlistJoins(sql) },
-  { key: "pageColumns", run: async (sql: any) => (m92 as any).pageColumns(sql) },
-  { key: "pageJoins", run: async (sql: any) => (m92 as any).pageJoins(sql) },
+  { key: "waitlistJoins", run: async (sql: any) => (m96 as any).waitlistJoins(sql) },
+  { key: "pageColumns", run: async (sql: any) => (m96 as any).pageColumns(sql) },
+  { key: "pageJoins", run: async (sql: any) => (m96 as any).pageJoins(sql) },
   {
     key: "runRetentionLanes",
     run: async (sql: any) =>
-      (m93 as any).runRetentionLanes(sql, new Date("2026-03-04T05:06:07.000Z"), {
+      (m97 as any).runRetentionLanes(sql, new Date("2026-03-04T05:06:07.000Z"), {
         info: () => undefined,
         debug: () => undefined,
         warn: () => undefined,
@@ -6876,38 +7164,38 @@ export const cases: TranscriptCase[] = [
   {
     key: "makeDrizzleJurisdictionRepository.containingStateGeoid",
     run: async (sql: any) =>
-      (m94 as any).makeDrizzleJurisdictionRepository(sql).containingStateGeoid(3, 3),
+      (m98 as any).makeDrizzleJurisdictionRepository(sql).containingStateGeoid(3, 3),
   },
   {
     key: "makeDrizzleJurisdictionRepository.exists",
-    run: async (sql: any) => (m94 as any).makeDrizzleJurisdictionRepository(sql).exists("geoid-1"),
+    run: async (sql: any) => (m98 as any).makeDrizzleJurisdictionRepository(sql).exists("geoid-1"),
   },
   {
     key: "makeDrizzleJurisdictionRepository.handleExists",
     run: async (sql: any) =>
-      (m94 as any).makeDrizzleJurisdictionRepository(sql).handleExists("handle-1"),
+      (m98 as any).makeDrizzleJurisdictionRepository(sql).handleExists("handle-1"),
   },
   {
     key: "makeDrizzleJurisdictionRepository.insertApiSourcedIfAbsent",
     run: async (sql: any) =>
-      (m94 as any)
+      (m98 as any)
         .makeDrizzleJurisdictionRepository(sql)
-        .insertApiSourcedIfAbsent({ geoid: "geoid-1", name: "name-1", layer: "place" }),
+        .insertApiSourcedIfAbsent({ geoid: "geoid-1", name: "name-1", layer: "state" }),
   },
   {
     key: "makeDrizzleJurisdictionRepository.loadHealth",
     run: async (sql: any) =>
-      (m94 as any).makeDrizzleJurisdictionRepository(sql).loadHealth("geoid-1"),
+      (m98 as any).makeDrizzleJurisdictionRepository(sql).loadHealth("geoid-1"),
   },
   {
     key: "makeDrizzleJurisdictionRepository.resolveContaining",
     run: async (sql: any) =>
-      (m94 as any).makeDrizzleJurisdictionRepository(sql).resolveContaining(3, 3),
+      (m98 as any).makeDrizzleJurisdictionRepository(sql).resolveContaining(3, 3),
   },
   {
     key: "makeJurisdictionService.exists",
     run: async (sql: any) =>
-      (m95 as any)
+      (m99 as any)
         .makeJurisdictionService({
           sql: sql,
           geocoder: { cityStateLabel: () => Promise.resolve("cityStateLabelResult-1") },
@@ -6928,7 +7216,7 @@ export const cases: TranscriptCase[] = [
   {
     key: "makeJurisdictionService.resolveForPoint",
     run: async (sql: any) =>
-      (m95 as any)
+      (m99 as any)
         .makeJurisdictionService({
           sql: sql,
           geocoder: { cityStateLabel: () => Promise.resolve("cityStateLabelResult-1") },
@@ -6949,7 +7237,7 @@ export const cases: TranscriptCase[] = [
   {
     key: "insertConsentRecords",
     run: async (sql: any) =>
-      (m96 as any).insertConsentRecords(
+      (m100 as any).insertConsentRecords(
         sql,
         "userId-1",
         [
@@ -6967,38 +7255,38 @@ export const cases: TranscriptCase[] = [
   {
     key: "makeLegalAcceptanceRepository.acceptanceCounts",
     run: async (sql: any) =>
-      (m96 as any)
+      (m100 as any)
         .makeLegalAcceptanceRepository(sql)
         .acceptanceCounts([{ type: "terms", version: "version-1" }]),
   },
   {
     key: "makeLegalAcceptanceRepository.versionsFor",
     run: async (sql: any) =>
-      (m96 as any)
+      (m100 as any)
         .makeLegalAcceptanceRepository(sql)
         .versionsFor("userId-1", new Date("2026-03-04T05:06:07.000Z")),
   },
   {
     key: "makeLegalAcceptanceRepository.withUserLock",
     run: async (sql: any) =>
-      (m96 as any)
+      (m100 as any)
         .makeLegalAcceptanceRepository(sql)
         .withUserLock("userId-1", () => Promise.resolve("fnResult-unsupported")),
   },
   {
     key: "makeLegalDocumentsRepository.current",
     run: async (sql: any) =>
-      (m97 as any).makeLegalDocumentsRepository(sql).current(new Date("2026-03-04T05:06:07.000Z")),
+      (m101 as any).makeLegalDocumentsRepository(sql).current(new Date("2026-03-04T05:06:07.000Z")),
   },
   {
     key: "makeLegalDocumentsRepository.find",
     run: async (sql: any) =>
-      (m97 as any).makeLegalDocumentsRepository(sql).find("terms", "version-1"),
+      (m101 as any).makeLegalDocumentsRepository(sql).find("terms", "version-1"),
   },
   {
     key: "makeLegalDocumentsRepository.insert",
     run: async (sql: any) =>
-      (m97 as any).makeLegalDocumentsRepository(sql).insert([
+      (m101 as any).makeLegalDocumentsRepository(sql).insert([
         {
           type: "terms",
           version: "version-1",
@@ -7014,89 +7302,91 @@ export const cases: TranscriptCase[] = [
   },
   {
     key: "makeLegalDocumentsRepository.listAll",
-    run: async (sql: any) => (m97 as any).makeLegalDocumentsRepository(sql).listAll(),
+    run: async (sql: any) => (m101 as any).makeLegalDocumentsRepository(sql).listAll(),
   },
   {
     key: "makeLegalDocumentsRepository.listVersions",
-    run: async (sql: any) => (m97 as any).makeLegalDocumentsRepository(sql).listVersions(),
+    run: async (sql: any) => (m101 as any).makeLegalDocumentsRepository(sql).listVersions(),
   },
   {
     key: "makeDrizzleMediaAuthorizationRepository.activeUserExists",
     run: async (sql: any) =>
-      (m98 as any).makeDrizzleMediaAuthorizationRepository(sql).activeUserExists("userId-1"),
+      (m102 as any).makeDrizzleMediaAuthorizationRepository(sql).activeUserExists("userId-1"),
   },
   {
     key: "makeDrizzleMediaAuthorizationRepository.findChatMessageRoom",
     run: async (sql: any) =>
-      (m98 as any).makeDrizzleMediaAuthorizationRepository(sql).findChatMessageRoom("messageId-1"),
+      (m102 as any).makeDrizzleMediaAuthorizationRepository(sql).findChatMessageRoom("messageId-1"),
   },
   {
     key: "makeDrizzleMediaAuthorizationRepository.findChatMessageScope",
     run: async (sql: any) =>
-      (m98 as any).makeDrizzleMediaAuthorizationRepository(sql).findChatMessageScope("messageId-1"),
+      (m102 as any)
+        .makeDrizzleMediaAuthorizationRepository(sql)
+        .findChatMessageScope("messageId-1"),
   },
   {
     key: "makeDrizzleMediaAuthorizationRepository.findDmMessage",
     run: async (sql: any) =>
-      (m98 as any).makeDrizzleMediaAuthorizationRepository(sql).findDmMessage("messageId-1"),
+      (m102 as any).makeDrizzleMediaAuthorizationRepository(sql).findDmMessage("messageId-1"),
   },
   {
     key: "makeDrizzleMediaAuthorizationRepository.findDmMessageThread",
     run: async (sql: any) =>
-      (m98 as any).makeDrizzleMediaAuthorizationRepository(sql).findDmMessageThread("messageId-1"),
+      (m102 as any).makeDrizzleMediaAuthorizationRepository(sql).findDmMessageThread("messageId-1"),
   },
   {
     key: "makeDrizzleMediaAuthorizationRepository.findEventAccess",
     run: async (sql: any) =>
-      (m98 as any)
+      (m102 as any)
         .makeDrizzleMediaAuthorizationRepository(sql)
         .findEventAccess("mediaId-1", "viewerId-1"),
   },
   {
     key: "makeDrizzleMediaAuthorizationRepository.findGroupAccess",
     run: async (sql: any) =>
-      (m98 as any)
+      (m102 as any)
         .makeDrizzleMediaAuthorizationRepository(sql)
         .findGroupAccess("groupId-1", "userId-1"),
   },
   {
     key: "makeDrizzleMediaAuthorizationRepository.findPostAccess",
     run: async (sql: any) =>
-      (m98 as any).makeDrizzleMediaAuthorizationRepository(sql).findPostAccess("postId-1"),
+      (m102 as any).makeDrizzleMediaAuthorizationRepository(sql).findPostAccess("postId-1"),
   },
   {
     key: "makeDrizzleMediaAuthorizationRepository.findReportAccess",
     run: async (sql: any) =>
-      (m98 as any).makeDrizzleMediaAuthorizationRepository(sql).findReportAccess("reportId-1"),
+      (m102 as any).makeDrizzleMediaAuthorizationRepository(sql).findReportAccess("reportId-1"),
   },
   {
     key: "makeDrizzleMediaAuthorizationRepository.isAvatarMedia",
     run: async (sql: any) =>
-      (m98 as any).makeDrizzleMediaAuthorizationRepository(sql).isAvatarMedia("mediaId-1"),
+      (m102 as any).makeDrizzleMediaAuthorizationRepository(sql).isAvatarMedia("mediaId-1"),
   },
   {
     key: "makeDrizzleMediaAuthorizationRepository.isCleanupMember",
     run: async (sql: any) =>
-      (m98 as any)
+      (m102 as any)
         .makeDrizzleMediaAuthorizationRepository(sql)
         .isCleanupMember("cleanupId-1", "userId-1"),
   },
   {
     key: "makeDrizzleMediaAuthorizationRepository.isDmParticipant",
     run: async (sql: any) =>
-      (m98 as any)
+      (m102 as any)
         .makeDrizzleMediaAuthorizationRepository(sql)
         .isDmParticipant("threadId-1", "userId-1"),
   },
   {
     key: "makeDrizzleMediaAuthorizationRepository.isLiveOrgLogo",
     run: async (sql: any) =>
-      (m98 as any).makeDrizzleMediaAuthorizationRepository(sql).isLiveOrgLogo("mediaId-1"),
+      (m102 as any).makeDrizzleMediaAuthorizationRepository(sql).isLiveOrgLogo("mediaId-1"),
   },
   {
     key: "makeDrizzleMediaViewAuthorizer.authorize",
     run: async (sql: any) =>
-      (m99 as any)
+      (m103 as any)
         .makeDrizzleMediaViewAuthorizer(sql, () => new Date("2026-03-04T05:06:07.000Z"))
         .authorize(
           {
@@ -7129,32 +7419,32 @@ export const cases: TranscriptCase[] = [
   },
   {
     key: "mediaBoundElsewhere",
-    run: async (sql: any) => (m100 as any).mediaBoundElsewhere(sql, "exceptCleanupId-1"),
+    run: async (sql: any) => (m104 as any).mediaBoundElsewhere(sql, "exceptCleanupId-1"),
   },
   {
     key: "claimableAsReportMedia",
-    run: async (sql: any) => (m100 as any).claimableAsReportMedia(sql, ["uploader-1"]),
+    run: async (sql: any) => (m104 as any).claimableAsReportMedia(sql, ["uploader-1"]),
   },
   {
     key: "claimableAsAttachment",
-    run: async (sql: any) => (m100 as any).claimableAsAttachment(sql, ["uploader-1"]),
+    run: async (sql: any) => (m104 as any).claimableAsAttachment(sql, ["uploader-1"]),
   },
   {
     key: "uploadedByClaimant",
-    run: async (sql: any) => (m100 as any).uploadedByClaimant(sql, ["uploader-1"]),
+    run: async (sql: any) => (m104 as any).uploadedByClaimant(sql, ["uploader-1"]),
   },
   {
     key: "eventsBindingMedia",
-    run: async (sql: any) => (m100 as any).eventsBindingMedia(sql, "mediaId-1"),
+    run: async (sql: any) => (m104 as any).eventsBindingMedia(sql, "mediaId-1"),
   },
   {
     key: "mediaBoundToCleanup",
-    run: async (sql: any) => (m100 as any).mediaBoundToCleanup(sql, "cleanupId-1"),
+    run: async (sql: any) => (m104 as any).mediaBoundToCleanup(sql, "cleanupId-1"),
   },
   {
     key: "findClaimableAvatarIn",
     run: async (sql: any) =>
-      (m101 as any).findClaimableAvatarIn(sql, "uploadId-1", {
+      (m105 as any).findClaimableAvatarIn(sql, "uploadId-1", {
         uploader: "uploader-1",
         userId: "userId-1",
         groupId: "groupId-1",
@@ -7162,44 +7452,44 @@ export const cases: TranscriptCase[] = [
   },
   {
     key: "lockUploadsForClaimIn",
-    run: async (sql: any) => (m101 as any).lockUploadsForClaimIn(sql, ["uploadId-1"]),
+    run: async (sql: any) => (m105 as any).lockUploadsForClaimIn(sql, ["uploadId-1"]),
   },
-  { key: "servedKeyExpr", run: async (sql: any) => (m102 as any).servedKeyExpr(sql, "m") },
+  { key: "servedKeyExpr", run: async (sql: any) => (m106 as any).servedKeyExpr(sql, "m") },
   {
     key: "publicServedKeyExpr",
-    run: async (sql: any) => (m102 as any).publicServedKeyExpr(sql, "m"),
+    run: async (sql: any) => (m106 as any).publicServedKeyExpr(sql, "m"),
   },
   {
     key: "servableMediaFilter",
-    run: async (sql: any) => (m102 as any).servableMediaFilter(sql, "m"),
+    run: async (sql: any) => (m106 as any).servableMediaFilter(sql, "m"),
   },
   {
     key: "moderationMediaKeyExpr",
-    run: async (sql: any) => (m102 as any).moderationMediaKeyExpr(sql, "m"),
+    run: async (sql: any) => (m106 as any).moderationMediaKeyExpr(sql, "m"),
   },
   {
     key: "moderationMediaFilter",
-    run: async (sql: any) => (m102 as any).moderationMediaFilter(sql, "m"),
+    run: async (sql: any) => (m106 as any).moderationMediaFilter(sql, "m"),
   },
   {
     key: "uploaderServedKeyExpr",
-    run: async (sql: any) => (m102 as any).uploaderServedKeyExpr(sql, "m", "viewerUploader-1"),
+    run: async (sql: any) => (m106 as any).uploaderServedKeyExpr(sql, "m", "viewerUploader-1"),
   },
   {
     key: "uploaderServableFilter",
-    run: async (sql: any) => (m102 as any).uploaderServableFilter(sql, "m", "viewerUploader-1"),
+    run: async (sql: any) => (m106 as any).uploaderServableFilter(sql, "m", "viewerUploader-1"),
   },
   {
     key: "makeDrizzleMediaWorkerRepository.adoptLegacyServedKeys",
     run: async (sql: any) =>
-      (m103 as any)
+      (m107 as any)
         .makeDrizzleMediaWorkerRepository("db-unsupported", sql)
         .adoptLegacyServedKeys(new Date("2026-03-04T05:06:07.000Z"), 3),
   },
   {
     key: "makeDrizzleMediaWorkerRepository.applyResult",
     run: async (sql: any) =>
-      (m103 as any).makeDrizzleMediaWorkerRepository("db-unsupported", sql).applyResult("id-1", {
+      (m107 as any).makeDrizzleMediaWorkerRepository("db-unsupported", sql).applyResult("id-1", {
         status: "ready",
         codec: "codec-1",
         width: 3,
@@ -7213,21 +7503,21 @@ export const cases: TranscriptCase[] = [
   {
     key: "makeDrizzleMediaWorkerRepository.clearLeakedObject",
     run: async (sql: any) =>
-      (m103 as any)
+      (m107 as any)
         .makeDrizzleMediaWorkerRepository("db-unsupported", sql)
         .clearLeakedObject("r2Key-1"),
   },
   {
     key: "makeDrizzleMediaWorkerRepository.deleteOrphan",
     run: async (sql: any) =>
-      (m103 as any)
+      (m107 as any)
         .makeDrizzleMediaWorkerRepository("db-unsupported", sql)
         .deleteOrphan("id-1", new Date("2026-03-04T05:06:07.000Z")),
   },
   {
     key: "makeDrizzleMediaWorkerRepository.enqueueHeldModerationItem",
     run: async (sql: any) =>
-      (m103 as any)
+      (m107 as any)
         .makeDrizzleMediaWorkerRepository("db-unsupported", sql)
         .enqueueHeldModerationItem({
           reportId: "reportId-1",
@@ -7239,26 +7529,26 @@ export const cases: TranscriptCase[] = [
   {
     key: "makeDrizzleMediaWorkerRepository.findById",
     run: async (sql: any) =>
-      (m103 as any).makeDrizzleMediaWorkerRepository("db-unsupported", sql).findById("id-1"),
+      (m107 as any).makeDrizzleMediaWorkerRepository("db-unsupported", sql).findById("id-1"),
   },
   {
     key: "makeDrizzleMediaWorkerRepository.findByUploadId",
     run: async (sql: any) =>
-      (m103 as any)
+      (m107 as any)
         .makeDrizzleMediaWorkerRepository("db-unsupported", sql)
         .findByUploadId("uploadId-1"),
   },
   {
     key: "makeDrizzleMediaWorkerRepository.findOrphans",
     run: async (sql: any) =>
-      (m103 as any)
+      (m107 as any)
         .makeDrizzleMediaWorkerRepository("db-unsupported", sql)
         .findOrphans(new Date("2026-03-04T05:06:07.000Z"), 3),
   },
   {
     key: "makeDrizzleMediaWorkerRepository.findPhashDuplicate",
     run: async (sql: any) =>
-      (m103 as any)
+      (m107 as any)
         .makeDrizzleMediaWorkerRepository("db-unsupported", sql)
         .findPhashDuplicate("hash-1", {
           excludeAssetId: "excludeAssetId-1",
@@ -7268,81 +7558,81 @@ export const cases: TranscriptCase[] = [
   {
     key: "makeDrizzleMediaWorkerRepository.findStuckValidating",
     run: async (sql: any) =>
-      (m103 as any)
+      (m107 as any)
         .makeDrizzleMediaWorkerRepository("db-unsupported", sql)
         .findStuckValidating(new Date("2026-03-04T05:06:07.000Z"), 3),
   },
   {
     key: "makeDrizzleMediaWorkerRepository.insertAbuseFlag",
     run: async (sql: any) =>
-      (m103 as any)
+      (m107 as any)
         .makeDrizzleMediaWorkerRepository("db-unsupported", sql)
         .insertAbuseFlag({ subjectId: "subjectId-1", reason: "gps", source: "user_report" }),
   },
   {
     key: "makeDrizzleMediaWorkerRepository.listLeakedObjects",
     run: async (sql: any) =>
-      (m103 as any).makeDrizzleMediaWorkerRepository("db-unsupported", sql).listLeakedObjects(3, 3),
+      (m107 as any).makeDrizzleMediaWorkerRepository("db-unsupported", sql).listLeakedObjects(3, 3),
   },
   {
     key: "makeDrizzleMediaWorkerRepository.r2KeyReferencedByOthers",
     run: async (sql: any) =>
-      (m103 as any)
+      (m107 as any)
         .makeDrizzleMediaWorkerRepository("db-unsupported", sql)
         .r2KeyReferencedByOthers("id-1", "r2Key-1"),
   },
   {
     key: "makeDrizzleMediaWorkerRepository.recordLeakedObjects",
     run: async (sql: any) =>
-      (m103 as any)
+      (m107 as any)
         .makeDrizzleMediaWorkerRepository("db-unsupported", sql)
         .recordLeakedObjects({ mediaId: "mediaId-1", keys: ["key-1"], error: "error-1" }),
   },
   {
     key: "makeDrizzleMediaWorkerRepository.terminalizeStuck",
     run: async (sql: any) =>
-      (m103 as any)
+      (m107 as any)
         .makeDrizzleMediaWorkerRepository("db-unsupported", sql)
         .terminalizeStuck("id-1"),
   },
   {
     key: "orphanPredicate",
     run: async (sql: any) =>
-      (m103 as any).orphanPredicate(sql, new Date("2026-03-04T05:06:07.000Z")),
+      (m107 as any).orphanPredicate(sql, new Date("2026-03-04T05:06:07.000Z")),
   },
   {
     key: "ensureNextMonthChatPartition",
     run: async (sql: any) =>
-      (m103 as any).ensureNextMonthChatPartition(sql, new Date("2026-03-04T05:06:07.000Z")),
+      (m107 as any).ensureNextMonthChatPartition(sql, new Date("2026-03-04T05:06:07.000Z")),
   },
   {
     key: "ensureNextMonthDmPartition",
     run: async (sql: any) =>
-      (m103 as any).ensureNextMonthDmPartition(sql, new Date("2026-03-04T05:06:07.000Z")),
+      (m107 as any).ensureNextMonthDmPartition(sql, new Date("2026-03-04T05:06:07.000Z")),
   },
   {
     key: "ensureChatPartitionWindow",
     run: async (sql: any) =>
-      (m103 as any).ensureChatPartitionWindow(sql, new Date("2026-03-04T05:06:07.000Z"), 3),
+      (m107 as any).ensureChatPartitionWindow(sql, new Date("2026-03-04T05:06:07.000Z"), 3),
   },
   {
     key: "ensureDmPartitionWindow",
     run: async (sql: any) =>
-      (m103 as any).ensureDmPartitionWindow(sql, new Date("2026-03-04T05:06:07.000Z"), 3),
+      (m107 as any).ensureDmPartitionWindow(sql, new Date("2026-03-04T05:06:07.000Z"), 3),
   },
   {
     key: "resolveHandles",
-    run: async (sql: any) => (m104 as any).resolveHandles(sql, ["handle-1"], "selfUserId-1"),
+    run: async (sql: any) => (m108 as any).resolveHandles(sql, ["handle-1"], "selfUserId-1"),
   },
   {
     key: "resolveUserIdsToMentions",
     run: async (sql: any) =>
-      (m104 as any).resolveUserIdsToMentions(sql, ["userId-1"], "selfUserId-1"),
+      (m108 as any).resolveUserIdsToMentions(sql, ["userId-1"], "selfUserId-1"),
   },
   {
     key: "resolveMentionTargets",
     run: async (sql: any) =>
-      (m104 as any).resolveMentionTargets(sql, {
+      (m108 as any).resolveMentionTargets(sql, {
         handles: ["handle-1"],
         userIds: ["userId-1"],
         authorUserId: "authorUserId-1",
@@ -7351,7 +7641,7 @@ export const cases: TranscriptCase[] = [
   {
     key: "loadServableAttachmentsFor",
     run: async (sql: any) =>
-      (m105 as any).loadServableAttachmentsFor(
+      (m109 as any).loadServableAttachmentsFor(
         sql,
         "chat_message_id",
         ["messageId-1"],
@@ -7362,40 +7652,40 @@ export const cases: TranscriptCase[] = [
   {
     key: "makeMessageMentionRepository.loadFor",
     run: async (sql: any) =>
-      (m106 as any)
+      (m110 as any)
         .makeMessageMentionRepository(sql, "chat_message_mentions", "post_id")
         .loadFor(["messageId-1"]),
   },
   {
     key: "makeMessageMentionRepository.recordFor",
     run: async (sql: any) =>
-      (m106 as any)
+      (m110 as any)
         .makeMessageMentionRepository(sql, "chat_message_mentions", "post_id")
         .recordFor(sql, "messageId-1", ["mentionedUserId-1"]),
   },
   {
     key: "loadMentionsFor",
     run: async (sql: any) =>
-      (m106 as any).loadMentionsFor(sql, "chat_message_mentions", ["messageId-1"], "post_id"),
+      (m110 as any).loadMentionsFor(sql, "chat_message_mentions", ["messageId-1"], "post_id"),
   },
   {
     key: "makeMessageReactionRepository.loadFor",
     run: async (sql: any) =>
-      (m107 as any)
+      (m111 as any)
         .makeMessageReactionRepository(sql, "chat_message_reactions")
         .loadFor(["messageId-1"], "viewerUserId-1"),
   },
   {
     key: "makeMessageReactionRepository.toggle",
     run: async (sql: any) =>
-      (m107 as any)
+      (m111 as any)
         .makeMessageReactionRepository(sql, "chat_message_reactions")
         .toggle("messageId-1", "userId-1", "like"),
   },
   {
     key: "loadReactionsFor",
     run: async (sql: any) =>
-      (m107 as any).loadReactionsFor(
+      (m111 as any).loadReactionsFor(
         sql,
         "chat_message_reactions",
         ["messageId-1"],
@@ -7404,75 +7694,75 @@ export const cases: TranscriptCase[] = [
   },
   {
     key: "explainHasUnread",
-    run: async (sql: any) => (m108 as any).explainHasUnread(sql, "userId-1"),
+    run: async (sql: any) => (m112 as any).explainHasUnread(sql, "userId-1"),
   },
   {
     key: "explainMarkAllRead",
-    run: async (sql: any) => (m108 as any).explainMarkAllRead(sql, "userId-1"),
+    run: async (sql: any) => (m112 as any).explainMarkAllRead(sql, "userId-1"),
   },
   {
     key: "makeDrizzleNotificationRepository.clearByTypeAndLink",
     run: async (sql: any) =>
-      (m108 as any)
+      (m112 as any)
         .makeDrizzleNotificationRepository(sql)
         .clearByTypeAndLink("userId-1", "system", "link-1"),
   },
   {
     key: "makeDrizzleNotificationRepository.createDefaultPrefs",
     run: async (sql: any) =>
-      (m108 as any).makeDrizzleNotificationRepository(sql).createDefaultPrefs("userId-1"),
+      (m112 as any).makeDrizzleNotificationRepository(sql).createDefaultPrefs("userId-1"),
   },
   {
     key: "makeDrizzleNotificationRepository.deleteAllNotificationsForUser",
     run: async (sql: any) =>
-      (m108 as any)
+      (m112 as any)
         .makeDrizzleNotificationRepository(sql)
         .deleteAllNotificationsForUser("userId-1"),
   },
   {
     key: "makeDrizzleNotificationRepository.deleteNotification",
     run: async (sql: any) =>
-      (m108 as any).makeDrizzleNotificationRepository(sql).deleteNotification("userId-1", "id-1"),
+      (m112 as any).makeDrizzleNotificationRepository(sql).deleteNotification("userId-1", "id-1"),
   },
   {
     key: "makeDrizzleNotificationRepository.deletePushTokensForUser",
     run: async (sql: any) =>
-      (m108 as any).makeDrizzleNotificationRepository(sql).deletePushTokensForUser("userId-1"),
+      (m112 as any).makeDrizzleNotificationRepository(sql).deletePushTokensForUser("userId-1"),
   },
   {
     key: "makeDrizzleNotificationRepository.findEmailRecipients",
     run: async (sql: any) =>
-      (m108 as any).makeDrizzleNotificationRepository(sql).findEmailRecipients(["userId-1"]),
+      (m112 as any).makeDrizzleNotificationRepository(sql).findEmailRecipients(["userId-1"]),
   },
   {
     key: "makeDrizzleNotificationRepository.findPrefs",
     run: async (sql: any) =>
-      (m108 as any).makeDrizzleNotificationRepository(sql).findPrefs("userId-1"),
+      (m112 as any).makeDrizzleNotificationRepository(sql).findPrefs("userId-1"),
   },
   {
     key: "makeDrizzleNotificationRepository.findPrefsMany",
     run: async (sql: any) =>
-      (m108 as any).makeDrizzleNotificationRepository(sql).findPrefsMany(["userId-1"]),
+      (m112 as any).makeDrizzleNotificationRepository(sql).findPrefsMany(["userId-1"]),
   },
   {
     key: "makeDrizzleNotificationRepository.findUserLocale",
     run: async (sql: any) =>
-      (m108 as any).makeDrizzleNotificationRepository(sql).findUserLocale("userId-1"),
+      (m112 as any).makeDrizzleNotificationRepository(sql).findUserLocale("userId-1"),
   },
   {
     key: "makeDrizzleNotificationRepository.findUserLocaleMany",
     run: async (sql: any) =>
-      (m108 as any).makeDrizzleNotificationRepository(sql).findUserLocaleMany(["userId-1"]),
+      (m112 as any).makeDrizzleNotificationRepository(sql).findUserLocaleMany(["userId-1"]),
   },
   {
     key: "makeDrizzleNotificationRepository.hasUnread",
     run: async (sql: any) =>
-      (m108 as any).makeDrizzleNotificationRepository(sql).hasUnread("userId-1"),
+      (m112 as any).makeDrizzleNotificationRepository(sql).hasUnread("userId-1"),
   },
   {
     key: "makeDrizzleNotificationRepository.insertNotification",
     run: async (sql: any) =>
-      (m108 as any).makeDrizzleNotificationRepository(sql).insertNotification({
+      (m112 as any).makeDrizzleNotificationRepository(sql).insertNotification({
         userId: "userId-1",
         type: "system",
         title: "title-1",
@@ -7483,31 +7773,31 @@ export const cases: TranscriptCase[] = [
   {
     key: "makeDrizzleNotificationRepository.insertUnlessRecentDuplicate",
     run: async (sql: any) =>
-      (m108 as any)
+      (m112 as any)
         .makeDrizzleNotificationRepository(sql)
         .insertUnlessRecentDuplicate("args-unsupported"),
   },
   {
     key: "makeDrizzleNotificationRepository.listNotifications",
     run: async (sql: any) =>
-      (m108 as any)
+      (m112 as any)
         .makeDrizzleNotificationRepository(sql)
         .listNotifications("userId-1", "cursor-1", 3),
   },
   {
     key: "makeDrizzleNotificationRepository.markAllRead",
     run: async (sql: any) =>
-      (m108 as any).makeDrizzleNotificationRepository(sql).markAllRead("userId-1"),
+      (m112 as any).makeDrizzleNotificationRepository(sql).markAllRead("userId-1"),
   },
   {
     key: "makeDrizzleNotificationRepository.markRead",
     run: async (sql: any) =>
-      (m108 as any).makeDrizzleNotificationRepository(sql).markRead("userId-1", ["id-1"]),
+      (m112 as any).makeDrizzleNotificationRepository(sql).markRead("userId-1", ["id-1"]),
   },
   {
     key: "makeDrizzleNotificationRepository.refreshUnreadNotification",
     run: async (sql: any) =>
-      (m108 as any).makeDrizzleNotificationRepository(sql).refreshUnreadNotification({
+      (m112 as any).makeDrizzleNotificationRepository(sql).refreshUnreadNotification({
         userId: "userId-1",
         type: "system",
         link: "link-1",
@@ -7519,14 +7809,14 @@ export const cases: TranscriptCase[] = [
   {
     key: "makeDrizzleNotificationRepository.revokeToken",
     run: async (sql: any) =>
-      (m108 as any)
+      (m112 as any)
         .makeDrizzleNotificationRepository(sql)
         .revokeToken("userId-1", "ios", "token-1"),
   },
   {
     key: "makeDrizzleNotificationRepository.upsertCoalescedNotification",
     run: async (sql: any) =>
-      (m108 as any).makeDrizzleNotificationRepository(sql).upsertCoalescedNotification({
+      (m112 as any).makeDrizzleNotificationRepository(sql).upsertCoalescedNotification({
         userId: "userId-1",
         type: "system",
         link: "link-1",
@@ -7538,7 +7828,7 @@ export const cases: TranscriptCase[] = [
   {
     key: "makeDrizzleNotificationRepository.upsertPrefs",
     run: async (sql: any) =>
-      (m108 as any).makeDrizzleNotificationRepository(sql).upsertPrefs("userId-1", {
+      (m112 as any).makeDrizzleNotificationRepository(sql).upsertPrefs("userId-1", {
         push: true,
         cleanupChat: true,
         reportUpdates: true,
@@ -7552,7 +7842,7 @@ export const cases: TranscriptCase[] = [
   {
     key: "makeDrizzleNotificationRepository.upsertPushToken",
     run: async (sql: any) =>
-      (m108 as any).makeDrizzleNotificationRepository(sql).upsertPushToken({
+      (m112 as any).makeDrizzleNotificationRepository(sql).upsertPushToken({
         userId: "userId-1",
         platform: "ios",
         token: "token-1",
@@ -7562,7 +7852,7 @@ export const cases: TranscriptCase[] = [
   {
     key: "makeDrizzleNotificationRepository.usersNotifiedSince",
     run: async (sql: any) =>
-      (m108 as any).makeDrizzleNotificationRepository(sql).usersNotifiedSince({
+      (m112 as any).makeDrizzleNotificationRepository(sql).usersNotifiedSince({
         userIds: ["userId-1"],
         type: "system",
         link: "link-1",
@@ -7572,24 +7862,24 @@ export const cases: TranscriptCase[] = [
   {
     key: "makeDrizzleNotificationSettingsRepository.disableEmail",
     run: async (sql: any) =>
-      (m109 as any)
+      (m113 as any)
         .makeDrizzleNotificationSettingsRepository(sql)
         .disableEmail("userId-1", "followers"),
   },
   {
     key: "makeDrizzleNotificationSettingsRepository.getSettings",
     run: async (sql: any) =>
-      (m109 as any).makeDrizzleNotificationSettingsRepository(sql).getSettings("userId-1"),
+      (m113 as any).makeDrizzleNotificationSettingsRepository(sql).getSettings("userId-1"),
   },
   {
     key: "makeDrizzleNotificationSettingsRepository.getSettingsMany",
     run: async (sql: any) =>
-      (m109 as any).makeDrizzleNotificationSettingsRepository(sql).getSettingsMany(["userId-1"]),
+      (m113 as any).makeDrizzleNotificationSettingsRepository(sql).getSettingsMany(["userId-1"]),
   },
   {
     key: "makeDrizzleNotificationSettingsRepository.upsertSettings",
     run: async (sql: any) =>
-      (m109 as any).makeDrizzleNotificationSettingsRepository(sql).upsertSettings("userId-1", {
+      (m113 as any).makeDrizzleNotificationSettingsRepository(sql).upsertSettings("userId-1", {
         followers: "followers-any",
         mentions: "mentions-any",
         events: "events-any",
@@ -7605,12 +7895,12 @@ export const cases: TranscriptCase[] = [
   },
   {
     key: "tombstonePostInTx",
-    run: async (sql: any) => (m110 as any).tombstonePostInTx(sql, "postId-1"),
+    run: async (sql: any) => (m114 as any).tombstonePostInTx(sql, "postId-1"),
   },
   {
     key: "explainFeedCandidates",
     run: async (sql: any) =>
-      (m110 as any).explainFeedCandidates(sql, {
+      (m114 as any).explainFeedCandidates(sql, {
         viewerId: "viewerId-1",
         filter: "events",
         fallbackLat: 3,
@@ -7623,7 +7913,7 @@ export const cases: TranscriptCase[] = [
   {
     key: "makeDrizzlePostRepository.actorNameOf",
     run: async (sql: any) =>
-      (m110 as any)
+      (m114 as any)
         .makeDrizzlePostRepository(sql, {
           presignMedia: () => Promise.resolve({ url: "url-1", thumbUrl: "thumbUrl-1" }),
           presignAvatar: () => Promise.resolve("presignAvatarResult-1"),
@@ -7649,7 +7939,7 @@ export const cases: TranscriptCase[] = [
   {
     key: "makeDrizzlePostRepository.canPostAsOrganization",
     run: async (sql: any) =>
-      (m110 as any)
+      (m114 as any)
         .makeDrizzlePostRepository(sql, {
           presignMedia: () => Promise.resolve({ url: "url-1", thumbUrl: "thumbUrl-1" }),
           presignAvatar: () => Promise.resolve("presignAvatarResult-1"),
@@ -7675,7 +7965,7 @@ export const cases: TranscriptCase[] = [
   {
     key: "makeDrizzlePostRepository.createPost",
     run: async (sql: any) =>
-      (m110 as any)
+      (m114 as any)
         .makeDrizzlePostRepository(sql, {
           presignMedia: () => Promise.resolve({ url: "url-1", thumbUrl: "thumbUrl-1" }),
           presignAvatar: () => Promise.resolve("presignAvatarResult-1"),
@@ -7713,7 +8003,7 @@ export const cases: TranscriptCase[] = [
   {
     key: "makeDrizzlePostRepository.feedCandidates",
     run: async (sql: any) =>
-      (m110 as any)
+      (m114 as any)
         .makeDrizzlePostRepository(sql, {
           presignMedia: () => Promise.resolve({ url: "url-1", thumbUrl: "thumbUrl-1" }),
           presignAvatar: () => Promise.resolve("presignAvatarResult-1"),
@@ -7747,7 +8037,7 @@ export const cases: TranscriptCase[] = [
   {
     key: "makeDrizzlePostRepository.followerIdsOf",
     run: async (sql: any) =>
-      (m110 as any)
+      (m114 as any)
         .makeDrizzlePostRepository(sql, {
           presignMedia: () => Promise.resolve({ url: "url-1", thumbUrl: "thumbUrl-1" }),
           presignAvatar: () => Promise.resolve("presignAvatarResult-1"),
@@ -7773,7 +8063,7 @@ export const cases: TranscriptCase[] = [
   {
     key: "makeDrizzlePostRepository.getPostBrief",
     run: async (sql: any) =>
-      (m110 as any)
+      (m114 as any)
         .makeDrizzlePostRepository(sql, {
           presignMedia: () => Promise.resolve({ url: "url-1", thumbUrl: "thumbUrl-1" }),
           presignAvatar: () => Promise.resolve("presignAvatarResult-1"),
@@ -7799,7 +8089,7 @@ export const cases: TranscriptCase[] = [
   {
     key: "makeDrizzlePostRepository.getPostDTO",
     run: async (sql: any) =>
-      (m110 as any)
+      (m114 as any)
         .makeDrizzlePostRepository(sql, {
           presignMedia: () => Promise.resolve({ url: "url-1", thumbUrl: "thumbUrl-1" }),
           presignAvatar: () => Promise.resolve("presignAvatarResult-1"),
@@ -7825,7 +8115,7 @@ export const cases: TranscriptCase[] = [
   {
     key: "makeDrizzlePostRepository.homeFeedChronological",
     run: async (sql: any) =>
-      (m110 as any)
+      (m114 as any)
         .makeDrizzlePostRepository(sql, {
           presignMedia: () => Promise.resolve({ url: "url-1", thumbUrl: "thumbUrl-1" }),
           presignAvatar: () => Promise.resolve("presignAvatarResult-1"),
@@ -7856,7 +8146,7 @@ export const cases: TranscriptCase[] = [
   {
     key: "makeDrizzlePostRepository.hydrateByIds",
     run: async (sql: any) =>
-      (m110 as any)
+      (m114 as any)
         .makeDrizzlePostRepository(sql, {
           presignMedia: () => Promise.resolve({ url: "url-1", thumbUrl: "thumbUrl-1" }),
           presignAvatar: () => Promise.resolve("presignAvatarResult-1"),
@@ -7882,7 +8172,7 @@ export const cases: TranscriptCase[] = [
   {
     key: "makeDrizzlePostRepository.isEventMember",
     run: async (sql: any) =>
-      (m110 as any)
+      (m114 as any)
         .makeDrizzlePostRepository(sql, {
           presignMedia: () => Promise.resolve({ url: "url-1", thumbUrl: "thumbUrl-1" }),
           presignAvatar: () => Promise.resolve("presignAvatarResult-1"),
@@ -7908,7 +8198,7 @@ export const cases: TranscriptCase[] = [
   {
     key: "makeDrizzlePostRepository.isReportAttachable",
     run: async (sql: any) =>
-      (m110 as any)
+      (m114 as any)
         .makeDrizzlePostRepository(sql, {
           presignMedia: () => Promise.resolve({ url: "url-1", thumbUrl: "thumbUrl-1" }),
           presignAvatar: () => Promise.resolve("presignAvatarResult-1"),
@@ -7934,7 +8224,7 @@ export const cases: TranscriptCase[] = [
   {
     key: "makeDrizzlePostRepository.like",
     run: async (sql: any) =>
-      (m110 as any)
+      (m114 as any)
         .makeDrizzlePostRepository(sql, {
           presignMedia: () => Promise.resolve({ url: "url-1", thumbUrl: "thumbUrl-1" }),
           presignAvatar: () => Promise.resolve("presignAvatarResult-1"),
@@ -7960,7 +8250,7 @@ export const cases: TranscriptCase[] = [
   {
     key: "makeDrizzlePostRepository.listReplies",
     run: async (sql: any) =>
-      (m110 as any)
+      (m114 as any)
         .makeDrizzlePostRepository(sql, {
           presignMedia: () => Promise.resolve({ url: "url-1", thumbUrl: "thumbUrl-1" }),
           presignAvatar: () => Promise.resolve("presignAvatarResult-1"),
@@ -7991,7 +8281,7 @@ export const cases: TranscriptCase[] = [
   {
     key: "makeDrizzlePostRepository.listSaves",
     run: async (sql: any) =>
-      (m110 as any)
+      (m114 as any)
         .makeDrizzlePostRepository(sql, {
           presignMedia: () => Promise.resolve({ url: "url-1", thumbUrl: "thumbUrl-1" }),
           presignAvatar: () => Promise.resolve("presignAvatarResult-1"),
@@ -8017,7 +8307,7 @@ export const cases: TranscriptCase[] = [
   {
     key: "makeDrizzlePostRepository.listUserPosts",
     run: async (sql: any) =>
-      (m110 as any)
+      (m114 as any)
         .makeDrizzlePostRepository(sql, {
           presignMedia: () => Promise.resolve({ url: "url-1", thumbUrl: "thumbUrl-1" }),
           presignAvatar: () => Promise.resolve("presignAvatarResult-1"),
@@ -8043,7 +8333,7 @@ export const cases: TranscriptCase[] = [
   {
     key: "makeDrizzlePostRepository.publicFeed",
     run: async (sql: any) =>
-      (m110 as any)
+      (m114 as any)
         .makeDrizzlePostRepository(sql, {
           presignMedia: () => Promise.resolve({ url: "url-1", thumbUrl: "thumbUrl-1" }),
           presignAvatar: () => Promise.resolve("presignAvatarResult-1"),
@@ -8069,7 +8359,7 @@ export const cases: TranscriptCase[] = [
   {
     key: "makeDrizzlePostRepository.readableCounts",
     run: async (sql: any) =>
-      (m110 as any)
+      (m114 as any)
         .makeDrizzlePostRepository(sql, {
           presignMedia: () => Promise.resolve({ url: "url-1", thumbUrl: "thumbUrl-1" }),
           presignAvatar: () => Promise.resolve("presignAvatarResult-1"),
@@ -8095,7 +8385,7 @@ export const cases: TranscriptCase[] = [
   {
     key: "makeDrizzlePostRepository.repost",
     run: async (sql: any) =>
-      (m110 as any)
+      (m114 as any)
         .makeDrizzlePostRepository(sql, {
           presignMedia: () => Promise.resolve({ url: "url-1", thumbUrl: "thumbUrl-1" }),
           presignAvatar: () => Promise.resolve("presignAvatarResult-1"),
@@ -8121,7 +8411,7 @@ export const cases: TranscriptCase[] = [
   {
     key: "makeDrizzlePostRepository.save",
     run: async (sql: any) =>
-      (m110 as any)
+      (m114 as any)
         .makeDrizzlePostRepository(sql, {
           presignMedia: () => Promise.resolve({ url: "url-1", thumbUrl: "thumbUrl-1" }),
           presignAvatar: () => Promise.resolve("presignAvatarResult-1"),
@@ -8147,7 +8437,7 @@ export const cases: TranscriptCase[] = [
   {
     key: "makeDrizzlePostRepository.softDeletePost",
     run: async (sql: any) =>
-      (m110 as any)
+      (m114 as any)
         .makeDrizzlePostRepository(sql, {
           presignMedia: () => Promise.resolve({ url: "url-1", thumbUrl: "thumbUrl-1" }),
           presignAvatar: () => Promise.resolve("presignAvatarResult-1"),
@@ -8173,7 +8463,7 @@ export const cases: TranscriptCase[] = [
   {
     key: "makeDrizzlePostRepository.unlike",
     run: async (sql: any) =>
-      (m110 as any)
+      (m114 as any)
         .makeDrizzlePostRepository(sql, {
           presignMedia: () => Promise.resolve({ url: "url-1", thumbUrl: "thumbUrl-1" }),
           presignAvatar: () => Promise.resolve("presignAvatarResult-1"),
@@ -8199,7 +8489,7 @@ export const cases: TranscriptCase[] = [
   {
     key: "makeDrizzlePostRepository.unrepost",
     run: async (sql: any) =>
-      (m110 as any)
+      (m114 as any)
         .makeDrizzlePostRepository(sql, {
           presignMedia: () => Promise.resolve({ url: "url-1", thumbUrl: "thumbUrl-1" }),
           presignAvatar: () => Promise.resolve("presignAvatarResult-1"),
@@ -8225,7 +8515,7 @@ export const cases: TranscriptCase[] = [
   {
     key: "makeDrizzlePostRepository.unsave",
     run: async (sql: any) =>
-      (m110 as any)
+      (m114 as any)
         .makeDrizzlePostRepository(sql, {
           presignMedia: () => Promise.resolve({ url: "url-1", thumbUrl: "thumbUrl-1" }),
           presignAvatar: () => Promise.resolve("presignAvatarResult-1"),
@@ -8251,7 +8541,7 @@ export const cases: TranscriptCase[] = [
   {
     key: "makePostService.createPost",
     run: async (sql: any) =>
-      (m111 as any)
+      (m115 as any)
         .makePostService({
           repo: {
             getPostBrief: () =>
@@ -8391,7 +8681,7 @@ export const cases: TranscriptCase[] = [
   {
     key: "makePostService.deletePost",
     run: async (sql: any) =>
-      (m111 as any)
+      (m115 as any)
         .makePostService({
           repo: {
             getPostBrief: () =>
@@ -8517,7 +8807,7 @@ export const cases: TranscriptCase[] = [
   {
     key: "makePostService.getFeedCounts",
     run: async (sql: any) =>
-      (m111 as any)
+      (m115 as any)
         .makePostService({
           repo: {
             getPostBrief: () =>
@@ -8643,7 +8933,7 @@ export const cases: TranscriptCase[] = [
   {
     key: "makePostService.getPost",
     run: async (sql: any) =>
-      (m111 as any)
+      (m115 as any)
         .makePostService({
           repo: {
             getPostBrief: () =>
@@ -8769,7 +9059,7 @@ export const cases: TranscriptCase[] = [
   {
     key: "makePostService.homeFeed",
     run: async (sql: any) =>
-      (m111 as any)
+      (m115 as any)
         .makePostService({
           repo: {
             getPostBrief: () =>
@@ -8899,7 +9189,7 @@ export const cases: TranscriptCase[] = [
   {
     key: "makePostService.likePost",
     run: async (sql: any) =>
-      (m111 as any)
+      (m115 as any)
         .makePostService({
           repo: {
             getPostBrief: () =>
@@ -9025,7 +9315,7 @@ export const cases: TranscriptCase[] = [
   {
     key: "makePostService.listReplies",
     run: async (sql: any) =>
-      (m111 as any)
+      (m115 as any)
         .makePostService({
           repo: {
             getPostBrief: () =>
@@ -9151,7 +9441,7 @@ export const cases: TranscriptCase[] = [
   {
     key: "makePostService.listSaves",
     run: async (sql: any) =>
-      (m111 as any)
+      (m115 as any)
         .makePostService({
           repo: {
             getPostBrief: () =>
@@ -9277,7 +9567,7 @@ export const cases: TranscriptCase[] = [
   {
     key: "makePostService.listUserPosts",
     run: async (sql: any) =>
-      (m111 as any)
+      (m115 as any)
         .makePostService({
           repo: {
             getPostBrief: () =>
@@ -9403,7 +9693,7 @@ export const cases: TranscriptCase[] = [
   {
     key: "makePostService.publicFeed",
     run: async (sql: any) =>
-      (m111 as any)
+      (m115 as any)
         .makePostService({
           repo: {
             getPostBrief: () =>
@@ -9529,7 +9819,7 @@ export const cases: TranscriptCase[] = [
   {
     key: "makePostService.repostPost",
     run: async (sql: any) =>
-      (m111 as any)
+      (m115 as any)
         .makePostService({
           repo: {
             getPostBrief: () =>
@@ -9655,7 +9945,7 @@ export const cases: TranscriptCase[] = [
   {
     key: "makePostService.savePost",
     run: async (sql: any) =>
-      (m111 as any)
+      (m115 as any)
         .makePostService({
           repo: {
             getPostBrief: () =>
@@ -9781,7 +10071,7 @@ export const cases: TranscriptCase[] = [
   {
     key: "makePostService.unlikePost",
     run: async (sql: any) =>
-      (m111 as any)
+      (m115 as any)
         .makePostService({
           repo: {
             getPostBrief: () =>
@@ -9907,7 +10197,7 @@ export const cases: TranscriptCase[] = [
   {
     key: "makePostService.unrepostPost",
     run: async (sql: any) =>
-      (m111 as any)
+      (m115 as any)
         .makePostService({
           repo: {
             getPostBrief: () =>
@@ -10033,7 +10323,7 @@ export const cases: TranscriptCase[] = [
   {
     key: "makePostService.unsavePost",
     run: async (sql: any) =>
-      (m111 as any)
+      (m115 as any)
         .makePostService({
           repo: {
             getPostBrief: () =>
@@ -10159,7 +10449,7 @@ export const cases: TranscriptCase[] = [
   {
     key: "monotonicReadWatermark",
     run: async (sql: any) =>
-      (m112 as any).monotonicReadWatermark(
+      (m116 as any).monotonicReadWatermark(
         sql,
         "table-1",
         { keysKey: "keys-1" },
@@ -10169,7 +10459,7 @@ export const cases: TranscriptCase[] = [
   {
     key: "monotonicReadWatermarkUpdate",
     run: async (sql: any) =>
-      (m112 as any).monotonicReadWatermarkUpdate(
+      (m116 as any).monotonicReadWatermarkUpdate(
         sql,
         "table-1",
         { keysKey: "keys-1" },
@@ -10179,27 +10469,27 @@ export const cases: TranscriptCase[] = [
   {
     key: "makeDrizzleChatReadState.lastReadAt",
     run: async (sql: any) =>
-      (m112 as any).makeDrizzleChatReadState(sql).lastReadAt("cleanupId-1", "userId-1"),
+      (m116 as any).makeDrizzleChatReadState(sql).lastReadAt("cleanupId-1", "userId-1"),
   },
   {
     key: "makeDrizzleChatReadState.markRead",
     run: async (sql: any) =>
-      (m112 as any)
+      (m116 as any)
         .makeDrizzleChatReadState(sql)
         .markRead("cleanupId-1", "userId-1", new Date("2026-03-04T05:06:07.000Z")),
   },
   {
     key: "jurisdictionCodeIn",
-    run: async (sql: any) => (m113 as any).jurisdictionCodeIn(sql, "geoid-1"),
+    run: async (sql: any) => (m117 as any).jurisdictionCodeIn(sql, "geoid-1"),
   },
   {
     key: "allocateNextSeqIn",
-    run: async (sql: any) => (m113 as any).allocateNextSeqIn(sql, "scopeKey-1"),
+    run: async (sql: any) => (m117 as any).allocateNextSeqIn(sql, "scopeKey-1"),
   },
   {
     key: "findReplyTarget",
     run: async (sql: any) =>
-      (m114 as any).findReplyTarget(
+      (m118 as any).findReplyTarget(
         sql,
         "chat_messages",
         { column: "cleanup_id", id: "id-1" },
@@ -10209,12 +10499,12 @@ export const cases: TranscriptCase[] = [
   {
     key: "loadReplyTargetRows",
     run: async (sql: any) =>
-      (m114 as any).loadReplyTargetRows(sql, "chat_messages", ["distinctItem-1"]),
+      (m118 as any).loadReplyTargetRows(sql, "chat_messages", ["distinctItem-1"]),
   },
   {
     key: "makeReportChatRepository.advanceReadWatermark",
     run: async (sql: any) =>
-      (m115 as any)
+      (m119 as any)
         .makeReportChatRepository(
           sql,
           () => Promise.resolve({ url: "url-1", thumbUrl: "thumbUrl-1" }),
@@ -10225,7 +10515,7 @@ export const cases: TranscriptCase[] = [
   {
     key: "makeReportChatRepository.countMembers",
     run: async (sql: any) =>
-      (m115 as any)
+      (m119 as any)
         .makeReportChatRepository(
           sql,
           () => Promise.resolve({ url: "url-1", thumbUrl: "thumbUrl-1" }),
@@ -10236,7 +10526,7 @@ export const cases: TranscriptCase[] = [
   {
     key: "makeReportChatRepository.insertSystemMessage",
     run: async (sql: any) =>
-      (m115 as any)
+      (m119 as any)
         .makeReportChatRepository(
           sql,
           () => Promise.resolve({ url: "url-1", thumbUrl: "thumbUrl-1" }),
@@ -10253,7 +10543,7 @@ export const cases: TranscriptCase[] = [
   {
     key: "makeReportChatRepository.isMember",
     run: async (sql: any) =>
-      (m115 as any)
+      (m119 as any)
         .makeReportChatRepository(
           sql,
           () => Promise.resolve({ url: "url-1", thumbUrl: "thumbUrl-1" }),
@@ -10264,7 +10554,7 @@ export const cases: TranscriptCase[] = [
   {
     key: "makeReportChatRepository.isReportVerified",
     run: async (sql: any) =>
-      (m115 as any)
+      (m119 as any)
         .makeReportChatRepository(
           sql,
           () => Promise.resolve({ url: "url-1", thumbUrl: "thumbUrl-1" }),
@@ -10275,7 +10565,7 @@ export const cases: TranscriptCase[] = [
   {
     key: "makeReportChatRepository.join",
     run: async (sql: any) =>
-      (m115 as any)
+      (m119 as any)
         .makeReportChatRepository(
           sql,
           () => Promise.resolve({ url: "url-1", thumbUrl: "thumbUrl-1" }),
@@ -10286,7 +10576,7 @@ export const cases: TranscriptCase[] = [
   {
     key: "makeReportChatRepository.leave",
     run: async (sql: any) =>
-      (m115 as any)
+      (m119 as any)
         .makeReportChatRepository(
           sql,
           () => Promise.resolve({ url: "url-1", thumbUrl: "thumbUrl-1" }),
@@ -10297,7 +10587,7 @@ export const cases: TranscriptCase[] = [
   {
     key: "makeReportChatRepository.listMemberIds",
     run: async (sql: any) =>
-      (m115 as any)
+      (m119 as any)
         .makeReportChatRepository(
           sql,
           () => Promise.resolve({ url: "url-1", thumbUrl: "thumbUrl-1" }),
@@ -10308,7 +10598,7 @@ export const cases: TranscriptCase[] = [
   {
     key: "makeReportChatRepository.listMembers",
     run: async (sql: any) =>
-      (m115 as any)
+      (m119 as any)
         .makeReportChatRepository(
           sql,
           () => Promise.resolve({ url: "url-1", thumbUrl: "thumbUrl-1" }),
@@ -10319,7 +10609,7 @@ export const cases: TranscriptCase[] = [
   {
     key: "makeReportChatRepository.loadChatMeta",
     run: async (sql: any) =>
-      (m115 as any)
+      (m119 as any)
         .makeReportChatRepository(
           sql,
           () => Promise.resolve({ url: "url-1", thumbUrl: "thumbUrl-1" }),
@@ -10330,7 +10620,7 @@ export const cases: TranscriptCase[] = [
   {
     key: "makeReportChatRepository.markRead",
     run: async (sql: any) =>
-      (m115 as any)
+      (m119 as any)
         .makeReportChatRepository(
           sql,
           () => Promise.resolve({ url: "url-1", thumbUrl: "thumbUrl-1" }),
@@ -10341,7 +10631,7 @@ export const cases: TranscriptCase[] = [
   {
     key: "makeReportChatRepository.roleOf",
     run: async (sql: any) =>
-      (m115 as any)
+      (m119 as any)
         .makeReportChatRepository(
           sql,
           () => Promise.resolve({ url: "url-1", thumbUrl: "thumbUrl-1" }),
@@ -10352,35 +10642,35 @@ export const cases: TranscriptCase[] = [
   {
     key: "makeDrizzleReportForwardAuditRepository.markForwarded",
     run: async (sql: any) =>
-      (m116 as any)
+      (m120 as any)
         .makeDrizzleReportForwardAuditRepository(sql)
         .markForwarded("messageId-1", "geoid-1"),
   },
   {
     key: "makeDrizzleReportForwardAuditRepository.recordMention",
     run: async (sql: any) =>
-      (m116 as any)
+      (m120 as any)
         .makeDrizzleReportForwardAuditRepository(sql)
         .recordMention("messageId-1", "geoid-1"),
   },
   {
     key: "isReportOwnedBy",
-    run: async (sql: any) => (m117 as any).isReportOwnedBy(sql, "reportId-1", "userId-1"),
+    run: async (sql: any) => (m121 as any).isReportOwnedBy(sql, "reportId-1", "userId-1"),
   },
   {
     key: "explainPressing",
     run: async (sql: any) =>
-      (m117 as any).explainPressing(sql, { west: 3, south: 3, east: 3, north: 3 }, 3),
+      (m121 as any).explainPressing(sql, { west: 3, south: 3, east: 3, north: 3 }, 3),
   },
   {
     key: "makeDrizzleReportRepository.countMediaStatesForReport",
     run: async (sql: any) =>
-      (m117 as any).makeDrizzleReportRepository(sql).countMediaStatesForReport("reportId-1"),
+      (m121 as any).makeDrizzleReportRepository(sql).countMediaStatesForReport("reportId-1"),
   },
   {
     key: "makeDrizzleReportRepository.createReportTx",
     run: async (sql: any) =>
-      (m117 as any).makeDrizzleReportRepository(sql).createReportTx({
+      (m121 as any).makeDrizzleReportRepository(sql).createReportTx({
         reportId: "reportId-1",
         reporterUserId: "reporterUserId-1",
         guestAnonSessionId: "guestAnonSessionId-1",
@@ -10436,6 +10726,13 @@ export const cases: TranscriptCase[] = [
             chatMemberCount: 3,
             chatMessageCount: 3,
             chatUnread: 3,
+            filing: {
+              jurisdictionName: undefined,
+              caseId: undefined,
+              caseUrl: undefined,
+              filedAt: undefined,
+              linkedExisting: undefined,
+            },
             referenceCode: "referenceCode-1",
             type: "graffiti",
             title: "title-1",
@@ -10449,74 +10746,74 @@ export const cases: TranscriptCase[] = [
   {
     key: "makeDrizzleReportRepository.findIdempotentSnapshot",
     run: async (sql: any) =>
-      (m117 as any)
+      (m121 as any)
         .makeDrizzleReportRepository(sql)
         .findIdempotentSnapshot("key-1", "scope-1", "userOrAnon-1"),
   },
   {
     key: "makeDrizzleReportRepository.findMapCandidates",
     run: async (sql: any) =>
-      (m117 as any)
+      (m121 as any)
         .makeDrizzleReportRepository(sql)
         .findMapCandidates({ west: 3, south: 3, east: 3, north: 3 }, ["trash"], ["graffiti"], 3),
   },
   {
     key: "makeDrizzleReportRepository.findMediaForReport",
     run: async (sql: any) =>
-      (m117 as any).makeDrizzleReportRepository(sql).findMediaForReport("reportId-1", true),
+      (m121 as any).makeDrizzleReportRepository(sql).findMediaForReport("reportId-1", true),
   },
   {
     key: "makeDrizzleReportRepository.findMediaForReports",
     run: async (sql: any) =>
-      (m117 as any).makeDrizzleReportRepository(sql).findMediaForReports(["reportId-1"], true),
+      (m121 as any).makeDrizzleReportRepository(sql).findMediaForReports(["reportId-1"], true),
   },
   {
     key: "makeDrizzleReportRepository.findPressing",
     run: async (sql: any) =>
-      (m117 as any)
+      (m121 as any)
         .makeDrizzleReportRepository(sql)
         .findPressing({ west: 3, south: 3, east: 3, north: 3 }, 3),
   },
   {
     key: "makeDrizzleReportRepository.findReportById",
-    run: async (sql: any) => (m117 as any).makeDrizzleReportRepository(sql).findReportById("id-1"),
+    run: async (sql: any) => (m121 as any).makeDrizzleReportRepository(sql).findReportById("id-1"),
   },
   {
     key: "makeDrizzleReportRepository.findReportByReferenceCode",
     run: async (sql: any) =>
-      (m117 as any).makeDrizzleReportRepository(sql).findReportByReferenceCode("code-1"),
+      (m121 as any).makeDrizzleReportRepository(sql).findReportByReferenceCode("code-1"),
   },
   {
     key: "makeDrizzleReportRepository.findTimelineForReport",
     run: async (sql: any) =>
-      (m117 as any).makeDrizzleReportRepository(sql).findTimelineForReport("reportId-1"),
+      (m121 as any).makeDrizzleReportRepository(sql).findTimelineForReport("reportId-1"),
   },
   {
     key: "makeDrizzleReportRepository.findTimelineForReports",
     run: async (sql: any) =>
-      (m117 as any).makeDrizzleReportRepository(sql).findTimelineForReports(["reportId-1"]),
+      (m121 as any).makeDrizzleReportRepository(sql).findTimelineForReports(["reportId-1"]),
   },
   {
     key: "makeDrizzleReportRepository.findVote",
     run: async (sql: any) =>
-      (m117 as any).makeDrizzleReportRepository(sql).findVote("reportId-1", "userId-1"),
+      (m121 as any).makeDrizzleReportRepository(sql).findVote("reportId-1", "userId-1"),
   },
   {
     key: "makeDrizzleReportRepository.listMyReports",
     run: async (sql: any) =>
-      (m117 as any).makeDrizzleReportRepository(sql).listMyReports("userId-1", "cursor-1", 3),
+      (m121 as any).makeDrizzleReportRepository(sql).listMyReports("userId-1", "cursor-1", 3),
   },
   {
     key: "makeDrizzleReportRepository.resolveByOwner",
     run: async (sql: any) =>
-      (m117 as any)
+      (m121 as any)
         .makeDrizzleReportRepository(sql)
         .resolveByOwner("reportId-1", "userId-1", { status: "published", note: "note-1" }),
   },
   {
     key: "makeDrizzleReportRepository.searchReports",
     run: async (sql: any) =>
-      (m117 as any).makeDrizzleReportRepository(sql).searchReports({
+      (m121 as any).makeDrizzleReportRepository(sql).searchReports({
         q: "q-1",
         categories: ["trash"],
         types: ["graffiti"],
@@ -10527,14 +10824,14 @@ export const cases: TranscriptCase[] = [
   {
     key: "makeDrizzleReportRepository.setConfirmation",
     run: async (sql: any) =>
-      (m117 as any)
+      (m121 as any)
         .makeDrizzleReportRepository(sql)
         .setConfirmation("reportId-1", "userId-1", "seen", "remove"),
   },
   {
     key: "makeDrizzleReportRepository.setVisibilityByOwner",
     run: async (sql: any) =>
-      (m117 as any)
+      (m121 as any)
         .makeDrizzleReportRepository(sql)
         .setVisibilityByOwner("reportId-1", "userId-1", {
           visibility: "public",
@@ -10542,63 +10839,63 @@ export const cases: TranscriptCase[] = [
           kind: "hidden",
         }),
   },
-  { key: "reportColumns", run: async (sql: any) => (m118 as any).reportColumns(sql) },
-  { key: "publicReportFilter", run: async (sql: any) => (m118 as any).publicReportFilter(sql) },
+  { key: "reportColumns", run: async (sql: any) => (m122 as any).reportColumns(sql) },
+  { key: "publicReportFilter", run: async (sql: any) => (m122 as any).publicReportFilter(sql) },
   {
     key: "firstReadyStillLateral",
-    run: async (sql: any) => (m118 as any).firstReadyStillLateral(sql),
+    run: async (sql: any) => (m122 as any).firstReadyStillLateral(sql),
   },
   {
     key: "selectPublicPins",
     run: async (sql: any) =>
-      (m118 as any).selectPublicPins(sql, sql`TRUE /* extraFilters */`, sql`TRUE /* order */`, 3),
+      (m122 as any).selectPublicPins(sql, sql`TRUE /* extraFilters */`, sql`TRUE /* order */`, 3),
   },
   {
     key: "makeDrizzleRetentionRepository.deleteExpiredAnonTokens",
     run: async (sql: any) =>
-      (m119 as any)
+      (m123 as any)
         .makeDrizzleRetentionRepository(sql)
         .deleteExpiredAnonTokens(new Date("2026-03-04T05:06:07.000Z"), 3),
   },
   {
     key: "makeDrizzleRetentionRepository.deleteExpiredOtps",
     run: async (sql: any) =>
-      (m119 as any)
+      (m123 as any)
         .makeDrizzleRetentionRepository(sql)
         .deleteExpiredOtps(new Date("2026-03-04T05:06:07.000Z"), 3),
   },
   {
     key: "makeDrizzleRetentionRepository.deleteExpiredSessions",
     run: async (sql: any) =>
-      (m119 as any)
+      (m123 as any)
         .makeDrizzleRetentionRepository(sql)
         .deleteExpiredSessions(new Date("2026-03-04T05:06:07.000Z"), 3),
   },
   {
     key: "makeDrizzleRetentionRepository.deleteOldIdempotencyKeys",
     run: async (sql: any) =>
-      (m119 as any)
+      (m123 as any)
         .makeDrizzleRetentionRepository(sql)
         .deleteOldIdempotencyKeys(new Date("2026-03-04T05:06:07.000Z"), 3),
   },
   {
     key: "makeDrizzleRetentionRepository.deleteOldNotifications",
     run: async (sql: any) =>
-      (m119 as any)
+      (m123 as any)
         .makeDrizzleRetentionRepository(sql)
         .deleteOldNotifications(new Date("2026-03-04T05:06:07.000Z"), 3),
   },
   {
     key: "makeDrizzleRetentionRepository.deleteStaleGeocodeCache",
     run: async (sql: any) =>
-      (m119 as any)
+      (m123 as any)
         .makeDrizzleRetentionRepository(sql)
         .deleteStaleGeocodeCache(new Date("2026-03-04T05:06:07.000Z"), 3),
   },
   {
     key: "makeDrizzleRoomMessagesRepository.findMessage",
     run: async (sql: any) =>
-      (m120 as any)
+      (m124 as any)
         .makeDrizzleRoomMessagesRepository(sql, {
           table: "chat_messages",
           alias: "dm",
@@ -10695,7 +10992,7 @@ export const cases: TranscriptCase[] = [
   {
     key: "makeDrizzleRoomMessagesRepository.history",
     run: async (sql: any) =>
-      (m120 as any)
+      (m124 as any)
         .makeDrizzleRoomMessagesRepository(sql, {
           table: "chat_messages",
           alias: "dm",
@@ -10792,7 +11089,7 @@ export const cases: TranscriptCase[] = [
   {
     key: "makeDrizzleRoomMessagesRepository.historyAround",
     run: async (sql: any) =>
-      (m120 as any)
+      (m124 as any)
         .makeDrizzleRoomMessagesRepository(sql, {
           table: "chat_messages",
           alias: "dm",
@@ -10889,7 +11186,7 @@ export const cases: TranscriptCase[] = [
   {
     key: "makeDrizzleRoomMessagesRepository.listPins",
     run: async (sql: any) =>
-      (m120 as any)
+      (m124 as any)
         .makeDrizzleRoomMessagesRepository(sql, {
           table: "chat_messages",
           alias: "dm",
@@ -10986,7 +11283,7 @@ export const cases: TranscriptCase[] = [
   {
     key: "makeDrizzleRoomMessagesRepository.setPinned",
     run: async (sql: any) =>
-      (m120 as any)
+      (m124 as any)
         .makeDrizzleRoomMessagesRepository(sql, {
           table: "chat_messages",
           alias: "dm",
@@ -11083,117 +11380,117 @@ export const cases: TranscriptCase[] = [
   {
     key: "explainSuggestFollows",
     run: async (sql: any) =>
-      (m121 as any).explainSuggestFollows(sql, { viewerId: "viewerId-1", limit: 3 }),
+      (m125 as any).explainSuggestFollows(sql, { viewerId: "viewerId-1", limit: 3 }),
   },
   {
     key: "makeDrizzleSocialRepository.addFollow",
     run: async (sql: any) =>
-      (m121 as any)
+      (m125 as any)
         .makeDrizzleSocialRepository(sql, () => Promise.resolve("presignAvatarResult-1"))
         .addFollow("followerId-1", "followeeId-1"),
   },
   {
     key: "makeDrizzleSocialRepository.findPersonByHandle",
     run: async (sql: any) =>
-      (m121 as any)
+      (m125 as any)
         .makeDrizzleSocialRepository(sql, () => Promise.resolve("presignAvatarResult-1"))
         .findPersonByHandle("handle-1"),
   },
   {
     key: "makeDrizzleSocialRepository.findPersonById",
     run: async (sql: any) =>
-      (m121 as any)
+      (m125 as any)
         .makeDrizzleSocialRepository(sql, () => Promise.resolve("presignAvatarResult-1"))
         .findPersonById("id-1"),
   },
   {
     key: "makeDrizzleSocialRepository.followerCount",
     run: async (sql: any) =>
-      (m121 as any)
+      (m125 as any)
         .makeDrizzleSocialRepository(sql, () => Promise.resolve("presignAvatarResult-1"))
         .followerCount("userId-1"),
   },
   {
     key: "makeDrizzleSocialRepository.isFollowing",
     run: async (sql: any) =>
-      (m121 as any)
+      (m125 as any)
         .makeDrizzleSocialRepository(sql, () => Promise.resolve("presignAvatarResult-1"))
         .isFollowing("followerId-1", "followeeId-1"),
   },
   {
     key: "makeDrizzleSocialRepository.listFollowers",
     run: async (sql: any) =>
-      (m121 as any)
+      (m125 as any)
         .makeDrizzleSocialRepository(sql, () => Promise.resolve("presignAvatarResult-1"))
         .listFollowers({ id: "id-1", viewerId: "viewerId-1", cursor: "cursor-1", limit: 3 }),
   },
   {
     key: "makeDrizzleSocialRepository.listFollowing",
     run: async (sql: any) =>
-      (m121 as any)
+      (m125 as any)
         .makeDrizzleSocialRepository(sql, () => Promise.resolve("presignAvatarResult-1"))
         .listFollowing({ id: "id-1", viewerId: "viewerId-1", cursor: "cursor-1", limit: 3 }),
   },
   {
     key: "makeDrizzleSocialRepository.listPeople",
     run: async (sql: any) =>
-      (m121 as any)
+      (m125 as any)
         .makeDrizzleSocialRepository(sql, () => Promise.resolve("presignAvatarResult-1"))
         .listPeople({ viewerId: "viewerId-1", q: "q-1", cursor: "cursor-1", limit: 3 }),
   },
   {
     key: "makeDrizzleSocialRepository.pastEventsPageFor",
     run: async (sql: any) =>
-      (m121 as any)
+      (m125 as any)
         .makeDrizzleSocialRepository(sql, () => Promise.resolve("presignAvatarResult-1"))
         .pastEventsPageFor("userId-1", { cursor: "cursor-1", limit: 3 }),
   },
   {
     key: "makeDrizzleSocialRepository.removeFollow",
     run: async (sql: any) =>
-      (m121 as any)
+      (m125 as any)
         .makeDrizzleSocialRepository(sql, () => Promise.resolve("presignAvatarResult-1"))
         .removeFollow("followerId-1", "followeeId-1"),
   },
   {
     key: "makeDrizzleSocialRepository.statsFor",
     run: async (sql: any) =>
-      (m121 as any)
+      (m125 as any)
         .makeDrizzleSocialRepository(sql, () => Promise.resolve("presignAvatarResult-1"))
         .statsFor("userId-1"),
   },
   {
     key: "makeDrizzleSocialRepository.suggestFollows",
     run: async (sql: any) =>
-      (m121 as any)
+      (m125 as any)
         .makeDrizzleSocialRepository(sql, () => Promise.resolve("presignAvatarResult-1"))
         .suggestFollows({ viewerId: "viewerId-1", limit: 3 }),
   },
   {
     key: "makeDrizzleSocialRepository.upcomingEventsFor",
     run: async (sql: any) =>
-      (m121 as any)
+      (m125 as any)
         .makeDrizzleSocialRepository(sql, () => Promise.resolve("presignAvatarResult-1"))
         .upcomingEventsFor("userId-1", { includeAttending: true, limit: 3 }),
   },
   {
     key: "makeDrizzleThreadsRepository.countUnread",
     run: async (sql: any) =>
-      (m122 as any)
+      (m126 as any)
         .makeDrizzleThreadsRepository(sql)
         .countUnread("cleanupId-1", "userId-1", new Date("2026-03-04T05:06:07.000Z")),
   },
   {
     key: "makeDrizzleThreadsRepository.listThreadsFor",
     run: async (sql: any) =>
-      (m122 as any)
+      (m126 as any)
         .makeDrizzleThreadsRepository(sql)
         .listThreadsFor("userId-1", 3, { at: new Date("2026-03-04T05:06:07.000Z"), id: "id-1" }),
   },
   {
     key: "makeDrizzleReportThreadsSource.listReportThreadsFor",
     run: async (sql: any) =>
-      (m122 as any).makeDrizzleReportThreadsSource(sql).listReportThreadsFor("userId-1", 3, {
+      (m126 as any).makeDrizzleReportThreadsSource(sql).listReportThreadsFor("userId-1", 3, {
         at: new Date("2026-03-04T05:06:07.000Z"),
         id: "id-1",
       }),
@@ -11201,54 +11498,54 @@ export const cases: TranscriptCase[] = [
   {
     key: "makeDrizzleGroupThreadsSource.listGroupThreadsFor",
     run: async (sql: any) =>
-      (m122 as any).makeDrizzleGroupThreadsSource(sql).listGroupThreadsFor("userId-1", 3, {
+      (m126 as any).makeDrizzleGroupThreadsSource(sql).listGroupThreadsFor("userId-1", 3, {
         at: new Date("2026-03-04T05:06:07.000Z"),
         id: "id-1",
       }),
   },
   {
     key: "userAvatarColumns",
-    run: async (sql: any) => (m123 as any).userAvatarColumns(sql, "userAlias-1", "m", "prefix-1"),
+    run: async (sql: any) => (m127 as any).userAvatarColumns(sql, "userAlias-1", "m", "prefix-1"),
   },
   {
     key: "makeDrizzleUserSearchRepository.searchByHandlePrefix",
     run: async (sql: any) =>
-      (m124 as any)
+      (m128 as any)
         .makeDrizzleUserSearchRepository(sql, () => Promise.resolve("presignAvatarResult-1"))
         .searchByHandlePrefix("q-1", "viewerId-1", 3),
   },
   {
     key: "makeDrizzleUserSearchRepository.searchMentionable",
     run: async (sql: any) =>
-      (m124 as any)
+      (m128 as any)
         .makeDrizzleUserSearchRepository(sql, () => Promise.resolve("presignAvatarResult-1"))
         .searchMentionable("q-1", "viewerId-1", 3),
   },
   {
     key: "makeDrizzleUsersRepository.findRoleAndEmail",
     run: async (sql: any) =>
-      (m125 as any).makeDrizzleUsersRepository(sql).findRoleAndEmail("userId-1"),
+      (m129 as any).makeDrizzleUsersRepository(sql).findRoleAndEmail("userId-1"),
   },
   {
     key: "lockEventCredits",
-    run: async (sql: any) => (m126 as any).lockEventCredits(sql, "cleanupId-1", ["userId-1"]),
+    run: async (sql: any) => (m130 as any).lockEventCredits(sql, "cleanupId-1", ["userId-1"]),
   },
   {
     key: "lockUserCredits",
-    run: async (sql: any) => (m126 as any).lockUserCredits(sql, ["userId-1"]),
+    run: async (sql: any) => (m130 as any).lockUserCredits(sql, ["userId-1"]),
   },
   {
     key: "sameDayEventHours",
-    run: async (sql: any) => (m126 as any).sameDayEventHours(sql, "cleanupId-1", ["userId-1"]),
+    run: async (sql: any) => (m130 as any).sameDayEventHours(sql, "cleanupId-1", ["userId-1"]),
   },
   {
     key: "hoursHeldOnServiceDate",
-    run: async (sql: any) => (m126 as any).hoursHeldOnServiceDate(sql, "userId-1", "serviceDate-1"),
+    run: async (sql: any) => (m130 as any).hoursHeldOnServiceDate(sql, "userId-1", "serviceDate-1"),
   },
   {
     key: "writeEventCredits",
     run: async (sql: any) =>
-      (m126 as any).writeEventCredits(sql, {
+      (m130 as any).writeEventCredits(sql, {
         cleanupId: "cleanupId-1",
         geoid: "geoid-1",
         actorId: "actorId-1",
@@ -11261,7 +11558,7 @@ export const cases: TranscriptCase[] = [
   {
     key: "makeDrizzleVolunteerHoursRepository.creditEventAsOperator",
     run: async (sql: any) =>
-      (m127 as any)
+      (m131 as any)
         .makeDrizzleVolunteerHoursRepository(sql, () => Promise.resolve("presignAvatarResult-1"))
         .creditEventAsOperator({
           operatorId: "operatorId-1",
@@ -11276,7 +11573,7 @@ export const cases: TranscriptCase[] = [
   {
     key: "makeDrizzleVolunteerHoursRepository.creditManual",
     run: async (sql: any) =>
-      (m127 as any)
+      (m131 as any)
         .makeDrizzleVolunteerHoursRepository(sql, () => Promise.resolve("presignAvatarResult-1"))
         .creditManual({
           operatorId: "operatorId-1",
@@ -11290,7 +11587,7 @@ export const cases: TranscriptCase[] = [
   {
     key: "makeDrizzleVolunteerHoursRepository.entriesForCertificate",
     run: async (sql: any) =>
-      (m127 as any)
+      (m131 as any)
         .makeDrizzleVolunteerHoursRepository(sql, () => Promise.resolve("presignAvatarResult-1"))
         .entriesForCertificate({
           userId: "userId-1",
@@ -11303,21 +11600,21 @@ export const cases: TranscriptCase[] = [
   {
     key: "makeDrizzleVolunteerHoursRepository.hoursVisibilityFor",
     run: async (sql: any) =>
-      (m127 as any)
+      (m131 as any)
         .makeDrizzleVolunteerHoursRepository(sql, () => Promise.resolve("presignAvatarResult-1"))
         .hoursVisibilityFor("userId-1"),
   },
   {
     key: "makeDrizzleVolunteerHoursRepository.leaderboard",
     run: async (sql: any) =>
-      (m127 as any)
+      (m131 as any)
         .makeDrizzleVolunteerHoursRepository(sql, () => Promise.resolve("presignAvatarResult-1"))
         .leaderboard("geoid-1", 3, 3, "viewerId-1", true),
   },
   {
     key: "makeDrizzleVolunteerHoursRepository.listEntries",
     run: async (sql: any) =>
-      (m127 as any)
+      (m131 as any)
         .makeDrizzleVolunteerHoursRepository(sql, () => Promise.resolve("presignAvatarResult-1"))
         .listEntries({
           userId: "userId-1",
@@ -11329,14 +11626,14 @@ export const cases: TranscriptCase[] = [
   {
     key: "makeDrizzleVolunteerHoursRepository.listEventHours",
     run: async (sql: any) =>
-      (m127 as any)
+      (m131 as any)
         .makeDrizzleVolunteerHoursRepository(sql, () => Promise.resolve("presignAvatarResult-1"))
         .listEventHours("cleanupId-1", "viewerId-1"),
   },
   {
     key: "makeDrizzleVolunteerHoursRepository.listOperatorLedger",
     run: async (sql: any) =>
-      (m127 as any)
+      (m131 as any)
         .makeDrizzleVolunteerHoursRepository(sql, () => Promise.resolve("presignAvatarResult-1"))
         .listOperatorLedger({
           userId: "userId-1",
@@ -11347,7 +11644,7 @@ export const cases: TranscriptCase[] = [
   {
     key: "makeDrizzleVolunteerHoursRepository.logEventHours",
     run: async (sql: any) =>
-      (m127 as any)
+      (m131 as any)
         .makeDrizzleVolunteerHoursRepository(sql, () => Promise.resolve("presignAvatarResult-1"))
         .logEventHours({
           actorId: "actorId-1",
@@ -11361,28 +11658,28 @@ export const cases: TranscriptCase[] = [
   {
     key: "makeDrizzleVolunteerHoursRepository.operatorLedgerTotals",
     run: async (sql: any) =>
-      (m127 as any)
+      (m131 as any)
         .makeDrizzleVolunteerHoursRepository(sql, () => Promise.resolve("presignAvatarResult-1"))
         .operatorLedgerTotals("userId-1"),
   },
   {
     key: "makeDrizzleVolunteerHoursRepository.totalHoursFor",
     run: async (sql: any) =>
-      (m127 as any)
+      (m131 as any)
         .makeDrizzleVolunteerHoursRepository(sql, () => Promise.resolve("presignAvatarResult-1"))
         .totalHoursFor("userId-1"),
   },
   {
     key: "makeDrizzleVolunteerHoursRepository.totalsFor",
     run: async (sql: any) =>
-      (m127 as any)
+      (m131 as any)
         .makeDrizzleVolunteerHoursRepository(sql, () => Promise.resolve("presignAvatarResult-1"))
         .totalsFor("userId-1"),
   },
   {
     key: "makeDrizzleVolunteerHoursRepository.voidEntry",
     run: async (sql: any) =>
-      (m127 as any)
+      (m131 as any)
         .makeDrizzleVolunteerHoursRepository(sql, () => Promise.resolve("presignAvatarResult-1"))
         .voidEntry({
           operatorId: "operatorId-1",

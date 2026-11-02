@@ -20,6 +20,9 @@ export const de: Partial<Record<MessageKey, string>> = {
   "notification.report_mention.title": "Du wurdest erwähnt",
   "notification.report_mention.body": "Jemand hat dich in einer Berichtsdiskussion erwähnt.",
 
+  "notification.report_filed.title": "Dein Bericht wurde an {{jurisdiction}} gesendet",
+  "notification.report_filed.title_city": "Dein Bericht wurde an die Stadt gesendet",
+
   "notification.post.like.title": "Neues Like",
   "notification.post.like.body": "{{name}} gefällt dein Beitrag.",
   "notification.post.repost.title": "Neuer Repost",

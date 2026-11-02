@@ -10,6 +10,7 @@ import { PgUserStore } from "../../src/auth/pg-stores.js"
 import { notifyHoursCredited } from "../../src/services/volunteer-hours-service.js"
 import { categoryForType } from "../../src/services/notification-categories.js"
 import { captureNotifications, categoryOfInput } from "../helpers/notification-capture.js"
+import { cityUpdateWorld, manualFilingWorld } from "../helpers/filings/filing-notices.js"
 
 const ERASED = "77777777-7777-4777-8777-777777777777"
 const COHOST = "88888888-8888-4888-8888-888888888888"
@@ -77,6 +78,18 @@ describe("per-path category", () => {
     expect(n.inputs.map((c) => [c.input.type, categoryOfInput(c.input)])).toEqual([
       ["cleanup_role", "eventTeam"],
       ["hours_logged", "eventTeam"],
+    ])
+  })
+
+  it("T15: a filing recorded by hand and a city update are Report updates", async () => {
+    const n = captureNotifications()
+    const manual = await manualFilingWorld(n)
+    await manual.recordManual()
+    const city = await cityUpdateWorld(n)
+    await city.send("closed")
+    expect(n.inputs.map((c) => [c.input.type, categoryOfInput(c.input)])).toEqual([
+      ["report_update", "reportUpdates"],
+      ["report_update", "reportUpdates"],
     ])
   })
 

@@ -61,6 +61,10 @@ export interface Env extends CommsEnv, RegistrationEnv {
   MAIL_REPLY_DOMAIN: string
   OUTREACH_THROTTLE_DAYS: number
   OUTREACH_DIGEST_CRON: string
+  /** Portal filings run by themselves only where this is on (D10); email filings always send. */
+  FILING_AUTOMATIC_ENABLED: boolean
+  /** The filings inbox the city-mail correlator reads; empty turns it off. */
+  FILING_INBOX_ADDRESS: string
   INBOUND_SWEEP_CRON: string
   GUEST_RETENTION_CRON: string
 

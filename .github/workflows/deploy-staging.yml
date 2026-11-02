@@ -3,9 +3,10 @@ name: Deploy (staging)
 # Deploys the civfix backend to the STAGING VPS (its address is the STAGING_DEPLOY_HOST repository
 # secret). TWO jobs, in order:
 #
-#   1. `images`  builds the api + media-worker images for this commit and pushes them to GHCR
-#                (build-images.yml). This is the ONLY build of this release: production is later
-#                promoted onto these exact digests rather than rebuilding.
+#   1. `images`  builds the api, media-worker and city-filer images for this commit and pushes them to
+#                GHCR (build-images.yml). This is the ONLY build of this release: production is later
+#                promoted onto these exact digests rather than rebuilding. Staging never runs the
+#                city-filer; its smoke test failing here still stops this deploy.
 #   2. `deploy`  SSHes the box, whose forced command runs /opt/civfix/infra/ops/deploy.sh. That script
 #                git-pulls the infra repo (single `main` branch, the same tree prod runs; the box's env
 #                marker at /etc/civfix/env selects env/staging.sh and secrets/staging/) + this backend

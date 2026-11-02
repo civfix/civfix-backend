@@ -66,6 +66,7 @@ function mailer(opts: { fail?: boolean; thread?: MailThreadRecord | null } = {})
     sendReportToJurisdiction(_input: SendReportInput) {
       return Promise.resolve({ thread: stubThread(), messageId: "<stub@civfix.org>" })
     },
+    redeliverReportPacket: () => Promise.reject(new Error("unused")),
     sendEventToJurisdiction: () =>
       Promise.resolve({ thread: stubThread(), messageId: "<stub@civfix.org>" }),
     sendToCity: () => Promise.resolve(stubThread()),

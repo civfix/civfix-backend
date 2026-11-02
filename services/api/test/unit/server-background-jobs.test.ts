@@ -1,4 +1,5 @@
 import type { FastifyInstance } from "fastify"
+import { FakeJobs } from "@civfix/seams"
 import { beforeEach, describe, expect, it, vi } from "vitest"
 
 const stubRegistration = vi.hoisted(
@@ -11,7 +12,6 @@ const stubRegistration = vi.hoisted(
 vi.mock("../../src/services/admin/outreach-jobs.js", stubRegistration("registerOutreachJobs"))
 vi.mock("../../src/services/admin/inbound-jobs.js", stubRegistration("registerInboundJobs"))
 vi.mock("../../src/services/admin/discovery-jobs.js", stubRegistration("registerDiscoveryJobs"))
-vi.mock("../../src/services/admin/autoforward-jobs.js", stubRegistration("registerAutoForwardJobs"))
 vi.mock("../../src/services/data-export-jobs.js", stubRegistration("registerDataExportJobs"))
 vi.mock("../../src/services/chat-fanout-jobs.js", stubRegistration("registerChatRoomFanoutJob"))
 vi.mock("../../src/services/cleanup-jobs.js", stubRegistration("registerCleanupCancelFanoutJob"))
@@ -22,15 +22,26 @@ vi.mock(
 )
 vi.mock("../../src/services/host/comms-jobs.js", stubRegistration("registerCommsJobs"))
 
+const runSweepPass = vi.hoisted(() => vi.fn((_opts?: { ignoreAge?: boolean }) => Promise.resolve()))
+const filingEmail = vi.hoisted(() => vi.fn((_job: unknown) => Promise.resolve()))
+vi.mock("../../src/services/filings/filing-wiring.js", () => ({
+  makeContainerFilingService: () => ({ runSweepPass }),
+  makeContainerFilingEmailHandler: () => filingEmail,
+}))
+
 const { startBackgroundJobs } = await import("../../src/server.js")
 const { registerOutreachJobs } = await import("../../src/services/admin/outreach-jobs.js")
-const { registerAutoForwardJobs } = await import("../../src/services/admin/autoforward-jobs.js")
 const { loadEnv } = await import("../../src/env.js")
 
 function fakeApp() {
   const log = { info: vi.fn(), warn: vi.fn(), error: vi.fn() }
   const container = {
-    jobs: { start: vi.fn(() => Promise.resolve()), enqueue: vi.fn(() => Promise.resolve()) },
+    jobs: {
+      start: vi.fn(() => Promise.resolve()),
+      enqueue: vi.fn(() => Promise.resolve()),
+      schedule: vi.fn(() => Promise.resolve()),
+      work: vi.fn(() => Promise.resolve()),
+    },
   }
   return { app: { container, log } as unknown as FastifyInstance, container, log }
 }
@@ -49,23 +60,27 @@ describe("startBackgroundJobs", () => {
     expect(registerOutreachJobs).toHaveBeenCalledWith(container, log)
   })
 
-  it.each([
-    { label: "unset", source: {} },
-    { label: "1", source: { REPORT_AUTOFORWARD_ENABLED: "1" } },
-  ])(
-    "T11: always registers the auto-forward worker (REPORT_AUTOFORWARD_ENABLED $label)",
-    async ({ source }) => {
-      const { app, container, log } = fakeApp()
-      const env = loadEnv({
-        NODE_ENV: "test",
-        DATABASE_URL: "postgres://u:p@localhost/db",
-        ...source,
-      })
+  it("C35: schedules filing.sweep every 10 minutes and works it with one sweep pass; filing.email is worked by its handler, filing.result has a worker and no other filing queue does", async () => {
+    const jobs = Object.assign(new FakeJobs(), { start: vi.fn(() => Promise.resolve()) })
+    const log = { info: vi.fn(), warn: vi.fn(), error: vi.fn() }
+    const app = { container: { jobs }, log } as unknown as FastifyInstance
+    const env = loadEnv({ NODE_ENV: "test", DATABASE_URL: "postgres://u:p@localhost/db" })
 
-      await startBackgroundJobs(app, env)
+    await startBackgroundJobs(app, env)
 
-      expect(registerAutoForwardJobs).toHaveBeenCalledTimes(1)
-      expect(registerAutoForwardJobs).toHaveBeenCalledWith(container, log)
-    },
-  )
+    expect(jobs.scheduled).toContainEqual({ name: "filing.sweep", cron: "*/10 * * * *" })
+    await jobs.enqueue("filing.sweep", {})
+    expect(jobs.jobsFor("filing.sweep")[0]?.state).toBe("completed")
+    expect(runSweepPass).toHaveBeenCalledTimes(1)
+    expect(runSweepPass).toHaveBeenCalledWith()
+
+    await jobs.enqueue("filing.email", { filingId: "f-1" })
+    expect(jobs.jobsFor("filing.email")[0]?.state).toBe("completed")
+    expect(filingEmail).toHaveBeenCalledWith(expect.objectContaining({ data: { filingId: "f-1" } }))
+
+    for (const name of ["filing.run", "filing.classify", "filing.city_update"]) {
+      await jobs.enqueue(name, {})
+      expect(jobs.jobsFor(name)[0]?.state, name).toBe("created")
+    }
+  })
 })

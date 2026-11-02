@@ -16,6 +16,7 @@ import { mapWithLimit } from "../../lib/concurrency.js"
 import { PRESIGN_CONCURRENCY, type PresignMedia } from "../media-presign.js"
 import type { ReportChatSystemEmitter } from "../report-timeline-event.js"
 import type { MessageUpdateAnnouncer } from "./admin-report-chat-service.js"
+import type { FilingService } from "../filings/filing-service.js"
 import type {
   CreateModerationItemInput,
   ListModerationArgs,
@@ -66,6 +67,8 @@ export interface ModerationServiceDeps {
   reportChatEmitter?: ReportChatSystemEmitter
   sessions?: ModerationSessionControl
   announceMessageUpdate?: MessageUpdateAnnouncer
+  /** A takedown cancels the report's open filing (D1); a hold cancels nothing. */
+  filings?: Pick<FilingService, "cancelForReport">
 }
 
 export function isMessageSubject(subjectType: ModerationSubjectType): boolean {
@@ -188,6 +191,9 @@ export function makeModerationService(deps: ModerationServiceDeps): ModerationSe
     ): Promise<void> {
       const result = await deps.repo.remove(id, input)
       if (!result) throw AppError.notFound(MODERATION_ITEM_NOT_FOUND)
+      if (result.reportTimelineStatus === "rejected") {
+        await deps.filings?.cancelForReport(result.subjectId)
+      }
       if (isMessageSubject(result.subjectType)) {
         await deps.announceMessageUpdate?.(result.subjectId)
       }
