@@ -152,6 +152,8 @@ describe.skipIf(!pg)("0199 notification settings migration (integration)", () =>
     const constraints = await h.sql<{ contype: string; def: string }[]>`
       SELECT contype, pg_get_constraintdef(oid) AS def
       FROM pg_constraint WHERE conrelid = to_regclass('notification_settings')
+        -- Postgres 18 also records each NOT NULL here; information_schema's is_nullable covers those.
+        AND contype <> 'n'
       ORDER BY contype, def
     `
     expect([...constraints]).toEqual([
