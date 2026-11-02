@@ -29,11 +29,9 @@
 # a #178 smoke run. @playwright/mcp drives the Chromium the kit's playwright-core installed: the build
 # fails unless both use the same playwright-core, so there is one browser in /ms-playwright.
 
-ARG UV_VERSION=0.13.5
+FROM ghcr.io/astral-sh/uv:0.13.5@sha256:32a7bb39b496babbd997b0a39a4d66c126bdaf5661b302bf6f06abda8deca6ff AS uv
 
-FROM ghcr.io/astral-sh/uv:${UV_VERSION} AS uv
-
-FROM node:22-bookworm-slim AS base
+FROM node:22-bookworm-slim@sha256:de170b39439eb0e5a3444ad7d60b015614a381e10fecae2e30ec9e735122f38d AS base
 ENV PNPM_HOME="/pnpm" \
     PATH="/pnpm:$PATH" \
     CI=true

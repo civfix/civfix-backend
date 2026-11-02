@@ -29,9 +29,9 @@ updates:
       - dependency-name: "@civfix/*"
       - dependency-name: "*"
         update-types: ["version-update:semver-major"]
-  # One entry for both Dockerfiles: they share the node base digest, which has to move in one PR.
+  # One entry for all three Dockerfiles: they share the node base digest, which has to move in one PR.
   - package-ecosystem: docker
-    directories: ["/services/api", "/services/media-worker"]
+    directories: ["/services/api", "/services/media-worker", "/services/city-filer"]
     schedule: { interval: weekly, day: monday }
     cooldown: { default-days: 3 }
     groups:

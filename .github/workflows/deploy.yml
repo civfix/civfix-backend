@@ -179,7 +179,7 @@ jobs:
             echo "| --- | --- |"
           } >> "$GITHUB_STEP_SUMMARY"
 
-          for image in api media-worker; do
+          for image in api media-worker city-filer; do
             src="ghcr.io/civfix/$image:sha-$SHA"
             if ! digest="$(docker buildx imagetools inspect --format '{{.Manifest.Digest}}' "$src" 2>/dev/null)"; then
               echo "::error::no published image $src." >&2

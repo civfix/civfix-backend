@@ -91,7 +91,7 @@ script with its own dry run, then runs it live once.
 
 Pinned in the Dockerfile: Claude Code (`CLAUDE_CODE_VERSION`) 2.1.310 and `@playwright/mcp`
 (`PLAYWRIGHT_MCP_VERSION`) 0.0.83 with `npm install -g`, the build checking that its `playwright-core`
-is the kit's; uv (`UV_VERSION`) 0.13.5; claude-swap (`CLAUDE_SWAP_VERSION`) 0.28.0 as a uv tool on
+is the kit's; uv 0.13.5 (its `FROM` line, by digest); claude-swap (`CLAUDE_SWAP_VERSION`) 0.28.0 as a uv tool on
 Python 3.12 under `/opt/uv`. A bump is an edit there plus a run of #178's smoke.
 
 `/etc/claude-code/managed-settings.json` turns off the auto-updater, telemetry, error reporting and

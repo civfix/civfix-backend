@@ -171,3 +171,55 @@ jobs:
             exit "$status"
           fi
           grep -q "sandbox preflight ok" preflight.log
+
+  city-filer-image:
+    name: city-filer image smoke
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    # Proves the two-user contract on every build instead of at deploy time, under prod's flags: the
+    # entrypoint drops root -> node keeping ambient CAP_SETUID/CAP_SETGID, filer-shell empties the
+    # environment (the canary DATABASE_URL must not reach it), and Chromium, the Claude Code CLI and cswap
+    # run as filer. None of this is reachable from a unit test.
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Build the city-filer image
+        run: docker build -f services/city-filer/Dockerfile -t civfix/city-filer:ci .
+
+      # The same gate build-images.yml holds the release image to.
+      - name: Set up Trivy
+        uses: ./.github/actions/setup-trivy
+
+      - name: Scan the city-filer image (fixable HIGH and CRITICAL)
+        run: trivy image civfix/city-filer:ci
+
+      - name: Preflight under the production flags
+        env:
+          IMAGE: civfix/city-filer:ci
+        run: |
+          set -uo pipefail
+          # tee, not command substitution: under `set -e` a failing substitution aborts the step before
+          # the echo, hiding the one line that says WHY preflight refused. Prod mounts named volumes at
+          # /workspace and /home/filer; anonymous ones get the image's layout and ownership the same way.
+          # The flags are civfix-infra's prod compose service, and this same command is in build-images.yml.
+          docker run --rm \
+            --cap-drop ALL \
+            --cap-add SETUID \
+            --cap-add SETGID \
+            --security-opt no-new-privileges:true \
+            --read-only \
+            --tmpfs /tmp:mode=1777,size=512m,noexec,nosuid,nodev \
+            --shm-size 1g \
+            -v /workspace \
+            -v /home/filer \
+            -e NODE_ENV=production \
+            -e DATABASE_URL=postgres://preflight-canary@127.0.0.1/none \
+            "$IMAGE" node dist/preflight.js 2>&1 | tee preflight.log
+          status=${PIPESTATUS[0]}
+          if [ "$status" -ne 0 ]; then
+            echo "city-filer preflight exited $status"
+            exit "$status"
+          fi
