@@ -1,5 +1,5 @@
 /**
- * The outreach digest and auto-forward read their runtime flag at the moment they act (#252), through the
+ * The outreach digest and canForwardToCity read their runtime flag at the moment they act (#252), through the
  * real Fastify app and job handlers on PostGIS. The container's flag service is swapped per case for one
  * over an in-memory store (built once, then flipped); everything else is the container's own wiring, so
  * every case runs the SQL production runs. The pure wiring cases are in test/unit/runtime-flag-wiring.test.ts.
@@ -17,9 +17,8 @@ import { InMemoryCacheClient } from "../../src/auth/cache.js"
 import { PgAuthStores } from "../../src/auth/pg-stores.js"
 import { makeAuthServices, type AuthServices } from "../../src/auth/auth-services.js"
 import { registerOutreachJobs } from "../../src/services/admin/outreach-jobs.js"
-import { registerAutoForwardJobs } from "../../src/services/admin/autoforward-jobs.js"
 import type { RuntimeFlagService } from "../../src/services/admin/runtime-flag-service.js"
-import { OUTREACH_DIGEST_JOB, REPORT_AUTOFORWARD_JOB } from "../../src/lib/queue-names.js"
+import { OUTREACH_DIGEST_JOB } from "../../src/lib/queue-names.js"
 import { LA_CITY, PROBE_INSIDE_CITY } from "../../src/db/seed-fixtures.js"
 import {
   ENV_SWITCH_VALUES,
@@ -71,7 +70,6 @@ describe.skipIf(!pg)("runtime flags read at the moment of the check (integration
     // The handlers get their own jobs so the server's enqueues are recorded, not run.
     const workers: Container = { ...container, jobs: workerJobs }
     await registerOutreachJobs(workers)
-    await registerAutoForwardJobs(workers)
   })
 
   afterAll(async () => {
@@ -149,20 +147,8 @@ describe.skipIf(!pg)("runtime flags read at the moment of the check (integration
     `
   }
 
-  async function routedAudits(reportId: string): Promise<number> {
-    const [row] = await h.sql<{ n: number }[]>`
-      SELECT count(*)::int AS n FROM audit_log
-      WHERE action = 'report.routed' AND target = ${`report:${reportId}`}
-    `
-    return row!.n
-  }
-
   function runDigest(data: Record<string, unknown>): Promise<void> {
     return workerJobs.handler(OUTREACH_DIGEST_JOB)({ id: randomUUID(), data })
-  }
-
-  function runAutoForward(reportId: string): Promise<void> {
-    return workerJobs.handler(REPORT_AUTOFORWARD_JOB)({ id: randomUUID(), data: { reportId } })
   }
 
   async function canForwardToCity(reportId: string, as?: Resident): Promise<unknown> {
@@ -226,24 +212,6 @@ describe.skipIf(!pg)("runtime flags read at the moment of the check (integration
     expect(await digestAudits()).toEqual([])
   })
 
-  it("T12: each auto-forward job reads report_autoforward_enabled when it runs", async () => {
-    const [first, second, third] = [await report(), await report(), await report()]
-
-    await expect(runAutoForward(first)).resolves.toBeUndefined()
-    expect(citySent()).toBe(0)
-    expect(await routedAudits(first)).toBe(0)
-
-    await flags.set("report_autoforward_enabled", true, OPERATOR_ID)
-    await runAutoForward(second)
-    expect(mailer.sent.map((m) => m.to)).toEqual([CONTACT])
-    expect(await routedAudits(second)).toBe(1)
-
-    await flags.set("report_autoforward_enabled", false, OPERATOR_ID)
-    await expect(runAutoForward(third)).resolves.toBeUndefined()
-    expect(citySent()).toBe(1)
-    expect(await routedAudits(third)).toBe(0)
-  })
-
   it("T14: canForwardToCity follows report_autoforward_enabled set and cleared", async () => {
     const id = await report()
 
@@ -282,17 +250,14 @@ describe.skipIf(!pg)("runtime flags read at the moment of the check (integration
     )
 
     it.each(ENV_SWITCH_VALUES)(
-      "REPORT_AUTOFORWARD_ENABLED=$raw: submission, canForwardToCity and the job forward only when $on",
+      "REPORT_AUTOFORWARD_ENABLED=$raw: canForwardToCity is set only when $on, and submission sends nothing",
       async ({ raw, on }) => {
         flags = flagHarness(envWith("REPORT_AUTOFORWARD_ENABLED", raw)).flags
         const reporter = await resident()
 
         const id = await createReport(reporter)
-        expect(serverJobs.jobsFor(REPORT_AUTOFORWARD_JOB)).toHaveLength(on ? 1 : 0)
         expect(await canForwardToCity(id, reporter)).toBe(on)
-
-        await runAutoForward(id)
-        expect(citySent()).toBe(on ? 1 : 0)
+        expect(citySent()).toBe(0)
       },
     )
   })

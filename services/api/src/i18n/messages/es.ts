@@ -19,6 +19,9 @@ export const es: Partial<Record<MessageKey, string>> = {
   "notification.report_mention.title": "Te mencionaron",
   "notification.report_mention.body": "Alguien te mencionó en una discusión de reporte.",
 
+  "notification.report_filed.title": "Tu reporte fue enviado a {{jurisdiction}}",
+  "notification.report_filed.title_city": "Tu reporte fue enviado a la ciudad",
+
   "notification.post.like.title": "Nuevo me gusta",
   "notification.post.like.body": "A {{name}} le gustó tu publicación.",
   "notification.post.repost.title": "Nueva republicación",
@@ -55,7 +58,7 @@ export const es: Partial<Record<MessageKey, string>> = {
   "role.coordinator": "coordinador",
   "role.staff": "personal de apoyo",
 
-  "notification.cleanup_cancelled.title": "Evento cancelado",
+  "notification.cleanup_cancelled.title": "{{title}} fue cancelado",
   "notification.cleanup_cancelled.body": "Este evento ha sido cancelado por el anfitrión.",
   "notification.cleanup_cancelled.body_reason":
     "Este evento ha sido cancelado por el anfitrión. Motivo: {{reason}}",
@@ -78,8 +81,24 @@ export const es: Partial<Record<MessageKey, string>> = {
     "Caduca en {{minutes}} minutos. Si no lo solicitaste, puedes ignorar este correo.",
   "email.otp.html_intro": "Tu código de acceso a civfix es:",
 
-  "email.report_update.subject": "Tu reporte en civfix fue {{status}}",
-  "email.report_update.body": "Tu reporte tiene un nuevo estado: {{status}}.",
+  "notification.category.reportUpdates": "Novedades de tus denuncias",
+  "notification.category.reportDiscussions": "Conversaciones de denuncias",
+  "notification.category.directMessages": "Mensajes directos",
+  "notification.category.mentions": "Menciones y respuestas",
+  "notification.category.groupChats": "Chats de grupo",
+  "notification.category.events": "Eventos a los que vas",
+  "notification.category.hostAnnouncements": "Anuncios de organizadores",
+  "notification.category.eventTeam": "Equipo del evento y horas",
+  "notification.category.followers": "Nuevos seguidores",
+  "notification.category.likesAndReposts": "Me gusta y republicaciones",
+  "notification.category.organizations": "Organizaciones",
+
+  "email.notification.open_cta": "Abrir en civfix",
+  "email.notification.conversation_subject": "Mensajes nuevos en {{conversation}}",
+  "email.notification.footer_reason":
+    "Recibes este correo porque tienes activado Correo para {{category}}.",
+  "email.notification.footer_stop": "Dejar de recibir estos correos",
+  "email.notification.footer_manage": "Gestionar la configuración de notificaciones",
 
   "email.generic.subject": "Una notificación de civfix",
   "email.generic.body": "Tienes una nueva notificación de civfix.",

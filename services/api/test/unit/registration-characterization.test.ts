@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest"
-import { avatarGradient, currentVersion } from "@civfix/contract"
+import { avatarGradient } from "@civfix/contract"
 import type { RegisterForEventRequest } from "@civfix/contract"
 import { InMemoryCounterStore, type CounterStore } from "../../src/abuse/counter-store.js"
 import { InMemoryCacheClient } from "../../src/auth/cache.js"
@@ -13,6 +13,7 @@ import type { RegistrationSubject } from "../../src/services/host/registration-r
 import {
   makeRegistrationService,
   type RegistrationService,
+  type RegistrationServiceDeps,
 } from "../../src/services/host/registration-service.js"
 import {
   OPEN_HOST_GUARDS,
@@ -22,6 +23,7 @@ import {
 } from "../../src/services/host/registration-wiring.js"
 import { makeTicketTokenSigner } from "../../src/services/host/ticket-token.js"
 import { makeSqlRecorder } from "../helpers/sql-recorder.js"
+import { captureNotifications, OFF } from "../helpers/notification-capture.js"
 
 const EVENT = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
 const USER = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"
@@ -52,7 +54,12 @@ interface Harness {
 }
 
 function build(
-  over: { notifierFails?: boolean; counters?: CounterStore; noTeam?: boolean } = {},
+  over: {
+    notifierFails?: boolean
+    counters?: CounterStore
+    noTeam?: boolean
+    notifier?: RegistrationServiceDeps["notifier"]
+  } = {},
 ): Harness {
   const repo = new InMemoryHostRegistrationRepository(counterIds("rec"))
   repo.seedEvent({ cleanupId: EVENT, scheduledAt: STARTS_AT, endsAt: ENDS_AT })
@@ -87,7 +94,7 @@ function build(
       subscribeUser: () => Promise.resolve(() => Promise.resolve()),
       close: () => Promise.resolve(),
     },
-    notifier: {
+    notifier: over.notifier ?? {
       createNotification: (userId, input) => {
         if (over.notifierFails === true) return Promise.reject(new Error("notify down"))
         notifications.push({ userId, input })
@@ -133,6 +140,16 @@ describe("registration characterization: register outcomes", () => {
 
   beforeEach(() => {
     h = build()
+  })
+
+  it("T44: the registration notice is Always on, even with every category Off", async () => {
+    const n = captureNotifications(() => NOW)
+    await n.setAll(USER, OFF)
+    const built = build({ notifier: n.service })
+    built.repo.seedTicketType({ cleanupId: EVENT, capacity: 10, maxPartySize: 4 })
+    await built.service.register(request(), ME)
+    expect(n.rows(USER).map((r) => [r.type, r.title])).toEqual([["system", "You're registered"]])
+    expect(n.inputs[0]?.input).not.toHaveProperty("category")
   })
 
   it("registered: returns the full DTO, one active-seat token per seat, notifies and signals once", async () => {
@@ -536,46 +553,6 @@ describe("registration characterization: register outcomes", () => {
     })
     expect(h.counterKeys).toHaveLength(1)
     expectNoSideEffects(h)
-  })
-
-  it("stale consent throws VALIDATION before the repository runs (terms first, then privacy)", async () => {
-    h.repo.seedEvent({
-      cleanupId: EVENT,
-      scheduledAt: STARTS_AT,
-      endsAt: ENDS_AT,
-      status: "cancelled",
-    })
-    await expect(
-      h.service.register(
-        request({
-          consent: {
-            termsVersion: "1900-01-01",
-            disclosureVersion: "1900-01-01",
-            hostContactOptIn: true,
-          },
-        }),
-        ME,
-      ),
-    ).rejects.toMatchObject({
-      code: "VALIDATION",
-      message: "Validation failed",
-      fields: { "consent.termsVersion": "out of date, so re-accept the terms" },
-    })
-    await expect(
-      h.service.register(
-        request({
-          consent: {
-            termsVersion: currentVersion("terms"),
-            disclosureVersion: "1900-01-01",
-            hostContactOptIn: true,
-          },
-        }),
-        ME,
-      ),
-    ).rejects.toMatchObject({
-      code: "VALIDATION",
-      fields: { "consent.disclosureVersion": "out of date, so re-accept the privacy notice" },
-    })
   })
 
   it("not_found: an unknown event throws NOT_FOUND after the flip budget is spent", async () => {

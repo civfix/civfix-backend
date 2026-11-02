@@ -102,7 +102,11 @@ describe.skipIf(!pg)("admin jurisdiction directory (integration: real schema)", 
     })
     await claimedAt
 
-    const patched = repo.patch(GEOID, { handle: "race" }, { actorId: null })
+    // Caught now, not after the wait below: the patch can reject while the test is still awaiting the
+    // holder, and a rejection with no handler yet fails the whole run as an unhandled error.
+    const patched = repo
+      .patch(GEOID, { handle: "race" }, { actorId: null })
+      .catch((err: unknown) => err)
     let blocked = false
     for (let attempt = 0; attempt < 100 && !blocked; attempt++) {
       const rows = await h.sql<{ n: number }[]>`
@@ -116,7 +120,7 @@ describe.skipIf(!pg)("admin jurisdiction directory (integration: real schema)", 
 
     release()
     await holder
-    await expect(patched).rejects.toMatchObject({ httpStatus: 409 })
+    expect(await patched).toMatchObject({ httpStatus: 409 })
 
     const after = await h.sql<{ handle: string | null }[]>`
       SELECT handle FROM jurisdictions WHERE geoid = ${GEOID}

@@ -103,7 +103,7 @@ function samplePacketMedia(): PacketMediaLink[] {
   return sampleValue("photoLinks")
     .split("\n")
     .filter((url) => url.trim() !== "")
-    .map((url) => ({ kind: "image", url }))
+    .map((url, i) => ({ id: `sample-${i + 1}`, kind: "image", url }))
 }
 
 export function makeForwardTemplateService(

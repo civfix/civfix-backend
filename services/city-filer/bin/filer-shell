@@ -1,0 +1,48 @@
+#!/bin/sh
+# Runs a command as the credential-less `filer` user (epic civfix/issue-tracker#164, D7). Every filer
+# process goes through here: the wrapper's script runs, Chromium, git and a founder's `docker exec`.
+#
+#   filer-shell [--run-dir <dir> --host <host>] [--] <cmd> [args...]
+#
+# Nothing comes from the caller's environment: env -i drops all of it and only the variables written
+# below are passed on. No shell runs after env -i (a shell would add PWD), and setpriv drops to filer with
+# no groups, no capabilities and no_new_privs, the flags the media worker's decoders run with.
+set -eu
+umask 0007
+
+run_dir=
+host=
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --run-dir | --host)
+      if [ "$#" -lt 2 ]; then
+        echo "filer-shell: $1 needs a value" >&2
+        exit 64
+      fi
+      if [ "$1" = "--run-dir" ]; then run_dir=$2; else host=$2; fi
+      shift 2
+      ;;
+    --)
+      shift
+      break
+      ;;
+    *)
+      break
+      ;;
+  esac
+done
+
+if [ "$#" -eq 0 ]; then
+  echo "usage: filer-shell [--run-dir <dir> --host <host>] [--] <cmd> [args...]" >&2
+  exit 64
+fi
+if [ -z "$run_dir" ] && [ -n "$host" ] || { [ -n "$run_dir" ] && [ -z "$host" ]; }; then
+  echo "filer-shell: --run-dir and --host go together" >&2
+  exit 64
+fi
+
+set -- /usr/bin/setpriv --reuid=filer --regid=filer --clear-groups --inh-caps=-all --ambient-caps=-all --no-new-privs -- "$@"
+if [ -n "$run_dir" ]; then
+  set -- "FILER_RUN_DIR=$run_dir" "FILER_HOST=$host" "$@"
+fi
+exec /usr/bin/env -i HOME=/home/filer PATH=/usr/local/bin:/usr/bin:/bin PLAYWRIGHT_BROWSERS_PATH=/ms-playwright TMPDIR=/tmp "$@"

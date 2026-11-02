@@ -39,11 +39,14 @@ export interface ReportPacket {
 }
 
 export interface PacketMediaLink {
+  id: string
   kind: AdminReportMediaRecord["kind"]
   url: string
 }
 
 interface LabelledMediaLink {
+  id: string
+  kind: PacketMediaLink["kind"]
   label: string
   href: string
 }
@@ -55,9 +58,9 @@ const MEDIA_KIND_LABELS: Record<PacketMediaLink["kind"], string> = {
 
 function labelPacketMedia(media: readonly PacketMediaLink[]): LabelledMediaLink[] {
   const counts: Record<PacketMediaLink["kind"], number> = { image: 0, video: 0 }
-  return media.map(({ kind, url }) => {
+  return media.map(({ id, kind, url }) => {
     counts[kind] += 1
-    return { label: `${MEDIA_KIND_LABELS[kind]} ${counts[kind]}`, href: url }
+    return { id, kind, label: `${MEDIA_KIND_LABELS[kind]} ${counts[kind]}`, href: url }
   })
 }
 
@@ -66,7 +69,7 @@ function photoLinksValue(labelled: readonly LabelledMediaLink[]): string {
   return labelled.map(({ label, href }) => `- ${label}: ${href}`).join("\n")
 }
 
-function mediaListHeading(media: readonly PacketMediaLink[]): string {
+function mediaListHeading(media: readonly LabelledMediaLink[]): string {
   const noun = media.some(({ kind }) => kind === "video") ? "Photos and videos" : "Photos"
   return `${noun} (${media.length})`
 }
@@ -168,17 +171,28 @@ function templateParagraphs(rendered: string): EmailBlock[] {
   return blocks.length > 0 ? blocks : [paragraph(rendered.trim())]
 }
 
+export interface PacketOptions {
+  /** Media sent as attachments: left out of the links, which keep their labels among all media. */
+  attached?: ReadonlySet<string>
+  /** A last paragraph after the template and the link block. */
+  closing?: string
+}
+
 export function buildReportPacket(
   record: AdminReportRecord,
   routing: AdminReportRoutingRecord | null,
   media: readonly PacketMediaLink[],
   note: string | null,
   templates: ForwardTemplates,
+  opts: PacketOptions = {},
 ): ReportPacket {
   const categoryLabel = REPORT_CATEGORY_LABELS[record.category]
   const place = routing?.place ?? record.place
   const noteText = note && note.trim() !== "" ? note.trim() : null
-  const labelledMedia = labelPacketMedia(media)
+  const attached = opts.attached
+  const labelledMedia = labelPacketMedia(media).filter(
+    (m) => attached === undefined || !attached.has(m.id),
+  )
   const values = buildTemplateValues(record, routing, labelledMedia, noteText)
 
   const subjectTemplate = resolveTemplate(templates.subject, DEFAULT_FORWARD_SUBJECT_TEMPLATE)
@@ -195,8 +209,9 @@ export function buildReportPacket(
     blocks.push(quote(noteText))
   }
   if (labelledMedia.length > 0 && !templateUsesToken(bodyTemplate, "photoLinks")) {
-    blocks.push(linkList(mediaListHeading(media), labelledMedia))
+    blocks.push(linkList(mediaListHeading(labelledMedia), labelledMedia))
   }
+  if (opts.closing !== undefined) blocks.push(linkedParagraph(opts.closing))
 
   const { text, html } = renderEmailBody({
     preheader: `A resident reported a ${categoryLabel} issue in ${place}.`,

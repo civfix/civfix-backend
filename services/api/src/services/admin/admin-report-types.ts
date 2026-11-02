@@ -13,6 +13,7 @@ import type { ReportChatSystemEmitter } from "../report-timeline-event.js"
 import type { ForwardTemplateReader } from "./forward-template-repository.js"
 import type { PresignPacketMedia } from "../media-presign.js"
 import type { AdminReportRepository } from "./admin-report-repository.js"
+import type { FilingService } from "../filings/filing-service.js"
 
 export type ReporterNotifier = Pick<NotificationService, "createNotification">
 
@@ -32,6 +33,10 @@ export function previewThumbnailUrl(media: ReportMedia | null): string | null {
 export interface AdminReportServiceDeps {
   repo: AdminReportRepository
   outboundMail: OutboundMailService
+  filings: Pick<
+    FilingService,
+    "fileability" | "recordEmailRoute" | "cancelForReport" | "onVerdict" | "adminReportView"
+  >
   presignMedia?: (
     r2Key: string,
     thumbKey: string | null,

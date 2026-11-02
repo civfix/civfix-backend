@@ -21,6 +21,7 @@
  */
 
 import { TEST_TICKET_SIGNER } from "../helpers/ticket-signer.js"
+import { captureNotifications, categoryOfInput } from "../helpers/notification-capture.js"
 import { describe, it, expect, beforeEach } from "vitest"
 import { MAX_EVENT_SLOTS, type AppError } from "@civfix/contract"
 import { InMemoryCounterStore } from "../../src/abuse/counter-store.js"
@@ -567,6 +568,21 @@ describe("capacity lowered below the live claim count (B25)", () => {
 })
 
 describe("the cleanup_slot bell (B34/B35)", () => {
+  it("T50: a removed slot's bell is Events you're going to", async () => {
+    const id = seedEvent()
+    const slot = repo.seedSlot({ cleanupId: id, title: "Grill" })
+    await service.claimEventSlot(id, MEMBER, slot.id)
+    const n = captureNotifications()
+    const notified = makeCleanupService({
+      tickets: TEST_TICKET_SIGNER,
+      repo,
+      counters,
+      notifier: n.service,
+    })
+    await notified.updateCleanup(id, { slots: [{ title: "Sign-in" }] }, ORG)
+    expect(n.inputs.map((c) => categoryOfInput(c.input))).toEqual(["events"])
+  })
+
   it("rings every claimant of a REMOVED slot, actor excluded", async () => {
     const id = seedEvent()
     const slot = repo.seedSlot({ cleanupId: id, title: "Grill" })

@@ -5,6 +5,7 @@ import type {
   CreateReportTxArgs,
   CreateReportTxResult,
   OwnerToggleStatus,
+  ResolveByOwnerOutcome,
   ReportConfirmationOutcome,
   ReportMapPoint,
   ReportMediaView,
@@ -19,6 +20,8 @@ import {
   PRESSING_DROP_FIXED,
   PRESSING_RECENT_VOTES,
 } from "../../src/services/report-repository.js"
+import type { InMemoryFilingRepository } from "./filings/filing-repository.memory.js"
+import { insertReopenFilingInMemory } from "./filings/filing-reopen.memory.js"
 import { formatReferenceCode, reportScopeKey, typeCodeFor } from "../../src/db/reference-code.js"
 import {
   confirmationVerdict,
@@ -59,6 +62,9 @@ interface StoredIdempotency {
 }
 
 export class InMemoryReportRepository implements ReportRepository {
+  /** The filing twin a reopen of a city-closed report writes its D12 filing into. */
+  constructor(readonly filings?: InMemoryFilingRepository) {}
+
   readonly reports = new Map<string, ReportRecord>()
   readonly media: StoredMediaAsset[] = []
   readonly timeline: StoredTimeline[] = []
@@ -500,16 +506,20 @@ export class InMemoryReportRepository implements ReportRepository {
     return Promise.resolve(this.confirmations.get(reportId)?.get(userId)?.kind ?? null)
   }
 
-  resolveByOwner(
+  async resolveByOwner(
     reportId: string,
     userId: string,
     input: { status: OwnerToggleStatus; note: string },
-  ): Promise<"updated" | "unchanged" | "not_found" | "forbidden" | "invalid_state"> {
+  ): Promise<ResolveByOwnerOutcome> {
     const r = this.reports.get(reportId)
-    if (!r || r.deletedAt !== null) return Promise.resolve("not_found")
-    if (r.reporterUserId !== userId) return Promise.resolve(notOwnerOutcome(r))
+    if (!r || r.deletedAt !== null) return "not_found"
+    if (r.reporterUserId !== userId) return notOwnerOutcome(r)
     const transition = ownerStatusTransition(r.status, input.status)
-    if (transition !== "apply") return Promise.resolve(transition)
+    if (transition !== "apply") return transition
+    const reopen =
+      r.status === "resolved" && this.filings !== undefined
+        ? await insertReopenFilingInMemory(this.filings, reportId)
+        : "none"
     r.status = input.status
     this.timeline.push({
       reportId,
@@ -517,7 +527,7 @@ export class InMemoryReportRepository implements ReportRepository {
       note: input.note,
       createdAt: this.nextDate(),
     })
-    return Promise.resolve("updated")
+    return reopen === "skipped_active" ? "updated_reopen_skipped" : "updated"
   }
 
   setVisibilityByOwner(

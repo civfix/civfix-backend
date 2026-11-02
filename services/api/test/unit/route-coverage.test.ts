@@ -19,7 +19,10 @@ import { InMemoryCleanupRepository } from "../helpers/cleanups.js"
 import { InMemoryGuestRsvpRepository } from "../helpers/guest-rsvp.js"
 import { InMemorySocialRepository } from "../helpers/social.js"
 import { InMemoryVolunteerHoursRepository } from "../helpers/volunteer-hours-repository.memory.js"
-import { InMemoryNotificationRepository } from "../helpers/notifications.js"
+import {
+  InMemoryNotificationRepository,
+  InMemoryNotificationSettingsRepository,
+} from "../helpers/notifications.js"
 import { InMemoryMediaRepository } from "../helpers/media.js"
 import { InMemoryThreadsRepository } from "../helpers/chat.js"
 import type { ReportServiceOverrides } from "../../src/routes/reports.routes.js"
@@ -39,6 +42,9 @@ import { fakeCleanupReader } from "../helpers/host-team.js"
 const SIGNING_KEY = "test-anon-signing-key"
 
 const PARAM_VALUE = "11111111-1111-1111-1111-111111111111"
+
+// Contract endpoints the server does not serve yet, skipped by name with the reason.
+const NOT_YET_ROUTED: Readonly<Record<string, string>> = {}
 
 async function buildFullFakeServer(): Promise<FastifyInstance> {
   const env = loadEnv({ NODE_ENV: "test" })
@@ -177,7 +183,10 @@ async function buildFullFakeServer(): Promise<FastifyInstance> {
     },
     socialOverrides: { repo: socialRepo },
     volunteerOverrides: { repo: new InMemoryVolunteerHoursRepository() },
-    notificationOverrides: { repo: notificationRepo },
+    notificationOverrides: {
+      repo: notificationRepo,
+      settingsRepo: new InMemoryNotificationSettingsRepository(),
+    },
     mediaRepo,
     chatOverrides,
   })
@@ -216,6 +225,7 @@ describe("route-coverage: every shared endpoint is registered (offline boot smok
   })
 
   for (const [name, ep] of Object.entries(endpoints)) {
+    if (name in NOT_YET_ROUTED) continue
     it(`registers ${name}: ${ep.method} ${ep.path}`, async () => {
       const res = await app.inject(injectArgs(ep))
 
@@ -231,8 +241,32 @@ describe("route-coverage: every shared endpoint is registered (offline boot smok
     })
   }
 
-  it("T59: covers ALL 352 endpoints in the registry (no endpoint skipped)", () => {
-    expect(Object.keys(endpoints).length).toBe(352)
+  it("T59: covers ALL 374 endpoints in the registry (only NOT_YET_ROUTED skipped)", () => {
+    expect(Object.keys(endpoints).length).toBe(374)
+  })
+
+  it("T13: getNotificationSettings and updateNotificationSettings are registered", async () => {
+    for (const name of ["getNotificationSettings", "updateNotificationSettings"] as const) {
+      const res = await app.inject(injectArgs(endpoints[name]))
+      const body = res.json<{ message?: string }>()
+      expect(
+        res.statusCode === 404 && body.message?.startsWith("Route ") === true,
+        `${name} is not registered`,
+      ).toBe(false)
+    }
+  })
+
+  it("T44: unsubscribeNotificationEmail and openUnsubscribeNotificationEmail are registered", async () => {
+    for (const name of [
+      "unsubscribeNotificationEmail",
+      "openUnsubscribeNotificationEmail",
+    ] as const) {
+      const res = await app.inject(injectArgs(endpoints[name]))
+      // The GET answers a bodiless 302, so only a 404 has a message to read.
+      const missing =
+        res.statusCode === 404 && res.json<{ message?: string }>().message?.startsWith("Route ")
+      expect(missing === true, `${name} is not registered`).toBe(false)
+    }
   })
 
   it("the discriminator is not vacuous: a bogus path IS detected as route-missing", async () => {

@@ -1,8 +1,7 @@
 /**
  * The kill switch and the outreach digest read their runtime flag at the moment they act (#252), over a
- * flag service built once and flipped afterwards. The handlers that need real SQL (the digest run, the
- * auto-forward job, canForwardToCity, report submission) are in
- * test/integration/runtime-flag-wiring-pg.test.ts.
+ * flag service built once and flipped afterwards. The handlers that need real SQL (the digest run,
+ * canForwardToCity, report submission) are in test/integration/runtime-flag-wiring-pg.test.ts.
  */
 
 import { afterEach, describe, expect, it } from "vitest"

@@ -20,6 +20,9 @@ export const ko: Partial<Record<MessageKey, string>> = {
   "notification.report_mention.title": "회원님이 언급되었어요",
   "notification.report_mention.body": "누군가 제보 토론에서 회원님을 언급했어요.",
 
+  "notification.report_filed.title": "내 제보가 {{jurisdiction}}에 전달됐어요",
+  "notification.report_filed.title_city": "내 제보가 시에 전달됐어요",
+
   "notification.post.like.title": "새 좋아요",
   "notification.post.like.body": "{{name}}님이 회원님의 게시물을 좋아합니다.",
   "notification.post.repost.title": "새 리포스트",
@@ -56,7 +59,7 @@ export const ko: Partial<Record<MessageKey, string>> = {
   "role.coordinator": "코디네이터",
   "role.staff": "스태프",
 
-  "notification.cleanup_cancelled.title": "이벤트 취소됨",
+  "notification.cleanup_cancelled.title": "{{title}} 이벤트가 취소됐어요",
   "notification.cleanup_cancelled.body": "주최자가 이 이벤트를 취소했어요.",
   "notification.cleanup_cancelled.body_reason": "주최자가 이 이벤트를 취소했어요. 사유: {{reason}}",
 
@@ -77,8 +80,23 @@ export const ko: Partial<Record<MessageKey, string>> = {
     "코드는 {{minutes}}분 후 만료됩니다. 요청하지 않으셨다면 이 이메일을 무시하세요.",
   "email.otp.html_intro": "civfix 로그인 코드:",
 
-  "email.report_update.subject": "civfix 제보가 {{status}} 처리되었어요",
-  "email.report_update.body": "제보 상태가 변경되었어요: {{status}}.",
+  "notification.category.reportUpdates": "내 신고 업데이트",
+  "notification.category.reportDiscussions": "신고 대화",
+  "notification.category.directMessages": "다이렉트 메시지",
+  "notification.category.mentions": "멘션 및 답글",
+  "notification.category.groupChats": "그룹 채팅",
+  "notification.category.events": "참석하는 이벤트",
+  "notification.category.hostAnnouncements": "주최자 공지",
+  "notification.category.eventTeam": "이벤트 팀 및 봉사 시간",
+  "notification.category.followers": "새 팔로워",
+  "notification.category.likesAndReposts": "좋아요 및 리포스트",
+  "notification.category.organizations": "단체",
+
+  "email.notification.open_cta": "civfix에서 열기",
+  "email.notification.conversation_subject": "{{conversation}}의 새 메시지",
+  "email.notification.footer_reason": "{{category}} 이메일 알림이 켜져 있어서 이 메일을 받았어요.",
+  "email.notification.footer_stop": "이 이메일 그만 받기",
+  "email.notification.footer_manage": "알림 설정 관리",
 
   "email.generic.subject": "civfix 알림",
   "email.generic.body": "새로운 civfix 알림이 있어요.",

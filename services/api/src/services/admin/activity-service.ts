@@ -179,6 +179,12 @@ const AUDIT_ACTION_LABELS: Record<string, string> = {
   "mail.reply_published": "Published a city reply",
   "outreach.digest_sent": "Sent an outreach digest",
   "inbox.status_changed": "Updated an inbox message",
+  "filing.filed": "Filed a report with the city",
+  "filing.retried": "Retried a city filing",
+  "filing.cancelled": "Cancelled a city filing",
+  "filing.manual_recorded": "Recorded a manual city filing",
+  "filing.settings_changed": "Changed automatic city filing",
+  "filing.routes_saved": "Saved filing routes",
   // Read audits are filtered out of the feed at the repo (AUDIT_READ_ACTIONS), so these labels only
   // matter if a row reaches the classifier another way (a fake, or a future feed that includes them).
   "user.detail_viewed": "Viewed an account",

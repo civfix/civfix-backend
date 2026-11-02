@@ -25,6 +25,10 @@ export const en = {
   "notification.report_mention.title": "You were mentioned",
   "notification.report_mention.body": "Someone mentioned you in a report discussion.",
 
+  // {{jurisdiction}} = the name of the jurisdiction the report was filed with.
+  "notification.report_filed.title": "Your report was sent to {{jurisdiction}}",
+  "notification.report_filed.title_city": "Your report was sent to the city",
+
   // {{name}} = the actor's display name / @handle.
   "notification.post.like.title": "New like",
   "notification.post.like.body": "{{name}} liked your post.",
@@ -68,7 +72,7 @@ export const en = {
 
   // The reason is optional on the wire, so there are two bodies rather than one with an empty tail.
   // {{reason}} is the host's own words (user content, slur-gated by assertEventTextClean).
-  "notification.cleanup_cancelled.title": "Event cancelled",
+  "notification.cleanup_cancelled.title": "{{title}} was cancelled",
   "notification.cleanup_cancelled.body": "This event has been cancelled by the host.",
   "notification.cleanup_cancelled.body_reason":
     "This event has been cancelled by the host. Reason: {{reason}}",
@@ -153,9 +157,26 @@ export const en = {
   // The code itself is rendered in a styled block by the template.
   "email.otp.html_intro": "Your civfix sign-in code is:",
 
-  // {{status}} = localized/raw status label.
-  "email.report_update.subject": "Your civfix report was {{status}}",
-  "email.report_update.body": "Your report has a new status: {{status}}.",
+  // D1's category labels, as the notification settings screen shows them.
+  "notification.category.reportUpdates": "Updates on your reports",
+  "notification.category.reportDiscussions": "Report discussions",
+  "notification.category.directMessages": "Direct messages",
+  "notification.category.mentions": "Mentions and replies",
+  "notification.category.groupChats": "Group chats",
+  "notification.category.events": "Events you're going to",
+  "notification.category.hostAnnouncements": "Announcements from hosts",
+  "notification.category.eventTeam": "Event team and hours",
+  "notification.category.followers": "New followers",
+  "notification.category.likesAndReposts": "Likes and reposts",
+  "notification.category.organizations": "Organizations",
+
+  // Notification emails (D10). {{conversation}} = the DM partner's name, the group's name, the report's
+  // category or the event's title. {{category}} = one of the labels above.
+  "email.notification.open_cta": "Open in civfix",
+  "email.notification.conversation_subject": "New messages in {{conversation}}",
+  "email.notification.footer_reason": "You're getting this because Email is on for {{category}}.",
+  "email.notification.footer_stop": "Stop these emails",
+  "email.notification.footer_manage": "Manage notification settings",
 
   // Fallback for an unknown template.
   "email.generic.subject": "A civfix notification",

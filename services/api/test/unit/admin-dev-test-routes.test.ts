@@ -33,6 +33,9 @@ const APP_STORE_URL = "https://apps.apple.com/us/app/civfix/id6000000000"
 const DEFAULT_PUSH = {
   title: "Test notification",
   body: "Sent from the civfix developer console.",
+  notificationId: expect.any(String) as string,
+  type: "system",
+  category: null,
 }
 
 const DEV_TOOLS_ON_ENV = {
@@ -597,7 +600,7 @@ describe("test tools: test push", () => {
     const body = { email: TESTER_EMAIL, title: "Hello", body: "World" }
     expect((await send(h, { method: "POST", url: PUSH_URL, body })).statusCode).toBe(200)
     expect(h.push.sent).toEqual([
-      { userId: h.tester.userId, payload: { title: "Hello", body: "World" } },
+      { userId: h.tester.userId, payload: { ...DEFAULT_PUSH, title: "Hello", body: "World" } },
     ])
   })
 

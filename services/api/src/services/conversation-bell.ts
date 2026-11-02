@@ -18,7 +18,7 @@ export function clearConversationBellFor(
   kind: ConversationBellKind,
   id: string,
   userId: string,
-): Promise<void> {
+): Promise<string[]> {
   const spec = CONVERSATION_BELL[kind]
   return notificationService.clearByTypeAndLink(userId, spec.type, spec.link(id))
 }

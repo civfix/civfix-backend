@@ -60,6 +60,7 @@ import {
   HostExportStatusSchema,
   LegalDocumentTypeSchema,
   ConsentSurfaceSchema,
+  LegalAcceptActionSchema,
 } from "@civfix/contract"
 import {
   ABUSE_REASON_VALUES,
@@ -131,6 +132,7 @@ import {
 import {
   LEGAL_DOCUMENT_TYPE_VALUES,
   CONSENT_SURFACE_VALUES,
+  CONSENT_ACTION_VALUES,
 } from "../../src/db/schema/types-legal.js"
 
 describe("schema enum tuples mirror @civfix/contract", () => {
@@ -198,6 +200,7 @@ describe("schema enum tuples mirror @civfix/contract", () => {
     ["HostExportStatus", HOST_EXPORT_STATUS_VALUES, HostExportStatusSchema.options],
     ["LegalDocumentType", LEGAL_DOCUMENT_TYPE_VALUES, LegalDocumentTypeSchema.options],
     ["ConsentSurface", CONSENT_SURFACE_VALUES, ConsentSurfaceSchema.options],
+    ["LegalAcceptAction", CONSENT_ACTION_VALUES, LegalAcceptActionSchema.options],
   ])("%s matches the shared enum exactly", (_name, mirrored, shared) => {
     expect([...mirrored]).toEqual([...shared])
   })
@@ -208,10 +211,9 @@ describe("schema enum tuples mirror @civfix/contract", () => {
     expect([...CHAT_MESSAGE_KIND_VALUES]).toEqual(expected)
   })
 
-  it("NotificationType matches the shared enum (tolerating the P4 'group_chat' value shipping ahead)", () => {
-    const shared: string[] = [...NotificationTypeSchema.options]
-    const expected = shared.includes("group_chat") ? shared : [...shared, "group_chat"]
-    expect([...NOTIFICATION_TYPE_VALUES]).toEqual(expected)
+  it("T1: NotificationType matches the shared enum exactly (22 values)", () => {
+    expect([...NOTIFICATION_TYPE_VALUES]).toEqual([...NotificationTypeSchema.options])
+    expect(NOTIFICATION_TYPE_VALUES).toHaveLength(22)
   })
 
   it("PostKind matches the shared enum exactly", () => {
@@ -219,8 +221,8 @@ describe("schema enum tuples mirror @civfix/contract", () => {
     expect([...POST_KIND_VALUES]).toEqual(["post", "repost", "quote", "reply"])
   })
 
-  it("NotificationType carries the five social-feed post interaction values (in order)", () => {
-    expect(NOTIFICATION_TYPE_VALUES.slice(-10, -5)).toEqual([
+  it("T1: NotificationType carries the five social-feed post interaction values (in order)", () => {
+    expect(NOTIFICATION_TYPE_VALUES.slice(-11, -6)).toEqual([
       "post_like",
       "post_repost",
       "post_reply",
@@ -232,20 +234,22 @@ describe("schema enum tuples mirror @civfix/contract", () => {
     }
   })
 
-  it("NotificationType carries the two service-hours values (LAST, in order)", () => {
-    expect(NOTIFICATION_TYPE_VALUES.slice(-5, -3)).toEqual(["cleanup_slot", "hours_logged"])
+  it("T1: NotificationType carries the two service-hours values (in order)", () => {
+    expect(NOTIFICATION_TYPE_VALUES.slice(-6, -4)).toEqual(["cleanup_slot", "hours_logged"])
     for (const t of ["cleanup_slot", "hours_logged"]) {
       expect(NotificationTypeSchema.options).toContain(t)
     }
   })
 
-  it("NotificationType keeps broadcast, then event-team-invite, then org_invite LAST", () => {
-    expect(NOTIFICATION_TYPE_VALUES.at(-3)).toBe("event_broadcast")
-    expect(NotificationTypeSchema.options.at(-3)).toBe("event_broadcast")
-    expect(NOTIFICATION_TYPE_VALUES.at(-2)).toBe("event_team_invite")
-    expect(NotificationTypeSchema.options.at(-2)).toBe("event_team_invite")
-    expect(NOTIFICATION_TYPE_VALUES.at(-1)).toBe("org_invite")
-    expect(NotificationTypeSchema.options.at(-1)).toBe("org_invite")
+  it("T1: NotificationType keeps broadcast, event-team-invite, org_invite, then chat_mention LAST", () => {
+    expect(NOTIFICATION_TYPE_VALUES.at(-4)).toBe("event_broadcast")
+    expect(NotificationTypeSchema.options.at(-4)).toBe("event_broadcast")
+    expect(NOTIFICATION_TYPE_VALUES.at(-3)).toBe("event_team_invite")
+    expect(NotificationTypeSchema.options.at(-3)).toBe("event_team_invite")
+    expect(NOTIFICATION_TYPE_VALUES.at(-2)).toBe("org_invite")
+    expect(NotificationTypeSchema.options.at(-2)).toBe("org_invite")
+    expect(NOTIFICATION_TYPE_VALUES.at(-1)).toBe("chat_mention")
+    expect(NotificationTypeSchema.options.at(-1)).toBe("chat_mention")
   })
 
   it("CleanupMemberRole appends coordinator LAST and EventTeamRole stays its invitable subset", () => {

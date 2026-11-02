@@ -1,33 +1,11 @@
 import { describe, expect, it } from "vitest"
 import { NotificationPrefsDTOSchema } from "@civfix/contract"
-import {
-  DEFAULT_PREFS,
-  toPrefsDTO,
-  typeAllowedByPrefs,
-} from "../../src/services/notification-helpers.js"
+import { DEFAULT_PREFS, toPrefsDTO } from "../../src/services/notification-helpers.js"
 
 describe("hostBroadcasts preference", () => {
   it("defaults to on", () => {
     expect(DEFAULT_PREFS.hostBroadcasts).toBe(true)
     expect(toPrefsDTO(DEFAULT_PREFS).hostBroadcasts).toBe(true)
-  })
-
-  it("gates the event_broadcast push type", () => {
-    expect(typeAllowedByPrefs("event_broadcast", DEFAULT_PREFS)).toBe(true)
-    expect(typeAllowedByPrefs("event_broadcast", { ...DEFAULT_PREFS, hostBroadcasts: false })).toBe(
-      false,
-    )
-  })
-
-  it("does not gate any other type", () => {
-    const off = { ...DEFAULT_PREFS, hostBroadcasts: false }
-    expect(typeAllowedByPrefs("cleanup_cancelled", off)).toBe(true)
-    expect(typeAllowedByPrefs("system", off)).toBe(true)
-    expect(typeAllowedByPrefs("report_update", off)).toBe(true)
-  })
-
-  it("still respects the master push switch", () => {
-    expect(typeAllowedByPrefs("event_broadcast", { ...DEFAULT_PREFS, push: false })).toBe(false)
   })
 
   it("produces a DTO the contract accepts", () => {
