@@ -56,7 +56,7 @@ export const ko: Partial<Record<MessageKey, string>> = {
   "role.coordinator": "코디네이터",
   "role.staff": "스태프",
 
-  "notification.cleanup_cancelled.title": "이벤트 취소됨",
+  "notification.cleanup_cancelled.title": "{{title}} 이벤트가 취소됐어요",
   "notification.cleanup_cancelled.body": "주최자가 이 이벤트를 취소했어요.",
   "notification.cleanup_cancelled.body_reason": "주최자가 이 이벤트를 취소했어요. 사유: {{reason}}",
 

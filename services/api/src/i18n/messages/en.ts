@@ -68,7 +68,7 @@ export const en = {
 
   // The reason is optional on the wire, so there are two bodies rather than one with an empty tail.
   // {{reason}} is the host's own words (user content, slur-gated by assertEventTextClean).
-  "notification.cleanup_cancelled.title": "Event cancelled",
+  "notification.cleanup_cancelled.title": "{{title}} was cancelled",
   "notification.cleanup_cancelled.body": "This event has been cancelled by the host.",
   "notification.cleanup_cancelled.body_reason":
     "This event has been cancelled by the host. Reason: {{reason}}",

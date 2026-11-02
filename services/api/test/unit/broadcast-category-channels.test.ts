@@ -383,4 +383,59 @@ describe("makeBroadcastPipeline", () => {
     expect(mailTo(`${C}@example.test`)).toHaveLength(1)
     expect((await repo.findById(created.id))?.failedCount).toBe(0)
   })
+
+  it("a cancellation broadcast only emails members, because the cancellation bell carries in-app and push", async () => {
+    await n.set(B, "hostAnnouncements", OFF)
+    await n.set(C, "hostAnnouncements", [true, true, true])
+    repo.notificationSettings = n.settings
+    const config = { ...CONFIG }
+    const service = makeBroadcastService({
+      repo,
+      counters: new InMemoryCounterStore(() => NOW.getTime()),
+      config,
+      mailer,
+      enqueuePlan: () => Promise.resolve(),
+      now: () => NOW,
+    })
+    const chunks: number[] = []
+    const pipeline = makeBroadcastPipeline({
+      repo,
+      service,
+      notifications: n.service,
+      settingsRepo: n.settings,
+      mailer,
+      cache: new InMemoryCacheClient(() => NOW.getTime()),
+      config,
+      mailDomain: "civfix.org",
+      enqueueChunk: (_id, chunkNo) => {
+        chunks.push(chunkNo)
+        return Promise.resolve()
+      },
+      audit: () => Promise.resolve(),
+      now: () => NOW,
+    })
+    const created = await repo.create({
+      cleanupId: EVENT,
+      createdBy: null,
+      kind: "event_cancelled",
+      subject: "Bring gloves",
+      bodyMd: "See you at the meeting point.",
+      segment: { kind: "all_registered" },
+      channels: ["inapp", "push", "email"],
+    })
+    await repo.transition(created.id, ["draft"], "sending", { startedAt: NOW })
+    expect((await pipeline.plan(created.id)).kind).toBe("planned")
+    for (const chunkNo of chunks) await pipeline.runChunk(created.id, chunkNo)
+    await flushNotificationDispatch()
+
+    expect(n.rows(C)).toEqual([])
+    expect(n.pushesTo(C)).toEqual([])
+    expect(mailTo(`${C}@example.test`)).toHaveLength(1)
+    expect(
+      repo
+        .allDeliveries()
+        .filter((d) => d.userId === C)
+        .map((d) => d.channel),
+    ).toEqual(["email"])
+  })
 })

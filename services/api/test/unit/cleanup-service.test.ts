@@ -1573,7 +1573,7 @@ describe("L24: the cancellation fan-out rides the notification pipeline", () => 
     expect(bells.some((b) => b.userId === ORG)).toBe(false)
   })
 
-  it("a cancellation with NO reason selects the reason-less body key and sends no vars", async () => {
+  it("a cancellation with NO reason selects the reason-less body key and names the event", async () => {
     repo.seedUser({ id: ALICE, displayName: "Alice" })
     const bells: { bodyKey?: string; vars?: Record<string, string | number> }[] = []
     const svc = makeCleanupService({
@@ -1601,7 +1601,9 @@ describe("L24: the cancellation fan-out rides the notification pipeline", () => 
 
     await svc.cancelCleanup(created.id, "   ", ORG)
 
-    expect(bells).toEqual([{ bodyKey: "notification.cleanup_cancelled.body" }])
+    expect(bells).toEqual([
+      { bodyKey: "notification.cleanup_cancelled.body", vars: { title: created.title } },
+    ])
   })
 
   it("only a FRESH transition rings the roster: re-cancelling pushes no second bell", async () => {
