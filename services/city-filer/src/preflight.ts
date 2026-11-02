@@ -151,7 +151,7 @@ export interface PreflightDeps {
   nodeUid: number
   /** What filer-shell is spawned with: the preflight's own variables, as docker exec passes them. */
   env: NodeJS.ProcessEnv
-  /** The globally installed @playwright/mcp, whose playwright-core must be the kit's (D9). */
+  /** The image's locked @playwright/mcp, whose playwright-core must be the kit's (D9). */
   mcpDir: string
   log: (line: string) => void
 }
