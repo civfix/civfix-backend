@@ -148,8 +148,10 @@ export function makeCleanupNotifications(deps: CleanupNotificationsDeps): Cleanu
             reason !== null
               ? "notification.cleanup_cancelled.body_reason"
               : "notification.cleanup_cancelled.body",
-          ...(reason !== null ? { vars: { reason } } : {}),
+          vars: { title: cleanup.title, ...(reason !== null ? { reason } : {}) },
           link: `/cleanups/${cleanup.id}`,
+          // The event_cancelled broadcast is the cancellation email; this bell would be a second one.
+          email: "never",
           dedupeWindowMs: CANCEL_FANOUT_DEDUPE_WINDOW_MS,
         })
       } catch (err) {

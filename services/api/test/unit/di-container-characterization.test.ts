@@ -170,6 +170,7 @@ describe("makeContainer characterization: Container surface", () => {
       "getPostRepo",
       "getPostService",
       "getNotificationService",
+      "getNotificationEmail",
       "getCounterStore",
       "getCache",
       "getByteMeter",

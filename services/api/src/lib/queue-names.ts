@@ -14,6 +14,7 @@ export const CLEANUP_CANCEL_FANOUT_JOB = "cleanup.cancel.fanout"
 export const CLEANUP_GUEST_UPDATE_FANOUT_JOB = "cleanup.guest.update.fanout"
 export const GUEST_RETENTION_SWEEP_JOB = "guest.retention.sweep"
 export const CHAT_ROOM_FANOUT_JOB = "chat.room.fanout"
+export const PUSH_CLEAR_JOB = "push.clear"
 export const WAITLIST_PROMOTE_JOB = "waitlist.promote"
 export const WAITLIST_EXPIRE_SWEEP_JOB = "waitlist.expire.sweep"
 export const CHECKIN_NOSHOW_SWEEP_JOB = "checkin.noshow.sweep"
@@ -114,4 +115,5 @@ export const ALL_QUEUE_NAMES: readonly string[] = [
   FILING_CLASSIFY_JOB,
   FILING_CITY_UPDATE_JOB,
   FILING_SWEEP_JOB,
+  PUSH_CLEAR_JOB,
 ]

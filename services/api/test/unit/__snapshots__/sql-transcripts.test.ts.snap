@@ -316,6 +316,24 @@ EXPLAIN (COSTS OFF, VERBOSE) WITH viewer_point AS ( SELECT p.geom FROM ( SELECT 
 => """
 `;
 
+exports[`sql transcripts > explainHasUnread 1`] = `
+"-- empty
+EXPLAIN (COSTS OFF, VERBOSE) SELECT EXISTS ( SELECT 1 FROM notifications WHERE user_id = $1 AND read_at IS NULL AND type <> ALL (ARRAY['dm','cleanup_chat','group_chat','report_chat']) ) AS has_unread -- ["userId-1"]
+=> ""
+-- row
+EXPLAIN (COSTS OFF, VERBOSE) SELECT EXISTS ( SELECT 1 FROM notifications WHERE user_id = $1 AND read_at IS NULL AND type <> ALL (ARRAY['dm','cleanup_chat','group_chat','report_chat']) ) AS has_unread -- ["userId-1"]
+=> """
+`;
+
+exports[`sql transcripts > explainMarkAllRead 1`] = `
+"-- empty
+EXPLAIN (COSTS OFF, VERBOSE) UPDATE notifications SET read_at = now() WHERE user_id = $1 AND read_at IS NULL AND type <> ALL (ARRAY['dm','cleanup_chat','group_chat','report_chat']) -- ["userId-1"]
+=> ""
+-- row
+EXPLAIN (COSTS OFF, VERBOSE) UPDATE notifications SET read_at = now() WHERE user_id = $1 AND read_at IS NULL AND type <> ALL (ARRAY['dm','cleanup_chat','group_chat','report_chat']) -- ["userId-1"]
+=> """
+`;
+
 exports[`sql transcripts > explainPressing 1`] = `
 "-- empty
 EXPLAIN (COSTS OFF, VERBOSE) WITH candidates AS ( SELECT r.id, r.geom, r.category, r.type, r.status, r.title, r.description, r.addr, r.reference_code, r.confirm_count, r.fixed_count, r.created_at FROM reports r WHERE r.status = ANY($1::text[]) AND r.visibility = 'public' AND r.deleted_at IS NULL AND r.status = ANY($2::text[]) AND r.confirm_count >= 1 AND ST_Intersects( r.geom, ST_MakeEnvelope($3, $4, $5, $6, 4326) ) ORDER BY r.confirm_count DESC, r.created_at DESC LIMIT $7 ), ranked AS ( SELECT c.*, c.confirm_count * recent.seen::numeric / recent.votes AS score FROM candidates c CROSS JOIN LATERAL ( SELECT count(*) FILTER (WHERE last.kind = 'seen') AS seen, count(*) AS votes FROM ( SELECT rc.kind FROM report_confirmations rc WHERE rc.report_id = c.id ORDER BY rc.created_at DESC LIMIT $8 ) last ) recent WHERE recent.votes - recent.seen < $9 ORDER BY score DESC, c.confirm_count DESC, c.created_at DESC LIMIT $10 ) SELECT r.id, ST_X(r.geom) AS lng, ST_Y(r.geom) AS lat, r.category, r.type, r.status, r.title, r.description, r.addr, r.reference_code, m.thumb_key, m.r2_key, r.confirm_count, r.fixed_count, r.created_at FROM ranked r LEFT JOIN LATERAL ( SELECT thumb_key, served_key AS r2_key FROM media_assets WHERE report_id = r.id AND status = 'ready' AND served_key IS NOT NULL AND (kind = 'image' OR thumb_key IS NOT NULL) ORDER BY created_at ASC, id ASC LIMIT 1 ) m ON true ORDER BY r.score DESC, r.confirm_count DESC, r.created_at DESC -- [["published","acknowledged","in_progress","resolved"],["published","acknowledged","in_progress"],3,3,3,3,200,5,3,3]
@@ -1186,6 +1204,33 @@ INSERT INTO conversation_mutes (user_id, room_kind, room_id) VALUES ($1, $2, $3)
 => undefined"
 `;
 
+exports[`sql transcripts > makeConversationNameRepository.eventTitle 1`] = `
+"-- empty
+SELECT title FROM cleanups WHERE id = $1 -- ["cleanupId-1"]
+=> null
+-- row
+SELECT title FROM cleanups WHERE id = $1 -- ["cleanupId-1"]
+=> "title-row""
+`;
+
+exports[`sql transcripts > makeConversationNameRepository.groupName 1`] = `
+"-- empty
+SELECT name FROM chat_groups WHERE id = $1 -- ["groupId-1"]
+=> null
+-- row
+SELECT name FROM chat_groups WHERE id = $1 -- ["groupId-1"]
+=> "name-row""
+`;
+
+exports[`sql transcripts > makeConversationNameRepository.reportCategory 1`] = `
+"-- empty
+SELECT category FROM reports WHERE id = $1 -- ["reportId-1"]
+=> null
+-- row
+SELECT category FROM reports WHERE id = $1 -- ["reportId-1"]
+=> "category-row""
+`;
+
 exports[`sql transcripts > makeDataExportService.exportData 1`] = `
 "-- empty
 SELECT id, display_name, handle, email, email_verified, bio, avatar_url, donation_url, created_at, deleted_at FROM users WHERE id = $1 LIMIT 1 -- ["userId-1"]
@@ -1202,6 +1247,7 @@ SELECT followee_id FROM follows_people WHERE follower_id = $1 LIMIT $2 -- ["user
 SELECT follower_id FROM follows_people WHERE followee_id = $1 LIMIT $2 -- ["userId-1",50001]
 SELECT blocked_id FROM user_blocks WHERE blocker_id = $1 LIMIT $2 -- ["userId-1",50001]
 SELECT user_id, push, cleanup_chat, report_updates, follows, quiet_start, quiet_end, mentions, host_broadcasts FROM notification_prefs WHERE user_id = $1 LIMIT 1 -- ["userId-1"]
+SELECT category, enabled, push, email FROM notification_settings WHERE user_id = $1 -- ["userId-1"]
 SELECT id, platform, created_at, revoked_at FROM push_tokens WHERE user_id = $1 LIMIT $2 -- ["userId-1",50001]
 SELECT code, locale, holder_name, holder_handle, total_hours::float8 AS total_hours, entry_count, period_start, period_end, document_sha256, byte_size, issued_at, revoked_at, revoked_reason FROM service_hours_certificates WHERE user_id = $1 ORDER BY issued_at DESC LIMIT $2 -- ["userId-1",50001]
 SELECT om.organization_id, o.slug, o.name, om.role, om.joined_at FROM organization_members om JOIN organizations o ON o.id = om.organization_id WHERE om.user_id = $1 ORDER BY om.joined_at DESC LIMIT $2 -- ["userId-1",50001]
@@ -1226,6 +1272,7 @@ SELECT followee_id FROM follows_people WHERE follower_id = $1 LIMIT $2 -- ["user
 SELECT follower_id FROM follows_people WHERE followee_id = $1 LIMIT $2 -- ["userId-1",50001]
 SELECT blocked_id FROM user_blocks WHERE blocker_id = $1 LIMIT $2 -- ["userId-1",50001]
 SELECT user_id, push, cleanup_chat, report_updates, follows, quiet_start, quiet_end, mentions, host_broadcasts FROM notification_prefs WHERE user_id = $1 LIMIT 1 -- ["userId-1"]
+SELECT category, enabled, push, email FROM notification_settings WHERE user_id = $1 -- ["userId-1"]
 SELECT id, platform, created_at, revoked_at FROM push_tokens WHERE user_id = $1 LIMIT $2 -- ["userId-1",50001]
 SELECT code, locale, holder_name, holder_handle, total_hours::float8 AS total_hours, entry_count, period_start, period_end, document_sha256, byte_size, issued_at, revoked_at, revoked_reason FROM service_hours_certificates WHERE user_id = $1 ORDER BY issued_at DESC LIMIT $2 -- ["userId-1",50001]
 SELECT om.organization_id, o.slug, o.name, om.role, om.joined_at FROM organization_members om JOIN organizations o ON o.id = om.organization_id WHERE om.user_id = $1 ORDER BY om.joined_at DESC LIMIT $2 -- ["userId-1",50001]
@@ -2355,22 +2402,22 @@ DELETE FROM user_blocks WHERE blocker_id = $1 AND blocked_id = $2 -- ["blockerId
 
 exports[`sql transcripts > makeDrizzleBroadcastAudienceRepository.audienceCount 1`] = `
 "-- empty
-SELECT count(*)::int AS n FROM ( SELECT DISTINCT u.id FROM cleanup_registrations r JOIN users u ON u.id = r.user_id WHERE r.cleanup_id = $1 AND r.status = 'registered' AND u.id > $2 AND u.deleted_at IS NULL AND NOT EXISTS ( SELECT 1 FROM user_moderation um WHERE um.user_id = u.id AND um.account_status <> 'active') AND NOT EXISTS ( SELECT 1 FROM cleanup_bans cb WHERE cb.cleanup_id = $3 AND cb.user_id = u.id) AND NOT EXISTS ( SELECT 1 FROM broadcast_unsubscribes bu WHERE bu.subject_kind = 'user' AND bu.user_id = u.id AND (bu.scope = 'global' OR bu.cleanup_id = $4)) AND NOT EXISTS ( SELECT 1 FROM cleanup_broadcast_mutes cbm WHERE cbm.cleanup_id = $5 AND cbm.user_id = u.id) AND NOT EXISTS ( SELECT 1 FROM notification_prefs np WHERE np.user_id = u.id AND np.host_broadcasts = false) ORDER BY u.id LIMIT $6) s -- ["cleanupId-1","00000000-0000-0000-0000-000000000000","cleanupId-1","cleanupId-1","cleanupId-1",3]
+SELECT count(*)::int AS n FROM ( SELECT DISTINCT u.id FROM cleanup_registrations r JOIN users u ON u.id = r.user_id WHERE r.cleanup_id = $1 AND r.status = 'registered' AND u.id > $2 AND u.deleted_at IS NULL AND NOT EXISTS ( SELECT 1 FROM user_moderation um WHERE um.user_id = u.id AND um.account_status <> 'active') AND NOT EXISTS ( SELECT 1 FROM cleanup_bans cb WHERE cb.cleanup_id = $3 AND cb.user_id = u.id) AND NOT EXISTS ( SELECT 1 FROM broadcast_unsubscribes bu WHERE bu.subject_kind = 'user' AND bu.user_id = u.id AND (bu.scope = 'global' OR bu.cleanup_id = $4)) AND NOT EXISTS ( SELECT 1 FROM cleanup_broadcast_mutes cbm WHERE cbm.cleanup_id = $5 AND cbm.user_id = u.id) AND NOT EXISTS ( SELECT 1 FROM notification_settings ns WHERE ns.user_id = u.id AND ns.category = $6 AND ns.enabled = false) ORDER BY u.id LIMIT $7) s -- ["cleanupId-1","00000000-0000-0000-0000-000000000000","cleanupId-1","cleanupId-1","cleanupId-1","hostAnnouncements",3]
 SELECT count(*)::int AS n FROM ( SELECT g.id FROM cleanup_guests g WHERE g.cleanup_id = $1 AND g.id > $2 AND g.cancelled_at IS NULL AND g.contact_scrubbed_at IS NULL AND g.email IS NOT NULL AND NOT EXISTS ( SELECT 1 FROM broadcast_unsubscribes bu WHERE bu.subject_kind = 'guest' AND bu.guest_id = g.id AND (bu.scope = 'global' OR bu.cleanup_id = $3)) ORDER BY g.id LIMIT $4) s -- ["cleanupId-1","00000000-0000-0000-0000-000000000000","cleanupId-1",3]
 => 0
 -- row
-SELECT count(*)::int AS n FROM ( SELECT DISTINCT u.id FROM cleanup_registrations r JOIN users u ON u.id = r.user_id WHERE r.cleanup_id = $1 AND r.status = 'registered' AND u.id > $2 AND u.deleted_at IS NULL AND NOT EXISTS ( SELECT 1 FROM user_moderation um WHERE um.user_id = u.id AND um.account_status <> 'active') AND NOT EXISTS ( SELECT 1 FROM cleanup_bans cb WHERE cb.cleanup_id = $3 AND cb.user_id = u.id) AND NOT EXISTS ( SELECT 1 FROM broadcast_unsubscribes bu WHERE bu.subject_kind = 'user' AND bu.user_id = u.id AND (bu.scope = 'global' OR bu.cleanup_id = $4)) AND NOT EXISTS ( SELECT 1 FROM cleanup_broadcast_mutes cbm WHERE cbm.cleanup_id = $5 AND cbm.user_id = u.id) AND NOT EXISTS ( SELECT 1 FROM notification_prefs np WHERE np.user_id = u.id AND np.host_broadcasts = false) ORDER BY u.id LIMIT $6) s -- ["cleanupId-1","00000000-0000-0000-0000-000000000000","cleanupId-1","cleanupId-1","cleanupId-1",3]
+SELECT count(*)::int AS n FROM ( SELECT DISTINCT u.id FROM cleanup_registrations r JOIN users u ON u.id = r.user_id WHERE r.cleanup_id = $1 AND r.status = 'registered' AND u.id > $2 AND u.deleted_at IS NULL AND NOT EXISTS ( SELECT 1 FROM user_moderation um WHERE um.user_id = u.id AND um.account_status <> 'active') AND NOT EXISTS ( SELECT 1 FROM cleanup_bans cb WHERE cb.cleanup_id = $3 AND cb.user_id = u.id) AND NOT EXISTS ( SELECT 1 FROM broadcast_unsubscribes bu WHERE bu.subject_kind = 'user' AND bu.user_id = u.id AND (bu.scope = 'global' OR bu.cleanup_id = $4)) AND NOT EXISTS ( SELECT 1 FROM cleanup_broadcast_mutes cbm WHERE cbm.cleanup_id = $5 AND cbm.user_id = u.id) AND NOT EXISTS ( SELECT 1 FROM notification_settings ns WHERE ns.user_id = u.id AND ns.category = $6 AND ns.enabled = false) ORDER BY u.id LIMIT $7) s -- ["cleanupId-1","00000000-0000-0000-0000-000000000000","cleanupId-1","cleanupId-1","cleanupId-1","hostAnnouncements",3]
 SELECT count(*)::int AS n FROM ( SELECT g.id FROM cleanup_guests g WHERE g.cleanup_id = $1 AND g.id > $2 AND g.cancelled_at IS NULL AND g.contact_scrubbed_at IS NULL AND g.email IS NOT NULL AND NOT EXISTS ( SELECT 1 FROM broadcast_unsubscribes bu WHERE bu.subject_kind = 'guest' AND bu.guest_id = g.id AND (bu.scope = 'global' OR bu.cleanup_id = $3)) ORDER BY g.id LIMIT $4) s -- ["cleanupId-1","00000000-0000-0000-0000-000000000000","cleanupId-1",3]
 => 4"
 `;
 
 exports[`sql transcripts > makeDrizzleBroadcastAudienceRepository.audiencePage 1`] = `
 "-- empty
-SELECT DISTINCT u.id FROM cleanup_registrations r JOIN users u ON u.id = r.user_id WHERE r.cleanup_id = $1 AND r.status = 'registered' AND u.id > $2 AND u.deleted_at IS NULL AND NOT EXISTS ( SELECT 1 FROM user_moderation um WHERE um.user_id = u.id AND um.account_status <> 'active') AND NOT EXISTS ( SELECT 1 FROM cleanup_bans cb WHERE cb.cleanup_id = $3 AND cb.user_id = u.id) AND NOT EXISTS ( SELECT 1 FROM broadcast_unsubscribes bu WHERE bu.subject_kind = 'user' AND bu.user_id = u.id AND (bu.scope = 'global' OR bu.cleanup_id = $4)) AND NOT EXISTS ( SELECT 1 FROM cleanup_broadcast_mutes cbm WHERE cbm.cleanup_id = $5 AND cbm.user_id = u.id) AND NOT EXISTS ( SELECT 1 FROM notification_prefs np WHERE np.user_id = u.id AND np.host_broadcasts = false) ORDER BY u.id LIMIT $6 -- ["cleanupId-1","afterMember-1","cleanupId-1","cleanupId-1","cleanupId-1",3]
+SELECT DISTINCT u.id FROM cleanup_registrations r JOIN users u ON u.id = r.user_id WHERE r.cleanup_id = $1 AND r.status = 'registered' AND u.id > $2 AND u.deleted_at IS NULL AND NOT EXISTS ( SELECT 1 FROM user_moderation um WHERE um.user_id = u.id AND um.account_status <> 'active') AND NOT EXISTS ( SELECT 1 FROM cleanup_bans cb WHERE cb.cleanup_id = $3 AND cb.user_id = u.id) AND NOT EXISTS ( SELECT 1 FROM broadcast_unsubscribes bu WHERE bu.subject_kind = 'user' AND bu.user_id = u.id AND (bu.scope = 'global' OR bu.cleanup_id = $4)) AND NOT EXISTS ( SELECT 1 FROM cleanup_broadcast_mutes cbm WHERE cbm.cleanup_id = $5 AND cbm.user_id = u.id) AND NOT EXISTS ( SELECT 1 FROM notification_settings ns WHERE ns.user_id = u.id AND ns.category = $6 AND ns.enabled = false) ORDER BY u.id LIMIT $7 -- ["cleanupId-1","afterMember-1","cleanupId-1","cleanupId-1","cleanupId-1","hostAnnouncements",3]
 SELECT g.id FROM cleanup_guests g WHERE g.cleanup_id = $1 AND g.id > $2 AND g.cancelled_at IS NULL AND g.contact_scrubbed_at IS NULL AND g.email IS NOT NULL AND NOT EXISTS ( SELECT 1 FROM broadcast_unsubscribes bu WHERE bu.subject_kind = 'guest' AND bu.guest_id = g.id AND (bu.scope = 'global' OR bu.cleanup_id = $3)) ORDER BY g.id LIMIT $4 -- ["cleanupId-1","afterGuest-1","cleanupId-1",3]
 => {"members":[],"guests":[]}
 -- row
-SELECT DISTINCT u.id FROM cleanup_registrations r JOIN users u ON u.id = r.user_id WHERE r.cleanup_id = $1 AND r.status = 'registered' AND u.id > $2 AND u.deleted_at IS NULL AND NOT EXISTS ( SELECT 1 FROM user_moderation um WHERE um.user_id = u.id AND um.account_status <> 'active') AND NOT EXISTS ( SELECT 1 FROM cleanup_bans cb WHERE cb.cleanup_id = $3 AND cb.user_id = u.id) AND NOT EXISTS ( SELECT 1 FROM broadcast_unsubscribes bu WHERE bu.subject_kind = 'user' AND bu.user_id = u.id AND (bu.scope = 'global' OR bu.cleanup_id = $4)) AND NOT EXISTS ( SELECT 1 FROM cleanup_broadcast_mutes cbm WHERE cbm.cleanup_id = $5 AND cbm.user_id = u.id) AND NOT EXISTS ( SELECT 1 FROM notification_prefs np WHERE np.user_id = u.id AND np.host_broadcasts = false) ORDER BY u.id LIMIT $6 -- ["cleanupId-1","afterMember-1","cleanupId-1","cleanupId-1","cleanupId-1",3]
+SELECT DISTINCT u.id FROM cleanup_registrations r JOIN users u ON u.id = r.user_id WHERE r.cleanup_id = $1 AND r.status = 'registered' AND u.id > $2 AND u.deleted_at IS NULL AND NOT EXISTS ( SELECT 1 FROM user_moderation um WHERE um.user_id = u.id AND um.account_status <> 'active') AND NOT EXISTS ( SELECT 1 FROM cleanup_bans cb WHERE cb.cleanup_id = $3 AND cb.user_id = u.id) AND NOT EXISTS ( SELECT 1 FROM broadcast_unsubscribes bu WHERE bu.subject_kind = 'user' AND bu.user_id = u.id AND (bu.scope = 'global' OR bu.cleanup_id = $4)) AND NOT EXISTS ( SELECT 1 FROM cleanup_broadcast_mutes cbm WHERE cbm.cleanup_id = $5 AND cbm.user_id = u.id) AND NOT EXISTS ( SELECT 1 FROM notification_settings ns WHERE ns.user_id = u.id AND ns.category = $6 AND ns.enabled = false) ORDER BY u.id LIMIT $7 -- ["cleanupId-1","afterMember-1","cleanupId-1","cleanupId-1","cleanupId-1","hostAnnouncements",3]
 SELECT g.id FROM cleanup_guests g WHERE g.cleanup_id = $1 AND g.id > $2 AND g.cancelled_at IS NULL AND g.contact_scrubbed_at IS NULL AND g.email IS NOT NULL AND NOT EXISTS ( SELECT 1 FROM broadcast_unsubscribes bu WHERE bu.subject_kind = 'guest' AND bu.guest_id = g.id AND (bu.scope = 'global' OR bu.cleanup_id = $3)) ORDER BY g.id LIMIT $4 -- ["cleanupId-1","afterGuest-1","cleanupId-1",3]
 => {"members":["id-row"],"guests":["id-row"]}"
 `;
@@ -2386,22 +2433,22 @@ UPDATE broadcast_deliveries d SET status = t.status, suppression_reason = t.supp
 
 exports[`sql transcripts > makeDrizzleBroadcastRepository.audienceCount 1`] = `
 "-- empty
-SELECT count(*)::int AS n FROM ( SELECT DISTINCT u.id FROM cleanup_registrations r JOIN users u ON u.id = r.user_id WHERE r.cleanup_id = $1 AND r.status = 'registered' AND u.id > $2 AND u.deleted_at IS NULL AND NOT EXISTS ( SELECT 1 FROM user_moderation um WHERE um.user_id = u.id AND um.account_status <> 'active') AND NOT EXISTS ( SELECT 1 FROM cleanup_bans cb WHERE cb.cleanup_id = $3 AND cb.user_id = u.id) AND NOT EXISTS ( SELECT 1 FROM broadcast_unsubscribes bu WHERE bu.subject_kind = 'user' AND bu.user_id = u.id AND (bu.scope = 'global' OR bu.cleanup_id = $4)) AND NOT EXISTS ( SELECT 1 FROM cleanup_broadcast_mutes cbm WHERE cbm.cleanup_id = $5 AND cbm.user_id = u.id) AND NOT EXISTS ( SELECT 1 FROM notification_prefs np WHERE np.user_id = u.id AND np.host_broadcasts = false) ORDER BY u.id LIMIT $6) s -- ["cleanupId-1","00000000-0000-0000-0000-000000000000","cleanupId-1","cleanupId-1","cleanupId-1",3]
+SELECT count(*)::int AS n FROM ( SELECT DISTINCT u.id FROM cleanup_registrations r JOIN users u ON u.id = r.user_id WHERE r.cleanup_id = $1 AND r.status = 'registered' AND u.id > $2 AND u.deleted_at IS NULL AND NOT EXISTS ( SELECT 1 FROM user_moderation um WHERE um.user_id = u.id AND um.account_status <> 'active') AND NOT EXISTS ( SELECT 1 FROM cleanup_bans cb WHERE cb.cleanup_id = $3 AND cb.user_id = u.id) AND NOT EXISTS ( SELECT 1 FROM broadcast_unsubscribes bu WHERE bu.subject_kind = 'user' AND bu.user_id = u.id AND (bu.scope = 'global' OR bu.cleanup_id = $4)) AND NOT EXISTS ( SELECT 1 FROM cleanup_broadcast_mutes cbm WHERE cbm.cleanup_id = $5 AND cbm.user_id = u.id) AND NOT EXISTS ( SELECT 1 FROM notification_settings ns WHERE ns.user_id = u.id AND ns.category = $6 AND ns.enabled = false) ORDER BY u.id LIMIT $7) s -- ["cleanupId-1","00000000-0000-0000-0000-000000000000","cleanupId-1","cleanupId-1","cleanupId-1","hostAnnouncements",3]
 SELECT count(*)::int AS n FROM ( SELECT g.id FROM cleanup_guests g WHERE g.cleanup_id = $1 AND g.id > $2 AND g.cancelled_at IS NULL AND g.contact_scrubbed_at IS NULL AND g.email IS NOT NULL AND NOT EXISTS ( SELECT 1 FROM broadcast_unsubscribes bu WHERE bu.subject_kind = 'guest' AND bu.guest_id = g.id AND (bu.scope = 'global' OR bu.cleanup_id = $3)) ORDER BY g.id LIMIT $4) s -- ["cleanupId-1","00000000-0000-0000-0000-000000000000","cleanupId-1",3]
 => 0
 -- row
-SELECT count(*)::int AS n FROM ( SELECT DISTINCT u.id FROM cleanup_registrations r JOIN users u ON u.id = r.user_id WHERE r.cleanup_id = $1 AND r.status = 'registered' AND u.id > $2 AND u.deleted_at IS NULL AND NOT EXISTS ( SELECT 1 FROM user_moderation um WHERE um.user_id = u.id AND um.account_status <> 'active') AND NOT EXISTS ( SELECT 1 FROM cleanup_bans cb WHERE cb.cleanup_id = $3 AND cb.user_id = u.id) AND NOT EXISTS ( SELECT 1 FROM broadcast_unsubscribes bu WHERE bu.subject_kind = 'user' AND bu.user_id = u.id AND (bu.scope = 'global' OR bu.cleanup_id = $4)) AND NOT EXISTS ( SELECT 1 FROM cleanup_broadcast_mutes cbm WHERE cbm.cleanup_id = $5 AND cbm.user_id = u.id) AND NOT EXISTS ( SELECT 1 FROM notification_prefs np WHERE np.user_id = u.id AND np.host_broadcasts = false) ORDER BY u.id LIMIT $6) s -- ["cleanupId-1","00000000-0000-0000-0000-000000000000","cleanupId-1","cleanupId-1","cleanupId-1",3]
+SELECT count(*)::int AS n FROM ( SELECT DISTINCT u.id FROM cleanup_registrations r JOIN users u ON u.id = r.user_id WHERE r.cleanup_id = $1 AND r.status = 'registered' AND u.id > $2 AND u.deleted_at IS NULL AND NOT EXISTS ( SELECT 1 FROM user_moderation um WHERE um.user_id = u.id AND um.account_status <> 'active') AND NOT EXISTS ( SELECT 1 FROM cleanup_bans cb WHERE cb.cleanup_id = $3 AND cb.user_id = u.id) AND NOT EXISTS ( SELECT 1 FROM broadcast_unsubscribes bu WHERE bu.subject_kind = 'user' AND bu.user_id = u.id AND (bu.scope = 'global' OR bu.cleanup_id = $4)) AND NOT EXISTS ( SELECT 1 FROM cleanup_broadcast_mutes cbm WHERE cbm.cleanup_id = $5 AND cbm.user_id = u.id) AND NOT EXISTS ( SELECT 1 FROM notification_settings ns WHERE ns.user_id = u.id AND ns.category = $6 AND ns.enabled = false) ORDER BY u.id LIMIT $7) s -- ["cleanupId-1","00000000-0000-0000-0000-000000000000","cleanupId-1","cleanupId-1","cleanupId-1","hostAnnouncements",3]
 SELECT count(*)::int AS n FROM ( SELECT g.id FROM cleanup_guests g WHERE g.cleanup_id = $1 AND g.id > $2 AND g.cancelled_at IS NULL AND g.contact_scrubbed_at IS NULL AND g.email IS NOT NULL AND NOT EXISTS ( SELECT 1 FROM broadcast_unsubscribes bu WHERE bu.subject_kind = 'guest' AND bu.guest_id = g.id AND (bu.scope = 'global' OR bu.cleanup_id = $3)) ORDER BY g.id LIMIT $4) s -- ["cleanupId-1","00000000-0000-0000-0000-000000000000","cleanupId-1",3]
 => 4"
 `;
 
 exports[`sql transcripts > makeDrizzleBroadcastRepository.audiencePage 1`] = `
 "-- empty
-SELECT DISTINCT u.id FROM cleanup_registrations r JOIN users u ON u.id = r.user_id WHERE r.cleanup_id = $1 AND r.status = 'registered' AND u.id > $2 AND u.deleted_at IS NULL AND NOT EXISTS ( SELECT 1 FROM user_moderation um WHERE um.user_id = u.id AND um.account_status <> 'active') AND NOT EXISTS ( SELECT 1 FROM cleanup_bans cb WHERE cb.cleanup_id = $3 AND cb.user_id = u.id) AND NOT EXISTS ( SELECT 1 FROM broadcast_unsubscribes bu WHERE bu.subject_kind = 'user' AND bu.user_id = u.id AND (bu.scope = 'global' OR bu.cleanup_id = $4)) AND NOT EXISTS ( SELECT 1 FROM cleanup_broadcast_mutes cbm WHERE cbm.cleanup_id = $5 AND cbm.user_id = u.id) AND NOT EXISTS ( SELECT 1 FROM notification_prefs np WHERE np.user_id = u.id AND np.host_broadcasts = false) ORDER BY u.id LIMIT $6 -- ["cleanupId-1","afterMember-1","cleanupId-1","cleanupId-1","cleanupId-1",3]
+SELECT DISTINCT u.id FROM cleanup_registrations r JOIN users u ON u.id = r.user_id WHERE r.cleanup_id = $1 AND r.status = 'registered' AND u.id > $2 AND u.deleted_at IS NULL AND NOT EXISTS ( SELECT 1 FROM user_moderation um WHERE um.user_id = u.id AND um.account_status <> 'active') AND NOT EXISTS ( SELECT 1 FROM cleanup_bans cb WHERE cb.cleanup_id = $3 AND cb.user_id = u.id) AND NOT EXISTS ( SELECT 1 FROM broadcast_unsubscribes bu WHERE bu.subject_kind = 'user' AND bu.user_id = u.id AND (bu.scope = 'global' OR bu.cleanup_id = $4)) AND NOT EXISTS ( SELECT 1 FROM cleanup_broadcast_mutes cbm WHERE cbm.cleanup_id = $5 AND cbm.user_id = u.id) AND NOT EXISTS ( SELECT 1 FROM notification_settings ns WHERE ns.user_id = u.id AND ns.category = $6 AND ns.enabled = false) ORDER BY u.id LIMIT $7 -- ["cleanupId-1","afterMember-1","cleanupId-1","cleanupId-1","cleanupId-1","hostAnnouncements",3]
 SELECT g.id FROM cleanup_guests g WHERE g.cleanup_id = $1 AND g.id > $2 AND g.cancelled_at IS NULL AND g.contact_scrubbed_at IS NULL AND g.email IS NOT NULL AND NOT EXISTS ( SELECT 1 FROM broadcast_unsubscribes bu WHERE bu.subject_kind = 'guest' AND bu.guest_id = g.id AND (bu.scope = 'global' OR bu.cleanup_id = $3)) ORDER BY g.id LIMIT $4 -- ["cleanupId-1","afterGuest-1","cleanupId-1",3]
 => {"members":[],"guests":[]}
 -- row
-SELECT DISTINCT u.id FROM cleanup_registrations r JOIN users u ON u.id = r.user_id WHERE r.cleanup_id = $1 AND r.status = 'registered' AND u.id > $2 AND u.deleted_at IS NULL AND NOT EXISTS ( SELECT 1 FROM user_moderation um WHERE um.user_id = u.id AND um.account_status <> 'active') AND NOT EXISTS ( SELECT 1 FROM cleanup_bans cb WHERE cb.cleanup_id = $3 AND cb.user_id = u.id) AND NOT EXISTS ( SELECT 1 FROM broadcast_unsubscribes bu WHERE bu.subject_kind = 'user' AND bu.user_id = u.id AND (bu.scope = 'global' OR bu.cleanup_id = $4)) AND NOT EXISTS ( SELECT 1 FROM cleanup_broadcast_mutes cbm WHERE cbm.cleanup_id = $5 AND cbm.user_id = u.id) AND NOT EXISTS ( SELECT 1 FROM notification_prefs np WHERE np.user_id = u.id AND np.host_broadcasts = false) ORDER BY u.id LIMIT $6 -- ["cleanupId-1","afterMember-1","cleanupId-1","cleanupId-1","cleanupId-1",3]
+SELECT DISTINCT u.id FROM cleanup_registrations r JOIN users u ON u.id = r.user_id WHERE r.cleanup_id = $1 AND r.status = 'registered' AND u.id > $2 AND u.deleted_at IS NULL AND NOT EXISTS ( SELECT 1 FROM user_moderation um WHERE um.user_id = u.id AND um.account_status <> 'active') AND NOT EXISTS ( SELECT 1 FROM cleanup_bans cb WHERE cb.cleanup_id = $3 AND cb.user_id = u.id) AND NOT EXISTS ( SELECT 1 FROM broadcast_unsubscribes bu WHERE bu.subject_kind = 'user' AND bu.user_id = u.id AND (bu.scope = 'global' OR bu.cleanup_id = $4)) AND NOT EXISTS ( SELECT 1 FROM cleanup_broadcast_mutes cbm WHERE cbm.cleanup_id = $5 AND cbm.user_id = u.id) AND NOT EXISTS ( SELECT 1 FROM notification_settings ns WHERE ns.user_id = u.id AND ns.category = $6 AND ns.enabled = false) ORDER BY u.id LIMIT $7 -- ["cleanupId-1","afterMember-1","cleanupId-1","cleanupId-1","cleanupId-1","hostAnnouncements",3]
 SELECT g.id FROM cleanup_guests g WHERE g.cleanup_id = $1 AND g.id > $2 AND g.cancelled_at IS NULL AND g.contact_scrubbed_at IS NULL AND g.email IS NOT NULL AND NOT EXISTS ( SELECT 1 FROM broadcast_unsubscribes bu WHERE bu.subject_kind = 'guest' AND bu.guest_id = g.id AND (bu.scope = 'global' OR bu.cleanup_id = $3)) ORDER BY g.id LIMIT $4 -- ["cleanupId-1","afterGuest-1","cleanupId-1",3]
 => {"members":["id-row"],"guests":["id-row"]}"
 `;
@@ -2684,13 +2731,13 @@ SELECT id, email, email_verified, display_name, locale FROM users WHERE id = ANY
 => {"<map>":[["id-row",{"userId":"id-row","email":"email-row","emailVerified":false,"displayName":"display_name-row","firstName":"display_name-row","locale":"locale-row"}]]}"
 `;
 
-exports[`sql transcripts > makeDrizzleBroadcastRepository.pushPrefs 1`] = `
+exports[`sql transcripts > makeDrizzleBroadcastRepository.quietHours 1`] = `
 "-- empty
-SELECT user_id, push, cleanup_chat, report_updates, follows, mentions, post_interactions, host_broadcasts, quiet_start, quiet_end, tz FROM notification_prefs WHERE user_id = ANY($1::uuid[]) -- [["userId-1"]]
+SELECT user_id, quiet_start, quiet_end, tz FROM notification_prefs WHERE user_id = ANY($1::uuid[]) -- [["userId-1"]]
 => {"<map>":[]}
 -- row
-SELECT user_id, push, cleanup_chat, report_updates, follows, mentions, post_interactions, host_broadcasts, quiet_start, quiet_end, tz FROM notification_prefs WHERE user_id = ANY($1::uuid[]) -- [["userId-1"]]
-=> {"<map>":[["user_id-row",{"push":"push-row","cleanupChat":"cleanup_chat-row","reportUpdates":"report_updates-row","follows":"follows-row","mentions":"mentions-row","postInteractions":"post_interactions-row","hostBroadcasts":"host_broadcasts-row","quietStart":"quiet_start-row","quietEnd":"quiet_end-row","tz":"tz-row"}]]}"
+SELECT user_id, quiet_start, quiet_end, tz FROM notification_prefs WHERE user_id = ANY($1::uuid[]) -- [["userId-1"]]
+=> {"<map>":[["user_id-row",{"quietStart":"quiet_start-row","quietEnd":"quiet_end-row","tz":"tz-row"}]]}"
 `;
 
 exports[`sql transcripts > makeDrizzleBroadcastRepository.recordUnsubscribe 1`] = `
@@ -3770,6 +3817,15 @@ SELECT user_id, push, cleanup_chat, report_updates, follows, quiet_start, quiet_
 => []
 -- row
 SELECT user_id, push, cleanup_chat, report_updates, follows, quiet_start, quiet_end, mentions, host_broadcasts FROM notification_prefs WHERE user_id = $1 LIMIT 1 -- ["userId-1"]
+=> [{}]"
+`;
+
+exports[`sql transcripts > makeDrizzleDataExportRepository.notificationSettings 1`] = `
+"-- empty
+SELECT category, enabled, push, email FROM notification_settings WHERE user_id = $1 -- ["userId-1"]
+=> []
+-- row
+SELECT category, enabled, push, email FROM notification_settings WHERE user_id = $1 -- ["userId-1"]
 => [{}]"
 `;
 
@@ -6850,11 +6906,11 @@ COMMIT tx1
 
 exports[`sql transcripts > makeDrizzleNotificationRepository.clearByTypeAndLink 1`] = `
 "-- empty
-UPDATE notifications SET read_at = now() WHERE user_id = $1 AND type = $2 AND link = $3 AND read_at IS NULL -- ["userId-1","system","link-1"]
-=> undefined
+UPDATE notifications SET read_at = now() WHERE user_id = $1 AND type IN ($2, 'chat_mention') AND link = $3 AND read_at IS NULL RETURNING id -- ["userId-1","system","link-1"]
+=> []
 -- row
-UPDATE notifications SET read_at = now() WHERE user_id = $1 AND type = $2 AND link = $3 AND read_at IS NULL -- ["userId-1","system","link-1"]
-=> undefined"
+UPDATE notifications SET read_at = now() WHERE user_id = $1 AND type IN ($2, 'chat_mention') AND link = $3 AND read_at IS NULL RETURNING id -- ["userId-1","system","link-1"]
+=> ["id-row"]"
 `;
 
 exports[`sql transcripts > makeDrizzleNotificationRepository.createDefaultPrefs 1`] = `
@@ -6876,6 +6932,15 @@ DELETE FROM notifications WHERE user_id = $1 -- ["userId-1"]
 => undefined"
 `;
 
+exports[`sql transcripts > makeDrizzleNotificationRepository.deleteNotification 1`] = `
+"-- empty
+DELETE FROM notifications WHERE id = $1 AND user_id = $2 RETURNING id -- ["id-1","userId-1"]
+=> false
+-- row
+DELETE FROM notifications WHERE id = $1 AND user_id = $2 RETURNING id -- ["id-1","userId-1"]
+=> true"
+`;
+
 exports[`sql transcripts > makeDrizzleNotificationRepository.deletePushTokensForUser 1`] = `
 "-- empty
 DELETE FROM push_tokens WHERE user_id = $1 -- ["userId-1"]
@@ -6883,6 +6948,15 @@ DELETE FROM push_tokens WHERE user_id = $1 -- ["userId-1"]
 -- row
 DELETE FROM push_tokens WHERE user_id = $1 -- ["userId-1"]
 => undefined"
+`;
+
+exports[`sql transcripts > makeDrizzleNotificationRepository.findEmailRecipients 1`] = `
+"-- empty
+SELECT u.id, u.email::text AS email, u.locale FROM users u WHERE u.id = ANY($1::uuid[]) AND u.email IS NOT NULL AND u.email_verified AND u.deleted_at IS NULL AND NOT EXISTS ( SELECT 1 FROM email_suppressions s WHERE s.email_hash = encode(sha256(convert_to(lower(btrim(u.email::text)), 'UTF8')), 'hex') ) -- [["userId-1"]]
+=> []
+-- row
+SELECT u.id, u.email::text AS email, u.locale FROM users u WHERE u.id = ANY($1::uuid[]) AND u.email IS NOT NULL AND u.email_verified AND u.deleted_at IS NULL AND NOT EXISTS ( SELECT 1 FROM email_suppressions s WHERE s.email_hash = encode(sha256(convert_to(lower(btrim(u.email::text)), 'UTF8')), 'hex') ) -- [["userId-1"]]
+=> [{"userId":"id-row","email":"email-row","locale":"locale-row"}]"
 `;
 
 exports[`sql transcripts > makeDrizzleNotificationRepository.findPrefs 1`] = `
@@ -6921,6 +6995,15 @@ SELECT id, locale FROM users WHERE id = ANY($1::uuid[]) -- [["userId-1"]]
 => {"<map>":[["id-row","locale-row"]]}"
 `;
 
+exports[`sql transcripts > makeDrizzleNotificationRepository.hasUnread 1`] = `
+"-- empty
+SELECT EXISTS ( SELECT 1 FROM notifications WHERE user_id = $1 AND read_at IS NULL AND type <> ALL (ARRAY['dm','cleanup_chat','group_chat','report_chat']) ) AS has_unread -- ["userId-1"]
+=> false
+-- row
+SELECT EXISTS ( SELECT 1 FROM notifications WHERE user_id = $1 AND read_at IS NULL AND type <> ALL (ARRAY['dm','cleanup_chat','group_chat','report_chat']) ) AS has_unread -- ["userId-1"]
+=> true"
+`;
+
 exports[`sql transcripts > makeDrizzleNotificationRepository.insertNotification 1`] = `
 "-- empty
 INSERT INTO notifications (user_id, type, title, body, link) VALUES ($1, $2, $3, $4, $5) RETURNING id, user_id, type, title, body, link, read_at, created_at -- ["userId-1","system","title-1","body-1","link-1"]
@@ -6955,13 +7038,22 @@ SELECT id, user_id, type, title, body, link, read_at, created_at, to_char(create
 => {"records":[{"id":"id-row","userId":"user_id-row","type":"type-row","title":"title-row","body":"body-row","link":"link-row","readAt":"2026-03-04T05:06:07.000Z","createdAt":"2026-03-04T05:06:07.000Z"}],"nextCursor":null}"
 `;
 
+exports[`sql transcripts > makeDrizzleNotificationRepository.markAllRead 1`] = `
+"-- empty
+UPDATE notifications SET read_at = now() WHERE user_id = $1 AND read_at IS NULL AND type <> ALL (ARRAY['dm','cleanup_chat','group_chat','report_chat']) -- ["userId-1"]
+=> 0
+-- row
+UPDATE notifications SET read_at = now() WHERE user_id = $1 AND read_at IS NULL AND type <> ALL (ARRAY['dm','cleanup_chat','group_chat','report_chat']) -- ["userId-1"]
+=> 1"
+`;
+
 exports[`sql transcripts > makeDrizzleNotificationRepository.markRead 1`] = `
 "-- empty
-UPDATE notifications SET read_at = now() WHERE user_id = $1 AND id = ANY($2::uuid[]) AND read_at IS NULL -- ["userId-1",["id-1"]]
-=> undefined
+UPDATE notifications SET read_at = now() WHERE user_id = $1 AND id = ANY($2::uuid[]) AND read_at IS NULL RETURNING id -- ["userId-1",["id-1"]]
+=> []
 -- row
-UPDATE notifications SET read_at = now() WHERE user_id = $1 AND id = ANY($2::uuid[]) AND read_at IS NULL -- ["userId-1",["id-1"]]
-=> undefined"
+UPDATE notifications SET read_at = now() WHERE user_id = $1 AND id = ANY($2::uuid[]) AND read_at IS NULL RETURNING id -- ["userId-1",["id-1"]]
+=> ["id-row"]"
 `;
 
 exports[`sql transcripts > makeDrizzleNotificationRepository.refreshUnreadNotification 1`] = `
@@ -7015,6 +7107,51 @@ INSERT INTO push_tokens (user_id, platform, token, device_id) VALUES ($1, $2, $3
 INSERT INTO push_tokens (user_id, platform, token, device_id) VALUES ($1, $2, $3, $4) ON CONFLICT (platform, token) DO UPDATE SET user_id = EXCLUDED.user_id, device_id = EXCLUDED.device_id, revoked_at = NULL, created_at = now() WHERE push_tokens.user_id = EXCLUDED.user_id OR push_tokens.revoked_at IS NOT NULL RETURNING id -- ["userId-1","ios","token-1","deviceId-1"]
 UPDATE push_tokens SET revoked_at = now() WHERE user_id = $1 AND revoked_at IS NULL AND id NOT IN ( SELECT id FROM push_tokens WHERE user_id = $2 AND revoked_at IS NULL ORDER BY created_at DESC, id DESC LIMIT $3 ) -- ["userId-1","userId-1",10]
 => "stored""
+`;
+
+exports[`sql transcripts > makeDrizzleNotificationRepository.usersNotifiedSince 1`] = `
+"-- empty
+SELECT DISTINCT user_id FROM notifications WHERE user_id = ANY($1::uuid[]) AND type = $2 AND link = $3 AND created_at > $4 -- [["userId-1"],"system","link-1","2026-03-04T05:06:07.000Z"]
+=> []
+-- row
+SELECT DISTINCT user_id FROM notifications WHERE user_id = ANY($1::uuid[]) AND type = $2 AND link = $3 AND created_at > $4 -- [["userId-1"],"system","link-1","2026-03-04T05:06:07.000Z"]
+=> ["user_id-row"]"
+`;
+
+exports[`sql transcripts > makeDrizzleNotificationSettingsRepository.disableEmail 1`] = `
+"-- empty
+INSERT INTO notification_settings AS s (user_id, category, enabled, push, email) SELECT u.id, $1, $2, $3, false FROM users u WHERE u.id = $4 AND u.deleted_at IS NULL FOR SHARE OF u ON CONFLICT (user_id, category) DO UPDATE SET email = false, updated_at = now() RETURNING s.user_id -- ["followers",true,false,"userId-1"]
+=> false
+-- row
+INSERT INTO notification_settings AS s (user_id, category, enabled, push, email) SELECT u.id, $1, $2, $3, false FROM users u WHERE u.id = $4 AND u.deleted_at IS NULL FOR SHARE OF u ON CONFLICT (user_id, category) DO UPDATE SET email = false, updated_at = now() RETURNING s.user_id -- ["followers",true,false,"userId-1"]
+=> true"
+`;
+
+exports[`sql transcripts > makeDrizzleNotificationSettingsRepository.getSettings 1`] = `
+"-- empty
+SELECT user_id, category, enabled, push, email FROM notification_settings WHERE user_id = $1 -- ["userId-1"]
+=> []
+-- row
+SELECT user_id, category, enabled, push, email FROM notification_settings WHERE user_id = $1 -- ["userId-1"]
+=> [{"userId":"user_id-row","category":"category-row","enabled":"enabled-row","push":"push-row","email":"email-row"}]"
+`;
+
+exports[`sql transcripts > makeDrizzleNotificationSettingsRepository.getSettingsMany 1`] = `
+"-- empty
+SELECT user_id, category, enabled, push, email FROM notification_settings WHERE user_id = ANY($1::uuid[]) -- [["userId-1"]]
+=> []
+-- row
+SELECT user_id, category, enabled, push, email FROM notification_settings WHERE user_id = ANY($1::uuid[]) -- [["userId-1"]]
+=> [{"userId":"user_id-row","category":"category-row","enabled":"enabled-row","push":"push-row","email":"email-row"}]"
+`;
+
+exports[`sql transcripts > makeDrizzleNotificationSettingsRepository.upsertSettings 1`] = `
+"-- empty
+WITH input AS ( SELECT * FROM jsonb_to_recordset($1) AS i ( category text, enabled boolean, push boolean, email boolean, new_enabled boolean, new_push boolean, new_email boolean ) ) INSERT INTO notification_settings AS s (user_id, category, enabled, push, email) SELECT $2, i.category, i.new_enabled, i.new_push, i.new_email FROM input i ON CONFLICT (user_id, category) DO UPDATE SET (enabled, push, email) = ( SELECT COALESCE(i.enabled, s.enabled), COALESCE(i.push, s.push), COALESCE(i.email, s.email) FROM input i WHERE i.category = EXCLUDED.category ), updated_at = now() -- [{"<json>":[{"category":"followers","enabled":null,"push":null,"email":null,"new_enabled":true,"new_push":false,"new_email":false},{"category":"mentions","enabled":null,"push":null,"email":null,"new_enabled":true,"new_push":true,"new_email":false},{"category":"events","enabled":null,"push":null,"email":null,"new_enabled":true,"new_push":true,"new_email":true},{"category":"reportUpdates","enabled":null,"push":null,"email":null,"new_enabled":true,"new_push":true,"new_email":false},{"category":"reportDiscussions","enabled":null,"push":null,"email":null,"new_enabled":true,"new_push":false,"new_email":false},{"category":"directMessages","enabled":null,"push":null,"email":null,"new_enabled":true,"new_push":true,"new_email":false},{"category":"groupChats","enabled":null,"push":null,"email":null,"new_enabled":true,"new_push":false,"new_email":false},{"category":"hostAnnouncements","enabled":null,"push":null,"email":null,"new_enabled":true,"new_push":true,"new_email":false},{"category":"eventTeam","enabled":null,"push":null,"email":null,"new_enabled":true,"new_push":true,"new_email":false},{"category":"likesAndReposts","enabled":null,"push":null,"email":null,"new_enabled":true,"new_push":false,"new_email":false},{"category":"organizations","enabled":null,"push":null,"email":null,"new_enabled":true,"new_push":false,"new_email":true}]},"userId-1"]
+=> undefined
+-- row
+WITH input AS ( SELECT * FROM jsonb_to_recordset($1) AS i ( category text, enabled boolean, push boolean, email boolean, new_enabled boolean, new_push boolean, new_email boolean ) ) INSERT INTO notification_settings AS s (user_id, category, enabled, push, email) SELECT $2, i.category, i.new_enabled, i.new_push, i.new_email FROM input i ON CONFLICT (user_id, category) DO UPDATE SET (enabled, push, email) = ( SELECT COALESCE(i.enabled, s.enabled), COALESCE(i.push, s.push), COALESCE(i.email, s.email) FROM input i WHERE i.category = EXCLUDED.category ), updated_at = now() -- [{"<json>":[{"category":"followers","enabled":null,"push":null,"email":null,"new_enabled":true,"new_push":false,"new_email":false},{"category":"mentions","enabled":null,"push":null,"email":null,"new_enabled":true,"new_push":true,"new_email":false},{"category":"events","enabled":null,"push":null,"email":null,"new_enabled":true,"new_push":true,"new_email":true},{"category":"reportUpdates","enabled":null,"push":null,"email":null,"new_enabled":true,"new_push":true,"new_email":false},{"category":"reportDiscussions","enabled":null,"push":null,"email":null,"new_enabled":true,"new_push":false,"new_email":false},{"category":"directMessages","enabled":null,"push":null,"email":null,"new_enabled":true,"new_push":true,"new_email":false},{"category":"groupChats","enabled":null,"push":null,"email":null,"new_enabled":true,"new_push":false,"new_email":false},{"category":"hostAnnouncements","enabled":null,"push":null,"email":null,"new_enabled":true,"new_push":true,"new_email":false},{"category":"eventTeam","enabled":null,"push":null,"email":null,"new_enabled":true,"new_push":true,"new_email":false},{"category":"likesAndReposts","enabled":null,"push":null,"email":null,"new_enabled":true,"new_push":false,"new_email":false},{"category":"organizations","enabled":null,"push":null,"email":null,"new_enabled":true,"new_push":false,"new_email":true}]},"userId-1"]
+=> undefined"
 `;
 
 exports[`sql transcripts > makeDrizzleOrganizationRepository.acceptInviteTx 1`] = `

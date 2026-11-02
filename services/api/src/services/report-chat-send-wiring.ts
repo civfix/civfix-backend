@@ -13,6 +13,7 @@ import {
 import { bindBlockedIdsAmong } from "./blocks-repository.drizzle.js"
 import { makeDrizzleCleanupRepository } from "./cleanup-repository.drizzle.js"
 import { makeChatGroupRepository } from "./chat-group-repository.drizzle.js"
+import { makeConversationNameRepository } from "./conversation-name-repository.drizzle.js"
 import { makeContainerReportCityForward } from "./report-city-forward-wiring.js"
 import { roomKeyFor } from "../ws/gateway.js"
 import type { ChatMentionRecordSeam } from "./chat-mention-resolver.js"
@@ -72,6 +73,8 @@ export function makeContainerReportChatSendDeps(
 
   const blockedIdsFor = bindBlockedIdsAmong(container.getBlocksRepo())
 
+  const conversationNames = makeConversationNameRepository(sql)
+
   let cleanupRepo: ReturnType<typeof makeDrizzleCleanupRepository> | undefined
   let groupRepo: ReturnType<typeof makeChatGroupRepository> | undefined
 
@@ -86,6 +89,8 @@ export function makeContainerReportChatSendDeps(
       null,
     isBlockedEitherWay,
     roomKeyFor,
+    conversationNames,
+    ...(logger !== undefined ? { logger } : {}),
   }
 
   const notifyMembers = makeReportChatNotifier({
@@ -96,6 +101,7 @@ export function makeContainerReportChatSendDeps(
     roomKeyFor,
     isBlockedEitherWay,
     ...(blockedIdsFor ? { blockedIdsFor } : {}),
+    conversationNames,
     logger,
   })
 

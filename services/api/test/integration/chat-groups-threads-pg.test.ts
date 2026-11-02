@@ -53,6 +53,7 @@ import {
 } from "../../src/services/chat-group-repository.drizzle.js"
 import { makeConversationMutesRepository } from "../../src/services/conversation-mutes-repository.drizzle.js"
 import { makeDrizzleNotificationRepository } from "../../src/services/notification-repository.drizzle.js"
+import { makeDrizzleNotificationSettingsRepository } from "../../src/services/notification-settings-repository.drizzle.js"
 import { makeNotificationService } from "../../src/services/notification-service.js"
 import { makeGroupChatNotifier } from "../../src/services/group-chat-notifier.js"
 import {
@@ -289,6 +290,7 @@ describe.skipIf(!pg)("chat groups: threads inbox + group_chat bells (integration
       const presence = new InMemoryChatPresence()
       const notificationService = makeNotificationService({
         repo: makeDrizzleNotificationRepository(h.sql),
+        settingsRepo: makeDrizzleNotificationSettingsRepository(h.sql),
         pushSender: new FakePushSender(),
       })
       const bellDeps: ChatBellDeps = {
@@ -447,7 +449,7 @@ describe.skipIf(!pg)("chat groups: threads inbox + group_chat bells (integration
       const finalBells = await bellsFor(target)
       expect(finalBells).toHaveLength(1)
       expect(finalBells[0]).toMatchObject({
-        type: "group_chat",
+        type: "chat_mention",
         title: "Group Reply Actor replied to you",
         body: "replying anyway",
         link: `/messages/group/${groupId}`,
@@ -490,7 +492,7 @@ describe.skipIf(!pg)("chat groups: threads inbox + group_chat bells (integration
       const mentionedFinal = await bellsFor(mentioned)
       expect(mentionedFinal).toHaveLength(1)
       expect(mentionedFinal[0]).toMatchObject({
-        type: "group_chat",
+        type: "chat_mention",
         title: "Group Mention Author mentioned you",
         link: `/messages/group/${groupId}`,
       })
@@ -512,6 +514,7 @@ describe.skipIf(!pg)("chat groups: threads inbox + group_chat bells (integration
 
       const notificationService = makeNotificationService({
         repo: makeDrizzleNotificationRepository(h.sql),
+        settingsRepo: makeDrizzleNotificationSettingsRepository(h.sql),
         pushSender: new FakePushSender(),
       })
       await notificationService.createNotification(member, {

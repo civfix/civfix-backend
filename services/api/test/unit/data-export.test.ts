@@ -1,5 +1,6 @@
 import { describe, it, expect } from "vitest"
 import { FakeMailer } from "@civfix/seams"
+import { NOTIFICATION_CATEGORY_DEFAULTS, NotificationCategorySchema } from "@civfix/contract"
 import type { Sql } from "../../src/db/client.js"
 import { makeFakeSql, type SqlHandler } from "../helpers/fake-sql.js"
 import { InMemoryUserStore, type UserRecord } from "../../src/auth/stores.js"
@@ -196,5 +197,32 @@ describe("data export", () => {
     await service.exportData(USER_ID)
     const parsed = attachmentJson(mailer)
     expect((parsed.pushTokens as { token: string }[])[0]!.token).toBe("[REDACTED]")
+  })
+
+  it("T36: an account with no stored settings exports every category at its default", async () => {
+    const { mailer, service } = harness(userRecord())
+    await service.exportData(USER_ID)
+    const parsed = attachmentJson(mailer)
+    expect(parsed.notificationSettings).toEqual(NOTIFICATION_CATEGORY_DEFAULTS)
+    const settings = parsed.notificationSettings as Record<string, Record<string, unknown>>
+    expect(Object.keys(settings).sort()).toEqual([...NotificationCategorySchema.options].sort())
+    for (const value of Object.values(settings)) {
+      expect(Object.keys(value).sort()).toEqual(["email", "enabled", "push"])
+    }
+    expect(parsed).toHaveProperty("notificationPrefs")
+  })
+
+  it("T37: a stored category exports its stored value; the other ten their defaults", async () => {
+    const { mailer, service } = harness(userRecord(), [
+      {
+        match: /FROM notification_settings/,
+        rows: [{ category: "events", enabled: false, push: false, email: false }],
+      },
+    ])
+    await service.exportData(USER_ID)
+    expect(attachmentJson(mailer).notificationSettings).toEqual({
+      ...NOTIFICATION_CATEGORY_DEFAULTS,
+      events: { enabled: false, push: false, email: false },
+    })
   })
 })
