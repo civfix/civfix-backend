@@ -156,7 +156,9 @@ export interface FilingHarness {
 }
 
 /** The filing service over the admin report twin and a filing twin linked to it. */
-export function filingHarness(opts: { automatic?: boolean; now?: Date } = {}): FilingHarness {
+export function filingHarness(
+  opts: { automatic?: boolean; now?: Date; notifications?: ReporterNotifier } = {},
+): FilingHarness {
   const reports = new InMemoryAdminReportRepository()
   const filings = linkedFilingRepository(reports)
   const jobs = new FakeJobs()
@@ -171,7 +173,7 @@ export function filingHarness(opts: { automatic?: boolean; now?: Date } = {}): F
     automaticFiling: opts.automatic ?? false,
     webBaseUrl: WEB_BASE,
     reportChatEmitter: emitter,
-    notifications: notifier,
+    notifications: opts.notifications ?? notifier,
     logger: { warn: (...args: unknown[]) => void warnings.push(args) },
     now: () => clock.now,
   })
