@@ -6,7 +6,6 @@
 import { afterEach, expect, it, vi } from "vitest"
 import { runGlitchtipTest } from "../../src/db/glitchtip-test.js"
 import {
-  D12_DATA_COLLECTION,
   FAKE_GLITCHTIP_DSN,
   recordingTransport,
   sentryClientOptions,
@@ -33,5 +32,7 @@ it("T9: sends one event tagged glitchtip-test with the fake personal data stripp
   for (const fake of ["glitchtip-test@example.com", "198.51.100.23", "glitchtip-test-cookie"]) {
     expect(serialized).not.toContain(fake)
   }
-  expect(sentryClientOptions()?.dataCollection).toEqual(D12_DATA_COLLECTION)
+  const options = sentryClientOptions() ?? {}
+  expect(options.sendDefaultPii).toBe(false)
+  expect(options).not.toHaveProperty("dataCollection")
 })

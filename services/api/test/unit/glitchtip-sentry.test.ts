@@ -10,7 +10,6 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest"
 import { flushErrorReporting, initErrorReporting } from "../../src/errors/glitchtip.js"
 import { makeErrorHandler } from "../../src/errors/http-mapper.js"
 import {
-  D12_DATA_COLLECTION,
   FAKE_GLITCHTIP_DSN,
   recordingTransport,
   sentryClientOptions,
@@ -88,11 +87,11 @@ async function requestIdOf(res: Response): Promise<string> {
 }
 
 describe("GlitchTip reporting on @sentry/node (recorded at the transport)", () => {
-  it("T1: initializes with D12's dataCollection and no sendDefaultPii", () => {
+  it("T1: initializes with sendDefaultPii false and no dataCollection (Sentry held on 10)", () => {
     expect(initialized).toBe(true)
     const options = sentryClientOptions() ?? {}
-    expect(options.dataCollection).toEqual(D12_DATA_COLLECTION)
-    expect(options).not.toHaveProperty("sendDefaultPii")
+    expect(options.sendDefaultPii).toBe(false)
+    expect(options).not.toHaveProperty("dataCollection")
   })
 
   it("T2: a failing request sends one event with none of the request's personal data", async () => {

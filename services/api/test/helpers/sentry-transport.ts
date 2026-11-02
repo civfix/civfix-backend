@@ -38,21 +38,6 @@ export function recordingTransport(): RecordingTransport {
   }
 }
 
-/** D12's dataCollection, as the T1 and T9 test cases spell it out. */
-export const D12_DATA_COLLECTION = {
-  userInfo: false,
-  cookies: false,
-  httpHeaders: false,
-  httpBodies: [],
-  urlQueryParams: false,
-  databaseQueryData: false,
-  queues: false,
-  stackFrameVariables: false,
-  graphQL: { document: false, variables: false },
-  genAI: { inputs: false, outputs: false },
-  mcp: { inputs: false, outputs: false },
-}
-
 /** The live client's options as a plain record, so a test can look for keys the SDK's type doesn't name. */
 export function sentryClientOptions(): Record<string, unknown> | undefined {
   return Sentry.getClient()?.getOptions() as unknown as Record<string, unknown> | undefined

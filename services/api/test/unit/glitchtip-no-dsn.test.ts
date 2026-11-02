@@ -18,6 +18,8 @@ import {
 const run = promisify(execFile)
 const apiDir = fileURLToPath(new URL("../..", import.meta.url))
 const SCRIPT_TIMEOUT_MS = 60_000
+// A cold tsx start compiles the script's whole import graph, which outruns the suite's 20 s on a loaded box.
+const SCRIPT_TEST_TIMEOUT_MS = SCRIPT_TIMEOUT_MS + 10_000
 
 afterEach(() => {
   vi.unstubAllEnvs()
@@ -61,5 +63,6 @@ describe("glitchtip:test without a DSN", () => {
       expect(process.exitCode ?? 0).toBe(0)
       expect(Sentry.getClient()).toBeUndefined()
     },
+    SCRIPT_TEST_TIMEOUT_MS,
   )
 })
