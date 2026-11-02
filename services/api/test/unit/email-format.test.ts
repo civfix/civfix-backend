@@ -513,6 +513,99 @@ describe("buildDiscussionForwardPacket", () => {
   })
 })
 
+describe("buildDiscussionForwardPacket: the resident-comment disclaimer (GH#286)", () => {
+  const D = "This comment was written by a resident, not by civfix. civfix does not endorse it."
+  const input = {
+    reportId: "abcdef12-0000-0000-0000-000000000000",
+    category: "trash",
+    place: "Oakville",
+    org: null,
+  }
+  const occurrences = (haystack: string, needle: string): number =>
+    haystack.split(needle).length - 1
+
+  it("T1: puts the disclaimer between the quoted comment and the reference line in the text part, once", () => {
+    const packet = buildDiscussionForwardPacket(input, "There is a pile on 5th Ave.")
+    expect(packet.text).toContain(
+      "> There is a pile on 5th Ave.\n\n" +
+        D +
+        "\n\nReference: abcdef12-0000-0000-0000-000000000000",
+    )
+    expect(occurrences(packet.text, D)).toBe(1)
+  })
+
+  it("T2: renders the disclaimer once in the HTML part as a lede-style paragraph, after the comment and before the reference", () => {
+    const packet = buildDiscussionForwardPacket(input, "There is a pile on 5th Ave.")
+    const ledeStyle = paragraph(D).html
+    expect(ledeStyle).toMatch(/^<p class="cv-ink2"/)
+    expect(ledeStyle).toContain("font-size:15px")
+    expect(ledeStyle).not.toContain("cv-ink3")
+    expect(ledeStyle).not.toContain("13px")
+    expect(packet.html).toContain(ledeStyle)
+    expect(occurrences(packet.html, D)).toBe(1)
+    const comment = packet.html.indexOf("There is a pile on 5th Ave.")
+    const disclaimer = packet.html.indexOf(D)
+    const reference = packet.html.indexOf("Reference: abcdef12-0000-0000-0000-000000000000")
+    expect(comment).toBeGreaterThanOrEqual(0)
+    expect(comment).toBeLessThan(disclaimer)
+    expect(disclaimer).toBeLessThan(reference)
+  })
+
+  it("T3: still names the resident in the opening line next to the disclaimer", () => {
+    const packet = buildDiscussionForwardPacket(
+      { ...input, displayName: "Dana Neighbor" },
+      "Still not cleared.",
+    )
+    expect(packet.text).toContain(
+      "Dana Neighbor commented on a trash report in Oakville via civfix and mentioned your office.",
+    )
+    expect(packet.text).toContain(D)
+    expect(packet.text).not.toContain("A neighbor commented")
+  })
+
+  it("T4: keeps the anonymous opening line and the disclaimer when there is no display name", () => {
+    for (const displayName of [null, undefined, "", "   "]) {
+      const packet = buildDiscussionForwardPacket({ ...input, displayName }, "hi")
+      expect(packet.text).toContain(
+        "A neighbor commented on a trash report in Oakville via civfix and mentioned your office.",
+      )
+      expect(packet.text).toContain("> hi\n\n" + D)
+    }
+  })
+
+  it("T5: follows the blank-comment placeholder with the disclaimer", () => {
+    const packet = buildDiscussionForwardPacket(input, "   ")
+    expect(packet.text).toContain(
+      "> (no comment provided)\n\n" + D + "\n\nReference: abcdef12-0000-0000-0000-000000000000",
+    )
+  })
+
+  it("T6: leaves the subject unchanged", () => {
+    const packet = buildDiscussionForwardPacket(input, "There is a pile on 5th Ave.")
+    expect(packet.subject).toBe("civfix report: trash in Oakville [abcdef12]")
+  })
+
+  it("T7: adds nothing to the report and event packets", () => {
+    const report = buildReportPacket(reportRecord(), null, [], null, NO_TEMPLATES)
+    const event = buildEventPacket(
+      {
+        title: "Riverbank cleanup",
+        host: "Sam Host",
+        place: "Riverside",
+        address: "River Rd",
+        lat: 39.5,
+        lng: -98.35,
+        referenceCode: "EVT-9",
+      },
+      "We need 20 trash bags and gloves.",
+    )
+    for (const packet of [report, event]) {
+      expect(packet.text).not.toContain("civfix does not endorse it")
+      expect(packet.html).not.toContain("civfix does not endorse it")
+    }
+  })
+})
+
 describe("buildEventPacket", () => {
   it("includes the reference code in the subject and quotes the request", () => {
     const packet = buildEventPacket(
