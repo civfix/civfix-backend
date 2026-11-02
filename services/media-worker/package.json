@@ -38,6 +38,7 @@
     "zod": "^4.6.6"
   },
   "devDependencies": {
+    "@civfix/city-filer": "workspace:*",
     "@civfix/config": "workspace:*",
     "@civfix/seams": "workspace:*",
     "@civfix/testing": "workspace:*",

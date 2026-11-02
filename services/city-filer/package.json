@@ -5,6 +5,9 @@
   "description": "civfix city filer. Works filing.run: runs each portal's workspace script as the credential-less filer user through filer-shell, with Claude Code writing or repairing the script when there is none or it fails, and hands the outcome back on filing.result. Works filing.classify: Claude Code reads a city's email for filing.city_update.",
   "license": "AGPL-3.0-only",
   "type": "module",
+  "exports": {
+    "./jobs": "./src/jobs.ts"
+  },
   "files": [
     "dist",
     "kit",

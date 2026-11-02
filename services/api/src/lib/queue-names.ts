@@ -1,3 +1,7 @@
+// The schema pg-boss 12 runs in. pg-boss 12 cannot migrate the pg-boss 10 `pgboss` schema in place, so
+// it starts on a new one and db/pgboss-move-to-v12.ts carries the waiting jobs over.
+export const PGBOSS_SCHEMA = "pgboss_v12"
+
 export const MEDIA_CHECKS_JOB = "media.checks"
 export const ANON_HOLD_RELEASE_JOB = "anon.hold.release"
 

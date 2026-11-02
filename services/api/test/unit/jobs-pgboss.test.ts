@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from "vitest"
 import { PgBossJobs, API_QUEUE_NAMES } from "../../src/adapters/jobs.pgboss.js"
+import { FILING_QUEUE_OPTIONS, PGBOSS_SCHEMA } from "../../src/lib/queue-names.js"
 
 /**
  * Unit test for the API-side pg-boss Jobs adapter. pg-boss is MOCKED (no Postgres) so we can prove the
@@ -28,9 +29,9 @@ let lastBoss: MockBoss
 const ctor = vi.fn()
 
 vi.mock("pg-boss", () => {
-  // The adapter does `const { default: PgBossCtor } = await import("pg-boss")` then `new PgBossCtor(...)`.
+  // The adapter does `const { PgBoss } = await import("pg-boss")` then `new PgBoss(...)`.
   return {
-    default: class {
+    PgBoss: class {
       constructor(opts: unknown) {
         ctor(opts)
         return lastBoss
@@ -58,52 +59,67 @@ beforeEach(() => {
 })
 
 describe("PgBossJobs (API enqueue adapter)", () => {
-  it("start() constructs pg-boss with the connection string, starts it, and creates the API queues", async () => {
+  it("T1: start() constructs pg-boss once on the pgboss_v12 schema with the connection string", async () => {
+    expect(PGBOSS_SCHEMA).toBe("pgboss_v12")
     const jobs = new PgBossJobs({ connectionString: "postgres://u:p@localhost:5432/civfix" })
     await jobs.start()
 
     expect(ctor).toHaveBeenCalledTimes(1)
     expect(ctor.mock.calls[0]![0]).toMatchObject({
       connectionString: "postgres://u:p@localhost:5432/civfix",
+      schema: "pgboss_v12",
     })
     expect(lastBoss.start).toHaveBeenCalledTimes(1)
 
-    // Creates EXACTLY the queues the API enqueues onto (media.checks + jurisdiction.discovery), so a
-    // send() can never race a missing queue in pg-boss v10.
+    // Creates EXACTLY the queues the API enqueues onto, so a send() can never race a missing queue.
     const created = lastBoss.createQueue.mock.calls.map((c) => c[0])
     expect(created).toEqual([...API_QUEUE_NAMES])
-    expect(created).toContain("media.checks")
-    expect(created).toContain("jurisdiction.discovery")
+  })
 
-    // Each queue is created AND updated with the "short" policy so a singletonKey actually dedupes
-    // pending jobs in pg-boss v10 (the default "standard" policy does not, and createQueue is a no-op on
-    // an already-existing queue, so updateQueue is what fixes a pre-existing default-policy queue).
+  it("T2: start() creates every API queue short, with that queue's retry settings", async () => {
+    const jobs = new PgBossJobs({ connectionString: "postgres://localhost/civfix" })
+    await jobs.start()
+    const filing: Record<string, object> = FILING_QUEUE_OPTIONS
+    const retryFields = ["retryLimit", "retryDelay", "retryBackoff", "expireInSeconds"] as const
     for (const name of API_QUEUE_NAMES) {
-      expect(lastBoss.createQueue).toHaveBeenCalledWith(
-        name,
-        expect.objectContaining({ policy: "short" }),
-      )
-      expect(lastBoss.updateQueue).toHaveBeenCalledWith(
-        name,
-        expect.objectContaining({ policy: "short" }),
-      )
+      const calls = lastBoss.createQueue.mock.calls.filter((c) => c[0] === name)
+      expect(calls, name).toHaveLength(1)
+      const opts = calls[0]![1] as Record<string, unknown>
+      expect(opts.policy, name).toBe("short")
+      const today: Record<string, unknown> =
+        name === "data.export"
+          ? { retryLimit: 10, retryDelay: 60, retryBackoff: true }
+          : { ...filing[name] }
+      for (const field of retryFields) expect(opts[field], `${name} ${field}`).toBe(today[field])
     }
   })
 
-  it("C34: start() creates each filing queue with exactly its FILING_QUEUE_OPTIONS entry", async () => {
+  it("T3: start() never hands updateQueue a policy or an empty update", async () => {
+    lastBoss.updateQueue = vi.fn((_name: string, options: object) => {
+      if ("policy" in options) {
+        return Promise.reject(new Error("queue policy cannot be changed after creation"))
+      }
+      if (Object.keys(options).length === 0) {
+        return Promise.reject(new Error("no properties found to update"))
+      }
+      return Promise.resolve()
+    })
+    const jobs = new PgBossJobs({ connectionString: "postgres://localhost/civfix" })
+    await expect(jobs.start()).resolves.toBeUndefined()
+    expect(lastBoss.updateQueue).toHaveBeenCalled()
+    for (const [name, options] of lastBoss.updateQueue.mock.calls as [string, object][]) {
+      expect(options, name).not.toHaveProperty("policy")
+      expect(Object.keys(options).length, name).toBeGreaterThan(0)
+    }
+  })
+
+  it("C34: start() brings each filing queue to its FILING_QUEUE_OPTIONS entry", async () => {
     const jobs = new PgBossJobs({ connectionString: "postgres://localhost/civfix" })
     await jobs.start()
-    const expected = {
-      "filing.run": { policy: "short", retryLimit: 0, expireInSeconds: 3600 },
-      "filing.email": { policy: "short", retryLimit: 2, retryDelay: 60 },
-      "filing.result": { policy: "short", retryLimit: 2, retryDelay: 30, retryBackoff: true },
-      "filing.city_update": { policy: "short", retryLimit: 2, retryDelay: 30, retryBackoff: true },
-      "filing.classify": { policy: "short", retryLimit: 1 },
-      "filing.sweep": { policy: "short", retryLimit: 0 },
-    }
-    for (const [name, options] of Object.entries(expected)) {
-      expect(lastBoss.createQueue).toHaveBeenCalledWith(name, { name, ...options })
-      expect(lastBoss.updateQueue).toHaveBeenCalledWith(name, { name, ...options })
+    for (const [name, options] of Object.entries(FILING_QUEUE_OPTIONS)) {
+      const { policy, ...retries } = options
+      expect(lastBoss.createQueue).toHaveBeenCalledWith(name, { policy, ...retries })
+      expect(lastBoss.updateQueue).toHaveBeenCalledWith(name, retries)
     }
   })
 
@@ -159,14 +175,18 @@ describe("PgBossJobs (API enqueue adapter)", () => {
     expect(lastBoss.schedule).toHaveBeenCalledWith("jurisdiction.discovery", "0 * * * *", {})
   })
 
-  it("stop() stops pg-boss gracefully and is safe to call when never started", async () => {
+  it("stop() is safe to call when never started", async () => {
     const jobs = new PgBossJobs({ connectionString: "postgres://localhost/civfix" })
-    // Never started: no boss, so stop is a no-op.
     await expect(jobs.stop()).resolves.toBeUndefined()
+    expect(ctor).not.toHaveBeenCalled()
+  })
 
+  it("T4: stop() stops pg-boss gracefully within 30 seconds", async () => {
+    const jobs = new PgBossJobs({ connectionString: "postgres://localhost/civfix" })
     await jobs.start()
     await jobs.stop()
-    expect(lastBoss.stop).toHaveBeenCalledWith({ graceful: true, wait: true })
+    expect(lastBoss.stop).toHaveBeenCalledTimes(1)
+    expect(lastBoss.stop.mock.calls[0]![0]).toStrictEqual({ graceful: true, timeout: 30000 })
   })
 
   it("gives data.export a backoff retry policy that outlasts a mail config outage", async () => {
@@ -175,17 +195,17 @@ describe("PgBossJobs (API enqueue adapter)", () => {
     await jobs.start()
     for (const call of [lastBoss.createQueue, lastBoss.updateQueue]) {
       const policy = call.mock.calls.find((c) => c[0] === "data.export")?.[1] as {
-        policy: string
         retryLimit: number
         retryDelay: number
         retryBackoff: boolean
       }
-      expect(policy).toMatchObject({ policy: "short", retryBackoff: true })
+      expect(policy).toMatchObject({ retryBackoff: true })
       const minimumSpan = policy.retryDelay * (2 ** policy.retryLimit - 1)
       expect(minimumSpan).toBeGreaterThanOrEqual(OUTAGE_SECONDS)
     }
     const other = lastBoss.createQueue.mock.calls.find((c) => c[0] === "media.checks")?.[1]
-    expect(other).toEqual({ name: "media.checks", policy: "short" })
+    expect(other).toEqual({ policy: "short" })
+    expect(lastBoss.updateQueue.mock.calls.some((c) => c[0] === "media.checks")).toBe(false)
   })
 
   it("work() hands each job its retry count and limit", async () => {

@@ -14,17 +14,11 @@ export interface MemoryJob {
   completedOn: Date | null
 }
 
-export interface MemoryArchivedJob extends MemoryJob {
-  archivedOn: Date
-}
-
-const ARCHIVE_WINDOW_MS = 48 * 60 * 60 * 1000
 const FAILED_WINDOW_MS = 24 * 60 * 60 * 1000
 
-/** pg-boss's job, archive, schedule and queue tables, read with the drizzle repository's rules. */
+/** pg-boss's job, schedule and queue tables, read with the drizzle repository's rules. */
 export class InMemoryDevJobsRepository implements DevJobsRepository {
   readonly jobs: MemoryJob[] = []
-  readonly archive: MemoryArchivedJob[] = []
   readonly schedules = new Map<string, string>()
   readonly queues = new Set<string>()
   readonly snapshotCalls: Date[] = []
@@ -42,18 +36,10 @@ export class InMemoryDevJobsRepository implements DevJobsRepository {
     })
   }
 
-  addArchived(name: string, state: MemoryJobState, completedOn: Date, archivedOn: Date) {
-    this.queues.add(name)
-    this.archive.push({ name, state, startAfter: new Date(0), completedOn, archivedOn })
-  }
-
   snapshot(names: readonly string[]): Promise<DevJobsSnapshot> {
     const now = this.now()
     this.snapshotCalls.push(now)
     const wanted = new Set(names)
-    const archived = this.archive.filter(
-      (j) => j.archivedOn.getTime() >= now.getTime() - ARCHIVE_WINDOW_MS,
-    )
     const stats = new Map<string, QueueJobStats>()
     const entry = (name: string): QueueJobStats => {
       let found = stats.get(name)
@@ -83,7 +69,7 @@ export class InMemoryDevJobsRepository implements DevJobsRepository {
       }
     }
     for (const j of this.jobs) {
-      if (!wanted.has(j.name)) continue
+      if (!wanted.has(j.name) || j.state === "cancelled") continue
       const s = entry(j.name)
       if (j.state === "created" || j.state === "retry" || j.state === "active") s[j.state] += 1
       if (j.state === "failed") s.failed += 1
@@ -91,12 +77,6 @@ export class InMemoryDevJobsRepository implements DevJobsRepository {
       if ((j.state === "created" || j.state === "retry") && j.startAfter <= now) {
         if (s.oldestDueAt === null || j.startAfter < s.oldestDueAt) s.oldestDueAt = j.startAfter
       }
-      noteCompleted(s, j)
-    }
-    for (const j of archived) {
-      if (!wanted.has(j.name)) continue
-      const s = entry(j.name)
-      if (failedRecently(j)) s.failedLast24h += 1
       noteCompleted(s, j)
     }
     return Promise.resolve({
