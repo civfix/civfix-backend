@@ -26,7 +26,7 @@ describe("the image, its entrypoint and the playbook", () => {
   it("T22: managed-settings.json is exactly the four DISABLE variables and disableAllHooks, copied by the runtime stage to /etc/claude-code/", async () => {
     const settings = JSON.parse(await read("../../managed-settings.json")) as unknown
     const dockerfile = await read("../../Dockerfile")
-    const runtime = dockerfile.slice(dockerfile.indexOf("FROM base AS runtime"))
+    const runtime = dockerfile.slice(dockerfile.indexOf(" AS runtime"))
 
     expect(settings).toStrictEqual({
       env: {

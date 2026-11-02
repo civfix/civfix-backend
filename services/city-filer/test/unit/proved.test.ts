@@ -154,7 +154,7 @@ describe("only proved scripts run live", () => {
 
   it("T35: the image makes /workspace/proved node:node 0755 and ignores it in git; a passing proof's spawns name no proved/ path", async () => {
     const dockerfile = await read("../../Dockerfile")
-    const runtime = dockerfile.slice(dockerfile.indexOf("FROM base AS runtime"))
+    const runtime = dockerfile.slice(dockerfile.indexOf(" AS runtime"))
     expect(runtime).toMatch(
       /^ && install -d -o node -g node -m 0755 (\S+ )*\/workspace\/proved( |$)/m,
     )

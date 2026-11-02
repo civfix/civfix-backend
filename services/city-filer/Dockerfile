@@ -50,7 +50,7 @@ RUN pnpm --filter @civfix/city-filer... build
 RUN --mount=type=cache,id=pnpm-store,target=/pnpm/store \
     pnpm --filter @civfix/city-filer --prod deploy /out
 
-FROM base AS runtime
+FROM node:22-bookworm-slim@sha256:de170b39439eb0e5a3444ad7d60b015614a381e10fecae2e30ec9e735122f38d AS runtime
 ARG SERVICE_VERSION=0.0.0
 ARG CLAUDE_CODE_VERSION=2.1.310
 ARG PLAYWRIGHT_MCP_VERSION=0.0.83
@@ -72,6 +72,8 @@ RUN apt-get update \
  && usermod --append --groups filer node \
  && command -v setpriv >/dev/null
 COPY --from=uv /uv /usr/local/bin/uv
+# npm, corepack and pip leave once these are installed: nothing here runs them, and the dependency trees npm
+# and pip vendor are where the image scan finds fixable HIGH advisories (docs/image-scan-runbook.md).
 RUN PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1 npm install --global --no-fund --no-audit \
       @anthropic-ai/claude-code@${CLAUDE_CODE_VERSION} @playwright/mcp@${PLAYWRIGHT_MCP_VERSION} \
  && npm cache clean --force \
@@ -79,6 +81,10 @@ RUN PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1 npm install --global --no-fund --no-audit
     UV_TOOL_BIN_DIR=/usr/local/bin UV_CACHE_DIR=/tmp/uv-cache \
     uv tool install --python 3.12 claude-swap==${CLAUDE_SWAP_VERSION} \
  && rm -rf /tmp/uv-cache \
+    /usr/local/bin/corepack /usr/local/lib/node_modules/corepack /usr/local/bin/yarn /usr/local/bin/yarnpkg /opt/yarn-* \
+    /usr/local/bin/npm /usr/local/bin/npx /usr/local/lib/node_modules/npm /root/.npm \
+    /opt/uv/python/cpython-*/bin/pip* /opt/uv/python/cpython-*/lib/python3.12/site-packages/pip* \
+    /opt/uv/python/cpython-*/lib/python3.12/ensurepip \
  && node -e ' \
       const { createRequire } = require("node:module"); \
       const core = (dir) => createRequire(dir + "/package.json")("playwright-core/package.json").version; \

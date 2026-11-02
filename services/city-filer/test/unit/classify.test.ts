@@ -151,7 +151,7 @@ describe("classify's working directory", () => {
     expect(claudeCwds).toEqual([h.classifyDir, CLASSIFY_DIR])
 
     const dockerfile = await readFile(new URL("../../Dockerfile", import.meta.url), "utf8")
-    const runtime = dockerfile.slice(dockerfile.indexOf("FROM base AS runtime"))
+    const runtime = dockerfile.slice(dockerfile.indexOf(" AS runtime"))
     const made = runtime
       .split("\n")
       .filter((l) => /install -d -o node -g node -m 0755 /.test(l))
