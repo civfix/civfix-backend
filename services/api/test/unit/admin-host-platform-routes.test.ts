@@ -6,6 +6,9 @@ import type { Container } from "../../src/di.js"
 import { registerAdminEventPageRoutes } from "../../src/routes/admin/pages.routes.js"
 import { registerAdminMediaRoutes } from "../../src/routes/admin/media.routes.js"
 import { registerAdminLegalRoutes } from "../../src/routes/admin/legal.routes.js"
+import { InMemoryLegalDocumentsRepository } from "../helpers/legal-documents-repository.memory.js"
+import { InMemoryLegalAcceptanceRepository } from "../helpers/legal-acceptance-repository.memory.js"
+import { defaultRows } from "../helpers/legal-fixtures.js"
 import { registerAdminBroadcastRoutes } from "../../src/routes/admin/broadcasts.routes.js"
 import { registerAdminOrgRoutes } from "../../src/routes/admin/orgs.routes.js"
 import type { AdminEventPageRow } from "../../src/services/host/admin-pages-repository.js"
@@ -147,6 +150,11 @@ async function harness(options: { media?: MediaAssetView | null } = {}): Promise
     },
   })
   app.decorate("adminMediaOverrides", { repo: mediaRepo })
+  const legalDocuments = new InMemoryLegalDocumentsRepository(defaultRows())
+  app.decorate("legalOverrides", {
+    repo: legalDocuments,
+    acceptances: new InMemoryLegalAcceptanceRepository(legalDocuments),
+  })
   app.decorate("adminBroadcastOverrides", { repo: broadcasts })
   app.decorate("adminEventOverrides", { repo: events, now: () => NOW })
   app.decorate("organizationOverrides", {

@@ -49,6 +49,7 @@ import { MS_PER_HOUR, MS_PER_SECOND, SECONDS_PER_DAY, SECONDS_PER_MINUTE } from 
 import { renderMessage } from "../i18n/renderMessage.js"
 import { parseKeysetCursor } from "../db/cursor-helpers.js"
 import { eventEndedError, eventWindowOf, hasEventEnded } from "./cleanup-rules.js"
+import { isLegalVersionOutdated } from "./legal-service.js"
 import { isEventPubliclyVisible } from "./host/authz.js"
 import { enqueueWaitlistPromotion } from "./host/waitlist-promotion.js"
 import { formatEventWhen } from "./host/broadcast-render.js"
@@ -716,7 +717,12 @@ export function makeGuestRsvpService(deps: GuestRsvpServiceDeps): GuestRsvpServi
         refusal: registrationRefusalError(response),
       }
     } catch (err) {
-      if (err instanceof AppError && err.code === ErrorCode.VALIDATION) throw err
+      if (
+        err instanceof AppError &&
+        (err.code === ErrorCode.VALIDATION || isLegalVersionOutdated(err))
+      ) {
+        throw err
+      }
       deps.logger?.warn(
         { err, cleanupId },
         "guest rsvp: registration failed (suppressed; the RSVP stands)",
