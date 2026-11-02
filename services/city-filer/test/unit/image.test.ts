@@ -10,15 +10,18 @@ const read = async (path: string): Promise<string> =>
 const prose = async (path: string): Promise<string> => (await read(path)).replace(/\s+/g, " ")
 
 describe("the image, its entrypoint and the playbook", () => {
-  it("T21: PLAYWRIGHT_MCP_VERSION is set, and the kit's playwright-core pin is ci.yml's npx playwright-core version", async () => {
-    const dockerfile = await read("../../Dockerfile")
+  it("T21: the tools lockfile pins @playwright/mcp, and its playwright-core is the kit's pin and ci.yml's npx playwright-core version", async () => {
+    const tools = JSON.parse(await read("../../tools/package-lock.json")) as {
+      packages: Record<string, { version: string } | undefined>
+    }
     const pkg = JSON.parse(await read("../../package.json")) as {
       dependencies: Record<string, string>
     }
     const ci = await read("../../../../.github/workflows/ci.yml")
     const installs = [...ci.matchAll(/npx --yes playwright-core@(\S+)/g)].map((m) => m[1])
 
-    expect(dockerfile).toMatch(/^ARG PLAYWRIGHT_MCP_VERSION=\d+\.\d+\.\d+$/m)
+    expect(tools.packages["node_modules/@playwright/mcp"]?.version).toMatch(/^\d+\.\d+\.\d+$/)
+    expect(tools.packages["node_modules/playwright-core"]?.version).toBe(installs[0])
     expect(installs).toHaveLength(1)
     expect(pkg.dependencies["playwright-core"]).toBe(installs[0])
   })
@@ -26,7 +29,7 @@ describe("the image, its entrypoint and the playbook", () => {
   it("T22: managed-settings.json is exactly the four DISABLE variables and disableAllHooks, copied by the runtime stage to /etc/claude-code/", async () => {
     const settings = JSON.parse(await read("../../managed-settings.json")) as unknown
     const dockerfile = await read("../../Dockerfile")
-    const runtime = dockerfile.slice(dockerfile.indexOf("FROM base AS runtime"))
+    const runtime = dockerfile.slice(dockerfile.indexOf(" AS runtime"))
 
     expect(settings).toStrictEqual({
       env: {

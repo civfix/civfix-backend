@@ -292,10 +292,11 @@ environments: the box picks its environment from a host marker file (`/etc/civfi
 `env/prod.sh` + `secrets/prod/` on the production box (`ssh civfix`) and `env/staging.sh` +
 `secrets/staging/` on the staging box (`ssh civfix-dev`). There is no per-environment infra branch.
 
-This repo provides the two service **Dockerfiles** (`services/{api,media-worker}/Dockerfile`) AND the
+This repo provides the three service **Dockerfiles** (`services/{api,media-worker,city-filer}/Dockerfile`) AND the
 workflow that builds them. The images are built once per commit by
 `.github/workflows/build-images.yml` (natively on arm64, to match the Oracle Ampere boxes) and pushed
-to `ghcr.io/civfix/{api,media-worker}` as `sha-<commit>`. The VPS pulls them; it no longer compiles.
+to `ghcr.io/civfix/{api,media-worker,city-filer}` as `sha-<commit>` (the city-filer package is private and
+only the prod box runs it). The VPS pulls them; it no longer compiles.
 The infra compose still carries each image's `build.context`, which is the escape hatch
 (`CIVFIX_ALLOW_LOCAL_BUILD=1`) rather than the normal path.
 

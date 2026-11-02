@@ -1,4 +1,4 @@
-# syntax=docker/dockerfile:1.7
+# syntax=docker/dockerfile:1.7@sha256:a57df69d0ea827fb7266491f2813635de6f17269be881f696fbfdf2d83dda33e
 #
 # civfix city filer image (epic civfix/issue-tracker#164, D7). BUILD CONTEXT IS THE REPO ROOT:
 #     docker build -f services/city-filer/Dockerfile -t civfix/city-filer:latest .
@@ -25,15 +25,14 @@
 # cwd: neither it nor a directory above it is writable by filer.
 #
 # CLAUDE CODE (D9) is installed here, never as a workspace dependency: the CLI and @playwright/mcp with
-# npm -g, claude-swap as a uv tool on a uv-managed Python. Each is pinned below; a bump is an edit here plus
-# a #178 smoke run. @playwright/mcp drives the Chromium the kit's playwright-core installed: the build
+# `npm ci` into /opt/filer-tools, claude-swap with hashes into its own venv on a uv-managed Python. Every
+# version, transitive ones too, is locked in services/city-filer/tools; a bump is a lockfile change plus a
+# #178 smoke run (docs/city-filing.md). @playwright/mcp drives the Chromium the kit's playwright-core installed: the build
 # fails unless both use the same playwright-core, so there is one browser in /ms-playwright.
 
-ARG UV_VERSION=0.13.5
+FROM ghcr.io/astral-sh/uv:0.13.5@sha256:32a7bb39b496babbd997b0a39a4d66c126bdaf5661b302bf6f06abda8deca6ff AS uv
 
-FROM ghcr.io/astral-sh/uv:${UV_VERSION} AS uv
-
-FROM node:22-bookworm-slim AS base
+FROM node:22-bookworm-slim@sha256:de170b39439eb0e5a3444ad7d60b015614a381e10fecae2e30ec9e735122f38d AS base
 ENV PNPM_HOME="/pnpm" \
     PATH="/pnpm:$PATH" \
     CI=true
@@ -52,11 +51,8 @@ RUN pnpm --filter @civfix/city-filer... build
 RUN --mount=type=cache,id=pnpm-store,target=/pnpm/store \
     pnpm --filter @civfix/city-filer --prod deploy /out
 
-FROM base AS runtime
+FROM node:22-bookworm-slim@sha256:de170b39439eb0e5a3444ad7d60b015614a381e10fecae2e30ec9e735122f38d AS runtime
 ARG SERVICE_VERSION=0.0.0
-ARG CLAUDE_CODE_VERSION=2.1.310
-ARG PLAYWRIGHT_MCP_VERSION=0.0.83
-ARG CLAUDE_SWAP_VERSION=0.28.0
 ENV NODE_ENV=production \
     SERVICE_VERSION=${SERVICE_VERSION} \
     PLAYWRIGHT_BROWSERS_PATH=/ms-playwright
@@ -74,17 +70,26 @@ RUN apt-get update \
  && usermod --append --groups filer node \
  && command -v setpriv >/dev/null
 COPY --from=uv /uv /usr/local/bin/uv
-RUN PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1 npm install --global --no-fund --no-audit \
-      @anthropic-ai/claude-code@${CLAUDE_CODE_VERSION} @playwright/mcp@${PLAYWRIGHT_MCP_VERSION} \
+COPY services/city-filer/tools/package.json services/city-filer/tools/package-lock.json services/city-filer/tools/requirements.txt /opt/filer-tools/
+# npm, corepack and pip leave once these are installed: nothing here runs them, and the dependency trees npm
+# and pip vendor are where the image scan finds fixable HIGH advisories (docs/image-scan-runbook.md).
+RUN cd /opt/filer-tools \
+ && PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1 npm ci --no-fund --no-audit \
  && npm cache clean --force \
- && UV_PYTHON_PREFERENCE=only-managed UV_PYTHON_INSTALL_DIR=/opt/uv/python UV_TOOL_DIR=/opt/uv/tools \
-    UV_TOOL_BIN_DIR=/usr/local/bin UV_CACHE_DIR=/tmp/uv-cache \
-    uv tool install --python 3.12 claude-swap==${CLAUDE_SWAP_VERSION} \
+ && ln -s /opt/filer-tools/node_modules/.bin/claude /opt/filer-tools/node_modules/.bin/playwright-mcp /usr/local/bin/ \
+ && export UV_PYTHON_PREFERENCE=only-managed UV_PYTHON_INSTALL_DIR=/opt/uv/python UV_CACHE_DIR=/tmp/uv-cache \
+ && uv venv --python 3.12 /opt/uv/tools/claude-swap \
+ && uv pip sync --require-hashes --python /opt/uv/tools/claude-swap/bin/python requirements.txt \
+ && ln -s /opt/uv/tools/claude-swap/bin/cswap /usr/local/bin/cswap \
  && rm -rf /tmp/uv-cache \
+    /usr/local/bin/corepack /usr/local/lib/node_modules/corepack /usr/local/bin/yarn /usr/local/bin/yarnpkg /opt/yarn-* \
+    /usr/local/bin/npm /usr/local/bin/npx /usr/local/lib/node_modules/npm /root/.npm \
+    /opt/uv/python/cpython-*/bin/pip* /opt/uv/python/cpython-*/lib/python3.12/site-packages/pip* \
+    /opt/uv/python/cpython-*/lib/python3.12/ensurepip \
  && node -e ' \
       const { createRequire } = require("node:module"); \
       const core = (dir) => createRequire(dir + "/package.json")("playwright-core/package.json").version; \
-      const mcp = core("/usr/local/lib/node_modules/@playwright/mcp"), kit = core("/app"); \
+      const mcp = core("/opt/filer-tools/node_modules/@playwright/mcp"), kit = core("/app"); \
       if (mcp !== kit) { console.error("@playwright/mcp uses playwright-core " + mcp + ", the kit " + kit); process.exit(1) }'
 COPY services/city-filer/managed-settings.json /etc/claude-code/managed-settings.json
 COPY services/city-filer/gitconfig /etc/gitconfig

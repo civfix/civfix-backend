@@ -89,10 +89,12 @@ and reads the cities' emails (with `FILER_CLASSIFY_MODEL`, `playbook/classify.md
 runs as `filer`, one Claude process at a time. It never presses a live submit: the wrapper proves each
 script with its own dry run, then runs it live once.
 
-Pinned in the Dockerfile: Claude Code (`CLAUDE_CODE_VERSION`) 2.1.310 and `@playwright/mcp`
-(`PLAYWRIGHT_MCP_VERSION`) 0.0.83 with `npm install -g`, the build checking that its `playwright-core`
-is the kit's; uv (`UV_VERSION`) 0.13.5; claude-swap (`CLAUDE_SWAP_VERSION`) 0.28.0 as a uv tool on
-Python 3.12 under `/opt/uv`. A bump is an edit there plus a run of #178's smoke.
+Locked in `services/city-filer/tools`, transitive dependencies included: Claude Code 2.1.310 and
+`@playwright/mcp` 0.0.83 in `package-lock.json`, installed with `npm ci` into `/opt/filer-tools`, the build
+checking that its `playwright-core` is the kit's; claude-swap 0.28.0 in the hash-locked `requirements.txt`,
+in its own venv on Python 3.12 under `/opt/uv`. uv is 0.13.5 (its `FROM` line, by digest). To bump, edit
+`package.json` and run `npm install --package-lock-only`, or edit `requirements.in` and rerun the
+`uv pip compile` command at the top of `requirements.txt`, then let `city-filer image smoke` run.
 
 `/etc/claude-code/managed-settings.json` turns off the auto-updater, telemetry, error reporting and
 non-essential traffic, and disables all hooks.
