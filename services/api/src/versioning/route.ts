@@ -5,34 +5,64 @@
  */
 
 import { endpoints, versionedPath } from "@civfix/contract/client"
-import type { FastifyInstance } from "fastify"
-import type { RouteHandlerMethod, RouteShorthandOptions } from "fastify"
+import type {
+  FastifyInstance,
+  RawReplyDefaultExpression,
+  RawRequestDefaultExpression,
+  RawServerDefault,
+  RouteHandlerMethod,
+  RouteShorthandOptions,
+} from "fastify"
+import type { z } from "zod"
+import { CHECK_RESPONSES, contractResponseCheck } from "./response-check.js"
 
 export type EndpointName = keyof typeof endpoints
 
 export type RouteOptions = Omit<RouteShorthandOptions, "method" | "url" | "handler">
 
-export function route(app: FastifyInstance, name: EndpointName, handler: RouteHandlerMethod): void
-export function route(
+/** `z.input`, not the parsed output: the handler sends what the client's schema parse accepts. */
+export type EndpointReply<N extends EndpointName> = z.input<(typeof endpoints)[N]["response"]>
+
+export type EndpointHandler<N extends EndpointName> = RouteHandlerMethod<
+  RawServerDefault,
+  RawRequestDefaultExpression,
+  RawReplyDefaultExpression,
+  { Reply: EndpointReply<N> }
+>
+
+export function route<N extends EndpointName>(
   app: FastifyInstance,
-  name: EndpointName,
-  opts: RouteOptions,
-  handler: RouteHandlerMethod,
+  name: N,
+  handler: EndpointHandler<N>,
 ): void
-export function route(
+export function route<N extends EndpointName>(
   app: FastifyInstance,
-  name: EndpointName,
-  optsOrHandler: RouteOptions | RouteHandlerMethod,
-  maybeHandler?: RouteHandlerMethod,
+  name: N,
+  opts: RouteOptions,
+  handler: EndpointHandler<N>,
+): void
+export function route<N extends EndpointName>(
+  app: FastifyInstance,
+  name: N,
+  optsOrHandler: RouteOptions | EndpointHandler<N>,
+  maybeHandler?: EndpointHandler<N>,
 ): void {
   const ep = endpoints[name]
   const url = versionedPath(ep)
 
-  const handler = (maybeHandler ?? optsOrHandler) as RouteHandlerMethod
-  const opts = (maybeHandler ? optsOrHandler : {}) as RouteOptions
+  const handler = maybeHandler ?? (optsOrHandler as EndpointHandler<N>)
+  const opts = maybeHandler ? (optsOrHandler as RouteOptions) : {}
 
-  app.route({
+  app.route<{ Reply: EndpointReply<N> }>({
     ...opts,
+    ...(CHECK_RESPONSES
+      ? {
+          onSend:
+            opts.onSend === undefined
+              ? contractResponseCheck(name)
+              : [opts.onSend, contractResponseCheck(name)].flat(),
+        }
+      : {}),
     method: ep.method,
     url,
     handler,

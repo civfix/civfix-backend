@@ -6,7 +6,7 @@ import {
   type GetLegalDocumentsResponse,
   type MyLegalStatusResponse,
 } from "@civfix/contract"
-import type { FastifyInstance, FastifyReply } from "fastify"
+import type { FastifyInstance } from "fastify"
 import { requireAuth } from "../auth/context.js"
 import { perHost, perIdentity } from "../plugins/rate-limit.js"
 import type { Container } from "../di.js"
@@ -47,12 +47,7 @@ export function legalServiceFor(app: FastifyInstance, container: Container): Leg
   })
 }
 
-function sendPublic(reply: FastifyReply, payload: unknown): void {
-  reply
-    .header("cache-control", `public, max-age=${LEGAL_VERSIONS_CACHE_SECONDS}`)
-    .status(200)
-    .send(payload)
-}
+const PUBLIC_CACHE = `public, max-age=${LEGAL_VERSIONS_CACHE_SECONDS}`
 
 export async function registerLegalRoutes(
   app: FastifyInstance,
@@ -62,12 +57,15 @@ export async function registerLegalRoutes(
   const config = { rateLimit: LEGAL_VERSIONS_RATE_LIMIT }
 
   route(app, "getLegalVersions", { config }, async (_request, reply) => {
-    sendPublic(reply, await legal().currentVersions())
+    return reply
+      .header("cache-control", PUBLIC_CACHE)
+      .status(200)
+      .send(await legal().currentVersions())
   })
 
   route(app, "getLegalDocuments", { config }, async (_request, reply) => {
     const payload: GetLegalDocumentsResponse = { documents: await legal().currentDocuments() }
-    sendPublic(reply, payload)
+    return reply.header("cache-control", PUBLIC_CACHE).status(200).send(payload)
   })
 
   route(app, "getLegalDocument", { config }, async (request, reply) => {
@@ -75,13 +73,13 @@ export async function registerLegalRoutes(
     reply.header("cache-control", "no-store")
     const { type, version } = parse(GetLegalDocumentRequestSchema, request.params)
     const payload: GetLegalDocumentResponse = { document: await legal().document(type, version) }
-    sendPublic(reply, payload)
+    return reply.header("cache-control", PUBLIC_CACHE).status(200).send(payload)
   })
 
   route(app, "getMyLegalStatus", async (request, reply) => {
     const userId = requireAuth(request)
     const payload: MyLegalStatusResponse = await legal().status(userId)
-    reply.status(200).send(payload)
+    return reply.status(200).send(payload)
   })
 
   route(
@@ -92,7 +90,7 @@ export async function registerLegalRoutes(
       const userId = requireAuth(request)
       const body = parse(AcceptLegalRequestSchema, request.body)
       const payload: AcceptLegalResponse = await legal().accept(userId, body)
-      reply.status(200).send(payload)
+      return reply.status(200).send(payload)
     },
   )
 }

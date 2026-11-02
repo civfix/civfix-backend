@@ -121,7 +121,9 @@ describe("runTool classification against real children", () => {
 })
 
 describe("stopSandbox", () => {
-  afterEach(() => resetSandboxStopped())
+  afterEach(() => {
+    resetSandboxStopped()
+  })
 
   it("kills a running child at once and refuses every later spawn", async () => {
     const started = Date.now()

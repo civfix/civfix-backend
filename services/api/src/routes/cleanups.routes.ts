@@ -116,20 +116,22 @@ function refineScheduledAt(
   const nowMs = Date.now()
   if (opts.rejectPast && whenMs < nowMs - SCHEDULE_MAX_BACKDATE_MS) {
     ctx.addIssue({
-      code: z.ZodIssueCode.custom,
+      code: "custom",
       path: ["scheduledAt"],
       message: "must not be in the past",
     })
   } else if (whenMs > nowMs + SCHEDULE_MAX_AHEAD_MS) {
     ctx.addIssue({
-      code: z.ZodIssueCode.custom,
+      code: "custom",
       path: ["scheduledAt"],
       message: "is too far in the future",
     })
   }
 }
 
-function dropBlankBringItems<T extends { bring?: readonly string[] | null }>(body: T): T {
+function dropBlankBringItems<T extends { bring?: readonly string[] | null | undefined }>(
+  body: T,
+): T {
   if (!Array.isArray(body.bring)) return body
   return { ...body, bring: body.bring.filter((item) => item !== "") }
 }
@@ -271,7 +273,7 @@ export async function registerCleanupRoutes(
       const userId = requireAuth(request)
       const body = parse(CreateCleanupBodySchema, request.body)
       const dto: CleanupDTO = await service().createCleanup(body, userId)
-      reply.status(201).send(dto)
+      return reply.status(201).send(dto)
     },
   )
 
@@ -284,7 +286,7 @@ export async function registerCleanupRoutes(
       const { id } = parse(CleanupIdParamsSchema, request.params)
       const body = parse(DuplicateCleanupBodySchema, { ...(request.body as object), id })
       const dto: GetCleanupResponse = await service().duplicateCleanup(userId, body)
-      reply.status(201).send(dto)
+      return reply.status(201).send(dto)
     },
   )
 
@@ -293,7 +295,7 @@ export async function registerCleanupRoutes(
     const { id } = parse(CleanupIdParamsSchema, request.params)
     const body = parse(UpdateCleanupBodySchema, { ...(request.body as object), id })
     const dto: GetCleanupResponse = await service().updateCleanup(id, body, userId)
-    reply.status(200).send(dto)
+    return reply.status(200).send(dto)
   })
 
   route(app, "cancelCleanup", { preHandler: csrfProtect }, async (request, reply) => {
@@ -301,7 +303,7 @@ export async function registerCleanupRoutes(
     const { id } = parse(CleanupIdParamsSchema, request.params)
     const body = parse(CancelCleanupBodySchema, { ...(request.body as object), id })
     const dto: GetCleanupResponse = await service().cancelCleanup(id, body.reason ?? null, userId)
-    reply.status(200).send(dto)
+    return reply.status(200).send(dto)
   })
 
   route(
@@ -318,7 +320,7 @@ export async function registerCleanupRoutes(
         userId,
         request.headers["user-agent"] ?? null,
       )
-      reply.status(200).send(dto)
+      return reply.status(200).send(dto)
     },
   )
 
@@ -331,7 +333,7 @@ export async function registerCleanupRoutes(
       const { id } = parse(CleanupIdParamsSchema, request.params)
       const body = parse(ClaimEventSlotRequestSchema, { ...(request.body as object), id })
       const dto: GetCleanupResponse = await service().claimEventSlot(id, userId, body.slotId)
-      reply.status(200).send(dto)
+      return reply.status(200).send(dto)
     },
   )
 
@@ -344,7 +346,7 @@ export async function registerCleanupRoutes(
       message: body.message,
       actorId: userId,
     })
-    reply.status(200).send(payload)
+    return reply.status(200).send(payload)
   })
 
   route(
@@ -361,7 +363,7 @@ export async function registerCleanupRoutes(
         body.userId,
         body.role,
       )
-      reply.status(200).send(payload)
+      return reply.status(200).send(payload)
     },
   )
 
@@ -374,7 +376,7 @@ export async function registerCleanupRoutes(
       const { id, userId } = parse(MemberParamsSchema, request.params)
       const body = parse(RemoveMemberRequestSchema, { ...(request.body as object), id, userId })
       const payload: RemoveMemberResponse = await service().removeMember(id, actorId, body.userId)
-      reply.status(200).send(payload)
+      return reply.status(200).send(payload)
     },
   )
 
@@ -388,13 +390,13 @@ export async function registerCleanupRoutes(
       ...(q.limit !== undefined ? { limit: q.limit } : {}),
     })
     const payload = await service().listCleanups(validated, viewerOf(request))
-    reply.status(200).send(payload)
+    return reply.status(200).send(payload)
   })
 
   route(app, "getCleanup", async (request, reply) => {
     const { id } = parse(CleanupRefOrIdParamsSchema, request.params)
     const dto: GetCleanupResponse = await service().getCleanup(id, viewerOf(request))
-    reply.status(200).send(dto)
+    return reply.status(200).send(dto)
   })
 
   route(
@@ -427,7 +429,7 @@ export async function registerCleanupRoutes(
         }),
         filename: `civfix-event-${event.id}.ics`,
       }
-      reply.status(200).send(payload)
+      return reply.status(200).send(payload)
     },
   )
 
@@ -439,7 +441,7 @@ export async function registerCleanupRoutes(
       const userId = requireAuth(request)
       const { id } = parse(CleanupIdParamsSchema, request.params)
       const payload: JoinCleanupResponse = await service().joinCleanup(id, userId)
-      reply.status(200).send(payload)
+      return reply.status(200).send(payload)
     },
   )
 
@@ -451,14 +453,14 @@ export async function registerCleanupRoutes(
       const userId = requireAuth(request)
       const { id } = parse(CleanupIdParamsSchema, request.params)
       const payload: LeaveCleanupResponse = await service().leaveCleanup(id, userId)
-      reply.status(200).send(payload)
+      return reply.status(200).send(payload)
     },
   )
 
   route(app, "getCleanupAttendees", async (request, reply) => {
     const { id } = parse(CleanupIdParamsSchema, request.params)
     const payload: CleanupAttendeesResponse = await service().listAttendees(id, viewerOf(request))
-    reply.status(200).send(payload)
+    return reply.status(200).send(payload)
   })
 
   route(app, "cleanupMessages", async (request, reply) => {
@@ -480,7 +482,7 @@ export async function registerCleanupRoutes(
       q,
       limit,
     )
-    reply.status(200).send(payload)
+    return reply.status(200).send(payload)
   })
 }
 

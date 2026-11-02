@@ -5,6 +5,7 @@
  */
 
 import { afterAll, beforeAll, describe, expect, it } from "vitest"
+import { expectConsoleError } from "@civfix/testing/console"
 import { withPg, type PgHarness, testHandle } from "../helpers/pg.js"
 import { seedCleanup } from "../helpers/cleanups.js"
 import { stampReferenceCodes, type ReferenceCodeRow } from "../../src/db/backfill-keyset.js"
@@ -39,6 +40,7 @@ describe.skipIf(!pg)("reference-code backfill keyset cursor (integration)", () =
 
     // A second visit to the failing row is the bug; stamping it then lets the old loop end.
     let failingVisits = 0
+    expectConsoleError(`backfill-keyset-pg: cleanups ${failing} failed: allocator refused`)
     const result = await stampReferenceCodes<ReferenceCodeRow>(h.sql, {
       table: "cleanups",
       batchSize: 1,

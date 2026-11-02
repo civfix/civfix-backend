@@ -113,7 +113,7 @@ export async function registerHostAnalyticsRoutes(
         GetEventAnalyticsRequestSchema,
         paramsOverQuery(request),
       )
-      reply.status(200).send(
+      return reply.status(200).send(
         await eventAnalytics().analytics(query.id, query.scope ?? DEFAULT_EVENT_ANALYTICS_SCOPE, {
           userId,
           organizationId: resolution.organizationId,
@@ -129,7 +129,7 @@ export async function registerHostAnalyticsRoutes(
     { config: { rateLimit: ANALYTICS_RATE_LIMIT } },
     async (request, reply) => {
       const scope = await eventScope(request)
-      reply
+      return reply
         .status(200)
         .send(await analytics().overview(scope.cleanupId, scope.range, scope.viewerScope))
     },
@@ -141,7 +141,7 @@ export async function registerHostAnalyticsRoutes(
     { config: { rateLimit: ANALYTICS_RATE_LIMIT } },
     async (request, reply) => {
       const scope = await eventScope(request)
-      reply
+      return reply
         .status(200)
         .send(await analytics().registrations(scope.cleanupId, scope.range, scope.viewerScope))
     },
@@ -153,7 +153,7 @@ export async function registerHostAnalyticsRoutes(
     { config: { rateLimit: ANALYTICS_RATE_LIMIT } },
     async (request, reply) => {
       const scope = await eventScope(request)
-      reply
+      return reply
         .status(200)
         .send(await analytics().checkins(scope.cleanupId, scope.range, scope.viewerScope))
     },
@@ -165,7 +165,7 @@ export async function registerHostAnalyticsRoutes(
     { config: { rateLimit: ANALYTICS_RATE_LIMIT } },
     async (request, reply) => {
       const scope = await eventScope(request)
-      reply
+      return reply
         .status(200)
         .send(await analytics().broadcasts(scope.cleanupId, scope.range, scope.viewerScope))
     },
@@ -177,7 +177,7 @@ export async function registerHostAnalyticsRoutes(
     { config: { rateLimit: ANALYTICS_RATE_LIMIT } },
     async (request, reply) => {
       const scope = await eventScope(request)
-      reply
+      return reply
         .status(200)
         .send(await analytics().sources(scope.cleanupId, scope.range, scope.viewerScope))
     },
@@ -196,7 +196,7 @@ export async function registerHostAnalyticsRoutes(
       if (!can(resolution.standing, "view_roster")) {
         throw AppError.forbidden(hostForbiddenCopy("view_roster"))
       }
-      reply.status(200).send(await insights().insights(query.id, { userId, viewerScope }))
+      return reply.status(200).send(await insights().insights(query.id, { userId, viewerScope }))
     },
   )
 
@@ -209,7 +209,7 @@ export async function registerHostAnalyticsRoutes(
       const query = parse(HostedEventsAnalyticsRequestSchema, request.query)
       const viewerScope = await portfolioViewerScope(userId, query.orgId)
       const range: PortfolioAnalyticsRange = query.range ?? DEFAULT_PORTFOLIO_RANGE
-      reply
+      return reply
         .status(200)
         .send(await analytics().portfolio(userId, query.orgId ?? null, range, viewerScope))
     },
@@ -224,7 +224,7 @@ export async function registerHostAnalyticsRoutes(
       const query = parse(HostAnalyticsSummaryRequestSchema, request.query)
       const viewerScope = await portfolioViewerScope(userId, query.orgId)
       const range: AnalyticsRange = query.range ?? DEFAULT_EVENT_RANGE
-      reply
+      return reply
         .status(200)
         .send(await analytics().summary(userId, query.orgId ?? null, range, viewerScope))
     },

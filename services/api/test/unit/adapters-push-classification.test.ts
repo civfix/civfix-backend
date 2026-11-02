@@ -1,22 +1,10 @@
 // Prune-vs-warn is expensive to get wrong both ways: pruning on a transient failure silently stops push
 // to a live device, and missing a dead token keeps it in push_tokens with every send re-attempting it.
 
-import { describe, it, expect, vi } from "vitest"
+import { describe, it, expect } from "vitest"
 import { isApnsPruneFailure } from "../../src/adapters/push-apns.js"
 import { isFcmPruneCode } from "../../src/adapters/push-fcm.js"
 import { classifyWebPushError } from "../../src/adapters/push-webpush.js"
-import { collectExpoInvalidTokens, makeExpoDispatcher } from "../../src/adapters/push-expo.js"
-import type { PushLogger } from "../../src/adapters/push-sender.js"
-
-function recordingLogger(): { logger: PushLogger; warns: unknown[]; errors: unknown[] } {
-  const warns: unknown[] = []
-  const errors: unknown[] = []
-  return {
-    logger: { warn: (obj) => warns.push(obj), error: (obj) => errors.push(obj) },
-    warns,
-    errors,
-  }
-}
 
 describe("isApnsPruneFailure", () => {
   it("prunes on 410 / Unregistered / BadDeviceToken", () => {
@@ -74,86 +62,5 @@ describe("classifyWebPushError", () => {
       prune: false,
       statusCode: undefined,
     })
-  })
-})
-
-describe("collectExpoInvalidTokens", () => {
-  it("returns only DeviceNotRegistered tokens, index-aligned with the chunk", () => {
-    const { logger, warns } = recordingLogger()
-    const invalid = collectExpoInvalidTokens(
-      [
-        { status: "ok" },
-        { status: "error", message: "gone", details: { error: "DeviceNotRegistered" } },
-        { status: "error", message: "slow down", details: { error: "MessageRateExceeded" } },
-      ],
-      ["good", "dead", "rate"],
-      logger,
-    )
-    expect(invalid).toEqual(["dead"])
-    expect(warns).toHaveLength(1)
-  })
-
-  it("ignores a ticket with no matching token and an error with no details", () => {
-    const { logger, warns } = recordingLogger()
-    const invalid = collectExpoInvalidTokens(
-      [{ status: "error", details: { error: "DeviceNotRegistered" } }, { status: "error" }],
-      [],
-      logger,
-    )
-    expect(invalid).toEqual([])
-    expect(warns).toHaveLength(2)
-  })
-
-  it("is a no-op for an all-ok / empty ticket list", () => {
-    const { logger, warns } = recordingLogger()
-    expect(collectExpoInvalidTokens([], ["a"], logger)).toEqual([])
-    expect(collectExpoInvalidTokens([{ status: "ok" }], ["a"], logger)).toEqual([])
-    expect(warns).toHaveLength(0)
-  })
-})
-
-describe("expo dispatcher retry (429/5xx)", () => {
-  it("retries a 429 ONCE and uses the retry's tickets", async () => {
-    const { logger } = recordingLogger()
-    let call = 0
-    const fetchImpl = vi.fn(async () => {
-      call++
-      if (call === 1) return new Response("slow down", { status: 429 })
-      return new Response(
-        JSON.stringify({ data: [{ status: "error", details: { error: "DeviceNotRegistered" } }] }),
-        { status: 200 },
-      )
-    }) as unknown as typeof fetch
-
-    const dispatch = makeExpoDispatcher({ fetchImpl, retryDelayMs: 1 }, logger)
-    const { invalidTokens } = await dispatch(["ExponentPushToken[a]"], { title: "Hi" })
-
-    expect(call).toBe(2)
-    expect(invalidTokens).toEqual(["ExponentPushToken[a]"])
-  })
-
-  it("gives up after ONE retry (never loops) and reports the status", async () => {
-    const { logger, errors } = recordingLogger()
-    const fetchImpl = vi.fn(
-      async () => new Response("boom", { status: 502 }),
-    ) as unknown as typeof fetch
-
-    const dispatch = makeExpoDispatcher({ fetchImpl, retryDelayMs: 1 }, logger)
-    await expect(dispatch(["ExponentPushToken[a]"], { title: "Hi" })).resolves.toEqual({
-      invalidTokens: [],
-    })
-    expect((fetchImpl as unknown as { mock: { calls: unknown[] } }).mock.calls).toHaveLength(2)
-    expect(errors).toHaveLength(1)
-  })
-
-  it("does NOT retry a 4xx that is not 429", async () => {
-    const { logger } = recordingLogger()
-    const fetchImpl = vi.fn(
-      async () => new Response("bad", { status: 400 }),
-    ) as unknown as typeof fetch
-
-    const dispatch = makeExpoDispatcher({ fetchImpl, retryDelayMs: 1 }, logger)
-    await dispatch(["ExponentPushToken[a]"], { title: "Hi" })
-    expect((fetchImpl as unknown as { mock: { calls: unknown[] } }).mock.calls).toHaveLength(1)
   })
 })

@@ -78,9 +78,9 @@ function fireMentionBells(
   mentions: UserMentionDTO[],
   message: ChatMessageDTO,
 ): void {
-  const notify = deps.mentions?.notifyChatMention
-  if (!notify || mentions.length === 0) return
-  const seam = deps.mentions!
+  const seam = deps.mentions
+  const notify = seam?.notifyChatMention
+  if (!seam || !notify || mentions.length === 0) return
   void mapWithLimit(mentions, REPORT_MENTION_BELL_CONCURRENCY, (m) =>
     notify
       .call(seam, { kind: "report", roomId: reportId, actorUserId, mentionedUserId: m.id, message })

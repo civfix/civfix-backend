@@ -20,7 +20,7 @@ function refusal(entry: LegalDocumentVersion, problem: string): Error {
 }
 
 /**
- * The row the contract describes. A version written since §66 must have its blocks, and its sha256 must be
+ * The row the contract describes. A version written since §68 must have its blocks, and its sha256 must be
  * the hash of its whole record: only this loader and the contract's own check ever compute it (D3).
  */
 function recordOf(

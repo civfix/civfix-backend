@@ -11,6 +11,7 @@ import type { FastifyBaseLogger } from "fastify"
 import type { Container } from "../di.js"
 import { makeReportChatRepository } from "./report-chat-repository.drizzle.js"
 import { makeReportChatNotifier } from "./report-chat-notifier.js"
+import { makeConversationNameRepository } from "./conversation-name-repository.drizzle.js"
 import { makeRouteNotificationService } from "./route-notifier.js"
 import {
   bindMutedUserIdsFor,
@@ -49,6 +50,7 @@ export function makeContainerReportChatEmitter(
     isMuted: (userId, roomId) => conversationMutes.isMuted(userId, "report", roomId),
     ...(mutedUserIdsFor ? { mutedUserIdsFor } : {}),
     roomKeyFor,
+    conversationNames: makeConversationNameRepository(sql),
     // System messages have no author, so the notifier short-circuits this gate on a null actor. It is
     // wired to the real repo rather than a `() => false` stub so a timeline event that gains an author
     // is already correct. Resolved lazily: a caller's wiring may have no blocks repo, and a throw at

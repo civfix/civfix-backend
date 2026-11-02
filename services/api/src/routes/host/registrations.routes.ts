@@ -65,7 +65,7 @@ export function registerHostRegistrationRoutes(
       const payload: RegisterForEventResponse = await ctx
         .services()
         .registrations.register(body, { kind: "user", userId })
-      reply.status(200).send(payload)
+      return reply.status(200).send(payload)
     },
   )
 
@@ -81,7 +81,7 @@ export function registerHostRegistrationRoutes(
       const payload: ListEventRegistrationsResponse = await ctx
         .services()
         .registrations.listRoster(query, userId, projectionFor(standing))
-      reply.status(200).send(payload)
+      return reply.status(200).send(payload)
     },
   )
 
@@ -97,7 +97,7 @@ export function registerHostRegistrationRoutes(
       const payload: CreateWalkupRegistrationResponse = await ctx
         .services()
         .registrations.walkup(body, userId)
-      reply.status(201).send(payload)
+      return reply.status(201).send(payload)
     },
   )
 
@@ -113,7 +113,7 @@ export function registerHostRegistrationRoutes(
       const payload: GetEventRegistrationResponse = await ctx
         .services()
         .registrations.getRegistration(id, registrationId, userId, projectionFor(standing))
-      reply.status(200).send(payload)
+      return reply.status(200).send(payload)
     },
   )
 
@@ -132,7 +132,7 @@ export function registerHostRegistrationRoutes(
       const payload: RemoveEventRegistrationResponse = await ctx
         .services()
         .registrations.remove(body, userId)
-      reply.status(200).send(payload)
+      return reply.status(200).send(payload)
     },
   )
 
@@ -157,7 +157,7 @@ export function registerHostRegistrationRoutes(
       const payload: CancelEventRegistrationResponse = await ctx
         .services()
         .registrations.cancel(body, userId, byHost)
-      reply.status(200).send(payload)
+      return reply.status(200).send(payload)
     },
   )
 
@@ -176,7 +176,7 @@ export function registerHostRegistrationRoutes(
       const payload: TransferEventRegistrationResponse = await ctx
         .services()
         .registrations.transfer(body, userId)
-      reply.status(200).send(payload)
+      return reply.status(200).send(payload)
     },
   )
 
@@ -195,7 +195,7 @@ export function registerHostRegistrationRoutes(
       const payload: SetEventRegistrationNoteResponse = await ctx
         .services()
         .registrations.setNote(body, userId)
-      reply.status(200).send(payload)
+      return reply.status(200).send(payload)
     },
   )
 
@@ -211,7 +211,7 @@ export function registerHostRegistrationRoutes(
       const payload: GetEventRegistrationAnswersResponse = await ctx
         .services()
         .registrations.getAnswers(id, registrationId, userId)
-      reply.status(200).send(payload)
+      return reply.status(200).send(payload)
     },
   )
 }

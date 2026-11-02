@@ -114,7 +114,7 @@ export async function registerDmRoutes(app: FastifyInstance, container: Containe
       const body = parse(OpenDmRequestSchema, request.body)
       const thread = await service().openDm(userId, body.userId)
       const payload: OpenDmResponse = { thread }
-      reply.status(200).send(payload)
+      return reply.status(200).send(payload)
     },
   )
 
@@ -134,7 +134,7 @@ export async function registerDmRoutes(app: FastifyInstance, container: Containe
       q,
       limit,
     )
-    reply.status(200).send(payload)
+    return reply.status(200).send(payload)
   })
 
   route(
@@ -173,7 +173,7 @@ export async function registerDmRoutes(app: FastifyInstance, container: Containe
         ),
       ).catch(() => {})
 
-      reply.status(200).send(updated)
+      return reply.status(200).send(updated)
     },
   )
 
@@ -203,7 +203,7 @@ export async function registerDmRoutes(app: FastifyInstance, container: Containe
           message: neutralizeChatViewerFields(updated),
         }),
       ).catch(() => {})
-      reply.status(200).send(updated)
+      return reply.status(200).send(updated)
     },
   )
 
@@ -240,7 +240,7 @@ export async function registerDmRoutes(app: FastifyInstance, container: Containe
       ).catch(() => {})
       broadcastMessageUpdate(container.chatService, "dm", threadId, roomView)
 
-      reply.status(200).send(tombstone)
+      return reply.status(200).send(tombstone)
     },
   )
 }

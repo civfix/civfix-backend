@@ -235,9 +235,7 @@ export function toEventAnswerDTO(record: AnswerRecord): EventAnswerDTO {
   const value =
     record.scrubbedAt !== null
       ? null
-      : record.valueText !== null
-        ? record.valueText
-        : ((record.valueJson ?? null) as EventAnswerDTO["value"])
+      : (record.valueText ?? ((record.valueJson ?? null) as EventAnswerDTO["value"]))
   return {
     questionId: record.questionId,
     prompt: record.prompt,

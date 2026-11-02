@@ -1,6 +1,6 @@
 import { AppError, IdSchema, type AdminOkResponse, type RoomKind } from "@civfix/contract"
 import type { FastifyBaseLogger, FastifyInstance, FastifyReply, FastifyRequest } from "fastify"
-import type { ZodTypeAny, z } from "zod"
+import type { z } from "zod"
 import { parse } from "../_validate.js"
 import type { Container } from "../../di.js"
 import { broadcastMessageUpdate } from "../../ws/gateway.js"
@@ -51,7 +51,7 @@ export function twoIdParams<K extends string>(
  * The typed client also fills the id into the body, but the URL path is authoritative: the path id
  * overwrites whatever the body claimed, so a body id can never address a different row than the path names.
  */
-export function parseBodyWithId<S extends ZodTypeAny>(
+export function parseBodyWithId<S extends z.ZodType>(
   schema: S,
   request: FastifyRequest,
 ): { id: string; body: z.infer<S> } {
@@ -59,9 +59,9 @@ export function parseBodyWithId<S extends ZodTypeAny>(
   return { id, body: parse(schema, { ...(request.body as object), id }) }
 }
 
-export function sendOk(reply: FastifyReply): void {
+export function sendOk(reply: FastifyReply): FastifyReply {
   const payload: AdminOkResponse = { ok: true }
-  reply.status(200).send(payload)
+  return reply.status(200).send(payload)
 }
 
 /**

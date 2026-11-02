@@ -31,8 +31,8 @@ export function normalizeIp(ip: string | undefined | null): string {
   const raw = (ip ?? "").trim().toLowerCase()
   if (raw === "") return UNKNOWN_IP_BUCKET
 
-  const mapped = IPV4_MAPPED_IPV6_RE.exec(raw)
-  if (mapped) return mapped[1]!
+  const mappedV4 = IPV4_MAPPED_IPV6_RE.exec(raw)?.[1]
+  if (mappedV4 !== undefined) return mappedV4
 
   if (IPV4_RE.test(raw)) return raw
 

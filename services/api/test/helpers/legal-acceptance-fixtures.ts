@@ -24,7 +24,7 @@ const TITLE: Record<LegalDocumentType, string> = {
   subprocessors: "Subprocessors",
 }
 
-/** V, newest last per type, with `material` null on the pre-§66 versions. */
+/** V, newest last per type, with `material` null on the pre-§68 versions. */
 const V_ENTRIES: readonly (readonly [LegalDocumentType, string, boolean | null])[] = [
   ["terms", "2026-09-16", null],
   ["terms", "2026-09-21", null],

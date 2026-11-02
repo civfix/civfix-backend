@@ -7,7 +7,10 @@ import type { Container } from "../../src/di.js"
 import { withPg, type PgHarness } from "../helpers/pg.js"
 import { InMemoryChatPresence } from "../../src/adapters/chat-presence.js"
 import { InMemoryThreadsRepository } from "../helpers/chat.js"
-import { InMemoryNotificationRepository } from "../helpers/notifications.js"
+import {
+  InMemoryNotificationRepository,
+  InMemoryNotificationSettingsRepository,
+} from "../helpers/notifications.js"
 import {
   InMemoryBlocksRepository,
   InMemoryDmRepository,
@@ -24,7 +27,7 @@ import { makeDrizzleChatReadState } from "../../src/services/read-watermark-repo
 type MarkRead = (cleanupId: string, userId: string, upToId: string) => Promise<void>
 
 // eslint-disable-next-line @typescript-eslint/no-unnecessary-type-assertion -- the assertion is the field's declared type: vi.hoisted infers the record from this literal
-const { captured } = vi.hoisted(() => ({ captured: {} as { markRead?: MarkRead } }))
+const { captured } = vi.hoisted(() => ({ captured: {} as { markRead?: MarkRead | undefined } }))
 
 vi.mock("../../src/ws/gateway.js", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../../src/ws/gateway.js")>()
@@ -82,7 +85,11 @@ describe.skipIf(!pg)("F040: the cleanup read ack only advances on a message from
   function wire(): MarkRead {
     captured.markRead = undefined
     notifRepo = new InMemoryNotificationRepository()
-    notifications = makeNotificationService({ repo: notifRepo, pushSender: new FakePushSender() })
+    notifications = makeNotificationService({
+      repo: notifRepo,
+      settingsRepo: new InMemoryNotificationSettingsRepository(),
+      pushSender: new FakePushSender(),
+    })
     const blocks = new InMemoryBlocksRepository()
     const app = {
       chatOverrides: {

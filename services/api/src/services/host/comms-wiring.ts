@@ -7,6 +7,7 @@ import { apiBaseUrlOf, webBaseUrlOf } from "../../lib/base-url.js"
 import type { WriteAuditInput } from "../admin/audit.js"
 import { insertAuditRow } from "../admin/audit-repository.drizzle.js"
 import { makeRouteNotificationService } from "../route-notifier.js"
+import { makeDrizzleNotificationSettingsRepository } from "../notification-settings-repository.drizzle.js"
 import { makeDrizzleAnalyticsRepository } from "./analytics-repository.drizzle.js"
 import { makeAnalyticsService, type AnalyticsService } from "./analytics-service.js"
 import { makeDrizzleEventAnalyticsRepository } from "./event-analytics-repository.drizzle.js"
@@ -97,7 +98,7 @@ function selfHostsOf(webOrigins: readonly string[]): string[] {
 export function broadcastConfigOf(container: Container): BroadcastConfig {
   const env = container.env
   return {
-    killSwitch: env.HOST_MESSAGING_KILL_SWITCH,
+    killSwitch: () => container.getRuntimeFlags().get("host_messaging_kill_switch"),
     perEventPerDay: env.HOST_BROADCAST_PER_EVENT_PER_DAY,
     recipientsPerDay: env.HOST_BROADCAST_RECIPIENTS_PER_DAY,
     cooldownSec: env.HOST_BROADCAST_COOLDOWN_SEC,
@@ -162,6 +163,7 @@ export function makeCommsRuntime(container: Container, logger?: CommsLogger): Co
     repo,
     service: broadcasts,
     notifications: makeRouteNotificationService(container, logger),
+    settingsRepo: makeDrizzleNotificationSettingsRepository(sql),
     mailer: container.mailer,
     cache: container.getCache(),
     config,

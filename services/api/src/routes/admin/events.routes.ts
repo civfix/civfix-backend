@@ -84,20 +84,20 @@ export async function registerAdminEventsRoutes(
   route(app, "listAdminEvents", async (request, reply) => {
     const query = parse(AdminEventListQuerySchema, request.query)
     const payload: AdminEventListResponse = await service().list(query)
-    reply.status(200).send(payload)
+    return reply.status(200).send(payload)
   })
 
   route(app, "getAdminEvent", async (request, reply) => {
     const { id } = idParam(request)
     const payload: AdminEventDTO = await service().get(id)
-    reply.status(200).send(payload)
+    return reply.status(200).send(payload)
   })
 
   route(app, "setEventStatus", { preHandler: csrfProtect }, async (request, reply) => {
     const operatorId = requireOperator(request)
     const { id, body } = parseBodyWithId(SetEventStatusRequestSchema, request)
     await service().setStatus(id, { status: body.status, actorId: operatorId })
-    sendOk(reply)
+    return sendOk(reply)
   })
 
   // The only write path for cleanups.bags.
@@ -105,41 +105,41 @@ export async function registerAdminEventsRoutes(
     const operatorId = requireOperator(request)
     const { id, body } = parseBodyWithId(SetEventOutcomeRequestSchema, request)
     await service().setOutcome(id, { bags: body.bags, actorId: operatorId })
-    sendOk(reply)
+    return sendOk(reply)
   })
 
   route(app, "flagEvent", { preHandler: csrfProtect }, async (request, reply) => {
     const operatorId = requireOperator(request)
     const { id, body } = parseBodyWithId(FlagEventRequestSchema, request)
     await service().flag(id, { reason: body.reason ?? null, actorId: operatorId })
-    sendOk(reply)
+    return sendOk(reply)
   })
 
   route(app, "cancelEvent", { preHandler: csrfProtect }, async (request, reply) => {
     const operatorId = requireOperator(request)
     const { id, body } = parseBodyWithId(CancelRequestSchema, request)
     await service().cancel(id, { reason: body.reason ?? null, actorId: operatorId })
-    sendOk(reply)
+    return sendOk(reply)
   })
 
   route(app, "postEventMessage", { preHandler: csrfProtect }, async (request, reply) => {
     const operatorId = requireOperator(request)
     const { id, body } = parseBodyWithId(PostMessageRequestSchema, request)
     await service().postMessage(id, { body: body.body, actorId: operatorId })
-    sendOk(reply)
+    return sendOk(reply)
   })
 
   route(app, "linkEventReports", { preHandler: csrfProtect }, async (request, reply) => {
     const operatorId = requireOperator(request)
     const { id, body } = parseBodyWithId(LinkEventReportsRequestSchema, request)
     await service().linkReports(id, body.reportIds, operatorId)
-    sendOk(reply)
+    return sendOk(reply)
   })
 
   route(app, "unlinkEventReport", { preHandler: csrfProtect }, async (request, reply) => {
     const operatorId = requireOperator(request)
     const { id, reportId } = twoIdParams(request, "reportId")
     await service().unlinkReport(id, reportId, operatorId)
-    sendOk(reply)
+    return sendOk(reply)
   })
 }

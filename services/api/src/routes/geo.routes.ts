@@ -45,7 +45,7 @@ export async function registerGeoRoutes(app: FastifyInstance, container: Contain
       )
 
       reply.header("Cache-Control", APPROXIMATE_LOCATION_CACHE_CONTROL)
-      reply.status(200).send(payload)
+      return reply.status(200).send(payload)
     },
   )
 }

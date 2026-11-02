@@ -36,6 +36,7 @@ import { makeRouteNotificationService } from "../../services/route-notifier.js"
 import { makeRouteCleanupReader } from "../../services/route-cleanup-reader.js"
 import { webBaseUrlOf } from "../../lib/base-url.js"
 import { avatarPresigner } from "../../services/user-avatar.js"
+import { makeDrizzleNotificationSettingsRepository } from "../../services/notification-settings-repository.drizzle.js"
 
 const ONE_MINUTE = "1 minute"
 const ONE_HOUR = "1 hour"
@@ -112,6 +113,7 @@ export async function registerHostTeamRoutes(
       counters: container.getCounterStore(),
       mailer: container.mailer,
       notifier: makeRouteNotificationService(container, app.log),
+      notificationSettings: makeDrizzleNotificationSettingsRepository(sql),
       presignEventMedia: makeEventMediaPresigner(container.storage),
       affiliations: container.getAffiliationLoader(),
       eventTitleOf: (cleanupId: string) => repo.eventTitleOf(cleanupId),
@@ -125,7 +127,7 @@ export async function registerHostTeamRoutes(
     const { id } = parse(CleanupIdParamsSchema, request.params)
     parse(ListEventTeamRequestSchema, { id })
     const payload: ListEventTeamResponse = await service().listTeam(id, userId)
-    reply.status(200).send(payload)
+    return reply.status(200).send(payload)
   })
 
   route(
@@ -137,7 +139,7 @@ export async function registerHostTeamRoutes(
       const { id } = parse(CleanupIdParamsSchema, request.params)
       const body = parse(InviteEventTeamMemberRequestSchema, { ...(request.body as object), id })
       const payload: InviteEventTeamMemberResponse = await service().inviteMember(id, userId, body)
-      reply.status(201).send(payload)
+      return reply.status(201).send(payload)
     },
   )
 
@@ -154,7 +156,7 @@ export async function registerHostTeamRoutes(
         userId,
         body.inviteId,
       )
-      reply.status(200).send(payload)
+      return reply.status(200).send(payload)
     },
   )
 
@@ -171,7 +173,7 @@ export async function registerHostTeamRoutes(
         userId,
         body.token,
       )
-      reply.status(200).send(payload)
+      return reply.status(200).send(payload)
     },
   )
 
@@ -190,7 +192,7 @@ export async function registerHostTeamRoutes(
         ...(validated.cursor !== undefined ? { cursor: validated.cursor } : {}),
         limit: validated.limit ?? MY_EVENT_INVITES_DEFAULT_LIMIT,
       })
-      reply.status(200).send(payload)
+      return reply.status(200).send(payload)
     },
   )
 
@@ -206,7 +208,7 @@ export async function registerHostTeamRoutes(
         userId,
         body.inviteId,
       )
-      reply.status(200).send(payload)
+      return reply.status(200).send(payload)
     },
   )
 
@@ -222,7 +224,7 @@ export async function registerHostTeamRoutes(
         userId,
         body.inviteId,
       )
-      reply.status(200).send(payload)
+      return reply.status(200).send(payload)
     },
   )
 }

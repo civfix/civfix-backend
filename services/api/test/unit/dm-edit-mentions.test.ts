@@ -26,7 +26,7 @@ afterEach(async () => {
   }
 })
 
-async function harness(chatMentions: ChatGatewayOverrides["chatMentions"]): Promise<{
+async function harness(chatMentions: NonNullable<ChatGatewayOverrides["chatMentions"]>): Promise<{
   app: FastifyInstance
   mailer: FakeMailer
   dmRepo: InMemoryDmRepository

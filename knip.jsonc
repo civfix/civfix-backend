@@ -26,6 +26,9 @@
         // decision, whose fix may reuse hostContactOptInFor.
         "src/services/host/event-consents-repository.drizzle.ts",
       ],
+      // Nothing imports ws directly: @fastify/websocket's typings do, and without these the socket
+      // type it hands the /ws handler resolves to `any`.
+      "ignoreDependencies": ["@types/ws"],
     },
     "services/media-worker": {
       "project": ["src/**/*.ts", "test/**/*.ts"],

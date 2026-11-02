@@ -55,14 +55,12 @@ export async function registerClaimRoutes(
 
   let reportServiceMemo: ReportService | undefined
   function reportService(): ReportService {
-    if (reportServiceMemo === undefined) {
-      reportServiceMemo = makeReportService({
-        repo: makeDrizzleReportRepository(container.getDb().sql),
-        resolveJurisdictionGeoid: () => Promise.resolve(null),
-        presignMedia: makeMediaPresigner(container.storage),
-        presignPrivateMedia: makePrivateMediaPresigner(container.storage),
-      })
-    }
+    reportServiceMemo ??= makeReportService({
+      repo: makeDrizzleReportRepository(container.getDb().sql),
+      resolveJurisdictionGeoid: () => Promise.resolve(null),
+      presignMedia: makeMediaPresigner(container.storage),
+      presignPrivateMedia: makePrivateMediaPresigner(container.storage),
+    })
     return reportServiceMemo
   }
 
@@ -98,7 +96,7 @@ export async function registerClaimRoutes(
       throw AppError.forbidden("Origin not allowed.")
     }
     const payload: ClaimNudgeResponse = await service().claimNudge(anonToken)
-    reply.status(200).send(payload)
+    return reply.status(200).send(payload)
   })
 
   route(
@@ -109,7 +107,7 @@ export async function registerClaimRoutes(
       const userId = requireAuth(request)
       const body = parse(ClaimReportRequestSchema, request.body)
       const payload: ClaimReportResponse = await service().claimReport(body.claimCode, userId)
-      reply.status(200).send(payload)
+      return reply.status(200).send(payload)
     },
   )
 }

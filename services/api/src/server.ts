@@ -59,6 +59,7 @@ import { registerDiscoveryJobs } from "./services/admin/discovery-jobs.js"
 import { registerAutoForwardJobs } from "./services/admin/autoforward-jobs.js"
 import { registerDataExportJobs } from "./services/data-export-jobs.js"
 import { registerChatRoomFanoutJob } from "./services/chat-fanout-jobs.js"
+import { registerPushClearJob } from "./services/push-clear-jobs.js"
 import { registerCleanupCancelFanoutJob } from "./services/cleanup-jobs.js"
 import { registerGuestJobs } from "./services/guest-jobs.js"
 import { registerRegistrationJobs } from "./services/host/registration-jobs.js"
@@ -173,10 +174,12 @@ export function loggerOptions(env: Env, capture?: MakeServerOptions["logCapture"
         return {
           method: request.method,
           url: loggedRequestUrl(request.url),
-          version: typeof acceptVersion === "string" ? acceptVersion : undefined,
+          ...(typeof acceptVersion === "string" ? { version: acceptVersion } : {}),
           host: request.host,
           remoteAddress: request.ip,
-          remotePort: request.socket.remotePort,
+          ...(request.socket.remotePort !== undefined
+            ? { remotePort: request.socket.remotePort }
+            : {}),
         }
       },
     },
@@ -189,6 +192,14 @@ export function loggerOptions(env: Env, capture?: MakeServerOptions["logCapture"
 }
 
 const HEALTH_PROBE_PATHS = new Set(["/healthz", "/readyz"])
+
+// Phone builds send `<platform>/<version>`; any other value is left off rather than logged as given.
+const APP_VERSION_PATTERN = /^(ios|android)\/\d+\.\d+\.\d+$/
+
+function appVersionField(request: FastifyRequest): { app_version?: string } {
+  const raw = request.headers["x-civfix-app-version"]
+  return typeof raw === "string" && APP_VERSION_PATTERN.test(raw) ? { app_version: raw } : {}
+}
 
 /**
  * One request line per request, written when it completes, in place of Fastify's incoming/completed
@@ -224,7 +235,12 @@ export class RequestLogController extends LogController {
     reply: FastifyReply,
   ): void {
     if (this.isLogDisabled(request)) return
-    const fields = { req: request, res: reply, responseTime: reply.elapsedTime }
+    const fields = {
+      req: request,
+      res: reply,
+      responseTime: reply.elapsedTime,
+      ...appVersionField(request),
+    }
     if (error) {
       reply.log.error({ ...fields, err: error }, "request errored")
       return
@@ -258,6 +274,13 @@ export async function makeServer(opts: MakeServerOptions = {}): Promise<FastifyI
     logController: new RequestLogController(),
     logger: loggerOptions(env, opts.logCapture),
   })
+
+  if (env.devTestEmailsDropped > 0) {
+    app.log.warn(
+      { dropped: env.devTestEmailsDropped },
+      "DEV_TEST_EMAILS: ignored the entries that are not civfix.org addresses",
+    )
+  }
 
   app.decorate("container", container)
   app.decorate("lifecycle", makeLifecycle())
@@ -332,11 +355,12 @@ export async function startBackgroundJobs(app: FastifyInstance, env: Env): Promi
   await registerInboundJobs(app.container)
   await app.container.jobs.enqueue(INBOUND_SWEEP_JOB, {})
   await registerDiscoveryJobs(app.container)
-  if (env.REPORT_AUTOFORWARD_ENABLED) await registerAutoForwardJobs(app.container, app.log)
+  await registerAutoForwardJobs(app.container, app.log)
   await registerDataExportJobs(app.container, { logger: app.log })
   await registerCleanupCancelFanoutJob(app.container, app.log)
   await registerGuestJobs(app.container, app.log)
   await registerChatRoomFanoutJob(app.container, app.log)
+  await registerPushClearJob(app.container, app.log)
   await registerRegistrationJobs(app.container, app.log)
   await registerCommsJobs(app.container, app.log)
 }

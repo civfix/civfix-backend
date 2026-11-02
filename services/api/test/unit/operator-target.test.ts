@@ -39,7 +39,7 @@ describe("assertTargetIsNotOperatorRole", () => {
 
   it("uses the caller's verb verbatim so each console action reads correctly", () => {
     for (const verb of ["ban", "suspend", "remove"]) {
-      expect(() => assertTargetIsNotOperatorRole(OPERATOR_ROLE, verb)).toThrowError(
+      expect(() => assertTargetIsNotOperatorRole(OPERATOR_ROLE, verb)).toThrow(
         new RegExp(`cannot ${verb} an operator`),
       )
     }

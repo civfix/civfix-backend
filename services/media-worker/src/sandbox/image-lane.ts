@@ -40,10 +40,7 @@ function envelopeSchema(limits: WorkerLimits) {
           .refine((m) => m.width * m.height <= limits.maxImagePixels, "pixel budget exceeded"),
         strippedContentType: z.enum(ALLOWED_OUTPUT_CONTENT_TYPES),
         thumbnailContentType: z.enum(ALLOWED_OUTPUT_CONTENT_TYPES),
-        exifGps: z
-          .object({ lat: z.number().finite(), lng: z.number().finite() })
-          .strict()
-          .nullable(),
+        exifGps: z.object({ lat: z.number(), lng: z.number() }).strict().nullable(),
         phash: z.string().regex(PHASH_RE).nullable(),
       })
       .strict(),

@@ -60,7 +60,7 @@ function fetchOver(
     const req = http.request({ host: "127.0.0.1", port, path, method: "GET", agent }, (res) => {
       let body = ""
       res.setEncoding("utf8")
-      res.on("data", (chunk) => {
+      res.on("data", (chunk: string) => {
         body += chunk
       })
       res.on("end", () => resolve({ status: res.statusCode ?? 0, body }))

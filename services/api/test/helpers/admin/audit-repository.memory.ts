@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto"
 import type {
   AuditRecord,
   AuditRepository,
@@ -18,12 +19,9 @@ export interface SeedAuditInput {
 export class InMemoryAuditRepository implements AuditRepository {
   readonly rows: AuditRecord[] = []
 
-  private seq = 0
-
   seedRow(input: SeedAuditInput = {}): AuditRecord {
-    this.seq += 1
     const record: AuditRecord = {
-      id: input.id ?? `audit-${this.seq}`,
+      id: input.id ?? randomUUID(),
       actorId: input.actorId ?? null,
       actorName: input.actorName ?? null,
       action: input.action ?? "report.status_changed",

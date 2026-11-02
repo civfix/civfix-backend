@@ -1,4 +1,5 @@
 import type { Queryable, Sql, SqlFragment } from "../../db/client.js"
+import { requireRow } from "../../db/rows.js"
 import { clampLimit } from "./pagination.js"
 import {
   isUuid,
@@ -347,11 +348,14 @@ export function makeDrizzleAdminEventRepository(sql: Sql): AdminEventRepository 
       return sql.begin(async (tx) => {
         const exists = await tx<{ id: string }[]>`SELECT id FROM cleanups WHERE id = ${id} LIMIT 1`
         if (exists.length === 0) return null
-        const [message] = await tx<{ id: string }[]>`
-          INSERT INTO chat_messages (cleanup_id, sender_id, body, kind)
-          VALUES (${id}, ${CIVFIX_OFFICIAL_USER_ID}, ${input.body}, 'text')
-          RETURNING id
-        `
+        const message = requireRow(
+          await tx<{ id: string }[]>`
+            INSERT INTO chat_messages (cleanup_id, sender_id, body, kind)
+            VALUES (${id}, ${CIVFIX_OFFICIAL_USER_ID}, ${input.body}, 'text')
+            RETURNING id
+          `,
+          "event attendee message insert",
+        )
         await tx`
           INSERT INTO cleanup_timeline (cleanup_id, kind, note, actor_id)
           VALUES (${id}, 'message', 'Posted an update to attendees', ${input.actorId})
@@ -367,7 +371,7 @@ export function makeDrizzleAdminEventRepository(sql: Sql): AdminEventRepository 
           actorId: input.actorId,
           action: "event.message_posted",
           target: `cleanup:${id}`,
-          meta: { members: notified.length, messageId: message!.id },
+          meta: { members: notified.length, messageId: message.id },
         })
         return { notified: notified.length }
       })

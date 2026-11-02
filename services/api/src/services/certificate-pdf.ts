@@ -136,8 +136,18 @@ type LoadedFonts = ReadonlyMap<FontFile, PromiseSettledResult<Buffer>>
 // used, so a missing CJK face still fails only the documents that need it.
 async function loadFonts(): Promise<LoadedFonts> {
   const files = Object.values(FONT)
-  const results = await Promise.allSettled(files.map((file) => fontBuffer(file)))
-  return new Map(results.map((result, index) => [files[index]!, result]))
+  const loaded = await Promise.all(
+    files.map((file) =>
+      fontBuffer(file).then(
+        (value): [FontFile, PromiseSettledResult<Buffer>] => [file, { status: "fulfilled", value }],
+        (reason: unknown): [FontFile, PromiseSettledResult<Buffer>] => [
+          file,
+          { status: "rejected", reason },
+        ],
+      ),
+    ),
+  )
+  return new Map(loaded)
 }
 
 function loadedFont(ctx: PdfContext, file: FontFile): Buffer {

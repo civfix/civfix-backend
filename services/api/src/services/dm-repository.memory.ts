@@ -126,7 +126,8 @@ export class InMemoryDmRepository implements DmRepository {
     const [lo, hi] = orderPair(userA, userB)
     const key = `${lo}:${hi}`
     const existingId = this.byPair.get(key)
-    if (existingId) return Promise.resolve(this.threads.get(existingId)!)
+    const existing = existingId === undefined ? undefined : this.threads.get(existingId)
+    if (existing) return Promise.resolve(existing)
     const thread: DmThread = {
       id: randomUUID(),
       userLo: lo,
@@ -268,14 +269,21 @@ export class InMemoryDmRepository implements DmRepository {
 
   listPins(threadId: string, viewerUserId: string | null): Promise<ChatMessageDTO[]> {
     const pins = (this.log.get(threadId) ?? [])
-      .filter((m) => !m.deleted && m.dto.pinnedAt != null)
-      .sort((a, b) => {
-        const at = a.dto.pinnedAt!
-        const bt = b.dto.pinnedAt!
-        return at === bt ? (a.dto.id < b.dto.id ? 1 : -1) : at < bt ? 1 : -1
+      .flatMap((m) => {
+        const pinnedAt = m.dto.pinnedAt
+        return !m.deleted && pinnedAt != null ? [{ m, pinnedAt }] : []
       })
+      .sort((a, b) =>
+        a.pinnedAt === b.pinnedAt
+          ? a.m.dto.id < b.m.dto.id
+            ? 1
+            : -1
+          : a.pinnedAt < b.pinnedAt
+            ? 1
+            : -1,
+      )
       .slice(0, PIN_LIST_CAP)
-      .map((m) =>
+      .map(({ m }) =>
         this.withReply(threadId, {
           ...m.dto,
           reactions: this.reactionsFor(m.dto.id, viewerUserId),
@@ -444,7 +452,7 @@ export class InMemoryDmRepository implements DmRepository {
         deletedAt: peer.deletedAt ?? null,
       })
       const live = (this.log.get(t.id) ?? []).filter((m) => !m.deleted).map((m) => m.dto)
-      const last = live.length > 0 ? live[live.length - 1]! : null
+      const last = live.at(-1) ?? null
       const lastReadMs = this.reads.get(readKey(t.id, userId)) ?? 0
       const baseline = Math.max(t.createdAt.getTime(), lastReadMs)
       const unread = live.filter(

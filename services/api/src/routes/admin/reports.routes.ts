@@ -133,13 +133,13 @@ export async function registerAdminReportsRoutes(
   route(app, "listAdminReports", async (request, reply) => {
     const query = parse(AdminReportListQuerySchema, request.query)
     const payload: AdminReportListResponse = await service().list(query)
-    reply.status(200).send(payload)
+    return reply.status(200).send(payload)
   })
 
   route(app, "getAdminReport", async (request, reply) => {
     const { id } = idParam(request)
     const payload: AdminReportDTO = await service().get(id)
-    reply.status(200).send(payload)
+    return reply.status(200).send(payload)
   })
 
   route(
@@ -150,7 +150,7 @@ export async function registerAdminReportsRoutes(
       const operatorId = requireOperator(request)
       const { id, body } = parseBodyWithId(SetReportStatusRequestSchema, request)
       await service().setStatus(id, { status: body.status, actorId: operatorId })
-      sendOk(reply)
+      return sendOk(reply)
     },
   )
 
@@ -162,7 +162,7 @@ export async function registerAdminReportsRoutes(
       const operatorId = requireOperator(request)
       const { id, body } = parseBodyWithId(FlagReportRequestSchema, request)
       await service().flag(id, { reason: body.reason ?? null, actorId: operatorId })
-      sendOk(reply)
+      return sendOk(reply)
     },
   )
 
@@ -174,7 +174,7 @@ export async function registerAdminReportsRoutes(
       const operatorId = requireOperator(request)
       const { id, body } = parseBodyWithId(RemoveReportRequestSchema, request)
       await service().remove(id, { reason: body.reason ?? null, actorId: operatorId })
-      sendOk(reply)
+      return sendOk(reply)
     },
   )
 
@@ -186,7 +186,7 @@ export async function registerAdminReportsRoutes(
       const operatorId = requireOperator(request)
       const { id, body } = parseBodyWithId(SendFollowupRequestSchema, request)
       await service().sendFollowup(id, { to: body.to, body: body.body, actorId: operatorId })
-      sendOk(reply)
+      return sendOk(reply)
     },
   )
 
@@ -199,7 +199,7 @@ export async function registerAdminReportsRoutes(
       const { id, body } = parseBodyWithId(SetReportVerdictRequestSchema, request)
       await service().setVerdict({ id, verdict: body.verdict, actorId: operatorId })
       const payload: SetReportVerdictResponse = { ok: true }
-      reply.status(200).send(payload)
+      return reply.status(200).send(payload)
     },
   )
 
@@ -215,7 +215,7 @@ export async function registerAdminReportsRoutes(
         actorId: operatorId,
       })
       const payload: RouteReportResponse = { ok: true, threadId, routedTo }
-      reply.status(200).send(payload)
+      return reply.status(200).send(payload)
     },
   )
 }

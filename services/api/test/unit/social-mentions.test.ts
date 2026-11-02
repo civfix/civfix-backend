@@ -13,7 +13,7 @@ const BOB = "55555555-5555-5555-5555-555555555555"
 function fakeSql(rows: unknown[]): Sql {
   const tag = (() => Promise.resolve(rows)) as unknown as Sql
   return new Proxy(tag, {
-    apply: (target, _thisArg, args) => {
+    apply: (_target, _thisArg, args) => {
       if (Array.isArray(args[0]) && "raw" in (args[0] as object)) return Promise.resolve(rows)
       return { __fragment: true }
     },

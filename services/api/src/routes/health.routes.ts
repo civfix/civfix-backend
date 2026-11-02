@@ -6,7 +6,7 @@
  * Both are unauthenticated attack surface. /readyz does real I/O (`select 1` on a 10-connection pool plus a
  * Redis PING), so it is rate limited and memoized for READY_CACHE_MS: an uncached probe was a cheap
  * amplifier, one HTTP request per DB round-trip. /healthz does not disclose the build version, which would
- * only help someone match us against a CVE list; operators see it on the admin system-health surface.
+ * only help someone match us against a CVE list; operators see it on the admin developer overview.
  */
 
 import type { FastifyInstance } from "fastify"
@@ -43,15 +43,22 @@ export async function registerHealthRoutes(
   app: FastifyInstance,
   container: Container,
 ): Promise<void> {
-  route(app, "health", async (_request, reply) => {
-    reply.header("cache-control", NO_STORE)
-    if (app.lifecycle.isDraining()) {
-      reply.header(DRAINING_HEADER, "1")
-      reply.status(HTTP_SERVICE_UNAVAILABLE)
-      return { ok: false }
-    }
-    return { ok: true, service: SERVICE_NAME }
-  })
+  route(
+    app,
+    "health",
+    {
+      // The draining 503 is a gate in front of the endpoint, not its contract response, so it answers
+      // from a hook and the handler only ever sends the healthy body.
+      onRequest: async (_request, reply) => {
+        reply.header("cache-control", NO_STORE)
+        if (app.lifecycle.isDraining()) {
+          reply.header(DRAINING_HEADER, "1")
+          return reply.status(HTTP_SERVICE_UNAVAILABLE).send({ ok: false })
+        }
+      },
+    },
+    async () => ({ ok: true as const, service: SERVICE_NAME }),
+  )
 
   let cached: { at: number; body: ReadyBody } | undefined
   let inFlight: Promise<ReadyBody> | undefined
@@ -111,6 +118,6 @@ export async function registerHealthRoutes(
   app.get("/readyz", async (_request, reply) => {
     const body = await readiness()
     reply.header("cache-control", NO_STORE)
-    reply.status(body.ok ? HTTP_OK : HTTP_SERVICE_UNAVAILABLE).send(body)
+    return reply.status(body.ok ? HTTP_OK : HTTP_SERVICE_UNAVAILABLE).send(body)
   })
 }

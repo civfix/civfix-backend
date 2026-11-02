@@ -37,6 +37,6 @@ export async function registerAdminAuditRoutes(
   route(app, "listAudit", async (request, reply) => {
     const query = parse(AuditListQuerySchema, request.query)
     const payload: AuditListResponse = await service().list(query)
-    reply.status(200).send(payload)
+    return reply.status(200).send(payload)
   })
 }

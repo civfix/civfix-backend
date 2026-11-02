@@ -44,7 +44,7 @@ const DEFAULT_SURFACE: Record<LegalAcceptAction, LegalConsentSurface> = {
   acknowledged: "notice",
 }
 
-// The versions DTO predates §66 and keeps `title`, `summary` and `material` optional, so a pre-§66 row
+// The versions DTO predates §68 and keeps `title`, `summary` and `material` optional, so a pre-§68 row
 // leaves them out instead of sending null.
 function storedVersionDTO(record: LegalVersionRecord): LegalDocumentVersionDTO {
   return {
@@ -179,7 +179,7 @@ export interface LegalService {
   accept(userId: string, request: AcceptLegalRequest): Promise<AcceptLegalResponse>
 }
 
-/** Serves legal documents from `legal_documents`, never from the contract constant (DECISIONS §66). */
+/** Serves legal documents from `legal_documents`, never from the contract constant (DECISIONS §68). */
 export function makeLegalService({ repo, acceptances, now }: LegalServiceDeps): LegalService {
   return {
     async currentDocuments() {

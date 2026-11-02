@@ -49,22 +49,19 @@ function childReturning(over: Record<string, unknown>) {
   }
 }
 
-let saved: NodeJS.ProcessEnv
 beforeEach(() => {
-  saved = { ...process.env }
   runToolMock.mockReset()
   resetSandboxIdentity()
 })
 afterEach(() => {
-  for (const key of Object.keys(process.env)) if (!(key in saved)) delete process.env[key]
-  Object.assign(process.env, saved)
+  vi.unstubAllEnvs()
   resetSandboxIdentity()
 })
 
 function withSandboxIdentity(): void {
-  process.env.MEDIA_SANDBOX_UID = String(process.getuid?.() ?? 1001)
-  process.env.MEDIA_SANDBOX_GID = String(process.getgid?.() ?? 1001)
-  process.env.MEDIA_IMAGE_LANE_ENTRY = fileURLToPath(import.meta.url)
+  vi.stubEnv("MEDIA_SANDBOX_UID", String(process.getuid?.() ?? 1001))
+  vi.stubEnv("MEDIA_SANDBOX_GID", String(process.getgid?.() ?? 1001))
+  vi.stubEnv("MEDIA_IMAGE_LANE_ENTRY", fileURLToPath(import.meta.url))
   resetSandboxIdentity()
 }
 
@@ -145,8 +142,8 @@ describe("image-lane child protocol", () => {
 
 describe("image-lane parent", () => {
   it("runs in-process when no sandbox identity is configured (dev/darwin)", async () => {
-    delete process.env.MEDIA_SANDBOX_UID
-    delete process.env.MEDIA_SANDBOX_GID
+    vi.stubEnv("MEDIA_SANDBOX_UID", undefined)
+    vi.stubEnv("MEDIA_SANDBOX_GID", undefined)
     resetSandboxIdentity()
 
     const out = await processImageLane(await fx.makeValidPng(), limits)
@@ -280,6 +277,16 @@ describe("B3': the parent trusts nothing the child says", () => {
     )
 
     runToolMock.mockImplementation(childReturning({ exifGps: { lat: "37", lng: 1 } }))
+    await expect(processImageLane(await fx.makeValidPng(), limits)).rejects.toThrow(
+      /invalid result/,
+    )
+
+    // JSON.stringify cannot emit Infinity, but a child can print 1e999, which JSON.parse reads as one.
+    const finiteChild = childReturning({ exifGps: { lat: 0, lng: 1 } })
+    runToolMock.mockImplementation(async (name: string, bin: string, args: string[]) => {
+      const res = await finiteChild(name, bin, args)
+      return { ...res, stdout: res.stdout.replace('"lat":0', '"lat":1e999') }
+    })
     await expect(processImageLane(await fx.makeValidPng(), limits)).rejects.toThrow(
       /invalid result/,
     )

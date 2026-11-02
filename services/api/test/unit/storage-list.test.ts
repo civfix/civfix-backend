@@ -28,7 +28,10 @@ describe("FakeStorage.list", () => {
     expect(page1.keys).toEqual(["p/a", "p/b"])
     expect(page1.cursor).toBe("p/b")
 
-    const page2 = await s.list("p/", { cursor: page1.cursor, limit: 2 })
+    const page2 = await s.list("p/", {
+      ...(page1.cursor !== undefined ? { cursor: page1.cursor } : {}),
+      limit: 2,
+    })
     expect(page2.keys).toEqual(["p/c", "p/d"])
     expect(page2.cursor).toBeUndefined()
   })

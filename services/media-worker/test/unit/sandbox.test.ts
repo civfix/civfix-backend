@@ -88,7 +88,8 @@ describe("sandbox/exec runTool", () => {
     expect((caught as SandboxToolError).timedOut).toBe(false)
   })
 
-  it("runs a lowPriority child at niceness 19", async () => {
+  // BSD nice on macOS refuses to run without a utility instead of printing the niceness; Linux CI covers it.
+  it.skipIf(process.platform === "darwin")("runs a lowPriority child at niceness 19", async () => {
     const res = await runTool("niceness", "/usr/bin/nice", [], {
       timeoutMs: 5_000,
       maxStdoutBytes: 1024,

@@ -80,7 +80,7 @@ export async function registerHostExportRoutes(
         { exportId: payload.id },
         { singletonKey: `export:${payload.id}`, retryLimit: EXPORT_JOB_RETRY_LIMIT },
       )
-      reply.status(200).send(payload)
+      return reply.status(200).send(payload)
     },
   )
 
@@ -94,7 +94,7 @@ export async function registerHostExportRoutes(
       await requireCapability(container.getDb().sql, query.id, userId, "export")
       const items = await exports().listForEvent(query.id)
       const payload: ListEventExportsResponse = { items, nextCursor: null }
-      reply.status(200).send(payload)
+      return reply.status(200).send(payload)
     },
   )
 
@@ -108,7 +108,7 @@ export async function registerHostExportRoutes(
       await requireCapability(container.getDb().sql, params.id, userId, "export")
       const record = await exports().get(params.exportId)
       if (record.cleanupId !== params.id) throw AppError.notFound(EXPORT_NOT_FOUND)
-      reply.status(200).send(toHostExportDTO(record))
+      return reply.status(200).send(toHostExportDTO(record))
     },
   )
 
@@ -124,7 +124,7 @@ export async function registerHostExportRoutes(
       if (record.cleanupId === null) throw AppError.notFound(EXPORT_NOT_FOUND)
       await requireCapability(container.getDb().sql, record.cleanupId, userId, "export")
       const payload: DownloadHostExportResponse = await exports().downloadUrl(record)
-      reply.status(200).send(payload)
+      return reply.status(200).send(payload)
     },
   )
 }

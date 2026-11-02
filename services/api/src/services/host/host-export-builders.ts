@@ -84,9 +84,10 @@ async function* keysetPages<Row>(
   let after: string | null = null
   for (;;) {
     const rows = await fetchPage(after)
-    if (rows.length === 0) return
+    const last = rows.at(-1)
+    if (last === undefined) return
     yield* rows
-    after = keyOf(rows[rows.length - 1]!)
+    after = keyOf(last)
     if (rows.length < EXPORT_PAGE_SIZE) return
   }
 }

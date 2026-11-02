@@ -16,7 +16,7 @@ export interface RequestAuthContext extends AuthContext {
 declare module "fastify" {
   interface FastifyRequest {
     auth: RequestAuthContext
-    sessionExpiresAtMs?: number
+    sessionExpiresAtMs?: number | undefined
     accountStatus?: AccountStatus
   }
   interface FastifyInstance {

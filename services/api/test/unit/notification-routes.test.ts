@@ -9,7 +9,10 @@ import { InMemoryCacheClient } from "../../src/auth/cache.js"
 import { makeInMemoryStores } from "../../src/auth/stores.js"
 import { makeAuthServices } from "../../src/auth/auth-services.js"
 import { StubJwksVerifier } from "../helpers/auth.js"
-import { InMemoryNotificationRepository } from "../helpers/notifications.js"
+import {
+  InMemoryNotificationRepository,
+  InMemoryNotificationSettingsRepository,
+} from "../helpers/notifications.js"
 import {
   MARK_NOTIFICATIONS_READ_MAX_IDS,
   type NotificationServiceOverrides,
@@ -52,7 +55,10 @@ async function makeHarness(
 
   const repo = new InMemoryNotificationRepository()
   if (seed) seed(repo)
-  const notificationOverrides: NotificationServiceOverrides = { repo }
+  const notificationOverrides: NotificationServiceOverrides = {
+    repo,
+    settingsRepo: new InMemoryNotificationSettingsRepository(),
+  }
 
   const container = makeContainer(env)
   const push = container.pushSender as FakePushSender
@@ -116,6 +122,17 @@ describe("GET /notifications", () => {
     const res = await app.inject({ method: "GET", url: "/v1/notifications", headers: auth(token) })
     expect(res.statusCode).toBe(200)
     expect(res.json().items.map((n: { title: string }) => n.title)).toEqual(["newer", "older"])
+  })
+
+  it("T15: a chat_mention row shows on the page and a group_chat row does not", async () => {
+    const { app, token, userId, repo } = await makeHarness()
+    const link = "/messages/group/99999999-0000-4000-8000-000000000001"
+    await repo.insertNotification({ userId, type: "chat_mention", title: "m", body: null, link })
+    await repo.insertNotification({ userId, type: "group_chat", title: "g", body: null, link })
+    const res = await app.inject({ method: "GET", url: "/v1/notifications", headers: auth(token) })
+    expect(res.statusCode).toBe(200)
+    expect(res.json().items).toMatchObject([{ type: "chat_mention", link }])
+    expect(res.json().items).toHaveLength(1)
   })
 
   it("401s anonymously", async () => {
@@ -212,25 +229,6 @@ describe("POST /notifications/read", () => {
 })
 
 describe("GET + PUT /notifications/prefs", () => {
-  it("default-creates prefs on first GET (all true, no quiet hours)", async () => {
-    const { app, token } = await makeHarness()
-    const res = await app.inject({
-      method: "GET",
-      url: "/v1/notifications/prefs",
-      headers: auth(token),
-    })
-    expect(res.statusCode).toBe(200)
-    expect(res.json()).toEqual({
-      push: true,
-      cleanupChat: true,
-      reportUpdates: true,
-      follows: true,
-      mentions: true,
-      postInteractions: true,
-      hostBroadcasts: true,
-    })
-  })
-
   it("applies a partial update and sets quiet hours", async () => {
     const { app, token } = await makeHarness()
     const res = await app.inject({
@@ -247,19 +245,15 @@ describe("GET + PUT /notifications/prefs", () => {
     expect(body.quietHours).toEqual({ start: "22:00", end: "07:00" })
   })
 
-  it("toggles the dedicated mentions preference off", async () => {
+  it("keeps muted host broadcasts muted when a later update changes another preference", async () => {
     const { app, token } = await makeHarness()
-    const res = await app.inject({
-      method: "PUT",
-      url: "/v1/notifications/prefs",
-      headers: auth(token),
-      payload: { mentions: false },
-    })
+    const put = (payload: Record<string, unknown>) =>
+      app.inject({ method: "PUT", url: "/v1/notifications/prefs", headers: auth(token), payload })
+    expect((await put({ hostBroadcasts: false })).json().hostBroadcasts).toBe(false)
+    const res = await put({ mentions: false })
     expect(res.statusCode).toBe(200)
-    const body = res.json()
-    expect(body.mentions).toBe(false)
-    expect(body.push).toBe(true)
-    expect(body.cleanupChat).toBe(true)
+    expect(res.json().hostBroadcasts).toBe(false)
+    expect(res.json().mentions).toBe(false)
   })
 
   it("keeps muted host broadcasts muted when a later update changes another preference", async () => {

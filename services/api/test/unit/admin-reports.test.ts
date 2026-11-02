@@ -14,6 +14,7 @@ import {
 import { InMemoryMailRepository } from "../helpers/admin/mail-repository.memory.js"
 import { InMemoryForwardTemplateRepository } from "../helpers/admin/forward-template-repository.memory.js"
 import { RecordingNotifier } from "../helpers/notifications.js"
+import { categoryOfInput } from "../helpers/notification-capture.js"
 import {
   makeOutboundMailService,
   OutboundSendDeadlineError,
@@ -586,6 +587,18 @@ describe("admin reports mutations", () => {
       link: "/reports/rep-1",
     })
     expect(notifier.sent[1]?.title).toContain("resolved")
+  })
+
+  it("T45: a status change and an operator follow-up are Updates on your reports", async () => {
+    const { repo, notifier, svc } = harness()
+    repo.seedReport({ id: "rep-1", status: "published", reporter: REPORTER })
+    await svc.setStatus("rep-1", { status: "in_progress", actorId: "op-1" })
+    await svc.sendFollowup("rep-1", {
+      to: "reporter",
+      body: "Routed to the city.",
+      actorId: "op-1",
+    })
+    expect(notifier.sent.map(categoryOfInput)).toEqual(["reportUpdates", "reportUpdates"])
   })
 
   it("setStatus is a 409 when the report moved on between the read and the write", async () => {

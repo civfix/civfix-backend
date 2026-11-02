@@ -130,7 +130,7 @@ export function mintThreadToken(): string {
   const bytes = new Uint8Array(THREAD_TOKEN_CHARS)
   globalThis.crypto.getRandomValues(bytes)
   let out = ""
-  for (const b of bytes) out += TOKEN_ALPHABET[b & TOKEN_ALPHABET_MASK]
+  for (const b of bytes) out += TOKEN_ALPHABET.charAt(b & TOKEN_ALPHABET_MASK)
   return out
 }
 

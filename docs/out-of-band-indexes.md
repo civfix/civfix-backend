@@ -1,7 +1,7 @@
 # Out-of-band indexes (civfix-backend)
 
 **Audience:** internal (engineering + ops). Not served publicly.
-**Last updated:** 2026-10-16 (reports_pressing_idx).
+**Last updated:** 2026-10-24 (notifications_user_unread_page_idx).
 
 Every migration in `services/api/drizzle/` runs inside **one transaction**
 (`src/db/migrate.ts`), and `CREATE INDEX CONCURRENTLY` is not allowed in a
@@ -34,6 +34,37 @@ inside the api container targets the LIVE color, read from the state file
 staging `civfix-staging-api-<color>-1`); there is no `compose-api-1`.
 
 ## Pending
+
+### `notifications_user_unread_page_idx` (migration 0200)
+
+Back the notifications page's unread dot (`hasUnread`, `GET
+/v1/notifications/unread`) and Mark all read (`markAllRead`, `POST
+/v1/notifications/read-all`) in
+`services/api/src/services/notification-repository.drizzle.ts`. Both look for
+a user's unread rows of the types the notifications page lists, leaving out
+the chat types (`dm`, `cleanup_chat`, `group_chat`, `report_chat`); without
+this index they walk every unread row of the user, chat rows included, through
+`notifications_user_unread_idx`. Nothing the index needs arrives with the
+release, so it can be built at any time.
+
+```sql
+CREATE INDEX CONCURRENTLY IF NOT EXISTS notifications_user_unread_page_idx
+  ON notifications (user_id) WHERE read_at IS NULL AND type <> ALL
+  (ARRAY['dm','cleanup_chat','group_chat','report_chat']);
+```
+
+Verify:
+
+```sql
+SELECT indisvalid FROM pg_index WHERE indexrelid = 'notifications_user_unread_page_idx'::regclass;
+```
+
+It must return `t`. The name is exported as `UNREAD_PAGE_INDEX` from
+`services/api/src/services/notification-repository.drizzle.ts`, and
+`test/integration/notification-inbox-pg.test.ts` (T8, T15) builds the index on
+its testcontainer and `EXPLAIN`s both actual statements through the exported
+`explainHasUnread` and `explainMarkAllRead`, so a query edit that loses the
+index fails CI.
 
 ### `reports_pressing_idx` (migration 0195)
 

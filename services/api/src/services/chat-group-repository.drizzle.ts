@@ -19,6 +19,7 @@ import type {
   GroupRoomAccess,
   UpdateChatGroupPatch,
 } from "./chat-group-repository.js"
+import { requireRow } from "../db/rows.js"
 
 export const GROUP_MEMBER_SCAN_CAP = 2000
 
@@ -126,13 +127,13 @@ export function makeChatGroupRepository(
                   uploader: userUploader(input.ownerId),
                 })
               ).id
-        const [g] = await tx<{ id: string }[]>`
+        const created = await tx<{ id: string }[]>`
           INSERT INTO chat_groups (kind, name, description, avatar_media_id, owner_id, visibility)
           VALUES (${input.kind}, ${input.name}, ${input.description}, ${avatarMediaId},
                   ${input.ownerId}, ${input.visibility})
           RETURNING id
         `
-        const groupId = g!.id
+        const groupId = requireRow(created, "chat group insert").id
         await tx`
           INSERT INTO chat_group_members (group_id, user_id, role)
           VALUES (${groupId}, ${input.ownerId}, 'owner')

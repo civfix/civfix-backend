@@ -41,7 +41,7 @@ export function parseCensusGeographies(json: unknown): JurisdictionLookupResult 
   for (const [collectionKey, layer] of CENSUS_LAYER_PRECEDENCE) {
     const features = collections[collectionKey]
     if (!Array.isArray(features) || features.length === 0) continue
-    const feature = features[0]
+    const feature: unknown = features[0]
     if (typeof feature !== "object" || feature === null) return null
     const f = feature as Record<string, unknown>
     const geoid = readString(f, "GEOID")

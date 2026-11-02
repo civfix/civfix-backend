@@ -109,7 +109,8 @@ async function readJsonPayload(response: Response, signal: AbortSignal): Promise
   const body = response.body
   if (body === null) return { payload: {}, interrupted: false }
 
-  const reader = body.getReader()
+  // undici types the body stream's chunks as `any`; the Fetch spec makes them Uint8Array, checked below.
+  const reader: ReadableStreamDefaultReader<unknown> = body.getReader()
   const cancelOnAbort = () => {
     void reader.cancel().catch(() => {})
   }
@@ -121,6 +122,7 @@ async function readJsonPayload(response: Response, signal: AbortSignal): Promise
     for (;;) {
       const { done, value } = await reader.read()
       if (done) break
+      if (!(value instanceof Uint8Array)) throw new TypeError("response body chunk is not bytes")
       total += value.byteLength
       if (total > MAX_ERROR_BODY_BYTES) {
         await reader.cancel().catch(() => {})

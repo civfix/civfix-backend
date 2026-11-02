@@ -9,7 +9,6 @@ import {
   InMemoryBlocksRepository,
   InMemoryDmRepository,
 } from "../../src/services/dm-repository.memory.js"
-import type { AppError } from "@civfix/contract"
 
 const ALICE = "11111111-1111-1111-1111-111111111111"
 const BOB = "22222222-2222-2222-2222-222222222222"
@@ -81,23 +80,11 @@ describe("DmService.openDm", () => {
 
   it("CVX-032: a MISSING target and a BLOCKED target produce the SAME response", async () => {
     await blocks.block(BOB, ALICE)
-    const missing = await service
-      .openDm(ALICE, "99999999-9999-9999-9999-999999999999")
-      .then(() => null)
-      .catch((e: AppError) => e)
-    const blocked = await service
-      .openDm(ALICE, BOB)
-      .then(() => null)
-      .catch((e: AppError) => e)
-    expect(missing).not.toBeNull()
-    expect({ status: missing!.httpStatus, message: missing!.message }).toEqual({
-      status: 403,
-      message: DM_FORBIDDEN_MESSAGE,
-    })
-    expect({ status: blocked!.httpStatus, message: blocked!.message }).toEqual({
-      status: missing!.httpStatus,
-      message: missing!.message,
-    })
+    const forbidden = { httpStatus: 403, message: DM_FORBIDDEN_MESSAGE }
+    await expect(
+      service.openDm(ALICE, "99999999-9999-9999-9999-999999999999"),
+    ).rejects.toMatchObject(forbidden)
+    await expect(service.openDm(ALICE, BOB)).rejects.toMatchObject(forbidden)
   })
 
   it("403s a self-DM", async () => {

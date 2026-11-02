@@ -61,7 +61,7 @@ export async function registerAdminOrgRoutes(
       meta: { returned: page.items.length, status: query.status ?? null },
     })
     const payload: AdminOrgVerificationListResponse = page
-    reply.status(200).send(payload)
+    return reply.status(200).send(payload)
   })
 
   // Every org-management mutation writes its operator audit, with the mandatory `reason` in its meta, inside
@@ -85,14 +85,14 @@ export async function registerAdminOrgRoutes(
       meta: { returned: page.items.length, q: query.q ?? null },
     })
     const payload: AdminOrgListResponse = page
-    reply.status(200).send(payload)
+    return reply.status(200).send(payload)
   })
 
   route(app, "adminCreateOrg", { preHandler: csrfProtect }, async (request, reply) => {
     const operatorId = requireOperator(request)
     const body = parse(AdminCreateOrgRequestSchema, request.body ?? {})
     const dto: AdminCreateOrgResponse = await service().adminCreateOrganization(operatorId, body)
-    reply.status(201).send(dto)
+    return reply.status(201).send(dto)
   })
 
   route(app, "adminGetOrg", async (request, reply) => {
@@ -103,7 +103,7 @@ export async function registerAdminOrgRoutes(
       action: "org.detail_viewed",
       target: `organization:${id}`,
     })
-    reply.status(200).send(dto)
+    return reply.status(200).send(dto)
   })
 
   route(app, "adminUpdateOrg", { preHandler: csrfProtect }, async (request, reply) => {
@@ -115,7 +115,7 @@ export async function registerAdminOrgRoutes(
       operatorId,
       patch,
     )
-    reply.status(200).send(dto)
+    return reply.status(200).send(dto)
   })
 
   route(app, "adminSetOrgSuspended", { preHandler: csrfProtect }, async (request, reply) => {
@@ -125,7 +125,7 @@ export async function registerAdminOrgRoutes(
       suspended: body.suspended,
       reason: body.reason,
     })
-    reply.status(200).send(dto)
+    return reply.status(200).send(dto)
   })
 
   route(app, "adminListOrgMembers", async (request, reply) => {
@@ -142,7 +142,7 @@ export async function registerAdminOrgRoutes(
       meta: { returned: page.items.length },
     })
     const payload: AdminOrgMemberListResponse = page
-    reply.status(200).send(payload)
+    return reply.status(200).send(payload)
   })
 
   route(app, "adminAddOrgMember", { preHandler: csrfProtect }, async (request, reply) => {
@@ -153,7 +153,7 @@ export async function registerAdminOrgRoutes(
       role: body.role,
       reason: body.reason,
     })
-    sendOk(reply)
+    return sendOk(reply)
   })
 
   route(app, "adminSetOrgMemberRole", { preHandler: csrfProtect }, async (request, reply) => {
@@ -169,7 +169,7 @@ export async function registerAdminOrgRoutes(
       role: body.role,
       reason: body.reason,
     })
-    sendOk(reply)
+    return sendOk(reply)
   })
 
   route(app, "adminRemoveOrgMember", { preHandler: csrfProtect }, async (request, reply) => {
@@ -184,7 +184,7 @@ export async function registerAdminOrgRoutes(
       userId: body.userId,
       reason: body.reason,
     })
-    sendOk(reply)
+    return sendOk(reply)
   })
 
   route(app, "adminListOrgEvents", async (request, reply) => {
@@ -204,7 +204,7 @@ export async function registerAdminOrgRoutes(
       meta: { returned: page.items.length, when: query.when ?? "all" },
     })
     const payload: AdminOrgEventListResponse = page
-    reply.status(200).send(payload)
+    return reply.status(200).send(payload)
   })
 
   // Unlike pages, which call insertAuditRow in the route, this decision is
@@ -222,6 +222,6 @@ export async function registerAdminOrgRoutes(
         ...(body.reason !== undefined ? { reason: body.reason } : {}),
       },
     )
-    reply.status(200).send(dto)
+    return reply.status(200).send(dto)
   })
 }

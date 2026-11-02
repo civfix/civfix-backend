@@ -5,6 +5,7 @@ import { InMemoryMailRepository } from "../helpers/admin/mail-repository.memory.
 import { InMemoryInboundRepository } from "../helpers/admin/inbound-repository.memory.js"
 import { InMemoryAdminReportRepository } from "../helpers/admin/admin-report-repository.memory.js"
 import { RecordingNotifier } from "../helpers/notifications.js"
+import { categoryOfInput } from "../helpers/notification-capture.js"
 import { InMemoryCleanupRepository } from "../helpers/cleanups.js"
 import {
   processInboundObject,
@@ -293,6 +294,40 @@ describe("processInboundObject: jurisdiction reply -> report side-effects (#40)"
     ).toBe(true)
   })
 
+  it("T45: a city email reply is Updates on your reports", async () => {
+    const c = ctx()
+    c.adminReportRepo.seedReport({
+      id: "report-1",
+      status: "published",
+      reporter: {
+        id: "user-1",
+        name: "Jane",
+        handle: "jane",
+        emailVerified: true,
+        hasOauth: false,
+        joinedAt: new Date("2025-01-01T00:00:00Z"),
+      },
+    })
+    const thread = c.mailRepo.seedThread({
+      threadToken: TOKEN,
+      reportId: "report-1",
+      status: "sent",
+    })
+    seedContact(c, thread.id, "publicworks@lacity.gov")
+    const key = `${INBOUND_PENDING_PREFIX}reply.eml`
+    await put(
+      c,
+      key,
+      rfc822({
+        from: "clerk@lacity.gov",
+        to: `reply+${TOKEN}@civfix.org`,
+        body: "Crew scheduled.",
+      }),
+    )
+    await processInboundObject(c.container, key, c.deps)
+    expect(c.notifier.sent.map(categoryOfInput)).toEqual(["reportUpdates"])
+  })
+
   it("records a system 'reply' timeline row WITHOUT a status change for an already-resolved report", async () => {
     const reportId = "report-2"
     const c = ctx()
@@ -355,7 +390,8 @@ describe("processInboundObject: jurisdiction reply -> report side-effects (#40)"
     })
     const threadFull = c.mailRepo.seedThread({ threadToken: TOKEN, reportId, status: "sent" })
     seedContact(c, threadFull.id, "publicworks@lacity.gov")
-    const calls: { kind?: string; body?: string | null; note: string }[] = []
+    const calls: { kind?: string | undefined; body?: string | null | undefined; note: string }[] =
+      []
     const orig = c.adminReportRepo.setStatus.bind(c.adminReportRepo)
     c.adminReportRepo.setStatus = (id, input) => {
       calls.push({ kind: input.kind, body: input.body, note: input.note })
@@ -452,7 +488,8 @@ describe("processInboundObject: jurisdiction reply -> report side-effects (#40)"
     c.adminReportRepo.seedReport({ id: reportId, status: "published", reporter: null })
     const thread = c.mailRepo.seedThread({ threadToken: TOKEN, reportId, status: "sent" })
     seedContact(c, thread.id, "publicworks@lacity.gov")
-    const calls: { kind?: string; body?: string | null; note: string }[] = []
+    const calls: { kind?: string | undefined; body?: string | null | undefined; note: string }[] =
+      []
     const orig = c.adminReportRepo.setStatus.bind(c.adminReportRepo)
     c.adminReportRepo.setStatus = (id, input) => {
       calls.push({ kind: input.kind, body: input.body, note: input.note })
@@ -645,8 +682,8 @@ describe("cityReplyChatBody (what a city reply publishes into the report chat)",
 describe("processInboundObject: unaffiliated thread joiners (H5)", () => {
   const WITHHELD_WARNING = "inbound: reply withheld from public effects pending operator review"
 
-  function captureWarns(c: Ctx): { obj: unknown; msg?: string }[] {
-    const warns: { obj: unknown; msg?: string }[] = []
+  function captureWarns(c: Ctx): { obj: unknown; msg?: string | undefined }[] {
+    const warns: { obj: unknown; msg?: string | undefined }[] = []
     c.deps.logger = { warn: (obj, msg) => warns.push({ obj, msg }), error: () => {} }
     return warns
   }

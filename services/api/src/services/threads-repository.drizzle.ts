@@ -160,8 +160,8 @@ export function makeDrizzleThreadsRepository(sql: Sql): ThreadsRepository {
         members: r.members,
         unread: r.unread,
         last:
-          r.last_created_at !== null
-            ? { body: r.last_body, createdAt: r.last_created_at, senderId: r.last_sender_id! }
+          r.last_created_at !== null && r.last_sender_id !== null
+            ? { body: r.last_body, createdAt: r.last_created_at, senderId: r.last_sender_id }
             : null,
       }))
     },

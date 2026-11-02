@@ -1,6 +1,7 @@
 import { createHmac } from "node:crypto"
 import { afterEach, describe, expect, it, vi } from "vitest"
 import { slugify, deriveMessageId, hmacSha256Hex, nudgeBackend, type Env } from "../src/index"
+import { bytes } from "./bytes"
 
 describe("slugify", () => {
   it("strips angle brackets and unsafe chars", () => {
@@ -16,15 +17,14 @@ describe("deriveMessageId", () => {
   it("prefers the Message-ID header (slugified)", async () => {
     const id = await deriveMessageId(
       new Headers({ "message-id": "<test-001@example.gov>" }),
-      new TextEncoder().encode("body").buffer,
+      bytes("body"),
     )
     expect(id).toBe("test-001@example.gov")
   })
 
   it("falls back to a stable content hash when Message-ID is absent", async () => {
-    const bytes = new TextEncoder().encode("same body").buffer
-    const a = await deriveMessageId(new Headers(), bytes)
-    const b = await deriveMessageId(new Headers(), new TextEncoder().encode("same body").buffer)
+    const a = await deriveMessageId(new Headers(), bytes("same body"))
+    const b = await deriveMessageId(new Headers(), bytes("same body"))
     expect(a).toMatch(/^[0-9a-f]{64}$/)
     expect(a).toBe(b) // duplicate deliveries -> identical key -> backend dedups
   })

@@ -23,8 +23,8 @@ import type {
   DeliveryListQuery,
   DeliveryListRow,
   KeysetRow,
+  QuietHoursRecord,
 } from "./broadcast-repository.js"
-import type { NotificationPrefsRecord } from "../notification-repository.js"
 import type {
   AdminBroadcastRow,
   AdminHostListParams,
@@ -44,6 +44,7 @@ import type {
   MemberContact,
 } from "./broadcast-types.js"
 import { ANNOUNCEMENT_VISIBLE_STATUSES, DEFAULT_BROADCAST_CHUNK_SIZE } from "./broadcast-types.js"
+import { requireRow } from "../../db/rows.js"
 
 interface BroadcastRowSelect {
   id: string
@@ -202,7 +203,7 @@ export function makeDrizzleBroadcastRepository(sql: Sql): BroadcastRepository {
           ${input.startedAt ?? null}, ${input.chunkSize ?? DEFAULT_BROADCAST_CHUNK_SIZE}
         )
         RETURNING ${broadcastColumns(sql)}`
-    return toRecord(rows[0]!)
+    return toRecord(requireRow(rows, "broadcast insert"))
   }
 
   return {
@@ -797,41 +798,22 @@ export function makeDrizzleBroadcastRepository(sql: Sql): BroadcastRepository {
       return out
     },
 
-    async pushPrefs(userIds: readonly string[]): Promise<Map<string, NotificationPrefsRecord>> {
-      const out = new Map<string, NotificationPrefsRecord>()
+    async quietHours(userIds: readonly string[]): Promise<Map<string, QuietHoursRecord>> {
+      const out = new Map<string, QuietHoursRecord>()
       if (userIds.length === 0) return out
       const rows = await sql<
         {
           user_id: string
-          push: boolean
-          cleanup_chat: boolean
-          report_updates: boolean
-          follows: boolean
-          mentions: boolean
-          post_interactions: boolean
-          host_broadcasts: boolean
           quiet_start: string | null
           quiet_end: string | null
           tz: string | null
         }[]
       >`
-        SELECT user_id, push, cleanup_chat, report_updates, follows, mentions, post_interactions,
-               host_broadcasts, quiet_start, quiet_end, tz
+        SELECT user_id, quiet_start, quiet_end, tz
           FROM notification_prefs
          WHERE user_id = ANY(${[...userIds]}::uuid[])`
       for (const row of rows) {
-        out.set(row.user_id, {
-          push: row.push,
-          cleanupChat: row.cleanup_chat,
-          reportUpdates: row.report_updates,
-          follows: row.follows,
-          mentions: row.mentions,
-          postInteractions: row.post_interactions,
-          hostBroadcasts: row.host_broadcasts,
-          quietStart: row.quiet_start,
-          quietEnd: row.quiet_end,
-          tz: row.tz,
-        })
+        out.set(row.user_id, { quietStart: row.quiet_start, quietEnd: row.quiet_end, tz: row.tz })
       }
       return out
     },

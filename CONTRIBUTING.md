@@ -17,8 +17,8 @@ as `CLA.md` describes.
 
 Never add a dependency whose license is incompatible with the AGPLv3 (for
 example SSPL, BUSL, Commons Clause or Creative Commons NonCommercial).
-`pnpm licenses list --prod` in the repository root is the check to run before
-a pull request that adds one.
+`pnpm check:licenses` in the repository root checks every production
+dependency against that rule, and CI runs it on every pull request.
 
 ## How changes land
 

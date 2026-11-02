@@ -7,7 +7,7 @@ import type { LegalBlock } from "@civfix/contract/legal"
  */
 export const SERVED_LEGAL_TYPES: readonly LegalDocumentType[] = LegalDocumentTypeSchema.options
 
-/** One `legal_documents` row. `title`, `summary`, `material` and `blocks` are null on pre-§66 versions. */
+/** One `legal_documents` row. `title`, `summary`, `material` and `blocks` are null on pre-§68 versions. */
 export interface LegalDocumentRecord {
   type: LegalDocumentType
   version: string

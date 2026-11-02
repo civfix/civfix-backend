@@ -66,10 +66,15 @@ function isSnapshotEntry(value: unknown): value is [string, number] {
 export function makeFeedPresence(deps: FeedPresenceDeps): FeedPresence {
   const cfg = deps.config
 
-  async function guarded<T>(fallback: T, label: string, run: () => Promise<T>): Promise<T> {
-    if (deps.cache === undefined) return fallback
+  async function guarded<T>(
+    fallback: T,
+    label: string,
+    run: (cache: FeedPresenceCache) => Promise<T>,
+  ): Promise<T> {
+    const cache = deps.cache
+    if (cache === undefined) return fallback
     try {
-      return await run()
+      return await run(cache)
     } catch (err) {
       deps.logger?.warn({ err }, `feed presence: ${label} failed (ignored)`)
       return fallback
@@ -80,8 +85,8 @@ export function makeFeedPresence(deps: FeedPresenceDeps): FeedPresence {
     snapshotsAvailable: deps.cache !== undefined && cfg.snapshotTtlSeconds > 0,
 
     readSnapshot(userId: string, filter: string): Promise<FeedSnapshotEntry[] | null> {
-      return guarded<FeedSnapshotEntry[] | null>(null, "snapshot read", async () => {
-        const raw = await deps.cache!.get(snapshotKey(userId, filter))
+      return guarded<FeedSnapshotEntry[] | null>(null, "snapshot read", async (cache) => {
+        const raw = await cache.get(snapshotKey(userId, filter))
         if (raw === null) return null
         const parsed: unknown = JSON.parse(raw)
         if (!Array.isArray(parsed)) return null
@@ -100,11 +105,11 @@ export function makeFeedPresence(deps: FeedPresenceDeps): FeedPresence {
       ranked: readonly RankedCandidate[],
     ): Promise<boolean> {
       if (cfg.snapshotTtlSeconds <= 0) return Promise.resolve(false)
-      return guarded<boolean>(false, "snapshot write", async () => {
+      return guarded<boolean>(false, "snapshot write", async (cache) => {
         const payload = ranked
           .slice(0, cfg.candidateCap)
           .map((entry) => [entry.id, entry.score] as const)
-        await deps.cache!.set(
+        await cache.set(
           snapshotKey(userId, filter),
           JSON.stringify(payload),
           cfg.snapshotTtlSeconds,
@@ -115,16 +120,16 @@ export function makeFeedPresence(deps: FeedPresenceDeps): FeedPresence {
 
     touchSnapshot(userId: string, filter: string): Promise<void> {
       if (cfg.snapshotTtlSeconds <= 0) return Promise.resolve()
-      return guarded<void>(undefined, "snapshot touch", async () => {
-        await deps.cache!.expire(snapshotKey(userId, filter), cfg.snapshotTtlSeconds)
+      return guarded<void>(undefined, "snapshot touch", async (cache) => {
+        await cache.expire(snapshotKey(userId, filter), cfg.snapshotTtlSeconds)
       })
     },
 
     seenBy(userId: string, postIds: readonly string[]): Promise<Set<string>> {
       if (postIds.length === 0) return Promise.resolve(new Set<string>())
       const unique = [...new Set(postIds)]
-      return guarded(new Set<string>(), "served-set read", async () => {
-        const flags = await deps.cache!.smismember(servedKey(userId), unique)
+      return guarded(new Set<string>(), "served-set read", async (cache) => {
+        const flags = await cache.smismember(servedKey(userId), unique)
         return new Set(unique.filter((_, i) => flags[i] === 1))
       })
     },
@@ -132,8 +137,7 @@ export function makeFeedPresence(deps: FeedPresenceDeps): FeedPresence {
     recordServed(userId: string, postIds: readonly string[]): Promise<void> {
       if (postIds.length === 0) return Promise.resolve()
       const unique = [...new Set(postIds)]
-      return guarded<void>(undefined, "served-set write", async () => {
-        const cache = deps.cache!
+      return guarded<void>(undefined, "served-set write", async (cache) => {
         await cache.sadd(servedKey(userId), ...unique)
         await cache.expireNx(servedKey(userId), cfg.servedTtlSeconds)
 
@@ -147,8 +151,7 @@ export function makeFeedPresence(deps: FeedPresenceDeps): FeedPresence {
     },
 
     viewersOf(postId: string): Promise<string[]> {
-      return guarded<string[]>([], "viewer index read", async () => {
-        const cache = deps.cache!
+      return guarded<string[]>([], "viewer index read", async (cache) => {
         const key = viewersKey(postId)
         const size = await cache.scard(key)
         if (size === 0) return []
