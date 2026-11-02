@@ -45,7 +45,7 @@ describe("ALL_QUEUE_NAMES", () => {
     const jobExports = Object.entries(queueNames)
       .filter(([key]) => key.endsWith("_JOB"))
       .map(([, value]) => value as string)
-    expect(jobExports).toHaveLength(28)
+    expect(jobExports).toHaveLength(29)
     expect(new Set(ALL_QUEUE_NAMES).size).toBe(ALL_QUEUE_NAMES.length)
     expect([...ALL_QUEUE_NAMES].sort()).toEqual([...jobExports].sort())
   })

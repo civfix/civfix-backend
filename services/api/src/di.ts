@@ -73,16 +73,27 @@ import {
   type NotificationService,
 } from "./services/notification-service.js"
 import { makeDrizzleNotificationRepository } from "./services/notification-repository.drizzle.js"
+import { makeDrizzleNotificationSettingsRepository } from "./services/notification-settings-repository.drizzle.js"
 import { MEDIA_GET_URL_TTL_SEC } from "./services/media-intake-service.js"
 import { makeAffiliationLoader, type AffiliationLoader } from "./services/affiliation.js"
 import { RedisByteMeter, type ByteMeter } from "./services/media-byte-quota.js"
 import { makeTicketTokenSigner, type TicketTokenSigner } from "./services/host/ticket-token.js"
+import { webPushKeys } from "./services/web-push-config.js"
 import { RedisCounterStore, type CounterStore } from "./abuse/counter-store.js"
 import { InMemoryBlocksRepository, InMemoryDmRepository } from "./services/dm-repository.memory.js"
 import { MultiPushSender, type PushSenderConfig } from "./adapters/push-sender.js"
+import { RedisPendingClears } from "./adapters/push-clears.js"
 import { HttpRoutingProvider } from "./adapters/routing-provider.js"
 import { RealAbuseChecks } from "./adapters/abuse-checks.js"
 import { PgBossJobs } from "./adapters/jobs.pgboss.js"
+import {
+  InMemoryNotificationEmailThrottle,
+  RedisNotificationEmailThrottle,
+} from "./adapters/notification-email-throttle.js"
+import {
+  notificationEmailConfigOf,
+  type NotificationEmailDeps,
+} from "./services/notification-email.js"
 import { makeDrizzleRuntimeFlagRepository } from "./services/admin/runtime-flag-repository.drizzle.js"
 import {
   makeRuntimeFlagService,
@@ -129,6 +140,7 @@ export interface Container {
   getPostRepo(): PostRepository
   getPostService(): PostService
   getNotificationService(logger?: NotificationLogger): NotificationService
+  getNotificationEmail(): NotificationEmailDeps
   getCounterStore(): CounterStore
   getCache(): CacheClient
   getByteMeter(): ByteMeter
@@ -463,6 +475,11 @@ export function makeContainer(env: Env): Container {
           ...(serverLogger !== undefined ? { logger: serverLogger } : {}),
         }),
   )
+
+  const jobs: Jobs = env.USE_FAKE_JOBS
+    ? new FakeJobs()
+    : new PgBossJobs({ connectionString: env.DATABASE_URL, logger: adapterLogger })
+
   const pushSender = lazy<PushSender>(() =>
     env.USE_FAKE_PUSH
       ? new FakePushSender()
@@ -471,6 +488,7 @@ export function makeContainer(env: Env): Container {
           config: buildPushConfig(env),
           counters: lazyCounters,
           logger: adapterLogger,
+          clears: { jobs, pending: new RedisPendingClears(getRedis) },
         }),
   )
   const devTestTools = lazy(() =>
@@ -484,6 +502,16 @@ export function makeContainer(env: Env): Container {
     }),
   )
 
+  // One per container: the in-memory throttle only limits anything if every service shares it.
+  const notificationEmail = lazy<NotificationEmailDeps>(() => ({
+    mailer: seams.mailer,
+    throttle:
+      env.REDIS_URL.length > 0
+        ? new RedisNotificationEmailThrottle(getRedis)
+        : new InMemoryNotificationEmailThrottle(),
+    config: notificationEmailConfigOf(env),
+  }))
+
   let notificationService: NotificationService | undefined
   let notificationLoggerWired = false
   // Rebuilt once when the first logger arrives, so a service built earlier without one does not keep
@@ -493,8 +521,10 @@ export function makeContainer(env: Env): Container {
     if (notificationService === undefined || (logger !== undefined && !notificationLoggerWired)) {
       notificationService = makeNotificationService({
         repo: makeDrizzleNotificationRepository(getDb().sql),
+        settingsRepo: makeDrizzleNotificationSettingsRepository(getDb().sql),
         pushSender: pushSender.get(),
         userChannel: userChannel.get(),
+        email: notificationEmail.get(),
         ...(logger !== undefined ? { logger } : {}),
       })
       notificationLoggerWired = logger !== undefined
@@ -524,10 +554,6 @@ export function makeContainer(env: Env): Container {
         pubsub: sharedPubSub.get(),
         logger: adapterLogger,
       })
-
-  const jobs: Jobs = env.USE_FAKE_JOBS
-    ? new FakeJobs()
-    : new PgBossJobs({ connectionString: env.DATABASE_URL, logger: adapterLogger })
 
   const memoized: ReadonlyArray<Lazy<unknown>> = [
     dmRepo,
@@ -602,6 +628,7 @@ export function makeContainer(env: Env): Container {
     getPostRepo: postRepo.get,
     getPostService: postService.get,
     getNotificationService,
+    getNotificationEmail: notificationEmail.get,
     getCounterStore: () => lazyCounters,
     getCache: cacheClient.get,
     getByteMeter: () => lazyByteMeter,
@@ -654,15 +681,7 @@ function buildPushConfig(env: Env): PushSenderConfig {
       ...(env.FCM_PROJECT_ID !== undefined ? { projectId: env.FCM_PROJECT_ID } : {}),
     }
   }
-  if (env.VAPID_PUBLIC_KEY && env.VAPID_PRIVATE_KEY && env.VAPID_SUBJECT) {
-    config.webPush = {
-      publicKey: env.VAPID_PUBLIC_KEY,
-      privateKey: env.VAPID_PRIVATE_KEY,
-      subject: env.VAPID_SUBJECT,
-    }
-  }
-  if (env.EXPO_ACCESS_TOKEN) {
-    config.expo = { accessToken: env.EXPO_ACCESS_TOKEN }
-  }
+  const webPush = webPushKeys(env)
+  if (webPush !== null) config.webPush = webPush
   return config
 }

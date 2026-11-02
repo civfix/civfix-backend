@@ -11,6 +11,7 @@ import {
 } from "../../src/services/host/broadcast-service.js"
 import { makeBroadcastPipeline } from "../../src/services/host/broadcast-pipeline.js"
 import type { NotificationService } from "../../src/services/notification-service.js"
+import { AllOnSettingsRepository } from "../helpers/notification-capture.js"
 
 const EVENT = "00000000-0000-0000-0000-0000000000ee"
 const HOST = "00000000-0000-0000-0000-0000000000aa"
@@ -82,6 +83,7 @@ function harness(options: { organizationSuspended: boolean }) {
   const pipeline = makeBroadcastPipeline({
     repo,
     service,
+    settingsRepo: new AllOnSettingsRepository(["hostAnnouncements"]),
     notifications: {
       createNotifications: () => Promise.resolve(),
       createNotificationsReportingFailures: () => Promise.resolve({ failed: [] }),
