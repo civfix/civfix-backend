@@ -60,6 +60,7 @@ import {
   HostExportStatusSchema,
   LegalDocumentTypeSchema,
   ConsentSurfaceSchema,
+  LegalAcceptActionSchema,
 } from "@civfix/contract"
 import {
   ABUSE_REASON_VALUES,
@@ -131,6 +132,7 @@ import {
 import {
   LEGAL_DOCUMENT_TYPE_VALUES,
   CONSENT_SURFACE_VALUES,
+  CONSENT_ACTION_VALUES,
 } from "../../src/db/schema/types-legal.js"
 
 describe("schema enum tuples mirror @civfix/contract", () => {
@@ -198,6 +200,7 @@ describe("schema enum tuples mirror @civfix/contract", () => {
     ["HostExportStatus", HOST_EXPORT_STATUS_VALUES, HostExportStatusSchema.options],
     ["LegalDocumentType", LEGAL_DOCUMENT_TYPE_VALUES, LegalDocumentTypeSchema.options],
     ["ConsentSurface", CONSENT_SURFACE_VALUES, ConsentSurfaceSchema.options],
+    ["LegalAcceptAction", CONSENT_ACTION_VALUES, LegalAcceptActionSchema.options],
   ])("%s matches the shared enum exactly", (_name, mirrored, shared) => {
     expect([...mirrored]).toEqual([...shared])
   })

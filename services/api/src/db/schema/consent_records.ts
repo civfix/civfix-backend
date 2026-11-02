@@ -2,8 +2,9 @@ import { sql } from "drizzle-orm"
 import { index, pgTable, text, timestamp, uuid } from "drizzle-orm/pg-core"
 import { users } from "./users.js"
 import type {
+  ConsentActionValue,
+  ConsentRecordSurfaceValue,
   ConsentSubjectKind,
-  ConsentSurfaceValue,
   LegalDocumentTypeValue,
 } from "./types-legal.js"
 
@@ -22,7 +23,8 @@ export const consentRecords = pgTable(
     documentVersion: text("document_version").notNull(),
     documentSha256: text("document_sha256").notNull(),
     acceptedAt: timestamp("accepted_at", { withTimezone: true }).notNull().defaultNow(),
-    surface: text("surface").$type<ConsentSurfaceValue>().notNull(),
+    action: text("action").$type<ConsentActionValue>().notNull().default("accepted"),
+    surface: text("surface").$type<ConsentRecordSurfaceValue>().notNull(),
     screenRoute: text("screen_route"),
     uiTemplateVersion: text("ui_template_version"),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
@@ -40,6 +42,12 @@ export const consentRecords = pgTable(
     index("consent_records_donor_idx")
       .on(t.donorKey, t.acceptedAt.desc())
       .where(sql`donor_key IS NOT NULL`),
+    index("consent_records_user_type_idx")
+      .on(t.userId, t.documentType, t.acceptedAt.desc())
+      .where(sql`subject_kind = 'user'`),
+    index("consent_records_document_idx")
+      .on(t.documentType, t.documentVersion)
+      .where(sql`subject_kind = 'user'`),
   ],
 )
 

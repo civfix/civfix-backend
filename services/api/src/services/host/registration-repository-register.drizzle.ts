@@ -6,6 +6,7 @@ import { deterministicUuid } from "../deterministic-uuid.js"
 import { isEventPubliclyVisible } from "./authz.js"
 import { isUniqueViolationOn } from "../../db/pg-errors.js"
 import { isReservedSeatsBackstopViolation } from "./registration-sql.js"
+import { insertConsentRecords } from "../legal-acceptance-repository.drizzle.js"
 import {
   isBannedIn,
   loadRegistrationById,
@@ -444,6 +445,19 @@ async function insertConsentRow(
       ${args.now}
     )
   `
+  // Consenting at an event counts as accepting those versions on the account (DECISIONS D7).
+  if (args.subject.kind === "user") {
+    await insertConsentRecords(
+      tx,
+      args.subject.userId,
+      args.consent.documents.map((document) => ({
+        ...document,
+        action: "accepted" as const,
+        surface: "event_registration" as const,
+      })),
+      args.now,
+    )
+  }
 }
 
 async function insertRegistrationRows(
