@@ -51,12 +51,17 @@ const CSRF_EXEMPT: Readonly<Record<string, string>> = {
   recordEventPageView: PUBLIC,
   unsubscribeBroadcasts:
     "public one-click unsubscribe (RFC 8058): the signed token, not a session, is the capability",
+  unsubscribeNotificationEmail:
+    "public one-click unsubscribe (RFC 8058): the signed token, not a session, is the capability",
   createMediaUpload: UNDER_REVIEW,
   finalizeMedia: UNDER_REVIEW,
   claimNudge: UNDER_REVIEW,
 }
 
 const MUTATING = new Set(["POST", "PUT", "PATCH", "DELETE"])
+
+// Contract endpoints the server does not serve yet, skipped by name with the reason.
+const NOT_YET_ROUTED: Readonly<Record<string, string>> = {}
 
 let harness: AuthHarness
 
@@ -76,7 +81,7 @@ function preHandlersOf(name: string): unknown[] {
 
 describe("CSRF pairing: every mutation runs csrfProtect or is a reviewed exception", () => {
   const mutations = Object.entries(endpoints)
-    .filter(([, ep]) => MUTATING.has(ep.method))
+    .filter(([name, ep]) => MUTATING.has(ep.method) && !(name in NOT_YET_ROUTED))
     .map(([name]) => name)
 
   it("sees every mutation in the registry registered", () => {
@@ -94,6 +99,17 @@ describe("CSRF pairing: every mutation runs csrfProtect or is a reviewed excepti
         `${name} mutates without csrfProtect; pair it or add a reviewed exemption`,
       ).toBe(true)
     }
+  })
+
+  it("T44: checks the inbox mutations", () => {
+    expect(mutations).toEqual(
+      expect.arrayContaining(["markAllNotificationsRead", "dismissNotification"]),
+    )
+  })
+
+  it("T13: checks updateNotificationSettings and finds csrfProtect", () => {
+    expect(mutations).toContain("updateNotificationSettings")
+    expect(preHandlersOf("updateNotificationSettings")).toContain(harness.container.csrf.protect)
   })
 
   it("T60: the developer console's mutations all run csrfProtect", () => {

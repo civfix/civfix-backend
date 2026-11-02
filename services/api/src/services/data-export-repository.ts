@@ -1,3 +1,5 @@
+import type { NotificationCategory } from "@civfix/contract"
+
 export interface ProfileRow {
   id: string
   display_name: string
@@ -105,6 +107,13 @@ export interface NotificationPrefsExportRow {
   host_broadcasts: boolean
 }
 
+export interface NotificationSettingExportRow {
+  category: NotificationCategory
+  enabled: boolean
+  push: boolean
+  email: boolean
+}
+
 export interface PushTokenRow {
   id: string
   platform: string
@@ -148,6 +157,15 @@ export interface EventConsentExportRow {
   disclosure_version: string
   host_contact_opt_in: boolean
   sms_opt_in: boolean
+  accepted_at: Date
+}
+
+export interface ConsentRecordExportRow {
+  document_type: string
+  document_version: string
+  document_sha256: string
+  action: string
+  surface: string
   accepted_at: Date
 }
 
@@ -196,6 +214,7 @@ export interface DataExportRepository {
   followers(userId: string, rowCap: number): Promise<FollowerExportRow[]>
   blocks(userId: string, rowCap: number): Promise<BlockExportRow[]>
   notificationPrefs(userId: string): Promise<NotificationPrefsExportRow[]>
+  notificationSettings(userId: string): Promise<NotificationSettingExportRow[]>
   /** The projection has no token column: a raw device token never reaches the export. */
   pushTokens(userId: string, rowCap: number): Promise<PushTokenRow[]>
   certificates(userId: string, rowCap: number): Promise<CertificateExportRow[]>
@@ -205,4 +224,5 @@ export interface DataExportRepository {
   eventRegistrations(userId: string, rowCap: number): Promise<EventRegistrationExportRow[]>
   eventAnswers(userId: string, rowCap: number): Promise<EventAnswerExportRow[]>
   eventCheckins(userId: string, rowCap: number): Promise<EventCheckinExportRow[]>
+  consentRecords(userId: string, rowCap: number): Promise<ConsentRecordExportRow[]>
 }

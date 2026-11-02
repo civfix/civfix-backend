@@ -53,9 +53,10 @@ response can be answered truthfully. It is the source of record for the
      the rows written while it did are retained. See the ⚖️ DECISION below.
    - **Revokes and scrubs their issued service-hours certificates**; see the
      dedicated section below.
-   - **Deletes** every durable session row, every device push token and every
-     notification row of the user, so no session outlives the tombstone and no
-     device can be reached after the erasure commits.
+   - **Deletes** every durable session row, every device push token, every
+     notification row and the notification settings and prefs rows of the user,
+     so no session outlives the tombstone and no device can be reached after the
+     erasure commits.
    - Keeps every content foreign key intact (the rows survive; the author
      de-links).
    - AFTER the commit, best-effort deletes each revoked certificate's R2 object.
@@ -81,6 +82,7 @@ response can be answered truthfully. It is the source of record for the
 | OAuth identity links | **Deleted** (best-effort, step 3); otherwise a provider sign-in walks back into the tombstone once the ban marker's TTL lapses. |
 | Device push tokens | **Deleted** inside the erasure transaction. |
 | Notifications | **Deleted** inside the erasure transaction (they can hold verbatim chat/DM previews and are not civic record). |
+| `notification_settings`, `notification_prefs` (per-category notification settings, the old prefs row and quiet hours) | **Deleted** inside the erasure transaction: they describe how to reach a person who no longer has an account, and are not civic record. `notification_settings` declares `ON DELETE CASCADE`, but civfix erasure is a SOFT delete, so that action never fires and the explicit delete is what removes the rows. |
 | Reports the user filed | **Kept** as rows; the user's `public` ones are flipped to `hidden` (see public rendering below). |
 | Report chat, event/group chat, DMs the user wrote | **Kept** (soft-deleted only where the user deleted them individually). |
 | Cleanups organized / joined | **Kept**; an `upcoming`/`active` event they organize is TRANSFERRED where anyone can take it over, and cancelled only when nobody can (ladder below). |
@@ -89,6 +91,7 @@ response can be answered truthfully. It is the source of record for the
 | Organization invitations they sent or received | Pending ones **revoked** (`org.invite_revoked` audit row per invite, `meta.reason = 'account_deleted'`), so an admin's invite cannot seat anyone after the admin is gone. An invite addressed only by email to the departing user's former address is not matched and expires on its own TTL. |
 | Posts published under an organization (`posts.organization_id`, 0.43.0) | **Kept**, exactly like every other post: the FK names the organization, not the person, and the author de-links the same way. Nothing about the org link identifies the departing account. |
 | `event_consents` | **Kept, untouched by every lane.** It carries no contact detail of its own (the subject is a foreign key) and it is the artifact THAT consent existed; the account row it points at is tombstoned rather than deleted. |
+| `consent_records` (the legal document versions the account accepted or acknowledged, 0231) | **Kept, untouched by every lane, `user_id` intact**: like `event_consents`, it is the legal record of what the person agreed to and when, it carries no contact detail (document, version, hash, action, surface, server time; never an IP or device), and the account row it points at is tombstoned rather than deleted. The FK declares `ON DELETE SET NULL`, but civfix erasure is a SOFT delete, so that action never fires. |
 | `cleanup_registrations`, `cleanup_registration_seats`, check-ins | **Kept**: they are the roster record of someone else's event. Only the departing person's own free text (`cleanup_answers` values, `attendee_name`, `host_note`) is scrubbed in the same transaction. |
 | `cleanup_waitlist` | Live entries (`waiting`/`offered`) **cancelled**, and the seats an `offered` entry reserved are released back to the ticket type. |
 | `broadcast_deliveries`, `cleanup_broadcast_mutes`, `broadcast_unsubscribes`, `host_exports` | **Kept, with the FK intact**, exactly like reports, posts and chat. These tables carry no contact detail of their own (only a reference), and the identity behind the reference is the tombstoned account. Their DDL declares `ON DELETE SET NULL` / `ON DELETE CASCADE`, but civfix erasure is a SOFT delete: the `users` row is never deleted, so **those FK actions never fire.** Do not describe the outcome as a cascade. A guest contact scrub separately NULLs the address the broadcast pipeline would have re-read at send time, so a delivery planned before the scrub is marked `suppressed(contact_scrubbed)` and never sent. |
@@ -97,6 +100,7 @@ response can be answered truthfully. It is the source of record for the
 | `cleanup_slot_claims` (which signup slot they took, P9) | **Kept**. The row is `(cleanup_id, user_id, slot_id, claimed_at)`: roster data with no free-text PII, held exactly like the `cleanup_members` row it accompanies, and with no `ON DELETE CASCADE` to `users` by design (`drizzle/0063_cleanup_slots.sql`). The attendee/roster read joins `users` with `deleted_at IS NULL`, so a tombstoned claimant disappears from the visible roster; the row still counts toward the slot's `claimed` total. |
 | `media_assets.uploader` (who created an upload, 0183) | **Kept**, like `reports.reporter_user_id`: it names the tombstoned account, never an email or IP. Nulling it would make the departed user's unbound uploads claimable by anyone inside the claim window. |
 | `report_confirmations` (their votes on other people's reports, "I see this too" and "This is fixed", 0194 and 0198) | **Kept, both kinds, and they still count** (neither `reports.confirm_count` nor `reports.fixed_count` is decremented, and a fixed vote still weighs in the pressing ranking). The row is `(report_id, user_id, created_at, kind)` with no free text, and no read anywhere, admin included, lists who voted on a report, so nothing about the departed account is on display. The FKs declare `ON DELETE CASCADE`, but civfix erasure is a SOFT delete, so that action never fires. |
+| City filings of their reports (`report_filings`, `filing_evidence`, `filing_messages`, 0210) | **Kept, untouched**, like the reports they file: a filing is the record of what CivFix sent a city on a resident's behalf. No row names the resident: `created_by` is the operator who filed, and the ticket text and evidence carry the report's text and photos, never the reporter's identity (D16). |
 | `volunteer_hours` (the hours ledger) | **Kept, untouched**, like reports: the rows are the record of work done at other people's events, and the leaderboard and public hours reads already hide a tombstoned account. The operator-credit columns from 0182 stay with their row: `service_date`, `credited_by_operator_id`, `voided_by_operator_id`, and the operator's free-text `note` (credit reason) and `void_reason`. The two operator ids name the operator, not the departing person, and the two reasons are admin-plane notes that no user-facing read or export carries. An operator can still void a deleted account's entries (`POST /v1/admin/users/:id/hours/:entryId/void`) but can no longer credit them. |
 | `service_hours_certificates` (issued PDF transcripts, P5) | **Revoked + scrubbed**, rows kept, **R2 objects deleted**. See the next section. |
 
@@ -155,9 +159,9 @@ Two rungs of that scrub exist for a reason:
   step-down writes an `event.team_role_changed` audit row with a **null actor**:
   nobody performed it; the erasure did.
 
-`event_consents` is deliberately untouched: it is the artifact THAT consent
-existed, it carries no contact detail of its own, and the account row it points at
-is tombstoned rather than deleted.
+`event_consents` and `consent_records` are deliberately untouched: they are the
+artifact THAT consent existed, they carry no contact detail of their own, and the
+account row they point at is tombstoned rather than deleted.
 
 ### ⚖️ DECISION: a deleted account's donation record survives, and so does the donor's email, for seven years
 

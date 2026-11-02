@@ -11,6 +11,7 @@ import { RecordingNotifier } from "../helpers/notifications.js"
 import { InMemoryMailRepository } from "../helpers/admin/mail-repository.memory.js"
 import { InMemoryAdminReportRepository } from "../helpers/admin/admin-report-repository.memory.js"
 import { makeOutboundMailService } from "../../src/services/admin/outbound-mail-service.js"
+import { InMemoryFilingRepository } from "../helpers/filings/filing-repository.memory.js"
 
 const OPERATOR = "ops@civfix.org"
 
@@ -48,6 +49,7 @@ async function makeHarness() {
     storage: new FakeStorage(),
     inboundEffects: {
       reportRepo: reports,
+      filings: new InMemoryFilingRepository(),
       notifications: new RecordingNotifier(),
       chatEmitter: {
         emit: (event) => {

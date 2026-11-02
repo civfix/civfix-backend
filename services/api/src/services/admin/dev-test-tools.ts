@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto"
 import {
   AppError,
   type AdminDevForceUpdateAccount,
@@ -37,6 +38,7 @@ export interface DevTestToolsDeps {
   /** Trimmed and lowercased by the env loader. */
   testEmails: readonly string[]
   now?: () => number
+  newId?: () => string
 }
 
 export interface DevTestTools {
@@ -54,6 +56,7 @@ export interface DevTestTools {
 
 export function makeDevTestTools(deps: DevTestToolsDeps): DevTestTools {
   const now = deps.now ?? Date.now
+  const newId = deps.newId ?? randomUUID
   const testEmails: ReadonlySet<string> = new Set(deps.testEmails)
 
   // Only accounts made for testing: staging holds real testers who get real pushes and email.
@@ -124,6 +127,11 @@ export function makeDevTestTools(deps: DevTestToolsDeps): DevTestTools {
       await deps.pushSender.send(target.userId, {
         title: input.title ?? TEST_PUSH_DEFAULT_TITLE,
         body: input.body ?? TEST_MESSAGE_TEXT,
+        // Stands in for a notification row, which a test push deliberately doesn't create. Always on,
+        // so a tester's own settings can't make the tool look broken.
+        notificationId: newId(),
+        type: "system",
+        category: null,
       })
       await deps.repo.writeAudit({
         actorId,

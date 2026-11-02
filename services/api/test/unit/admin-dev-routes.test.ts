@@ -696,7 +696,7 @@ describe("GET /v1/admin/dev/jobs", () => {
     expect(queues.filter((q) => q.owner === "worker").map((q) => q.name)).toEqual(
       [...WORKER_QUEUES].sort(),
     )
-    expect(queues.filter((q) => q.owner === "api")).toHaveLength(20)
+    expect(queues.filter((q) => q.owner === "api")).toHaveLength(26)
   })
 
   it("T18: exactly four queues are runnable", async () => {

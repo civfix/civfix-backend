@@ -1,0 +1,8 @@
+# /etc/gitconfig in the city-filer image, root-owned.
+[safe]
+	# /workspace's top level is node's and its repository is filer's, and git refuses a repository whose
+	# top level another user owns. This names the one it may use.
+	directory = /workspace
+[user]
+	name = CivFix filer
+	email = filer@civfix.invalid

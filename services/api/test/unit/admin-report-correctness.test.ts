@@ -8,6 +8,7 @@ import { makeOutboundMailService } from "../../src/services/admin/outbound-mail-
 import { RecordingNotifier } from "../helpers/notifications.js"
 import { makeFakeSql } from "../helpers/fake-sql.js"
 import type { Sql } from "../../src/db/client.js"
+import { memoryFilingService } from "../helpers/filings/filing-harness.js"
 
 const NOW = new Date("2026-06-06T00:00:00.000Z")
 const REPORT_ID = "0b8f3a52-7a55-4d6e-9d0c-5a8f1b7c9e11"
@@ -35,6 +36,7 @@ function harness(opts: { emitterThrows?: boolean } = {}) {
   const warned: Warned[] = []
   const svc = makeAdminReportService({
     repo,
+    filings: memoryFilingService(repo),
     outboundMail: makeOutboundMailService({
       repo: new InMemoryMailRepository(),
       mailer: new FakeMailer(),

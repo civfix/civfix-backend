@@ -72,6 +72,13 @@ separate **product/counsel retention DECISION**; this sweep only reaps auth
 artifacts that are unambiguously dead once expired. Orphaned media already has its
 own `orphan.sweep`.
 
+City filings (`report_filings`, `filing_evidence`, `filing_messages`, epic #164) are
+never swept: they are the record of what was filed with a city on a resident's
+behalf, kept indefinitely like the reports themselves, and account deletion leaves
+them untouched (`erasure-behavior.md`). Filing evidence in R2 (`filings/<filingId>/`)
+is kept with them. Only the filer's own working copies (`runs/` in its workspace)
+are pruned, after 30 days, by the filer (D16).
+
 ## The official account
 
 The `users` row `00000000-0000-4000-8000-00000000c1f1` (`@civfix`, created by
@@ -386,6 +393,7 @@ NEVER throws out of the sweep: a failed lane is logged and the next lane still r
 | `users.primary_organization_id` | **No TTL, indefinite.** It is a display PREFERENCE (which membership shows as the profile's affiliation badge), not a data class: it holds no contact detail, it is derivable from `organization_members` when null, and it is nulled in the same transaction that removes the matching membership and by account erasure. | none |
 | `posts.organization_id` | **No TTL, indefinite**: part of the post, retained exactly as the post is. It names an organization, never a person; the acting human stays `posts.author_id` and de-links on erasure like any other author. | none |
 | `event_consents` | **Never scrubbed, never swept.** Deleted only with its event (`ON DELETE CASCADE`); `registration_id` is `ON DELETE SET NULL` (0121) so the consent artifact survives a registration that does not. It holds no contact detail of its own (the subject is a foreign key), and it is the artifact THAT consent existed, including the `surface` it was captured on. | none |
+| `consent_records` (an account's legal document acceptances and acknowledgements, 0231) | **Never scrubbed, never swept, kept indefinitely.** Account deletion keeps every record with the anonymized account as a legal record, `user_id` intact (erasure is a soft delete, so the FK's `ON DELETE SET NULL` never fires). A row holds the document type, version and sha256, the action, the surface and the server's time: no IP address, no device data, no contact detail. Only the demo purge deletes rows, those of the demo accounts it removes. | none |
 
 ### Registration and check-in
 

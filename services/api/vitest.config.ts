@@ -32,7 +32,12 @@ export default defineConfig({
       reporter: ["text-summary"],
       // The unit-only baseline rounded down. CI also runs the integration suite, so its numbers are
       // never lower; raise these as coverage grows, never lower them.
-      thresholds: { lines: 86, functions: 84, branches: 74, statements: 84 },
+      // A CI shard runs a fraction of the suite, so its own numbers mean nothing: the merge job checks
+      // these against the combined report.
+      thresholds:
+        process.env.CIVFIX_TEST_SHARD === undefined
+          ? { lines: 86, functions: 84, branches: 74, statements: 84 }
+          : {},
     },
   },
 })

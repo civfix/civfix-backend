@@ -30,6 +30,8 @@ const RAW_UPLOAD_KEY_READERS: Record<string, string> = {
     "the media worker reads the original to re-encode it",
   "services/certificate-repository.drizzle.ts":
     "service_hours_certificates.r2_key is a generated certificate, not an upload",
+  "services/filings/filing-repository.drizzle.ts":
+    "filing_evidence.r2_key is a filer screenshot or script, not an upload",
   "services/report-sql.ts":
     "m is the ready-only firstReadyStillLateral, whose r2_key is served_key",
   "services/report-repository.drizzle.ts":

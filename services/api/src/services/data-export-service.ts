@@ -7,11 +7,13 @@ import { renderEmailBody } from "../adapters/email-layout.js"
 import { mailFailure } from "../adapters/mail-failure.js"
 import { insertAuditRow } from "./admin/audit-repository.drizzle.js"
 import { makeDrizzleDataExportRepository } from "./data-export-repository.drizzle.js"
+import { effectiveNotificationSettings } from "./notification-settings-service.js"
 import type {
   BlockExportRow,
   DataExportRepository,
   FollowerExportRow,
   FollowingExportRow,
+  NotificationSettingExportRow,
   ProfileRow,
   PushTokenRow,
   ReportConfirmationExportRow,
@@ -129,6 +131,7 @@ const DATA_EXPORT_BODY_ORDER = [
   "followers",
   "blocks",
   "notificationPrefs",
+  "notificationSettings",
   "pushTokens",
   "certificates",
   "organizations",
@@ -137,11 +140,21 @@ const DATA_EXPORT_BODY_ORDER = [
   "eventRegistrations",
   "eventAnswers",
   "eventCheckins",
+  "consentRecords",
 ] as const
 
 type BodyKey = (typeof DATA_EXPORT_BODY_ORDER)[number]
 
-type SingleRecordKey = "notificationPrefs"
+type SingleRecordKey = "notificationPrefs" | "notificationSettings"
+
+const SINGLE_RECORD_KEYS: ReadonlySet<BodyKey> = new Set<SingleRecordKey>([
+  "notificationPrefs",
+  "notificationSettings",
+])
+
+function isSingleRecord(key: BodyKey): key is SingleRecordKey {
+  return SINGLE_RECORD_KEYS.has(key)
+}
 
 type SectionName = Exclude<BodyKey, SingleRecordKey>
 
@@ -153,6 +166,7 @@ const DATA_EXPORT_FIT_ORDER = [
   "pushTokens",
   "certificates",
   "organizations",
+  "consentRecords",
   "eventConsents",
   "eventRegistrations",
   "eventCheckins",
@@ -193,6 +207,8 @@ interface SectionPart {
 interface SingleRecordPart {
   kind: "record"
   load(repo: DataExportRepository, userId: string): PromiseLike<readonly object[]>
+  /** Turns the loaded rows into the one value the export carries. */
+  present(rows: readonly object[]): unknown
 }
 
 type BodyParts = { readonly [K in SectionName]: SectionPart } & {
@@ -295,6 +311,13 @@ const DATA_EXPORT_BODY: BodyParts = {
   notificationPrefs: {
     kind: "record",
     load: (repo, userId) => repo.notificationPrefs(userId),
+    present: (rows) => rows[0] ?? null,
+  },
+
+  notificationSettings: {
+    kind: "record",
+    load: (repo, userId) => repo.notificationSettings(userId),
+    present: (rows: NotificationSettingExportRow[]) => effectiveNotificationSettings(rows),
   },
 
   pushTokens: {
@@ -350,6 +373,12 @@ const DATA_EXPORT_BODY: BodyParts = {
     kind: "section",
     rowCap: DATA_EXPORT_MAX_ROWS,
     load: (repo, userId, rowCap) => repo.eventCheckins(userId, rowCap),
+  },
+
+  consentRecords: {
+    kind: "section",
+    rowCap: DATA_EXPORT_MAX_ROWS,
+    load: (repo, userId, rowCap) => repo.consentRecords(userId, rowCap),
   },
 }
 
@@ -410,12 +439,14 @@ function fitBody(loaded: ReadonlyMap<BodyKey, readonly object[]>): FittedBody {
   const body = Object.fromEntries(
     DATA_EXPORT_BODY_ORDER.map((key) => [
       key,
-      key === "notificationPrefs" ? (loaded.get(key)?.[0] ?? null) : sections.get(key),
+      isSingleRecord(key)
+        ? DATA_EXPORT_BODY[key].present(loaded.get(key) ?? [])
+        : sections.get(key),
     ]),
   ) as Record<BodyKey, unknown>
 
   const truncatedSections = DATA_EXPORT_BODY_ORDER.filter(
-    (key): key is SectionName => key !== "notificationPrefs" && truncatedCaps.has(key),
+    (key): key is SectionName => !isSingleRecord(key) && truncatedCaps.has(key),
   )
   const sectionCaps = Object.fromEntries(
     truncatedSections.map((name) => [name, truncatedCaps.get(name)]),

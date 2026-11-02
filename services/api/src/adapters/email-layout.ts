@@ -48,7 +48,10 @@ export interface EventFooterOptions {
   eventTitle: string
   unsubscribeUrl?: string
   replyTo?: string | null
+  /** A change or cancellation notice to a guest: it reaches them past an opt-out. */
   critical?: boolean
+  /** The same notice to an account holder, whose own settings and opt-outs still apply (D3). */
+  serviceNotice?: boolean
   manageUrl?: string
 }
 
@@ -72,14 +75,15 @@ function linkLine(label: string, url: string): FooterSegment[] {
 
 export function eventFooter(opts: EventFooterOptions): EmailFooter {
   const lines: FooterSegment[][] = []
+  const serviceMessage = `This is a service message about "${opts.eventTitle}", an event you signed up for on civfix.`
   if (opts.critical === true) {
     lines.push([
       {
-        text:
-          `This is a service message about "${opts.eventTitle}", an event you signed up for on civfix. ` +
-          `You receive these even if you have turned off updates from this organizer.`,
+        text: `${serviceMessage} You receive these even if you have turned off updates from this organizer.`,
       },
     ])
+  } else if (opts.serviceNotice === true) {
+    lines.push([{ text: serviceMessage }])
   } else {
     lines.push([
       {
@@ -110,7 +114,12 @@ function footerSegments(footer: string | EmailFooter): readonly FooterSegment[] 
 
 function footerText(footer: string | EmailFooter): string {
   return footerSegments(footer)
-    .map((segment) => segment.text)
+    .map((segment) =>
+      // Plain text carries no links, so a link labelled with words prints its URL after them.
+      segment.href !== undefined && segment.text !== segment.href
+        ? `${segment.text}: ${segment.href}`
+        : segment.text,
+    )
     .join("")
 }
 

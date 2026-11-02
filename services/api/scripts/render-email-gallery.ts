@@ -260,8 +260,8 @@ function collect(): GalleryEntry[] {
       sampleReport(),
       { geoid: "0644000", dept: "Public Works", place: "Los Angeles", contact: null, routed: true },
       [
-        { kind: "image", url: `${WEB}/m/a?t=1` },
-        { kind: "image", url: `${WEB}/m/b?t=2` },
+        { id: "media-a", kind: "image", url: `${WEB}/m/a?t=1` },
+        { id: "media-b", kind: "image", url: `${WEB}/m/b?t=2` },
       ],
       "Second report at this location this month; residents flagged it as recurring.",
       { subject: null, body: null },

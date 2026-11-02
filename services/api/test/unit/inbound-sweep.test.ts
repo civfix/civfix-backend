@@ -11,6 +11,7 @@ import { InMemoryAdminReportRepository } from "../helpers/admin/admin-report-rep
 import { RecordingNotifier } from "../helpers/notifications.js"
 import { JURISDICTION_REPLY_NOTE } from "../../src/services/admin/inbound-thread-correlation.js"
 import type { Container } from "../../src/di.js"
+import { InMemoryFilingRepository } from "../helpers/filings/filing-repository.memory.js"
 
 function rfc822(to: string, body = "x", messageId?: string): Buffer {
   const lines = [`From: c@city.gov`, `To: ${to}`]
@@ -148,6 +149,7 @@ describe("runInboundSweep: side-effect re-drive", () => {
       inboundRepo,
       adminReportRepo,
       notifications: notifier,
+      filings: new InMemoryFilingRepository(),
     }
     const container = {
       env: { USE_FAKE_CHAT: true },
@@ -285,6 +287,7 @@ describe("runInboundSweep: crash-safe lease + idempotent re-drive (B4)", () => {
       inboundRepo,
       adminReportRepo,
       notifications: notifier,
+      filings: new InMemoryFilingRepository(),
     }
     const container = {
       env: { USE_FAKE_CHAT: true },

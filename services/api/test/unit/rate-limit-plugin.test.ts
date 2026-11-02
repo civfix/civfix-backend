@@ -117,7 +117,10 @@ import {
 } from "../../src/routes/host/exports.routes.js"
 import { PAGE_VIEW_RATE_LIMIT } from "../../src/routes/host/page-views.routes.js"
 import { UNSUBSCRIBE_RATE_LIMIT } from "../../src/routes/host/unsubscribe.routes.js"
-import { LEGAL_VERSIONS_RATE_LIMIT } from "../../src/routes/legal.routes.js"
+import {
+  LEGAL_ACCEPT_RATE_LIMIT,
+  LEGAL_VERSIONS_RATE_LIMIT,
+} from "../../src/routes/legal.routes.js"
 import {
   ADMIN_REPORT_MUTATION_RATE_LIMIT,
   ROUTE_REPORT_RATE_LIMIT,
@@ -134,7 +137,13 @@ import { ADMIN_USER_HOURS_WRITE_RATE_LIMIT } from "../../src/routes/admin/user-h
 import { ADMIN_RUNTIME_FLAG_RATE_LIMIT } from "../../src/routes/admin/dev-flags.routes.js"
 import { ADMIN_DEV_TEST_RATE_LIMIT } from "../../src/routes/admin/dev-test.routes.js"
 import { ADMIN_DEV_RUN_JOB_RATE_LIMIT } from "../../src/routes/admin/dev-status.routes.js"
-import { PUSH_TOKEN_RATE_LIMIT } from "../../src/routes/notifications.routes.js"
+import {
+  DISMISS_NOTIFICATION_RATE_LIMIT,
+  MARK_ALL_NOTIFICATIONS_READ_RATE_LIMIT,
+  MARK_NOTIFICATIONS_READ_RATE_LIMIT,
+  NOTIFICATION_SETTINGS_RATE_LIMIT,
+  PUSH_TOKEN_RATE_LIMIT,
+} from "../../src/routes/notifications.routes.js"
 import { FOLLOW_RATE_LIMIT, FOLLOW_SUGGESTIONS_RATE_LIMIT } from "../../src/routes/social.routes.js"
 import { DATA_EXPORT_RATE_LIMIT, LIST_BLOCKS_RATE_LIMIT } from "../../src/routes/users.routes.js"
 import {
@@ -455,6 +464,7 @@ function recordingRedis(): RecordingRedis {
 }
 
 const IDENTITY_SCOPED_LIMITS = {
+  LEGAL_ACCEPT_RATE_LIMIT,
   CREATE_GROUP_RATE_LIMIT,
   ADD_GROUP_MEMBERS_RATE_LIMIT,
   JOIN_GROUP_RATE_LIMIT,
@@ -486,6 +496,10 @@ const IDENTITY_SCOPED_LIMITS = {
   FEED_COUNTS_RATE_LIMIT,
   HOME_FEED_RATE_LIMIT,
   PUSH_TOKEN_RATE_LIMIT,
+  MARK_NOTIFICATIONS_READ_RATE_LIMIT,
+  MARK_ALL_NOTIFICATIONS_READ_RATE_LIMIT,
+  DISMISS_NOTIFICATION_RATE_LIMIT,
+  NOTIFICATION_SETTINGS_RATE_LIMIT,
   ADMIN_OUTBOUND_MAIL_RATE_LIMIT,
   ADMIN_MAIL_REPLY_PUBLISH_RATE_LIMIT,
   ADMIN_USER_HOURS_WRITE_RATE_LIMIT,

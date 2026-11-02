@@ -1,4 +1,5 @@
-import { AppError, currentVersion } from "@civfix/contract"
+import { AppError } from "@civfix/contract"
+import type { LegalDocumentVersion } from "@civfix/contract/legal"
 import type {
   CancelEventRegistrationRequest,
   CancelEventRegistrationResponse,
@@ -31,6 +32,7 @@ import {
   toEventRegistrationDTO,
 } from "./registration-dto.js"
 import { enqueueWaitlistPromotion } from "./waitlist-promotion.js"
+import { eventConsentDocuments } from "../legal-service.js"
 import type { InsightsInvalidator } from "./host-analytics-cache.js"
 import { NO_AFFILIATIONS, withAffiliation, type AffiliationLoader } from "../affiliation.js"
 import type { TicketTokenSigner } from "./ticket-token.js"
@@ -102,6 +104,8 @@ export interface RegistrationServiceDeps {
   affiliations?: AffiliationLoader
   now?: () => Date
   newId?: () => string
+  /** The legal versions event consent is checked against; the contract's when absent. */
+  legalVersions?: readonly LegalDocumentVersion[]
   logger?: { warn(obj: unknown, msg?: string): void }
 }
 
@@ -173,20 +177,13 @@ export function makeRegistrationService(deps: RegistrationServiceDeps): Registra
 
   function consentWriteOf(consent: EventConsentInput | undefined): ConsentWrite | null {
     if (consent === undefined) return null
-    if (consent.termsVersion !== currentVersion("terms")) {
-      throw AppError.validation({ "consent.termsVersion": "out of date, so re-accept the terms" })
-    }
-    if (consent.disclosureVersion !== currentVersion("privacy")) {
-      throw AppError.validation({
-        "consent.disclosureVersion": "out of date, so re-accept the privacy notice",
-      })
-    }
     return {
       termsVersion: consent.termsVersion,
       disclosureVersion: consent.disclosureVersion,
       hostContactOptIn: consent.hostContactOptIn,
       smsOptIn: consent.smsOptIn ?? null,
       surface: consent.surface ?? null,
+      documents: eventConsentDocuments(consent, now(), deps.legalVersions),
     }
   }
 
