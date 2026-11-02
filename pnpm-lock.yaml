@@ -76,8 +76,8 @@ importers:
   packages/seams:
     dependencies:
       '@civfix/contract':
-        specifier: 0.71.1-b-integration-city-filing.ga6c1cdc
-        version: 0.71.1-b-integration-city-filing.ga6c1cdc
+        specifier: ^0.71.1
+        version: 0.71.1
     devDependencies:
       '@civfix/config':
         specifier: workspace:*
@@ -137,8 +137,8 @@ importers:
         specifier: ^3.1147.0
         version: 3.1147.0
       '@civfix/contract':
-        specifier: 0.71.1-b-integration-city-filing.ga6c1cdc
-        version: 0.71.1-b-integration-city-filing.ga6c1cdc
+        specifier: ^0.71.1
+        version: 0.71.1
       '@civfix/tokens':
         specifier: ^0.1.1
         version: 0.1.1
@@ -291,8 +291,8 @@ importers:
         specifier: workspace:*
         version: link:../api
       '@civfix/contract':
-        specifier: 0.71.1-b-integration-city-filing.ga6c1cdc
-        version: 0.71.1-b-integration-city-filing.ga6c1cdc
+        specifier: ^0.71.1
+        version: 0.71.1
       '@sentry/node':
         specifier: ^10.76.1
         version: 10.76.1(@opentelemetry/core@2.12.0(@opentelemetry/api@1.9.1))
@@ -355,8 +355,8 @@ importers:
         specifier: workspace:*
         version: link:../api
       '@civfix/contract':
-        specifier: 0.71.1-b-integration-city-filing.ga6c1cdc
-        version: 0.71.1-b-integration-city-filing.ga6c1cdc
+        specifier: ^0.71.1
+        version: 0.71.1
       '@sentry/node':
         specifier: ^10.76.1
         version: 10.76.1(@opentelemetry/core@2.12.0(@opentelemetry/api@1.9.1))
@@ -539,8 +539,8 @@ packages:
     resolution: {integrity: sha512-6zABk/ECA/QYSCQ1NGiVwwbQerUCZ+TQbp64Q3AgmfNvurHH0j8TtXa1qbShXA6qqkpAj4V5W8pP6mLe1mcMqA==}
     engines: {node: '>=18'}
 
-  '@civfix/contract@0.71.1-b-integration-city-filing.ga6c1cdc':
-    resolution: {integrity: sha512-gLNBn3bKDdmP9y15pJ5RR3knGkhf0sgeRolkpH3Q3NjF0xFI1o/EdhGApK/zWLbf2mi65WyBAsexfgI7n4fPlg==}
+  '@civfix/contract@0.71.1':
+    resolution: {integrity: sha512-jg5VpST3D+BljDsuGnwHtguSZCCat/S0ooCXPQx2I0QF6rhGtEkhRgJkF8F+UCWuBRjDfOfbfrPRbBZgcAl4hw==}
     engines: {node: '>=20'}
 
   '@civfix/tokens@0.1.1':
@@ -4724,7 +4724,7 @@ snapshots:
 
   '@bcoe/v8-coverage@1.0.2': {}
 
-  '@civfix/contract@0.71.1-b-integration-city-filing.ga6c1cdc':
+  '@civfix/contract@0.71.1':
     dependencies:
       zod: 4.6.7
 
