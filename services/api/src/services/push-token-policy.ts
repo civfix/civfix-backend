@@ -1,7 +1,6 @@
 import { isIP } from "node:net"
 import { lookup, Resolver } from "node:dns/promises"
 import type { PushPlatform } from "@civfix/contract"
-import { isExpoPushToken } from "../adapters/push-expo.js"
 import { expandIpv6Hextets } from "../adapters/net-ipv6.js"
 
 export const PUSH_DNS_TIMEOUT_MS = 2_000
@@ -128,8 +127,10 @@ function ipv6ToBytes(input: string): number[] | null {
     if (quad.length !== 4) return null
     const nums = quad.map((p) => Number(p))
     if (!nums.every(isOctet)) return null
-    const hi = ((nums[0]! << 8) | nums[1]!).toString(16)
-    const lo = ((nums[2]! << 8) | nums[3]!).toString(16)
+    const [n0, n1, n2, n3] = nums
+    if (n0 === undefined || n1 === undefined || n2 === undefined || n3 === undefined) return null
+    const hi = ((n0 << 8) | n1).toString(16)
+    const lo = ((n2 << 8) | n3).toString(16)
     s = `${s.slice(0, cut + 1)}${hi}:${lo}`
   }
   const { hextets: groups, runs, fill } = expandIpv6Hextets(s)
@@ -148,6 +149,8 @@ function ipv6ToBytes(input: string): number[] | null {
 function isPublicIpv6(addr: string): boolean {
   const b = ipv6ToBytes(addr)
   if (!b) return false
+  const [first, second] = b
+  if (first === undefined || second === undefined) return false
   if (b.every((x) => x === 0)) return false
   const embeddedV4 = () => b.slice(12).join(".")
   const first10Zero = b.slice(0, 10).every((x) => x === 0)
@@ -162,9 +165,9 @@ function isPublicIpv6(addr: string): boolean {
   ) {
     return isPublicIpv4(embeddedV4())
   }
-  if (b[0] === 0xfe && (b[1]! & 0xc0) === 0x80) return false
-  if ((b[0]! & 0xfe) === 0xfc) return false
-  if (b[0] === 0xff) return false
+  if (first === 0xfe && (second & 0xc0) === 0x80) return false
+  if ((first & 0xfe) === 0xfc) return false
+  if (first === 0xff) return false
   return true
 }
 
@@ -173,7 +176,13 @@ const WEB_PUSH_AUTH_BYTES = 16
 const BASE64URL_RE = /^[A-Za-z0-9_-]+={0,2}$/
 const APNS_TOKEN_RE = /^[0-9a-fA-F]{64,200}$/
 const FCM_TOKEN_RE = /^[A-Za-z0-9_:.~%+-]{64,2048}$/
-const EXPO_PUSH_TOKEN_MAX_LENGTH = 512
+const EXPO_TOKEN_PREFIXES = ["ExponentPushToken[", "ExpoPushToken["] as const
+
+// D7: pushes go to APNs, FCM and web push directly, so an Expo token can't be registered, and one
+// stored from before is revoked the first time a send meets it.
+export function isExpoPushToken(token: string): boolean {
+  return EXPO_TOKEN_PREFIXES.some((prefix) => token.startsWith(prefix))
+}
 
 function decodedByteLength(value: string): number | null {
   if (!BASE64URL_RE.test(value)) return null
@@ -185,7 +194,6 @@ function decodedByteLength(value: string): number | null {
 }
 
 export type PushTokenShape =
-  | { ok: true; kind: "expo" }
   | { ok: true; kind: "apns" }
   | { ok: true; kind: "fcm" }
   | { ok: true; kind: "web"; endpoint: string }
@@ -220,9 +228,7 @@ function classifyWebSubscription(token: string): PushTokenShape {
 
 export function classifyPushToken(platform: PushPlatform, token: string): PushTokenShape {
   if (isExpoPushToken(token)) {
-    return token.endsWith("]") && token.length <= EXPO_PUSH_TOKEN_MAX_LENGTH
-      ? { ok: true, kind: "expo" }
-      : invalidToken("malformed Expo push token")
+    return invalidToken("Expo push tokens are no longer accepted; register the device's own token")
   }
   if (platform === "web") return classifyWebSubscription(token)
   if (platform === "ios") {

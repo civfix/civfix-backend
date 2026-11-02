@@ -12,6 +12,7 @@
 import type { AddressPrecision } from "@civfix/contract"
 import type { ReverseGeocode, ReverseResult } from "./reverse-geocode.chain.js"
 import { fetchJsonOrNull } from "./http-fetch.js"
+import { firstNonEmpty } from "../lib/text.js"
 
 const MAPBOX_REVERSE_URL = "https://api.mapbox.com/search/geocode/v6/reverse"
 const DEFAULT_TIMEOUT_MS = 4000
@@ -49,8 +50,8 @@ export interface MapboxReverseOptions {
 
 export function formatMapboxReverse(p: MapboxReverseProps): string | null {
   const ctx = p.context ?? {}
-  const primary = p.name || ctx.address?.name || ctx.street?.name || ctx.place?.name || ""
-  if (!primary) return null
+  const primary = firstNonEmpty(p.name, ctx.address?.name, ctx.street?.name, ctx.place?.name)
+  if (primary === undefined) return null
   const region = ctx.region?.region_code ?? ctx.region?.name ?? null
   const cc = ctx.country?.country_code
   const tail = [

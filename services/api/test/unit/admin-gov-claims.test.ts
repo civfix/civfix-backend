@@ -404,17 +404,9 @@ describe("gov claim approve", () => {
     repo.now = NOW
     repo.seedClaim({ id: "GOV-1", contactEmail: "dana@waynesboro-va.gov", status: "pending" })
     const users = new InMemoryUserProvisioner()
-    const racingRepo = {
-      ...repo,
-      getClaim: (id: string) => repo.getClaim(id),
-      approve: () => Promise.resolve(null),
-      reject: (id: string, input: { reason: string; actorId: string | null }) =>
-        repo.reject(id, input),
-      list: repo.list.bind(repo),
-      setCheck: repo.setCheck.bind(repo),
-    }
+    vi.spyOn(repo, "approve").mockResolvedValue(null)
     const svc = makeGovClaimsService({
-      repo: racingRepo,
+      repo,
       users,
       revokeSessions: () => Promise.resolve(0),
       now: () => NOW,

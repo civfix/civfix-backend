@@ -89,14 +89,16 @@ jobs:
     timeout-minutes: 10
     permissions:
       contents: read
+      # Adds the release tags to the staging digests in ghcr.io/civfix/*.
       packages: write
     outputs:
       tag: ${{ steps.resolve.outputs.tag }}
       sha: ${{ steps.resolve.outputs.sha }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
+          persist-credentials: false
 
       - name: Resolve the release, and prove it is the one the box will deploy
         id: resolve
@@ -154,7 +156,7 @@ jobs:
           echo "deploying $tag ($sha)"
 
       - name: Log in to GHCR
-        uses: docker/login-action@v3
+        uses: docker/login-action@81c6f93d4bc991e510b342a00b419b3bb4efc5c6 # v4.7.0
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
@@ -205,6 +207,8 @@ jobs:
     environment: production
     runs-on: ubuntu-latest
     timeout-minutes: 20
+    # Only SSH and curl: the GITHUB_TOKEN is never used, so it gets no scope at all.
+    permissions: {}
     # No checkout: the VPS pulls the code itself; this job only needs to SSH in.
     env:
       DEPLOY_HOST: ${{ secrets.PROD_DEPLOY_HOST }}

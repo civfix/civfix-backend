@@ -41,7 +41,9 @@ export function chance(p: number): boolean {
 }
 
 export function pick<T>(arr: readonly T[]): T {
-  return arr[Math.floor(rand() * arr.length)]!
+  const item = arr[Math.floor(rand() * arr.length)]
+  if (item === undefined) throw new Error("pick: empty array")
+  return item
 }
 
 export function pickWeighted<T>(items: readonly (readonly [T, number])[]): T {
@@ -52,13 +54,19 @@ export function pickWeighted<T>(items: readonly (readonly [T, number])[]): T {
     roll -= w
     if (roll <= 0) return v
   }
-  return items[items.length - 1]![0]
+  const last = items.at(-1)
+  if (last === undefined) throw new Error("pickWeighted: no items")
+  return last[0]
 }
 
 export function shuffle<T>(arr: T[]): T[] {
   for (let i = arr.length - 1; i > 0; i--) {
     const j = Math.floor(rand() * (i + 1))
-    ;[arr[i], arr[j]] = [arr[j]!, arr[i]!]
+    const a = arr[i]
+    const b = arr[j]
+    if (a === undefined || b === undefined) throw new Error("shuffle: index out of range")
+    arr[i] = b
+    arr[j] = a
   }
   return arr
 }
@@ -78,15 +86,16 @@ export function sampleWeighted<T>(
     if (total <= 0) break
     let roll = rand() * total
     let idx = pool.length - 1
-    for (let j = 0; j < pool.length; j++) {
-      roll -= weightOf(pool[j]!)
+    for (const [j, item] of pool.entries()) {
+      roll -= weightOf(item)
       if (roll <= 0) {
         idx = j
         break
       }
     }
-    out.push(pool[idx]!)
-    pool.splice(idx, 1)
+    const [chosen] = pool.splice(idx, 1)
+    if (chosen === undefined) throw new Error("sampleWeighted: index out of range")
+    out.push(chosen)
   }
   return out
 }

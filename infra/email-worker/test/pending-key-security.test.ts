@@ -1,11 +1,8 @@
 import { afterEach, describe, expect, it, vi } from "vitest"
 import worker, { derivePendingKey, type Env } from "../src/index"
+import { bytes } from "./bytes"
 
 const BACKEND_PENDING_KEY_RE = /^inbound\/pending\/[^/]+\.eml$/
-
-function bytes(text: string): ArrayBuffer {
-  return new TextEncoder().encode(text).buffer as ArrayBuffer
-}
 
 function withMessageId(messageId: string): Headers {
   return new Headers({ "message-id": messageId })

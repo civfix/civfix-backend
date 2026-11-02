@@ -81,40 +81,40 @@ export async function registerAdminModerationRoutes(
   route(app, "listModeration", async (request, reply) => {
     const query = parse(ModerationListQuerySchema, request.query)
     const payload: ModerationListResponse = await service().list(query)
-    reply.status(200).send(payload)
+    return reply.status(200).send(payload)
   })
 
   route(app, "getModerationItem", async (request, reply) => {
     const { id } = idParam(request)
     const payload: GetModerationItemResponse = await service().getItem(id)
-    reply.status(200).send(payload)
+    return reply.status(200).send(payload)
   })
 
   route(app, "approveModeration", { preHandler: csrfProtect }, async (request, reply) => {
     const actorId = requireOperator(request)
     const { id, body } = parseBodyWithId(ApproveModerationRequestSchema, request)
     await service().approve(id, { actorId, note: body.note ?? null })
-    sendOk(reply)
+    return sendOk(reply)
   })
 
   route(app, "removeModeration", { preHandler: csrfProtect }, async (request, reply) => {
     const actorId = requireOperator(request)
     const { id, body } = parseBodyWithId(RemoveModerationRequestSchema, request)
     await service().remove(id, { actorId, reason: body.reason ?? null })
-    sendOk(reply)
+    return sendOk(reply)
   })
 
   route(app, "holdModeration", { preHandler: csrfProtect }, async (request, reply) => {
     const actorId = requireOperator(request)
     const { id, body } = parseBodyWithId(HoldModerationRequestSchema, request)
     await service().hold(id, { actorId, note: body.note ?? null })
-    sendOk(reply)
+    return sendOk(reply)
   })
 
   route(app, "appealModeration", { preHandler: csrfProtect }, async (request, reply) => {
     const actorId = requireOperator(request)
     const { id, body } = parseBodyWithId(AppealModerationRequestSchema, request)
     await service().appeal(id, { decision: body.decision, actorId, note: body.note ?? null })
-    sendOk(reply)
+    return sendOk(reply)
   })
 }

@@ -212,7 +212,7 @@ describe.skipIf(!pg)("erasure: the host-transfer ladder", () => {
         (cleanup_id, invited_by, invited_user_id, invited_email, role, token_hash, status, expires_at)
       VALUES (
         ${target}, ${host}, ${invitee}, 'invitee@example.test', 'cohost',
-        ${"hash-" + Date.now()}, 'pending', now() + interval '7 days'
+        ${`hash-${Date.now()}`}, 'pending', now() + interval '7 days'
       )
     `
 

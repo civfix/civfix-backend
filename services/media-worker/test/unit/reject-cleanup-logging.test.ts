@@ -21,7 +21,7 @@ function deps() {
 }
 
 function capture() {
-  const lines: { line: string; extra?: Record<string, unknown> }[] = []
+  const lines: { line: string; extra?: Record<string, unknown> | undefined }[] = []
   return {
     lines,
     log: (line: string, extra?: Record<string, unknown>) => lines.push({ line, extra }),

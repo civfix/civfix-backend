@@ -8,6 +8,6 @@ export async function registerAdminLegalRoutes(
   container: Container,
 ): Promise<void> {
   route(app, "adminGetLegalVersions", async (_request, reply) => {
-    reply.status(200).send(await legalServiceFor(app, container).allVersions())
+    return reply.status(200).send(await legalServiceFor(app, container).allVersions())
   })
 }

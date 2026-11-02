@@ -43,7 +43,6 @@ export async function registerAdminSystemRoutes(
       log: (err, meta) => app.log.warn({ err, ...meta }, "admin system-health probe failed"),
       env: {
         glitchTipConfigured: typeof env.GLITCHTIP_DSN === "string" && env.GLITCHTIP_DSN.length > 0,
-        tileCdnConfigured: true,
         mailerIsFake: env.USE_FAKE_MAILER,
         jobsIsFake: env.USE_FAKE_JOBS,
       },
@@ -53,6 +52,6 @@ export async function registerAdminSystemRoutes(
 
   route(app, "adminSystemHealth", async (_request, reply) => {
     const payload: SystemHealthResponse = await service().health()
-    reply.status(200).send(payload)
+    return reply.status(200).send(payload)
   })
 }

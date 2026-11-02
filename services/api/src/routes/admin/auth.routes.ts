@@ -85,16 +85,11 @@ export async function registerAdminAuthRoutes(
 
   async function provisionOperator(email: string, request: FastifyRequest): Promise<UserRecord> {
     let user = await services.users.findByEmail(email)
-    if (!user) {
-      user = await services.users.create(email, {
-        displayName: newAccountDisplayName(
-          deriveOperatorName(email),
-          UNNAMED_OPERATOR_DISPLAY_NAME,
-        ),
-        role: "operator",
-        emailVerified: true,
-      })
-    }
+    user ??= await services.users.create(email, {
+      displayName: newAccountDisplayName(deriveOperatorName(email), UNNAMED_OPERATOR_DISPLAY_NAME),
+      role: "operator",
+      emailVerified: true,
+    })
     // Cloudflare Access proves the operator owns the address, but a row that never verified it may
     // have been planted by someone else, and promoting it would hand them the operator role. The row is
     // refused and left untouched.
@@ -148,13 +143,13 @@ export async function registerAdminAuthRoutes(
         reply,
         operator,
       )
-      reply.status(200).send(payload)
+      return reply.status(200).send(payload)
     },
   )
 
   route(app, "adminSession", async (request, reply) => {
     const payload = await buildAdminSession(services, csrf, env, request, reply)
-    reply.status(200).send(payload)
+    return reply.status(200).send(payload)
   })
 
   route(
@@ -181,7 +176,7 @@ export async function registerAdminAuthRoutes(
         })
       }
       const payload: AdminLogoutResponse = { ok: true }
-      reply.status(200).send(payload)
+      return reply.status(200).send(payload)
     },
   )
 }

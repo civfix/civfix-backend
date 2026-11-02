@@ -70,7 +70,7 @@ export async function registerAdminUserHoursRoutes(
       target: `user:${id}`,
       meta: { returned: payload.items.length, cursor: query.cursor ?? null },
     })
-    reply.status(200).send(payload)
+    return reply.status(200).send(payload)
   })
 
   route(
@@ -84,7 +84,7 @@ export async function registerAdminUserHoursRoutes(
         operatorId,
         body,
       )
-      reply.status(200).send(payload)
+      return reply.status(200).send(payload)
     },
   )
 
@@ -101,7 +101,7 @@ export async function registerAdminUserHoursRoutes(
         entryId,
       })
       const payload: AdminVoidUserHoursResponse = await service().voidUserHours(operatorId, body)
-      reply.status(200).send(payload)
+      return reply.status(200).send(payload)
     },
   )
 }

@@ -62,7 +62,7 @@ describe("event consent check (DECISIONS D7)", () => {
     )
   })
 
-  it("T31: a pre-§66 current version, material unknown, accepts only itself", () => {
+  it("T31: a pre-§68 current version, material unknown, accepts only itself", () => {
     const at = new Date("2026-10-01T00:00:00.000Z")
 
     expect(eventConsentDocuments(claim("2026-09-21", "2026-09-21"), at, V)).toEqual(

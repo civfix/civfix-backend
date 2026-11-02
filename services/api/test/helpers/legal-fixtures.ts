@@ -4,7 +4,7 @@ import type { StoredLegalDocument } from "./legal-documents-repository.memory.js
 
 // The fixtures of issue #236's test cases: P, R, N and F.
 
-/** P: the pre-§66 versions in the contract, exactly as 0151/0171/0172 seed them. */
+/** P: the pre-§68 versions in the contract, exactly as 0151/0171/0172 seed them. */
 export const PRE_EPIC: readonly LegalDocumentVersion[] = LEGAL_DOCUMENTS.filter(
   (entry) => entry.title === undefined,
 )

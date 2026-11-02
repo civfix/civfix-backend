@@ -14,12 +14,13 @@ import {
   makeBroadcastPipeline,
 } from "../../src/services/host/broadcast-pipeline.js"
 import { makeDrizzleNotificationRepository } from "../../src/services/notification-repository.drizzle.js"
+import { makeDrizzleNotificationSettingsRepository } from "../../src/services/notification-settings-repository.drizzle.js"
 import { makeNotificationService } from "../../src/services/notification-service.js"
 
 const pg = await withPg()
 
 const CONFIG: BroadcastConfig = {
-  killSwitch: false,
+  killSwitch: () => Promise.resolve(false),
   perEventPerDay: 3,
   recipientsPerDay: 2000,
   cooldownSec: 900,
@@ -94,11 +95,17 @@ describe.skipIf(!pg)("broadcast delivery on Postgres (integration)", () => {
       enqueuePlan: () => Promise.resolve(),
       now,
     })
+    // Host broadcast email reaches only account holders who checked Email for host announcements (D1).
+    await h.sql`
+      INSERT INTO notification_settings (user_id, category, enabled, push, email)
+      SELECT id, 'hostAnnouncements', true, true, true FROM unnest(${memberIds}::uuid[]) AS id`
     const pipeline = makeBroadcastPipeline({
       repo,
       service,
+      settingsRepo: makeDrizzleNotificationSettingsRepository(h.sql),
       notifications: makeNotificationService({
         repo: makeDrizzleNotificationRepository(h.sql),
+        settingsRepo: makeDrizzleNotificationSettingsRepository(h.sql),
         pushSender: push,
         now,
       }),

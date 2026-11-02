@@ -23,6 +23,7 @@
 import type { AddressPrecision } from "@civfix/contract"
 import type { ReverseGeocode, ReverseResult } from "./reverse-geocode.chain.js"
 import { fetchJsonOrNull } from "./http-fetch.js"
+import { firstNonEmpty } from "../lib/text.js"
 
 const PHOTON_REVERSE_URL = "https://photon.komoot.io/reverse"
 const DEFAULT_TIMEOUT_MS = 4000
@@ -99,8 +100,8 @@ function addressLine(p: PhotonReverseProps, primary: string): string {
 
 export function formatPhotonReverse(p: PhotonReverseProps): string | null {
   const street = [p.housenumber, p.street].filter(Boolean).join(" ").trim()
-  const primary = street || p.name || p.district || p.city || ""
-  if (!primary) return null
+  const primary = firstNonEmpty(street, p.name, p.district, p.city)
+  if (primary === undefined) return null
   return addressLine(p, primary)
 }
 

@@ -37,46 +37,46 @@ export async function registerAdminAnalyticsRoutes(
   )
 
   route(app, "analyticsKpis", async (_request, reply) => {
-    reply.status(200).send(await service().kpis())
+    return reply.status(200).send(await service().kpis())
   })
 
   route(app, "analyticsPinsByWeek", async (_request, reply) => {
-    reply.status(200).send(await service().pinsByWeek())
+    return reply.status(200).send(await service().pinsByWeek())
   })
 
   route(app, "analyticsByCategory", async (_request, reply) => {
-    reply.status(200).send(await service().byCategory())
+    return reply.status(200).send(await service().byCategory())
   })
 
   route(app, "analyticsFunnel", async (_request, reply) => {
-    reply.status(200).send(await service().funnel())
+    return reply.status(200).send(await service().funnel())
   })
 
   route(app, "analyticsCoverage", async (_request, reply) => {
-    reply.status(200).send(await service().coverage())
+    return reply.status(200).send(await service().coverage())
   })
 
   route(app, "analyticsResolutionByCategory", async (_request, reply) => {
-    reply.status(200).send(await service().resolutionByCategory())
+    return reply.status(200).send(await service().resolutionByCategory())
   })
 
   route(app, "analyticsEvents", async (_request, reply) => {
-    reply.status(200).send(await service().events())
+    return reply.status(200).send(await service().events())
   })
 
   route(app, "analyticsTopJurisdictions", async (_request, reply) => {
-    reply.status(200).send(await service().topJurisdictions())
+    return reply.status(200).send(await service().topJurisdictions())
   })
 
   route(app, "analyticsTopContributors", async (_request, reply) => {
-    reply.status(200).send(await service().topContributors())
+    return reply.status(200).send(await service().topContributors())
   })
 
   route(app, "analyticsHeatmap", async (_request, reply) => {
-    reply.status(200).send(await service().heatmap())
+    return reply.status(200).send(await service().heatmap())
   })
 
   route(app, "analyticsRetention", async (_request, reply) => {
-    reply.status(200).send(await service().retention())
+    return reply.status(200).send(await service().retention())
   })
 }

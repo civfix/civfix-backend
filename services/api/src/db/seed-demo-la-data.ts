@@ -279,10 +279,10 @@ export interface Hood {
   lng: number
   r: number
   weight: number
-  streets: readonly string[]
+  streets: readonly [string, ...string[]]
 }
 
-export const HOODS: readonly Hood[] = [
+export const HOODS: readonly [Hood, ...Hood[]] = [
   {
     name: "Boyle Heights",
     lat: 34.0397,
@@ -538,7 +538,7 @@ export const PARKS: readonly { name: string; hood: string; lat: number; lng: num
 ]
 
 export function hoodByName(name: string): Hood {
-  return HOODS.find((h) => h.name === name) ?? HOODS[0]!
+  return HOODS.find((h) => h.name === name) ?? HOODS[0]
 }
 
 // Deliberately casual: lowercase drift, loose punctuation, Spanish and Spanglish mixed in, occasional

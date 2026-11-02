@@ -37,6 +37,7 @@ export interface BroadcastRenderContext {
   manageUrl?: string
   replyTo?: string | null
   critical?: boolean
+  serviceNotice?: boolean
   allowedLinkHosts?: readonly string[]
 }
 
@@ -74,6 +75,7 @@ export function renderBroadcast(
     ...(ctx.manageUrl !== undefined ? { manageUrl: ctx.manageUrl } : {}),
     ...(ctx.replyTo !== undefined ? { replyTo: ctx.replyTo } : {}),
     ...(ctx.critical !== undefined ? { critical: ctx.critical } : {}),
+    ...(ctx.serviceNotice !== undefined ? { serviceNotice: ctx.serviceNotice } : {}),
   }
   const { text, html } = renderEmailBody({
     preheader: subject,

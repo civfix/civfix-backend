@@ -12,6 +12,7 @@ import type { CreateNotificationInput } from "../../../src/services/notification
 import { fakeCleanupDTO } from "../../helpers/host-team.js"
 import { makeFakeSql } from "../../helpers/fake-sql.js"
 import type { Sql } from "../../../src/db/client.js"
+import { AllOnSettingsRepository } from "../../helpers/notification-capture.js"
 
 const EVENT = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
 const ORGANIZER = "11111111-1111-4111-8111-111111111111"
@@ -67,6 +68,8 @@ beforeEach(() => {
       },
     },
     eventTitleOf: () => Promise.resolve("Beach cleanup"),
+    // Email checked for Event team and hours, so these cases are about the address, not the setting.
+    notificationSettings: new AllOnSettingsRepository(["eventTeam"]),
     webOrigin: "https://civfix.test",
     now: () => clock,
     newToken: () => `token-${++tokenSeq}-aaaaaaaaaaaaaaaaaaaaaaaa`,

@@ -1,5 +1,14 @@
-import type { NotificationDTO, NotificationPrefsDTO, NotificationType } from "@civfix/contract"
+import { NotificationCategorySchema } from "@civfix/contract"
+import type {
+  NotificationCategory,
+  NotificationDTO,
+  NotificationPrefsDTO,
+  NotificationType,
+  UpdateNotificationPrefsRequest,
+} from "@civfix/contract"
 import type { NotificationPrefsRecord, NotificationRecord } from "./notification-repository.js"
+import type { NotificationSettingsPatch } from "./notification-settings-repository.js"
+import type { EffectiveNotificationSettings } from "./notification-settings-service.js"
 import { MINUTES_PER_HOUR } from "../lib/time.js"
 
 export const DEFAULT_PREFS: NotificationPrefsRecord = {
@@ -81,58 +90,10 @@ export function isWithinQuietHours(
   return t >= s || t < e
 }
 
-export function typeAllowedByPrefs(
-  type: NotificationType,
-  prefs: NotificationPrefsRecord,
-): boolean {
-  if (!prefs.push) return false
-  switch (type) {
-    case "report_update":
-    case "claim_available":
-    case "report_chat":
-      return prefs.reportUpdates
-    case "cleanup_chat":
-    case "cleanup_reminder":
-    case "cleanup_cancelled":
-    case "cleanup_role":
-    case "cleanup_slot":
-    case "hours_logged":
-    case "group_chat":
-    case "event_team_invite":
-      return prefs.cleanupChat
-    case "new_follower":
-      return prefs.follows
-    case "post_mention":
-      return prefs.mentions
-    case "post_like":
-    case "post_repost":
-    case "post_reply":
-    case "post_quote":
-      return prefs.postInteractions
-    case "event_broadcast":
-      return prefs.hostBroadcasts
-    case "system":
-      return true
-    default:
-      return true
-  }
-}
-
-export type PushGateMode = "auto" | "never" | "always"
-
-export function pushGateAllows(
-  type: NotificationType,
-  prefs: NotificationPrefsRecord,
-  mode: PushGateMode = "auto",
-): boolean {
-  if (mode === "never") return false
-  if (!prefs.push) return false
-  if (mode === "always") return true
-  return typeAllowedByPrefs(type, prefs)
-}
+export type PushGateMode = "auto" | "never"
 
 export function toPrefsDTO(row: NotificationPrefsRecord): NotificationPrefsDTO {
-  const hasQuiet = row.quietStart !== null && row.quietEnd !== null
+  const quietHours = quietHoursOf(row)
   return {
     push: row.push,
     cleanupChat: row.cleanupChat,
@@ -141,16 +102,82 @@ export function toPrefsDTO(row: NotificationPrefsRecord): NotificationPrefsDTO {
     mentions: row.mentions,
     postInteractions: row.postInteractions,
     hostBroadcasts: row.hostBroadcasts,
-    ...(hasQuiet
-      ? {
-          quietHours: {
-            start: row.quietStart!,
-            end: row.quietEnd!,
-            ...(row.tz !== null ? { tz: row.tz } : {}),
-          },
-        }
-      : {}),
+    ...(quietHours !== undefined ? { quietHours } : {}),
   }
+}
+
+function quietHoursOf(
+  row: Pick<NotificationPrefsRecord, "quietStart" | "quietEnd" | "tz">,
+): NotificationPrefsDTO["quietHours"] {
+  if (row.quietStart === null || row.quietEnd === null) return undefined
+  return {
+    start: row.quietStart,
+    end: row.quietEnd,
+    ...(row.tz !== null ? { tz: row.tz } : {}),
+  }
+}
+
+type LegacyPrefsSwitch = Exclude<keyof UpdateNotificationPrefsRequest, "push" | "quietHours">
+
+// D4: the categories each old switch stands for, the same map the 0199 backfill applied.
+const LEGACY_SWITCH_CATEGORIES: Readonly<
+  Record<LegacyPrefsSwitch, readonly NotificationCategory[]>
+> = {
+  reportUpdates: ["reportUpdates", "reportDiscussions"],
+  cleanupChat: ["groupChats", "events", "eventTeam"],
+  mentions: ["mentions"],
+  follows: ["followers"],
+  postInteractions: ["likesAndReposts"],
+  hostBroadcasts: ["hostAnnouncements"],
+}
+
+// The old mentions and host-broadcast switches hid the notifications entirely, so they also turn their
+// category on or off.
+const LEGACY_SWITCHES_SETTING_ENABLED: ReadonlySet<LegacyPrefsSwitch> = new Set([
+  "mentions",
+  "hostBroadcasts",
+])
+
+/** The old prefs DTO read from the new settings (D4), with quiet hours from notification_prefs. */
+export function prefsFromSettings(
+  settings: EffectiveNotificationSettings,
+  quiet: NotificationPrefsRecord | null,
+): NotificationPrefsDTO {
+  const quietHours = quiet === null ? undefined : quietHoursOf(quiet)
+  return {
+    push: Object.values(settings).some((s) => s.push),
+    cleanupChat: settings.groupChats.push,
+    reportUpdates: settings.reportUpdates.push,
+    follows: settings.followers.push,
+    mentions: settings.mentions.enabled && settings.mentions.push,
+    postInteractions: settings.likesAndReposts.push,
+    hostBroadcasts: settings.hostAnnouncements.enabled,
+    ...(quietHours !== undefined ? { quietHours } : {}),
+  }
+}
+
+/** The settings an old prefs update writes (D4). Quiet hours are not settings and are left out. */
+export function settingsPatchFromPrefs(
+  patch: UpdateNotificationPrefsRequest,
+): NotificationSettingsPatch {
+  const out: NotificationSettingsPatch = {}
+  for (const key of Object.keys(LEGACY_SWITCH_CATEGORIES) as LegacyPrefsSwitch[]) {
+    const value = patch[key]
+    if (value === undefined) continue
+    for (const category of LEGACY_SWITCH_CATEGORIES[key]) {
+      out[category] = LEGACY_SWITCHES_SETTING_ENABLED.has(key)
+        ? { enabled: value, push: value }
+        : { push: value }
+    }
+  }
+  // Master off goes last so it wins over a switch turned on in the same body. Master on changes nothing
+  // (D4): it never said which categories to check again.
+  if (patch.push === false) {
+    for (const category of NotificationCategorySchema.options) {
+      out[category] = { ...out[category], push: false }
+    }
+  }
+  return out
 }
 
 export function toNotificationDTO(record: NotificationRecord): NotificationDTO {

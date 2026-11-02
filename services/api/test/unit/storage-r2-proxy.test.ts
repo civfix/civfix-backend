@@ -32,7 +32,6 @@ const { R2Storage } = await import("../../src/adapters/storage.r2.js")
 const { readProxySettings, shouldProxyHost } = await import("../../src/adapters/proxy-egress.js")
 
 const ENV_KEYS = ["HTTPS_PROXY", "https_proxy", "NO_PROXY", "no_proxy"] as const
-const saved: Record<string, string | undefined> = {}
 
 function storage() {
   return new R2Storage({
@@ -52,17 +51,11 @@ async function proxyOf(config: Record<string, unknown>): Promise<URL | undefined
 
 beforeEach(() => {
   clientConfigs.length = 0
-  for (const key of ENV_KEYS) {
-    saved[key] = process.env[key]
-    delete process.env[key]
-  }
+  for (const key of ENV_KEYS) vi.stubEnv(key, undefined)
 })
 
 afterEach(() => {
-  for (const key of ENV_KEYS) {
-    if (saved[key] === undefined) delete process.env[key]
-    else process.env[key] = saved[key]
-  }
+  vi.unstubAllEnvs()
 })
 
 describe("R2 client egress", () => {
@@ -74,7 +67,7 @@ describe("R2 client egress", () => {
   })
 
   it("builds a proxy-bearing requestHandler when HTTPS_PROXY is set (the worker)", async () => {
-    process.env.HTTPS_PROXY = "http://media-egress-proxy:8888"
+    vi.stubEnv("HTTPS_PROXY", "http://media-egress-proxy:8888")
 
     await storage().presignGet("uploads/a", 60, { forceSigned: true })
 
@@ -89,8 +82,8 @@ describe("R2 client egress", () => {
   })
 
   it("stays direct for a host listed in NO_PROXY", async () => {
-    process.env.HTTPS_PROXY = "http://media-egress-proxy:8888"
-    process.env.NO_PROXY = "postgres,redis,localhost,.r2.cloudflarestorage.com"
+    vi.stubEnv("HTTPS_PROXY", "http://media-egress-proxy:8888")
+    vi.stubEnv("NO_PROXY", "postgres,redis,localhost,.r2.cloudflarestorage.com")
 
     await storage().presignGet("uploads/a", 60, { forceSigned: true })
 

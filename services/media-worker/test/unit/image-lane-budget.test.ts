@@ -18,18 +18,15 @@ const { resetSandboxIdentity } = await import("../../src/sandbox/exec.js")
 const { processImageLane } = await import("../../src/sandbox/image-lane.js")
 const fx = await import("../fixtures/make.js")
 
-let saved: NodeJS.ProcessEnv
 beforeEach(() => {
-  saved = { ...process.env }
   runToolMock.mockReset()
-  process.env.MEDIA_SANDBOX_UID = String(process.getuid?.() ?? 1001)
-  process.env.MEDIA_SANDBOX_GID = String(process.getgid?.() ?? 1001)
-  process.env.MEDIA_IMAGE_LANE_ENTRY = fileURLToPath(import.meta.url)
+  vi.stubEnv("MEDIA_SANDBOX_UID", String(process.getuid?.() ?? 1001))
+  vi.stubEnv("MEDIA_SANDBOX_GID", String(process.getgid?.() ?? 1001))
+  vi.stubEnv("MEDIA_IMAGE_LANE_ENTRY", fileURLToPath(import.meta.url))
   resetSandboxIdentity()
 })
 afterEach(() => {
-  for (const key of Object.keys(process.env)) if (!(key in saved)) delete process.env[key]
-  Object.assign(process.env, saved)
+  vi.unstubAllEnvs()
   resetSandboxIdentity()
 })
 

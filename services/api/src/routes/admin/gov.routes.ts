@@ -94,13 +94,13 @@ export async function registerAdminGovRoutes(
   route(app, "listGovClaims", async (request, reply) => {
     const query = parse(GovClaimListQuerySchema, request.query)
     const payload: GovClaimListResponse = await service().list(query)
-    reply.status(200).send(payload)
+    return reply.status(200).send(payload)
   })
 
   route(app, "getGovClaim", async (request, reply) => {
     const { id } = idParam(request)
     const payload: GetGovClaimResponse = await service().getClaim(id)
-    reply.status(200).send(payload)
+    return reply.status(200).send(payload)
   })
 
   route(app, "verifyGovClaim", { preHandler: csrfProtect }, async (request, reply) => {
@@ -113,20 +113,20 @@ export async function registerAdminGovRoutes(
       note: body.note ?? null,
       actorId,
     })
-    sendOk(reply)
+    return sendOk(reply)
   })
 
   route(app, "approveGovClaim", { preHandler: csrfProtect }, async (request, reply) => {
     const actorId = requireOperator(request)
     const { id, body } = parseBodyWithId(ApproveGovClaimRequestSchema, request)
     await service().approve(id, { actorId, note: body.note ?? null })
-    sendOk(reply)
+    return sendOk(reply)
   })
 
   route(app, "rejectGovClaim", { preHandler: csrfProtect }, async (request, reply) => {
     const actorId = requireOperator(request)
     const { id, body } = parseBodyWithId(RejectGovClaimRequestSchema, request)
     await service().reject(id, { reason: body.reason, actorId })
-    sendOk(reply)
+    return sendOk(reply)
   })
 }

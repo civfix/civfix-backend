@@ -211,7 +211,7 @@ export interface DiscussionForwardInput {
   category: string
   place: string | null
   org: string | null
-  displayName?: string | null
+  displayName?: string | null | undefined
 }
 
 const DISCUSSION_FORWARD_ANONYMOUS_AUTHOR = "A neighbor"

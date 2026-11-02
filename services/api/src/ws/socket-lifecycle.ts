@@ -1,5 +1,4 @@
 import type { FastifyBaseLogger, FastifyInstance, FastifyRequest } from "fastify"
-import type { WebSocket } from "@fastify/websocket"
 import { ErrorCode } from "@civfix/contract"
 import type { ChatConnection, UserChannel } from "@civfix/seams"
 import { randomUUID } from "node:crypto"
@@ -16,6 +15,7 @@ import { makeTokenBucketLimiter, type RateLimiter } from "./report-rate-limit.js
 import { normalizeIp } from "../abuse/ip-rate-limit.js"
 import {
   type GatewaySession,
+  type GatewaySocket,
   type RegisterGatewayOptions,
   type WsHandshakeResult,
   WS_BUFFER_DROP_THRESHOLD,
@@ -114,7 +114,7 @@ function decodeFrame(data: unknown): string {
   return String(data)
 }
 
-function wrapSocket(socket: WebSocket): ChatConnection {
+function wrapSocket(socket: GatewaySocket): ChatConnection {
   const id = randomUUID()
   return {
     id,
@@ -127,7 +127,7 @@ function wrapSocket(socket: WebSocket): ChatConnection {
 }
 
 function sendErrorThenClose(
-  socket: WebSocket,
+  socket: GatewaySocket,
   send: (data: string) => void,
   log: SocketLog,
   error: { code: string; message: string },
@@ -215,7 +215,7 @@ interface HandshakeFrameBuffer {
   route(handler: (raw: string) => void): void
 }
 
-function bufferFramesUntilAccepted(socket: WebSocket): HandshakeFrameBuffer {
+function bufferFramesUntilAccepted(socket: GatewaySocket): HandshakeFrameBuffer {
   let pending: string[] | undefined = []
   let pendingBytes = 0
   let onFrame: ((raw: string) => void) | undefined
@@ -254,7 +254,7 @@ function bufferFramesUntilAccepted(socket: WebSocket): HandshakeFrameBuffer {
 }
 
 function makeGatewaySession(
-  socket: WebSocket,
+  socket: GatewaySocket,
   opts: RegisterGatewayOptions,
   handshake: AcceptedHandshake,
   sendLimiter: RateLimiter,
@@ -299,7 +299,11 @@ interface AuthCloser {
   isClosing(): boolean
 }
 
-function makeAuthCloser(socket: WebSocket, session: GatewaySession, log: SocketLog): AuthCloser {
+function makeAuthCloser(
+  socket: GatewaySocket,
+  session: GatewaySession,
+  log: SocketLog,
+): AuthCloser {
   let closingForAuth = false
   return {
     close() {
@@ -324,7 +328,7 @@ function nextReauthInterval(): number {
 }
 
 function startHeartbeat(
-  socket: WebSocket,
+  socket: GatewaySocket,
   session: GatewaySession,
   opts: RegisterGatewayOptions,
   sessionHash: string | undefined,
@@ -397,7 +401,7 @@ function startHeartbeat(
 // The per-frame token bucket only runs when a frame is dequeued, so while one handler awaits a slow
 // store every later frame would otherwise sit in memory unbounded.
 function makeFrameQueue(
-  socket: WebSocket,
+  socket: GatewaySocket,
   session: GatewaySession,
   runFrame: (raw: string) => Promise<void>,
   log: SocketLog,
@@ -442,7 +446,7 @@ function makeFrameQueue(
 }
 
 interface SocketContext {
-  socket: WebSocket
+  socket: GatewaySocket
   request: FastifyRequest
   opts: RegisterGatewayOptions
   sendLimiter: RateLimiter
@@ -542,7 +546,7 @@ export function registerChatGateway(app: FastifyInstance, opts: RegisterGatewayO
   const sendLimiter = makeSendLimiter(opts.reportSendLimiter)
   const slots = makeConnectionSlots()
 
-  app.get(WS_ROUTE, { websocket: true }, (socket: WebSocket, request: FastifyRequest) => {
+  app.get(WS_ROUTE, { websocket: true }, (socket: GatewaySocket, request: FastifyRequest) => {
     const frames = bufferFramesUntilAccepted(socket)
     void acceptSocket({ socket, request, opts, sendLimiter, slots, frames })
   })

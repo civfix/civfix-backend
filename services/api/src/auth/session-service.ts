@@ -309,7 +309,7 @@ export class SessionService {
     results.forEach((result, index) => {
       if (result.status === "rejected") {
         this.logger?.error(
-          { userId, hash: hashes[index]!, err: result.reason },
+          { userId, hash: hashes[index], err: result.reason as unknown },
           "session cache eviction failed during revoke",
         )
       }

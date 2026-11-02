@@ -69,14 +69,14 @@ describe.skipIf(!pg)("map routes (integration)", () => {
     expect(body.layer).toBe("county")
   })
 
-  it("returns 200 with a null body for a point outside all coverage", async () => {
+  it("answers 404 NOT_FOUND for a point outside all coverage", async () => {
     const res = await app.inject({
       method: "POST",
       url: "/v1/map/resolve-jurisdiction",
       payload: { lat: PROBE_OUTSIDE_ALL.lat, lng: PROBE_OUTSIDE_ALL.lng },
     })
-    expect(res.statusCode).toBe(200)
-    expect(res.json()).toBeNull()
+    expect(res.statusCode).toBe(404)
+    expect(res.json()).toMatchObject({ code: "NOT_FOUND" })
   })
 
   it("GET /map/cleanups returns only pins inside the bbox, with going counts", async () => {

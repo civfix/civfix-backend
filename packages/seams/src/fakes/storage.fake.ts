@@ -17,7 +17,9 @@ interface StoredObject {
 /**
  * In-memory Storage. presignPut returns a `memory://<key>` URL; the body itself is not transferred
  * via the presigned URL in this fake, but put/head/delete operate on the same Map so tests can
- * round-trip by calling put() directly.
+ * round-trip by calling put() directly. presignGet returns `https://fake-storage.invalid/<key>`: the
+ * contract accepts only http(s) links where a GET link is sent (DECISIONS §64), and `.invalid` can
+ * never resolve (RFC 2606), so nothing can fetch it.
  */
 export class FakeStorage implements Storage {
   readonly objects = new Map<string, StoredObject>()
@@ -33,7 +35,7 @@ export class FakeStorage implements Storage {
   }
 
   presignGet(key: string, _ttlSec: number): Promise<string> {
-    return Promise.resolve(`memory://${key}`)
+    return Promise.resolve(`https://fake-storage.invalid/${key}`)
   }
 
   head(key: string): Promise<StorageHead | null> {
@@ -72,7 +74,8 @@ export class FakeStorage implements Storage {
    */
   list(prefix: string, opts?: StorageListOptions): Promise<StorageListResult> {
     const all = [...this.objects.keys()].filter((k) => k.startsWith(prefix)).sort()
-    const start = opts?.cursor ? all.findIndex((k) => k > opts.cursor!) : 0
+    const cursor = opts?.cursor
+    const start = cursor ? all.findIndex((k) => k > cursor) : 0
     const from = start < 0 ? all.length : start
     const limit = opts?.limit && opts.limit > 0 ? opts.limit : 1000
     const page = all.slice(from, from + limit)

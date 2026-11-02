@@ -92,7 +92,7 @@ export async function applyMigrations(sql: Sql, dir: string = MIGRATIONS_DIR): P
       applied.push(name)
     }
 
-    // Under the same lock, so two deploys never both insert a version (DECISIONS §66, D9).
+    // Under the same lock, so two deploys never both insert a version (DECISIONS §68, D9).
     const loaded = await inTransaction("the legal document load", () =>
       loadLegalDocuments(makeLegalDocumentsRepository(reserved), LEGAL_DOCUMENTS, LEGAL_TEXTS),
     )

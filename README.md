@@ -31,23 +31,24 @@ civfix-backend/
   packages/
     config/                     shared eslint + prettier presets (@civfix/config)
     seams/                      the 11 seam interfaces, their fakes, MailSendError (@civfix/seams)
+    testing/                    shared test support: the console guard every vitest suite runs (@civfix/testing)
   services/
     api/                        Fastify API (@civfix/api)
     media-worker/               pg-boss media worker (@civfix/media-worker)
   infra/
     email-worker/               Cloudflare Email Worker for inbound mail (standalone, own wrangler toolchain)
-  scripts/                      the CI no-frontend guard + the dynamic-SQL check (pnpm check:sql, a CI gate)
-  docs/                         engineering notes (retention, erasure, migrations, operator runbook, ...)
-  .github/workflows/            ci.yml (PR checks: lint, format, typecheck, static checks, build, test), build-images.yml, deploy-staging.yml, deploy.yml
+  scripts/                      CI guards: no-frontend, dynamic SQL (pnpm check:sql), licenses (pnpm check:licenses)
+  docs/                         engineering notes (retention, erasure, migrations, operator runbook, image-scan runbook, ...)
+  .github/workflows/            ci.yml (PR checks: audit, licenses, zizmor, lint, format, typecheck, static checks, build, test), audit.yml (weekly), build-images.yml, deploy-staging.yml, deploy.yml
   tsconfig.base.json            strict base TS config
   turbo.json                    turborepo task graph
-  pnpm-workspace.yaml
+  pnpm-workspace.yaml           workspace packages + every pnpm setting (overrides, audit ignores, build allowlist, supply-chain gates)
 ```
 
 ## Requirements
 
 - Node >= 22 (see `.nvmrc`)
-- pnpm 9.12.0 (this repo is pnpm-only)
+- pnpm 10.34.9, pinned by `packageManager` (this repo is pnpm-only; `corepack enable` picks it up)
 - Docker is needed only for the integration suites; it is not required to build or test.
   The Docker-gated suites SKIP themselves on a machine with no Docker so `pnpm test` stays green, but
   only there: with `CI` (set by GitHub Actions) or `CIVFIX_REQUIRE_PG=1` in the environment, a failed
@@ -97,23 +98,29 @@ pnpm build        # tsup build of api + media-worker
 pnpm typecheck    # tsc --noEmit in both services
 pnpm lint         # eslint in both services
 pnpm test         # vitest in both services: unit + the Docker-gated integration suites
+pnpm test:coverage # the same run with v8 coverage and each package's thresholds (what CI runs)
 pnpm format:check # prettier --check (Markdown is excluded, see .prettierignore)
 pnpm check:sql    # dynamic-SQL guard: unsafe/raw allowlist, Drizzle $client, parameter IS NULL tests
 pnpm knip         # unused files, exports and dependencies (knip.jsonc)
 pnpm dup:check    # copy-paste duplication over the service sources (.jscpd.json threshold)
+pnpm check:licenses # fails on a production dependency whose license is AGPL-incompatible or unknown
+pnpm audit --audit-level high && pnpm audit --prod --audit-level moderate   # the CI audit gates
 pnpm dev          # run both services in watch mode (persistent)
 pnpm clean        # remove build artifacts
-pnpm check:sql    # dynamic-SQL guard (manual; not run by CI)
 ```
 
 CI runs every command above except `dev` and `clean`. The Cloudflare email worker in
-`infra/email-worker` is not a workspace package and keeps its own lockfile, so it installs and tests
-in isolation:
+`infra/email-worker` is not a workspace package and keeps its own lockfile and settings-only
+`pnpm-workspace.yaml`, so it installs and tests in isolation:
 
 ```
-pnpm --dir infra/email-worker install --frozen-lockfile --ignore-workspace
+pnpm --dir infra/email-worker install --frozen-lockfile
 pnpm --dir infra/email-worker test
 ```
+
+Every vitest suite fails a test that logs an unexpected `console.error` or `console.warn`. A test that
+expects one declares it with `expectConsoleError` / `expectConsoleWarn` from `@civfix/testing/console`.
+The coverage thresholds in each `vitest.config.ts` only ever go up.
 
 ## Running the API in dev (offline, no credentials)
 
@@ -421,17 +428,24 @@ full list, each with its written consequence, is `FAKE_SEAM_FLAGS` in `services/
 
 ### Outbound mail to cities is opt-in
 
-Two flags, both OFF by default in every environment, decide whether civfix ever emails a city without
-an operator pressing "Send to city" (or "Verify and send to city") on a report in the admin dashboard:
+Two runtime flags, both OFF by default in every environment, decide whether civfix ever emails a city
+without an operator pressing "Send to city" (or "Verify and send to city") on a report in the admin
+dashboard:
 
-| Flag                        | When ON                                                                                     |
-| --------------------------- | ------------------------------------------------------------------------------------------- |
-| `REPORT_AUTOFORWARD_ENABLED` | new reports from report-verified reporters are forwarded at submission, and a citizen `@city` mention in a report discussion forwards the comment |
-| `OUTREACH_DIGEST_ENABLED`    | the daily `outreach.digest` cron and the enqueue after saving a jurisdiction's contacts send the per-jurisdiction "reports awaiting your attention" digest |
+| Flag (env fallback) | When ON |
+| --- | --- |
+| `report_autoforward_enabled` (`REPORT_AUTOFORWARD_ENABLED`) | new reports from report-verified reporters are forwarded at submission |
+| `outreach_digest_enabled` (`OUTREACH_DIGEST_ENABLED`) | the daily `outreach.digest` cron and the enqueue after saving a jurisdiction's contacts send the per-jurisdiction "reports awaiting your attention" digest |
 
-With both off, the only mail a city receives is the packet an operator sends per report. Enabling either
-is a SOPS edit to that environment's `secrets/<env>/api.sops.env` in civfix-infra followed by a deploy
-(both flags are read at boot; `OUTREACH_DIGEST_ENABLED` is also what schedules the cron).
+With both off, a city receives only the packet an operator sends per report and the discussion comments
+residents forward with an `@city` mention, which neither flag gates.
+
+A founder flips either flag in the admin developer console, without a redeploy: each submission, job
+run and contact save reads it when it runs, and every API process sees a change within 5 seconds. The
+digest cron is always scheduled, so a run with the flag off does nothing, and a queued auto-forward that
+runs while the flag is off completes without sending. The env var is only the fallback for a flag with
+no override (a SOPS edit to that environment's `secrets/<env>/api.sops.env` in civfix-infra and a
+deploy); `HOST_MESSAGING_KILL_SWITCH` is the same fallback for `host_messaging_kill_switch`.
 
 To exercise a real seam locally, run the dev infra from the civfix-infra repo
 (`compose/docker-compose.dev.yml` brings up PostGIS + Redis), set `DATABASE_URL` / `REDIS_URL`, and turn
@@ -466,6 +480,26 @@ verifying with the configured code signs in and, on first use, creates a fully s
 works for this exact address, that address never accepts a mailed code, and a wrong guess spends the
 same per-IP verify throttle as any other failed sign-in. `@reviewer` is on the reserved-handle
 blocklist so no real user can take it.
+
+### Staging test accounts
+
+The developer console's test tools act only on test accounts, which sign in the same way but with a
+code of their own, so the code given to App Store reviewers is never shared with testers. They are
+wired only while dev tools are on (`DEV_TOOLS_ENABLED`, staging or local), whether or not the reviewer
+bypass is.
+
+| Variable | Meaning |
+| --- | --- |
+| `DEV_TEST_EMAILS` | comma-separated test addresses, trimmed and lowercased; only `@civfix.org` addresses are kept. Boot fails if one is `reviewer@civfix.org` or in `ADMIN_EMAILS` |
+| `DEV_TEST_OTP_CODE` | the test accounts' shared code, **at least 20 characters**; required whenever `DEV_TEST_EMAILS` lists an address |
+
+Behaviour when wired: requesting a code for a listed address sends **no** email and stores nothing;
+verifying with `DEV_TEST_OTP_CODE` signs in and, on first use, creates a citizen account with its
+profile incomplete (so it goes through first run) and a handle made from the address (`new.tester@…`
+becomes `@new_tester`, then `@new_tester_2` and so on when taken). An existing account whose role is
+not citizen is refused like a wrong code. The test code works only for listed addresses, the reviewer
+code never works for them, and a wrong guess spends the same per-IP verify throttle. With dev tools
+off a listed address gets a normal emailed code.
 
 ## License
 

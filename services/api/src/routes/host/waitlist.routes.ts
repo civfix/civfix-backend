@@ -44,7 +44,7 @@ export function registerHostWaitlistRoutes(
       const payload: JoinEventWaitlistResponse = await ctx
         .services()
         .waitlist.join(body, { kind: "user", userId })
-      reply.status(200).send(payload)
+      return reply.status(200).send(payload)
     },
   )
 
@@ -59,7 +59,7 @@ export function registerHostWaitlistRoutes(
       const payload: LeaveEventWaitlistResponse = await ctx
         .services()
         .waitlist.leave(body, { kind: "user", userId })
-      reply.status(200).send(payload)
+      return reply.status(200).send(payload)
     },
   )
 
@@ -73,7 +73,7 @@ export function registerHostWaitlistRoutes(
       await ctx.guards().requireCapability(id, userId, "view_roster")
       const query = parse(ListEventWaitlistRequestSchema, queryWith(request, { id }))
       const payload: ListEventWaitlistResponse = await ctx.services().waitlist.list(query)
-      reply.status(200).send(payload)
+      return reply.status(200).send(payload)
     },
   )
 
@@ -88,7 +88,7 @@ export function registerHostWaitlistRoutes(
       const payload: ClaimWaitlistOfferResponse = await ctx
         .services()
         .waitlist.claim(body, { kind: "user", userId })
-      reply.status(200).send(payload)
+      return reply.status(200).send(payload)
     },
   )
 
@@ -104,7 +104,7 @@ export function registerHostWaitlistRoutes(
       const payload: PromoteFromWaitlistResponse = await ctx
         .services()
         .waitlist.promote(body, userId)
-      reply.status(200).send(payload)
+      return reply.status(200).send(payload)
     },
   )
 }

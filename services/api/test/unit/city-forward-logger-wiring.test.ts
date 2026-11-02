@@ -10,7 +10,11 @@ import { InMemoryCounterStore } from "../../src/abuse/counter-store.js"
 import { InMemoryChatPresence } from "../../src/adapters/chat-presence.js"
 import { InMemoryChatReadState } from "../../src/services/threads-service.js"
 import { makeNotificationService } from "../../src/services/notification-service.js"
-import { InMemoryNotificationRepository } from "../helpers/notifications.js"
+import {
+  InMemoryNotificationRepository,
+  InMemoryNotificationSettingsRepository,
+} from "../helpers/notifications.js"
+import { fakeNotificationEmail } from "../helpers/notification-email.js"
 import { InMemoryThreadsRepository } from "../helpers/chat.js"
 import {
   InMemoryBlocksRepository,
@@ -19,7 +23,7 @@ import {
 
 const { captured, mail } = vi.hoisted(() => ({
   // eslint-disable-next-line @typescript-eslint/no-unnecessary-type-assertion -- the assertion is the field's declared type: vi.hoisted infers the record from this literal
-  captured: {} as { onReportMessage?: OnReportMessage },
+  captured: {} as { onReportMessage?: OnReportMessage | undefined },
   mail: { sendFails: false },
 }))
 
@@ -123,13 +127,13 @@ function containerWith(counters: InMemoryCounterStore): Container {
       WEB_ORIGINS: [],
       MAIL_FROM_OUTREACH: "a@b",
       MAIL_REPLY_DOMAIN: "b",
-      REPORT_AUTOFORWARD_ENABLED: false,
     },
     storage: { presignGet: () => Promise.resolve("") },
     mailer: {},
     chatService: { broadcast: () => Promise.resolve() },
     userChannel: undefined,
     pushSender: new FakePushSender(),
+    getNotificationEmail: fakeNotificationEmail,
     getDb: () => ({ sql: {} }),
     getCounterStore: () => counters,
     getBlocksRepo: () => new InMemoryBlocksRepository(),
@@ -148,6 +152,7 @@ function wireGateway(counters: InMemoryCounterStore, log: ReturnType<typeof spyL
       blocksRepo: blocks,
       notificationService: makeNotificationService({
         repo: new InMemoryNotificationRepository(),
+        settingsRepo: new InMemoryNotificationSettingsRepository(),
         pushSender: new FakePushSender(),
       }),
       reportChat: reportChatStub(),

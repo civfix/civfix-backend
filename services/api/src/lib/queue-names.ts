@@ -15,6 +15,7 @@ export const CLEANUP_CANCEL_FANOUT_JOB = "cleanup.cancel.fanout"
 export const CLEANUP_GUEST_UPDATE_FANOUT_JOB = "cleanup.guest.update.fanout"
 export const GUEST_RETENTION_SWEEP_JOB = "guest.retention.sweep"
 export const CHAT_ROOM_FANOUT_JOB = "chat.room.fanout"
+export const PUSH_CLEAR_JOB = "push.clear"
 export const WAITLIST_PROMOTE_JOB = "waitlist.promote"
 export const WAITLIST_EXPIRE_SWEEP_JOB = "waitlist.expire.sweep"
 export const CHECKIN_NOSHOW_SWEEP_JOB = "checkin.noshow.sweep"
@@ -33,3 +34,36 @@ export const ANON_HOLD_RELEASE_SWEEP_JOB = "anon.hold.release.sweep"
 export const RETENTION_SWEEP_JOB = "retention.sweep"
 export const MEDIA_STUCK_SWEEP_JOB = "media.stuck.sweep"
 export const MEDIA_UPLOAD_REAP_JOB = "media.upload.reap"
+
+/** Every queue above, API and worker, in the order they are declared. */
+export const ALL_QUEUE_NAMES: readonly string[] = [
+  MEDIA_CHECKS_JOB,
+  ANON_HOLD_RELEASE_JOB,
+  JURISDICTION_DISCOVERY_JOB,
+  OUTREACH_DIGEST_JOB,
+  INBOUND_SWEEP_JOB,
+  REPORT_AUTOFORWARD_JOB,
+  DATA_EXPORT_JOB,
+  CLEANUP_CANCEL_FANOUT_JOB,
+  CLEANUP_GUEST_UPDATE_FANOUT_JOB,
+  GUEST_RETENTION_SWEEP_JOB,
+  CHAT_ROOM_FANOUT_JOB,
+  WAITLIST_PROMOTE_JOB,
+  WAITLIST_EXPIRE_SWEEP_JOB,
+  CHECKIN_NOSHOW_SWEEP_JOB,
+  BROADCAST_PLAN_JOB,
+  BROADCAST_CHUNK_JOB,
+  BROADCAST_SCHEDULE_SWEEP_JOB,
+  EVENT_REMINDERS_SWEEP_JOB,
+  EVENT_METRICS_ROLLUP_JOB,
+  HOST_EXPORT_JOB,
+  HOST_EXPORT_REAP_JOB,
+  HOST_RETENTION_SWEEP_JOB,
+  ORPHAN_SWEEP_JOB,
+  CHAT_PARTITION_JOB,
+  ANON_HOLD_RELEASE_SWEEP_JOB,
+  RETENTION_SWEEP_JOB,
+  MEDIA_STUCK_SWEEP_JOB,
+  MEDIA_UPLOAD_REAP_JOB,
+  PUSH_CLEAR_JOB,
+]

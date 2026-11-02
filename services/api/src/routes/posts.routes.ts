@@ -42,7 +42,7 @@ export async function registerPostRoutes(
     async (request, reply) => {
       const userId = requireAuth(request)
       const input = parse(PostComposeInputSchema, request.body)
-      reply
+      return reply
         .status(201)
         .send(await service().createPost(input, userId, request.auth.guestAnonSessionId))
     },
@@ -51,20 +51,20 @@ export async function registerPostRoutes(
   route(app, "getPost", async (request, reply) => {
     const viewerId = request.auth.userId ?? NIL_VIEWER_ID
     const { id } = parse(PostIdParamsSchema, request.params)
-    reply.status(200).send(await service().getPost(id, viewerId))
+    return reply.status(200).send(await service().getPost(id, viewerId))
   })
 
   route(app, "deletePost", { preHandler: csrfProtect }, async (request, reply) => {
     const userId = requireAuth(request)
     const { id } = parse(PostIdParamsSchema, request.params)
-    reply.status(200).send(await service().deletePost(id, userId))
+    return reply.status(200).send(await service().deletePost(id, userId))
   })
 
   route(app, "listReplies", async (request, reply) => {
     const userId = requireAuth(request)
     const { id } = parse(PostIdParamsSchema, request.params)
     const pagination = parse(PaginationQuerySchema, request.query)
-    reply.status(200).send(await service().listReplies(id, userId, pagination))
+    return reply.status(200).send(await service().listReplies(id, userId, pagination))
   })
 
   route(
@@ -74,7 +74,7 @@ export async function registerPostRoutes(
     async (request, reply) => {
       const userId = requireAuth(request)
       const { id } = parse(PostIdParamsSchema, request.params)
-      reply.status(200).send(await service().repostPost(id, userId))
+      return reply.status(200).send(await service().repostPost(id, userId))
     },
   )
 
@@ -85,7 +85,7 @@ export async function registerPostRoutes(
     async (request, reply) => {
       const userId = requireAuth(request)
       const { id } = parse(PostIdParamsSchema, request.params)
-      reply.status(200).send(await service().unrepostPost(id, userId))
+      return reply.status(200).send(await service().unrepostPost(id, userId))
     },
   )
 
@@ -96,7 +96,7 @@ export async function registerPostRoutes(
     async (request, reply) => {
       const userId = requireAuth(request)
       const { id } = parse(PostIdParamsSchema, request.params)
-      reply.status(200).send(await service().likePost(id, userId))
+      return reply.status(200).send(await service().likePost(id, userId))
     },
   )
 
@@ -107,7 +107,7 @@ export async function registerPostRoutes(
     async (request, reply) => {
       const userId = requireAuth(request)
       const { id } = parse(PostIdParamsSchema, request.params)
-      reply.status(200).send(await service().unlikePost(id, userId))
+      return reply.status(200).send(await service().unlikePost(id, userId))
     },
   )
 
@@ -118,7 +118,7 @@ export async function registerPostRoutes(
     async (request, reply) => {
       const userId = requireAuth(request)
       const { id } = parse(PostIdParamsSchema, request.params)
-      reply.status(200).send(await service().savePost(id, userId))
+      return reply.status(200).send(await service().savePost(id, userId))
     },
   )
 
@@ -129,7 +129,7 @@ export async function registerPostRoutes(
     async (request, reply) => {
       const userId = requireAuth(request)
       const { id } = parse(PostIdParamsSchema, request.params)
-      reply.status(200).send(await service().unsavePost(id, userId))
+      return reply.status(200).send(await service().unsavePost(id, userId))
     },
   )
 
@@ -150,7 +150,7 @@ export async function registerPostRoutes(
       const userId = request.auth.userId
       const query = parse(HomeFeedQuerySchema, request.query)
       const location = viewerLocationOf(request)
-      reply
+      return reply
         .status(200)
         .send(
           userId
@@ -167,7 +167,7 @@ export async function registerPostRoutes(
     async (request, reply) => {
       const userId = requireAuth(request)
       const { postIds } = parse(FeedCountsRequestSchema, request.body)
-      reply.status(200).send(await service().getFeedCounts(postIds, userId))
+      return reply.status(200).send(await service().getFeedCounts(postIds, userId))
     },
   )
 
@@ -175,12 +175,12 @@ export async function registerPostRoutes(
     const userId = request.auth.userId ?? NIL_VIEWER_ID
     const { id } = parse(PostIdParamsSchema, request.params)
     const pagination = parse(PaginationQuerySchema, request.query)
-    reply.status(200).send(await service().listUserPosts(id, userId, pagination))
+    return reply.status(200).send(await service().listUserPosts(id, userId, pagination))
   })
 
   route(app, "listSaves", async (request, reply) => {
     const userId = requireAuth(request)
     const pagination = parse(PaginationQuerySchema, request.query)
-    reply.status(200).send(await service().listSaves(userId, pagination))
+    return reply.status(200).send(await service().listSaves(userId, pagination))
   })
 }

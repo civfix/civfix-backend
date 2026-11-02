@@ -27,6 +27,7 @@ import type {
   CertificateVerifyRow,
 } from "./certificate-repository.js"
 import { PG_UNIQUE_VIOLATION } from "../db/pg-errors.js"
+import { requireRow } from "../db/rows.js"
 
 /** The partial `(user_id, ledger_fingerprint) WHERE revoked_at IS NULL` index (0064). */
 const FINGERPRINT_INDEX = "service_hours_certificates_live_fp_uidx"
@@ -124,7 +125,7 @@ export function makeDrizzleCertificateRepository(sql: Sql): CertificateRepositor
             ledger_fingerprint, r2_key, document_sha256, byte_size, issued_at,
             regenerated_at, revoked_at, revoked_reason
         `
-        return toRow(rows[0]!)
+        return toRow(requireRow(rows, "certificate insert"))
       } catch (err) {
         const kind = conflictKind(err)
         if (kind !== null) throw new CertificateConflictError(kind)

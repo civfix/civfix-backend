@@ -45,7 +45,7 @@ export function makeTokenBucketLimiter(opts: TokenBucketOptions): RateLimiter {
           break
         }
       }
-      if (victim === undefined) victim = buckets.keys().next().value
+      victim ??= buckets.keys().next().value
       if (victim === undefined) break
       buckets.delete(victim)
     }

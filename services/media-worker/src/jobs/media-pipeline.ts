@@ -124,7 +124,7 @@ async function applyAbuseSeams(
     try {
       const dup = deps.findPhashDuplicate
         ? await deps.findPhashDuplicate(phash, {
-            excludeAssetId: selfAssetId,
+            ...(selfAssetId !== undefined ? { excludeAssetId: selfAssetId } : {}),
             ...(selfReportId != null ? { excludeReportId: selfReportId } : {}),
           })
         : await deps.abuseChecks.isNearDuplicate(phash)

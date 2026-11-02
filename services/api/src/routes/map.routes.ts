@@ -7,7 +7,6 @@ import {
   SuggestContactRequestSchema,
   AppError,
   type TileInfoResponse,
-  type JurisdictionDTO,
   type ResolveAddressResponse,
   type ReverseLabelResponse,
   type SuggestPlacesResponse,
@@ -34,6 +33,8 @@ const CARTO_ATTRIBUTION = "(c) OpenStreetMap contributors, (c) CARTO"
 const TILE_INFO_CACHE_CONTROL = "public, max-age=3600"
 const MAP_CLEANUPS_CACHE_CONTROL = "public, max-age=60"
 const CONTACT_SUGGESTED_AUDIT_ACTION = "discovery.contact_suggested"
+/** Clients read this 404 as "no jurisdiction here", which is an answer, not a failure. */
+const NO_JURISDICTION_MESSAGE = "No jurisdiction covers this point"
 
 const CleanupsQuerySchema = z.object({
   bbox: CappedBBoxQueryParam,
@@ -116,7 +117,7 @@ export async function registerMapRoutes(app: FastifyInstance, container: Contain
       bounds: env.TILES_BOUNDS,
     }
     reply.header("Cache-Control", TILE_INFO_CACHE_CONTROL)
-    reply.status(200).send(payload)
+    return reply.status(200).send(payload)
   })
 
   route(
@@ -125,8 +126,9 @@ export async function registerMapRoutes(app: FastifyInstance, container: Contain
     { config: { rateLimit: GEOCODER_RATE_LIMIT } },
     async (request, reply) => {
       const { lat, lng } = parse(ResolveJurisdictionRequestSchema, request.body)
-      const dto: JurisdictionDTO | null = await jurisdictionService().resolveForPoint(lat, lng)
-      reply.status(200).send(dto)
+      const dto = await jurisdictionService().resolveForPoint(lat, lng)
+      if (dto === null) throw AppError.notFound(NO_JURISDICTION_MESSAGE)
+      return reply.status(200).send(dto)
     },
   )
 
@@ -138,7 +140,7 @@ export async function registerMapRoutes(app: FastifyInstance, container: Contain
       const { lat, lng } = parse(ReverseLabelRequestSchema, request.body)
       const label = await container.geocoder.cityStateLabel(lat, lng)
       const payload: ReverseLabelResponse = { cityStateLabel: label ?? "" }
-      reply.status(200).send(payload)
+      return reply.status(200).send(payload)
     },
   )
 
@@ -164,7 +166,7 @@ export async function registerMapRoutes(app: FastifyInstance, container: Contain
         precision: resolved.precision,
         cityStateLabel: resolved.cityStateLabel,
       }
-      reply.status(200).send(payload)
+      return reply.status(200).send(payload)
     },
   )
 
@@ -181,7 +183,7 @@ export async function registerMapRoutes(app: FastifyInstance, container: Contain
       ...(container.env.MAPBOX_TOKEN ? { mapboxToken: container.env.MAPBOX_TOKEN } : {}),
     })
     const payload: SuggestPlacesResponse = { suggestions }
-    reply.status(200).send(payload)
+    return reply.status(200).send(payload)
   })
 
   route(
@@ -202,7 +204,7 @@ export async function registerMapRoutes(app: FastifyInstance, container: Contain
       const pins = await repo.listCleanupPins(bbox, when)
       const payload: MapCleanupsResponse = { pins }
       reply.header("Cache-Control", MAP_CLEANUPS_CACHE_CONTROL)
-      reply.status(200).send(payload)
+      return reply.status(200).send(payload)
     },
   )
 
@@ -235,7 +237,7 @@ export async function registerMapRoutes(app: FastifyInstance, container: Contain
       })
 
       const payload: SuggestContactResponse = { ok: true }
-      reply.status(201).send(payload)
+      return reply.status(201).send(payload)
     },
   )
 }

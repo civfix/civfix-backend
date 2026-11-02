@@ -123,7 +123,7 @@ type HostEventPatch = Pick<
   | "organizationId"
   | "reminderOffsetsMinutes"
   | "hostReplyTo"
-> & { scheduledAt?: string }
+> & { scheduledAt?: string | undefined }
 
 // `joined` means an RSVP (a cleanup_members row, which the organizer always has). Org standing
 // grants host powers and visibility, not attendance: clients key Join/Leave off this flag.
@@ -347,7 +347,7 @@ export interface CleanupServiceDeps {
   audit?: HostAuditSink
   presignEventMedia?: EventMediaPresigner
   presignThumb?: (thumbKey: string) => Promise<string>
-  resolveJurisdictionGeoid?: (lat: number, lng: number) => Promise<string | null>
+  resolveJurisdictionGeoid?: ((lat: number, lng: number) => Promise<string | null>) | undefined
   resolveJurisdictionCode?: (geoid: string | null) => Promise<number>
   /**
    * Only ever called for an OLD client (one that sends no `addressSource`) that also sent no address,
@@ -444,7 +444,9 @@ export function makeCleanupService(deps: CleanupServiceDeps): CleanupService {
     cleanupIds: string[],
     userId: string | null,
   ): Promise<Map<string, HostStanding>> {
-    if (userId === null || cleanupIds.length === 0) return Promise.resolve(new Map())
+    if (userId === null || cleanupIds.length === 0) {
+      return Promise.resolve(new Map<string, HostStanding>())
+    }
     return deps.repo.standingsOf(cleanupIds, userId)
   }
 
@@ -748,7 +750,7 @@ export function makeCleanupService(deps: CleanupServiceDeps): CleanupService {
         patch.scheduledAt !== undefined
           ? new Date(patch.scheduledAt)
           : (current?.scheduledAt ?? new Date(0)),
-      endsAt: write.endsAt !== undefined ? write.endsAt : (current?.endsAt ?? null),
+      endsAt: write.endsAt ?? current?.endsAt ?? null,
       registrationOpensAt:
         write.registrationOpensAt !== undefined
           ? write.registrationOpensAt

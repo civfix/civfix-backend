@@ -55,6 +55,6 @@ export async function registerAdminMediaRoutes(
       },
       expiresAt: new Date(Date.now() + MEDIA_PRIVATE_GET_URL_TTL_SEC * 1000).toISOString(),
     }
-    reply.status(200).send(payload)
+    return reply.status(200).send(payload)
   })
 }

@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach } from "vitest"
 import type { FastifyInstance, FastifyRequest } from "fastify"
-import type { WebSocket } from "@fastify/websocket"
+import type { GatewaySocket } from "../../src/ws/types.js"
 import { registerChatGateway } from "../../src/ws/gateway.js"
 import { WsChatService } from "../../src/adapters/chat-service.ws.js"
 import { InMemoryChatPubSub } from "../../src/adapters/chat-pubsub.js"
@@ -78,13 +78,13 @@ type GatewayOptions = Parameters<typeof registerChatGateway>[1]
 
 function captureGatewayHandler(
   opts: GatewayOptions,
-): (socket: WebSocket, request: FastifyRequest) => void {
-  let captured: ((socket: WebSocket, request: FastifyRequest) => void) | undefined
+): (socket: GatewaySocket, request: FastifyRequest) => void {
+  let captured: ((socket: GatewaySocket, request: FastifyRequest) => void) | undefined
   const app = {
     get(
       _path: string,
       _opts: unknown,
-      handler: (socket: WebSocket, request: FastifyRequest) => void,
+      handler: (socket: GatewaySocket, request: FastifyRequest) => void,
     ): void {
       captured = handler
     },

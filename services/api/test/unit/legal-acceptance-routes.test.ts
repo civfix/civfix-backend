@@ -204,7 +204,7 @@ describe("GET /me/legal", () => {
     })
   })
 
-  it("T3: pre-§66 acceptances owe the material Terms and notice the minor Privacy", async () => {
+  it("T3: pre-§68 acceptances owe the material Terms and notice the minor Privacy", async () => {
     const h = await harness()
     const u = await person(h)
     rec(h, u, "terms@2026-09-21", "accepted")

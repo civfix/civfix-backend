@@ -33,7 +33,7 @@ export function parseUserMentions(body: string): string[] {
     const before = i > 0 ? body[i - 1] : undefined
     if (before !== undefined && HANDLE_CHAR.test(before)) continue
     let j = i + 1
-    while (j < body.length && HANDLE_CHAR.test(body[j]!)) j++
+    while (j < body.length && HANDLE_CHAR.test(body.charAt(j))) j++
     if (j === i + 1) continue
     const handle = body.slice(i + 1, j)
     const key = handle.toLowerCase()

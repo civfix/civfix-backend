@@ -118,7 +118,11 @@ describe("anon submit abuse key is the real client IP (not a spoofed XFF)", () =
       ): Promise<AnonSubmitResult> {
         seenIps.push(ctx.ip)
         return Promise.resolve({
-          response: { reportId: "r1", status: "held", claimCode: "c1" },
+          response: {
+            reportId: "6f1c2a3b-0000-4000-8000-000000000001",
+            status: "held",
+            claimCode: "c1",
+          },
         })
       },
       anonReportStatus() {

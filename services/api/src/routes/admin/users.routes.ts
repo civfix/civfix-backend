@@ -83,7 +83,7 @@ export async function registerAdminUsersRoutes(
   route(app, "listAdminUsers", async (request, reply) => {
     const query = parse(AdminUserListQuerySchema, request.query)
     const payload: AdminUserListResponse = await service().list(query)
-    reply.status(200).send(payload)
+    return reply.status(200).send(payload)
   })
 
   route(app, "getAdminUser", async (request, reply) => {
@@ -93,21 +93,21 @@ export async function registerAdminUsersRoutes(
       action: "user.detail_viewed",
       target: `user:${id}`,
     })
-    reply.status(200).send(payload)
+    return reply.status(200).send(payload)
   })
 
   route(app, "getUserReports", async (request, reply) => {
     const { id } = idParam(request)
     const query = parse(UserSubListQuerySchema, { ...(request.query as object), id })
     const payload: UserReportsResponse = await service().getReports(query)
-    reply.status(200).send(payload)
+    return reply.status(200).send(payload)
   })
 
   route(app, "getUserEvents", async (request, reply) => {
     const { id } = idParam(request)
     const query = parse(UserSubListQuerySchema, { ...(request.query as object), id })
     const payload: UserEventsResponse = await service().getEvents(query)
-    reply.status(200).send(payload)
+    return reply.status(200).send(payload)
   })
 
   route(app, "getUserMessages", async (request, reply) => {
@@ -119,35 +119,35 @@ export async function registerAdminUsersRoutes(
       target: `user:${id}`,
       meta: { returned: payload.items.length, cursor: query.cursor ?? null },
     })
-    reply.status(200).send(payload)
+    return reply.status(200).send(payload)
   })
 
   route(app, "flagUser", { preHandler: csrfProtect }, async (request, reply) => {
     const actorId = requireOperator(request)
     const { id, body } = parseBodyWithId(FlagUserRequestSchema, request)
     await service().flag(id, { reason: body.reason ?? null, actorId })
-    sendOk(reply)
+    return sendOk(reply)
   })
 
   route(app, "setUserStatus", { preHandler: csrfProtect }, async (request, reply) => {
     const actorId = requireOperator(request)
     const { id, body } = parseBodyWithId(SetUserStatusRequestSchema, request)
     await service().setStatus(id, { status: body.status, reason: body.reason ?? null, actorId })
-    sendOk(reply)
+    return sendOk(reply)
   })
 
   route(app, "setUserRole", { preHandler: csrfProtect }, async (request, reply) => {
     const actorId = requireOperator(request)
     const { id, body } = parseBodyWithId(SetRoleRequestSchema, request)
     await service().setRole(id, { role: body.role, actorId })
-    sendOk(reply)
+    return sendOk(reply)
   })
 
   route(app, "setUserReportVerified", { preHandler: csrfProtect }, async (request, reply) => {
     const actorId = requireOperator(request)
     const { id, body } = parseBodyWithId(SetUserReportVerifiedRequestSchema, request)
     await service().setReportVerified(id, { value: body.value, actorId })
-    sendOk(reply)
+    return sendOk(reply)
   })
 
   route(app, "removeUserMessage", { preHandler: csrfProtect }, async (request, reply) => {
@@ -159,6 +159,6 @@ export async function registerAdminUsersRoutes(
       messageId,
     })
     await service().removeMessage(id, messageId, { reason: body.reason ?? null, actorId })
-    sendOk(reply)
+    return sendOk(reply)
   })
 }

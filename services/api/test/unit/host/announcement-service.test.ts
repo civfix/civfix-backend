@@ -27,7 +27,7 @@ const HOST = "00000000-0000-0000-0000-0000000000aa"
 const SLOT = "00000000-0000-0000-0000-0000000000s1".replace("s1", "0f1")
 
 const CONFIG: BroadcastConfig = {
-  killSwitch: false,
+  killSwitch: () => Promise.resolve(false),
   perEventPerDay: 3,
   recipientsPerDay: 2000,
   cooldownSec: 900,

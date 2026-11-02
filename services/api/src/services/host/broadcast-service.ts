@@ -47,7 +47,8 @@ const PREVIEW_SAMPLE_TICKET_TYPE = "General"
 const TEST_SUBJECT_PREFIX = "[Test] "
 
 export interface BroadcastConfig {
-  killSwitch: boolean
+  /** Read at every check, so flipping the runtime flag refuses sends without a redeploy. */
+  killSwitch: () => Promise<boolean>
   perEventPerDay: number
   recipientsPerDay: number
   cooldownSec: number
@@ -216,7 +217,7 @@ export function makeBroadcastService(deps: BroadcastServiceDeps): BroadcastServi
   }
 
   async function guardHost(actorId: string): Promise<void> {
-    if (config.killSwitch) throw new BroadcastCapError("kill_switch", CAP_COPY.kill_switch)
+    if (await config.killSwitch()) throw new BroadcastCapError("kill_switch", CAP_COPY.kill_switch)
     let state: Awaited<ReturnType<BroadcastRepository["hostMessagingState"]>>
     try {
       state = await repo.hostMessagingState(actorId)

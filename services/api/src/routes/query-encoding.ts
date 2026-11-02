@@ -14,18 +14,18 @@ import { BBoxSchema, LatLngSchema, ReportCategorySchema, ReportTypeSchema } from
 const MAX_JSON_PARAM_LEN = 4096
 
 /** Bad input becomes a Zod issue (422 at the route's parse()), never a thrown SyntaxError. */
-function jsonParam<S extends z.ZodTypeAny>(inner: S) {
+function jsonParam<S extends z.ZodType>(inner: S) {
   return z
     .string()
     .transform((raw, ctx) => {
       if (raw.length > MAX_JSON_PARAM_LEN) {
-        ctx.addIssue({ code: z.ZodIssueCode.custom, message: "JSON param too large" })
+        ctx.addIssue({ code: "custom", message: "JSON param too large" })
         return z.NEVER
       }
       try {
         return JSON.parse(raw) as unknown
       } catch {
-        ctx.addIssue({ code: z.ZodIssueCode.custom, message: "must be a JSON-encoded object" })
+        ctx.addIssue({ code: "custom", message: "must be a JSON-encoded object" })
         return z.NEVER
       }
     })

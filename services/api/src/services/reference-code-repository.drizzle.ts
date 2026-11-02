@@ -1,4 +1,5 @@
 import type { Queryable } from "../db/client.js"
+import { requireRow } from "../db/rows.js"
 
 /**
  * A plain SELECT that takes no row lock, so it cannot disturb the allocator's lock order wherever it is
@@ -20,5 +21,5 @@ export async function allocateNextSeqIn(q: Queryable, scopeKey: string): Promise
       SET next_val = reference_counters.next_val + 1
     RETURNING next_val
   `
-  return Number(rows[0]!.next_val)
+  return Number(requireRow(rows, "reference counter upsert").next_val)
 }

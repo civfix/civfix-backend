@@ -3,7 +3,7 @@ import { LEGAL_DOCUMENTS } from "@civfix/contract/legal"
 import { LEGAL_TEXTS } from "@civfix/contract/legal-texts"
 import { withPg } from "../helpers/pg.js"
 
-// The migration runner loads every contract version into legal_documents (DECISIONS §66), so after the
+// The migration runner loads every contract version into legal_documents (DECISIONS §68), so after the
 // harness's migrate the table must hold the contract exactly.
 
 const pg = await withPg()

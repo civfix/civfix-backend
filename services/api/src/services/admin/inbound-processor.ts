@@ -37,6 +37,7 @@ import { htmlToText } from "./mail-preview.js"
 import { ATTACHMENT_FILENAME_MAX_CHARS, safeFilenameChars } from "../../lib/filename.js"
 import { sha256HexSync } from "../../lib/hash.js"
 import { passThroughRejection, settleWithin } from "../../lib/timeout.js"
+import { firstNonEmpty } from "../../lib/text.js"
 
 export { detectBounce, resolveMessageId }
 
@@ -367,7 +368,8 @@ async function routeInbox(
       .map((a) => a.address)
       .filter((a) => a.length > 0)
       .join(", ") || null
-  const claimedFrom = mail.headers["from"]?.slice(0, INBOUND_HEADER_VALUE_MAX_CHARS) || null
+  const claimedFrom =
+    firstNonEmpty(mail.headers["from"]?.slice(0, INBOUND_HEADER_VALUE_MAX_CHARS)) ?? null
   const { id, inserted } = await inboundRepo.insertIdempotent({
     messageId,
     fromAddr: mail.from?.address ?? claimedFrom,

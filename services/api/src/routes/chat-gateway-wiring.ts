@@ -90,6 +90,8 @@ import { InMemoryChatReadState, type ChatReadState } from "../services/threads-s
 import { makeMarkRoomRead, type MarkRoomRead } from "../services/room-read-service.js"
 import type { ChatGatewayOverrides } from "./chat.routes.js"
 import { avatarPresigner } from "../services/user-avatar.js"
+import { makeConversationNameRepository } from "../services/conversation-name-repository.drizzle.js"
+import type { ConversationNameLookups } from "../services/conversation-names.js"
 
 const WS_UPGRADE_RATE_LIMIT = { max: 60, timeWindow: "1 minute" } as const
 
@@ -244,7 +246,7 @@ export function applyWsUpgradeRateLimit(app: FastifyInstance): void {
     const result = await limiter(request)
     if (!result.isAllowed && result.isExceeded) {
       applyRateLimitHeaders(reply, result)
-      reply
+      return reply
         .status(429)
         .send({ code: ErrorCode.RATE_LIMITED, message: "Too many connection attempts." })
     }
@@ -277,6 +279,7 @@ interface ChatRepos {
   getGroupsRepo(): ChatGroupRepository | undefined
   groupWired: boolean
   getReportRepo(): DiscussionRepository
+  getConversationNames(): ConversationNameLookups
 }
 
 function makeChatRepos({ container, overrides, useFakeChat }: WiringContext): ChatRepos {
@@ -297,6 +300,7 @@ function makeChatRepos({ container, overrides, useFakeChat }: WiringContext): Ch
   let reportChatRepo: ReportChatRepository | undefined
   let groupsRepo: ChatGroupRepository | undefined
   let reportRepo: DiscussionRepository | undefined
+  let conversationNames: ConversationNameLookups | undefined
 
   return {
     getCleanupRepo,
@@ -322,12 +326,18 @@ function makeChatRepos({ container, overrides, useFakeChat }: WiringContext): Ch
           : (groupsRepo ??= makeChatGroupRepository(container.getDb().sql, presignMedia)),
     groupWired: overrides ? overrides.groups !== undefined : !useFakeChat,
     getReportRepo: () => (reportRepo ??= makeDrizzleDiscussionRepository(container.getDb().sql)),
+    getConversationNames: () =>
+      (conversationNames ??= makeConversationNameRepository(container.getDb().sql)),
   }
 }
 
 function makeGroupChat(repos: ChatRepos): GatewayGroupChat | undefined {
   if (!repos.groupWired) return undefined
-  const groups = (): ChatGroupRepository => repos.getGroupsRepo()!
+  const groups = (): ChatGroupRepository => {
+    const repo = repos.getGroupsRepo()
+    if (!repo) throw new Error("chat gateway: group chat is wired but has no group repository")
+    return repo
+  }
   return {
     isMember: async (groupId, userId) => (await groups().roleOf(groupId, userId)) !== null,
     access: async (groupId, userId) => {
@@ -439,7 +449,7 @@ function makeThreadRecipientsOf(
 }
 
 function makeBellDeps(
-  { useFakeChat }: WiringContext,
+  { app, overrides, useFakeChat }: WiringContext,
   repos: ChatRepos,
   notifications: ChatNotifications,
   presence: ChatPresence,
@@ -447,6 +457,8 @@ function makeBellDeps(
   const { notificationService, isMutedFor } = notifications
   if (useFakeChat || !notificationService) return undefined
   return {
+    ...(overrides ? {} : { conversationNames: repos.getConversationNames() }),
+    logger: app.log,
     notificationService,
     isMutedFor,
     isCleanupMember: repos.isMember,
@@ -515,6 +527,7 @@ function withSendResilience(
     deliverLocal?: LocalDeliver
   }
   const { dmRepo, getChatRepo } = repos
+  const baseBroadcastEvent = baseChat.broadcastEvent?.bind(baseChat)
   const sendResilience = makeSendResilience({
     dedupe,
     findRoomMessage: (kind, roomId, messageId, viewerUserId) => {
@@ -536,11 +549,7 @@ function withSendResilience(
     history: (room, before, limit, viewerUserId, around) =>
       baseChat.history(room, before, limit, viewerUserId, around),
     broadcast: (room, msg, opts) => baseChat.broadcast(room, msg, opts),
-    ...(baseChat.broadcastEvent
-      ? {
-          broadcastEvent: (room, frame, opts) => baseChat.broadcastEvent!(room, frame, opts),
-        }
-      : {}),
+    ...(baseBroadcastEvent ? { broadcastEvent: baseBroadcastEvent } : {}),
     sendResilience,
   }
 }
@@ -565,7 +574,7 @@ interface RoomMemberNotifiers {
 }
 
 function makeRoomMemberNotifiers(
-  { app }: WiringContext,
+  { app, overrides }: WiringContext,
   repos: ChatRepos,
   notifications: ChatNotifications,
   presence: ChatPresence,
@@ -574,6 +583,7 @@ function makeRoomMemberNotifiers(
 ): RoomMemberNotifiers {
   const { notificationService, conversationMutes, mutedUserIdsFor } = notifications
   const { blockedIdsFor, isBlockedEitherWay } = repos
+  const names = () => (overrides ? {} : { conversationNames: repos.getConversationNames() })
 
   const notifyReportChatMembers =
     notificationService && conversationMutes
@@ -589,6 +599,7 @@ function makeRoomMemberNotifiers(
           roomKeyFor,
           isBlockedEitherWay,
           ...(blockedIdsFor ? { blockedIdsFor } : {}),
+          ...names(),
           ...fanoutHandoff("report"),
           logger: app.log,
         })
@@ -607,6 +618,7 @@ function makeRoomMemberNotifiers(
           roomKeyFor,
           isBlockedEitherWay,
           ...(blockedIdsFor ? { blockedIdsFor } : {}),
+          ...names(),
           ...fanoutHandoff("group"),
           logger: app.log,
         })

@@ -83,10 +83,7 @@ function pageCount(bytes: Uint8Array): number {
  * BOM. The ko fixture is what exercises the second branch (a raw utf8 grep would silently never match).
  */
 function pdfString(value: string): Buffer {
-  const ascii = [...value].every((ch) => {
-    const code = ch.codePointAt(0) ?? 0
-    return code >= 0x20 && code <= 0x7e
-  })
+  const ascii = /^[\x20-\x7e]*$/.test(value)
   if (ascii) return Buffer.from(value, "latin1")
   return Buffer.concat([Buffer.from([0xfe, 0xff]), Buffer.from(value, "utf16le").swap16()])
 }

@@ -17,9 +17,23 @@ export const UNSUBSCRIBE_RATE_LIMIT = perHost({ max: 60, timeWindow: "1 minute" 
 
 const OK: UnsubscribeBroadcastsResponse = { ok: true }
 
-const UNSUBSCRIBE_UNAVAILABLE_COPY = "We couldn't save your unsubscribe. Please try again."
+export const UNSUBSCRIBE_UNAVAILABLE_COPY = "We couldn't save your unsubscribe. Please try again."
 
-function tokenFrom(request: FastifyRequest): string | null {
+export function addFormBodyParser(scope: FastifyInstance): void {
+  scope.addContentTypeParser(
+    "application/x-www-form-urlencoded",
+    { parseAs: "string" },
+    (_req, body, done) => {
+      try {
+        done(null, Object.fromEntries(new URLSearchParams(body as string)))
+      } catch (err) {
+        done(err as Error)
+      }
+    },
+  )
+}
+
+export function tokenFrom(request: FastifyRequest): string | null {
   const body = (request.body ?? {}) as Record<string, unknown>
   if (typeof body.token === "string" && body.token.length > 0) return body.token
   const query = (request.query ?? {}) as Record<string, unknown>
@@ -44,17 +58,7 @@ export async function registerUnsubscribeRoutes(
   }
 
   await app.register(async (unsubscribeScope) => {
-    unsubscribeScope.addContentTypeParser(
-      "application/x-www-form-urlencoded",
-      { parseAs: "string" },
-      (_req, body, done) => {
-        try {
-          done(null, Object.fromEntries(new URLSearchParams(body as string)))
-        } catch (err) {
-          done(err as Error)
-        }
-      },
-    )
+    addFormBodyParser(unsubscribeScope)
 
     route(
       unsubscribeScope,
@@ -63,13 +67,11 @@ export async function registerUnsubscribeRoutes(
       async (request, reply) => {
         const token = tokenFrom(request)
         if (token === null) {
-          reply.status(200).send(OK)
-          return
+          return reply.status(200).send(OK)
         }
         const parsed = UnsubscribeBroadcastsRequestSchema.safeParse({ token })
         if (!parsed.success) {
-          reply.status(200).send(OK)
-          return
+          return reply.status(200).send(OK)
         }
         try {
           await runtime().broadcasts.unsubscribe(parsed.data.token)
@@ -84,7 +86,7 @@ export async function registerUnsubscribeRoutes(
             }),
           )
         }
-        reply.status(200).send(OK)
+        return reply.status(200).send(OK)
       },
     )
 
@@ -98,7 +100,7 @@ export async function registerUnsubscribeRoutes(
         const target = parsed.success
           ? `${webBaseUrl()}/unsubscribe?t=${encodeURIComponent(parsed.data.t)}`
           : `${webBaseUrl()}/unsubscribe`
-        reply.redirect(target, 302)
+        return reply.redirect(target, 302)
       },
     )
   })

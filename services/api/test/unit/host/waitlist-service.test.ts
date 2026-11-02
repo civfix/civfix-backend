@@ -10,6 +10,8 @@ import {
 } from "../../../src/services/host/waitlist-service.js"
 import type { SeatDraft } from "../../../src/services/host/registration-repository.js"
 import { makeTicketTokenSigner } from "../../../src/services/host/ticket-token.js"
+import type { CreateNotificationInput } from "../../../src/services/notification-service.js"
+import { categoryOfInput } from "../../helpers/notification-capture.js"
 
 const EVENT = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
 const ALICE = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"
@@ -26,6 +28,7 @@ interface Harness {
   advance(ms: number): void
   enqueued: string[]
   notified: string[]
+  notifiedInputs: CreateNotificationInput[]
   guestsNotified: string[]
   warnings: unknown[]
   bumped: string[]
@@ -38,6 +41,7 @@ function build(opts: { guestNotifyFails?: boolean; withGuestNotifier?: boolean }
   const clock = (): Date => new Date(state.base + state.tick++)
   const enqueued: string[] = []
   const notified: string[] = []
+  const notifiedInputs: CreateNotificationInput[] = []
   const guestsNotified: string[] = []
   const warnings: unknown[] = []
   const bumped: string[] = []
@@ -67,8 +71,9 @@ function build(opts: { guestNotifyFails?: boolean; withGuestNotifier?: boolean }
       fail: () => Promise.resolve(),
     },
     notifier: {
-      createNotification: (userId) => {
+      createNotification: (userId, input) => {
         notified.push(userId)
+        notifiedInputs.push(input)
         return Promise.resolve(null)
       },
     },
@@ -101,6 +106,7 @@ function build(opts: { guestNotifyFails?: boolean; withGuestNotifier?: boolean }
     },
     enqueued,
     notified,
+    notifiedInputs,
     guestsNotified,
     warnings,
     bumped,
@@ -161,6 +167,16 @@ describe("waitlist service", () => {
     expect(h.repo.ticketTypes.get(type.id)?.reservedSeats).toBe(1)
 
     expect(await h.service.runPromote({ ticketTypeId: type.id })).toBe(0)
+  })
+
+  it("T50: the waitlist offer is Events you're going to", async () => {
+    const type = h.repo.seedTicketType({ cleanupId: EVENT, capacity: 1, waitlistEnabled: true })
+    await h.service.join(
+      { id: EVENT, ticketTypeId: type.id, partySize: 1 },
+      { kind: "user", userId: ALICE },
+    )
+    await h.service.runPromote({ ticketTypeId: type.id })
+    expect(h.notifiedInputs.map(categoryOfInput)).toEqual(["events"])
   })
 
   it("blocks at the head of the queue rather than skipping a party that does not fit", async () => {

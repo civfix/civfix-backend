@@ -1,4 +1,5 @@
 import { afterEach, describe, it, expect, vi } from "vitest"
+import { expectConsoleWarn } from "@civfix/testing/console"
 import { makeWorker } from "../../src/worker.js"
 import {
   ANON_HOLD_RELEASE_JOB,
@@ -54,6 +55,7 @@ describe("media-worker wiring", () => {
     await expect(worker.start()).resolves.toBeUndefined()
 
     const beforeEnqueue = fake.enqueued.length
+    expectConsoleWarn("media.checks: no DB repo configured (offline mode); skipping")
     await fake.enqueue(MEDIA_CHECKS_JOB, {
       mediaId: "x",
       uploadId: "y",
@@ -73,7 +75,11 @@ describe("media-worker wiring", () => {
     const handle = makeJobs()
     const calls: {
       name: string
-      options?: { retryLimit?: number; retryBackoff?: boolean; policy?: string }
+      options?: {
+        retryLimit?: number | undefined
+        retryBackoff?: boolean | undefined
+        policy?: string | undefined
+      }
     }[] = []
     const original = handle.jobs.createQueue.bind(handle.jobs)
     handle.jobs.createQueue = (name, options) => {

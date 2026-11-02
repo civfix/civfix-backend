@@ -1,4 +1,4 @@
-import type { Sql, SqlFragment } from "../db/client.js"
+import type { Queryable, Sql, SqlFragment } from "../db/client.js"
 import {
   keysetInstant,
   keysetPredicate,
@@ -7,6 +7,7 @@ import {
 } from "../db/cursor-helpers.js"
 import type {
   CoalescedNotificationArgs,
+  EmailRecipientRecord,
   NewNotificationArgs,
   NotificationPrefsPatch,
   NotificationPrefsRecord,
@@ -17,6 +18,7 @@ import type {
 import { DEFAULT_PREFS, FEED_HIDDEN_NOTIFICATION_TYPES } from "./notification-service.js"
 import { AppError } from "@civfix/contract"
 import type { NotificationType, PushPlatform } from "@civfix/contract"
+import { requireRow } from "../db/rows.js"
 
 const QUIET_TIME_RE = /^([01]\d|2[0-3]):[0-5]\d(:[0-5]\d)?$/
 
@@ -98,6 +100,46 @@ function refreshUnreadWith(
   `.then((rows) => (rows[0] ? toRecord(rows[0]) : null))
 }
 
+export const UNREAD_PAGE_INDEX = "notifications_user_unread_page_idx"
+
+// The page's hidden types are written out as literals, word for word UNREAD_PAGE_INDEX's predicate
+// (0200): a bound array is opaque to a generic plan, which then cannot prove the partial predicate and
+// loses the index whenever Postgres switches the prepared statement to one. The list must stay equal to
+// FEED_HIDDEN_NOTIFICATION_TYPES; notification-inbox-pg.test.ts checks every type against it.
+function unreadPagePredicate(sql: Queryable): SqlFragment {
+  return sql`read_at IS NULL AND type <> ALL (ARRAY['dm','cleanup_chat','group_chat','report_chat'])`
+}
+
+function hasUnreadStatement(sql: Queryable, userId: string): SqlFragment {
+  return sql`
+    SELECT EXISTS (
+      SELECT 1 FROM notifications
+      WHERE user_id = ${userId} AND ${unreadPagePredicate(sql)}
+    ) AS has_unread
+  `
+}
+
+function markAllReadStatement(sql: Queryable, userId: string): SqlFragment {
+  return sql`
+    UPDATE notifications
+    SET read_at = now()
+    WHERE user_id = ${userId} AND ${unreadPagePredicate(sql)}
+  `
+}
+
+async function explain(sql: Queryable, statement: SqlFragment): Promise<string> {
+  const rows = await sql<Record<string, string>[]>`EXPLAIN (COSTS OFF, VERBOSE) ${statement}`
+  return rows.map((r) => Object.values(r)[0] ?? "").join("\n")
+}
+
+export function explainHasUnread(sql: Queryable, userId: string): Promise<string> {
+  return explain(sql, hasUnreadStatement(sql, userId))
+}
+
+export function explainMarkAllRead(sql: Queryable, userId: string): Promise<string> {
+  return explain(sql, markAllReadStatement(sql, userId))
+}
+
 export function makeDrizzleNotificationRepository(sql: Sql): NotificationRepository {
   return {
     async insertNotification(args: NewNotificationArgs): Promise<NotificationRecord> {
@@ -106,7 +148,7 @@ export function makeDrizzleNotificationRepository(sql: Sql): NotificationReposit
         VALUES (${args.userId}, ${args.type}, ${args.title}, ${args.body}, ${args.link})
         RETURNING id, user_id, type, title, body, link, read_at, created_at
       `
-      return toRecord(rows[0]!)
+      return toRecord(requireRow(rows, "notification insert"))
     },
 
     async listNotifications(
@@ -134,26 +176,53 @@ export function makeDrizzleNotificationRepository(sql: Sql): NotificationReposit
       return { records: items.map(toRecord), nextCursor }
     },
 
-    async markRead(userId: string, ids: string[]): Promise<void> {
-      if (ids.length === 0) return
-      await sql`
+    async markRead(userId: string, ids: string[]): Promise<string[]> {
+      if (ids.length === 0) return []
+      const rows = await sql<{ id: string }[]>`
         UPDATE notifications
         SET read_at = now()
         WHERE user_id = ${userId}
           AND id = ANY(${ids}::uuid[])
           AND read_at IS NULL
+        RETURNING id
       `
+      return rows.map((r) => r.id)
     },
 
-    async clearByTypeAndLink(userId: string, type: NotificationType, link: string): Promise<void> {
-      await sql`
+    async clearByTypeAndLink(
+      userId: string,
+      type: NotificationType,
+      link: string,
+    ): Promise<string[]> {
+      const rows = await sql<{ id: string }[]>`
         UPDATE notifications
         SET read_at = now()
         WHERE user_id = ${userId}
-          AND type = ${type}
+          AND type IN (${type}, 'chat_mention')
           AND link = ${link}
           AND read_at IS NULL
+        RETURNING id
       `
+      return rows.map((r) => r.id)
+    },
+
+    async hasUnread(userId: string): Promise<boolean> {
+      const rows = await sql<{ has_unread: boolean }[]>`${hasUnreadStatement(sql, userId)}`
+      return rows[0]?.has_unread === true
+    },
+
+    async markAllRead(userId: string): Promise<number> {
+      const result = await sql`${markAllReadStatement(sql, userId)}`
+      return result.count
+    },
+
+    async deleteNotification(userId: string, id: string): Promise<boolean> {
+      const rows = await sql`
+        DELETE FROM notifications
+        WHERE id = ${id} AND user_id = ${userId}
+        RETURNING id
+      `
+      return rows.length > 0
     },
 
     async findPrefs(userId: string): Promise<NotificationPrefsRecord | null> {
@@ -250,7 +319,7 @@ export function makeDrizzleNotificationRepository(sql: Sql): NotificationReposit
         ON CONFLICT (user_id) DO UPDATE SET ${joinSet(sql, setFragments)}
         RETURNING push, cleanup_chat, report_updates, follows, mentions, post_interactions, host_broadcasts, quiet_start, quiet_end, tz
       `
-      return toPrefsRecord(rows[0]!)
+      return toPrefsRecord(requireRow(rows, "notification prefs upsert"))
     },
 
     async upsertPushToken(args: {
@@ -301,6 +370,18 @@ export function makeDrizzleNotificationRepository(sql: Sql): NotificationReposit
       await sql`DELETE FROM push_tokens WHERE user_id = ${userId}`
     },
 
+    async usersNotifiedSince({ userIds, type, link, since }) {
+      if (userIds.length === 0) return []
+      const rows = await sql<{ user_id: string }[]>`
+        SELECT DISTINCT user_id FROM notifications
+        WHERE user_id = ANY(${[...userIds]}::uuid[])
+          AND type = ${type}
+          AND link = ${link}
+          AND created_at > ${since}
+      `
+      return rows.map((r) => r.user_id)
+    },
+
     async insertUnlessRecentDuplicate(
       args: NewNotificationArgs & { since: Date },
     ): Promise<{ record: NotificationRecord; deduped: boolean }> {
@@ -329,7 +410,7 @@ export function makeDrizzleNotificationRepository(sql: Sql): NotificationReposit
           VALUES (${args.userId}, ${args.type}, ${args.title}, ${args.body}, ${args.link})
           RETURNING id, user_id, type, title, body, link, read_at, created_at
         `
-        return { record: toRecord(rows[0]!), deduped: false }
+        return { record: toRecord(requireRow(rows, "notification insert")), deduped: false }
       })
     },
 
@@ -355,7 +436,7 @@ export function makeDrizzleNotificationRepository(sql: Sql): NotificationReposit
           VALUES (${args.userId}, ${args.type}, ${args.title}, ${args.body}, ${args.link})
           RETURNING id, user_id, type, title, body, link, read_at, created_at
         `
-        return { record: toRecord(rows[0]!), coalesced: false }
+        return { record: toRecord(requireRow(rows, "notification insert")), coalesced: false }
       })
     },
 
@@ -380,6 +461,25 @@ export function makeDrizzleNotificationRepository(sql: Sql): NotificationReposit
         SELECT locale FROM users WHERE id = ${userId} LIMIT 1
       `
       return rows[0]?.locale ?? null
+    },
+
+    // The suppression key is emailHashOf's sha256(lower(trim(email))), computed here so that one
+    // statement answers the whole batch.
+    async findEmailRecipients(userIds: string[]): Promise<EmailRecipientRecord[]> {
+      if (userIds.length === 0) return []
+      const rows = await sql<{ id: string; email: string; locale: string }[]>`
+        SELECT u.id, u.email::text AS email, u.locale
+        FROM users u
+        WHERE u.id = ANY(${userIds}::uuid[])
+          AND u.email IS NOT NULL
+          AND u.email_verified
+          AND u.deleted_at IS NULL
+          AND NOT EXISTS (
+            SELECT 1 FROM email_suppressions s
+            WHERE s.email_hash = encode(sha256(convert_to(lower(btrim(u.email::text)), 'UTF8')), 'hex')
+          )
+      `
+      return rows.map((r) => ({ userId: r.id, email: r.email, locale: r.locale }))
     },
   }
 }

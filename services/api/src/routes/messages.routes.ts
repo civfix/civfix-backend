@@ -11,7 +11,6 @@ import {
   type SetMessagePinnedRequest,
 } from "@civfix/contract"
 import { randomUUID } from "node:crypto"
-import { z } from "zod"
 import type { FastifyInstance } from "fastify"
 import { perIdentity } from "../plugins/rate-limit.js"
 import type { Container } from "../di.js"
@@ -58,7 +57,7 @@ export const CreatePollBodySchema = trimTextFields(
   poll.options.forEach((option, index) => {
     if (seen.has(option)) {
       ctx.addIssue({
-        code: z.ZodIssueCode.custom,
+        code: "custom",
         path: ["options", index],
         message: "must not repeat an earlier option",
       })
@@ -263,7 +262,7 @@ export async function registerMessagesRoutes(
         mentionedUserIds: body.mentionedUserIds,
       })
 
-      reply.status(200).send(updated)
+      return reply.status(200).send(updated)
     },
   )
 
@@ -303,7 +302,7 @@ export async function registerMessagesRoutes(
         neutralizeChatViewerFields(updated),
       )
 
-      reply.status(200).send(updated)
+      return reply.status(200).send(updated)
     },
   )
 
@@ -344,7 +343,7 @@ export async function registerMessagesRoutes(
         container.chatService.broadcastEvent?.(roomKeyFor(roomKind, roomId), frame),
       ).catch(() => {})
 
-      reply.status(200).send(updated)
+      return reply.status(200).send(updated)
     },
   )
 
@@ -396,7 +395,7 @@ export async function registerMessagesRoutes(
         anonymous: body.anonymous,
         userId,
       })
-      reply.status(200).send(created)
+      return reply.status(200).send(created)
     },
   )
 
@@ -412,7 +411,7 @@ export async function registerMessagesRoutes(
         optionIdxs: body.optionIdxs,
         userId,
       })
-      reply.status(200).send(updated)
+      return reply.status(200).send(updated)
     },
   )
 
@@ -424,7 +423,7 @@ export async function registerMessagesRoutes(
       const userId = requireAuth(request)
       const body = parse(ClosePollRequestSchema, request.body)
       const closed = await getPollService().closePoll({ messageId: body.messageId, userId })
-      reply.status(200).send(closed)
+      return reply.status(200).send(closed)
     },
   )
 }
