@@ -19,6 +19,7 @@ export {
   FILING_RESULT_JOB,
   FILING_RUN_JOB,
   FILING_SWEEP_JOB,
+  PGBOSS_SCHEMA,
   SHARED_QUEUE_POLICY,
   type FilingQueueName,
   type FilingQueueOptions,

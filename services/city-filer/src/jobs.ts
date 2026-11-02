@@ -1,6 +1,10 @@
-import type PgBoss from "pg-boss"
+import type { JobWithMetadata, PgBoss } from "pg-boss"
 import type { EnqueueOptions, JobHandler } from "@civfix/seams"
-import type { FilingQueueName, FilingQueueOptions } from "@civfix/api/filings-worker"
+import {
+  PGBOSS_SCHEMA,
+  type FilingQueueName,
+  type FilingQueueOptions,
+} from "@civfix/api/filings-worker"
 
 export interface FilerWorkSettings {
   batchSize: number
@@ -9,7 +13,10 @@ export interface FilerWorkSettings {
 export interface FilerJobs {
   start(): Promise<void>
   stop(): Promise<void>
-  /** Every field of the queue's FILING_QUEUE_OPTIONS entry: pg-boss keeps whichever creator ran last. */
+  /**
+   * Every field of the queue's FILING_QUEUE_OPTIONS entry: the first creator fixes the policy and the last
+   * updateQueue sets the retries, so the API and the filer pass the same entry.
+   */
   createQueue(name: FilingQueueName, options: FilingQueueOptions): Promise<void>
   enqueue(name: string, data: unknown, opts?: EnqueueOptions): Promise<string>
   work(name: string, handler: JobHandler, settings: FilerWorkSettings): Promise<void>
@@ -26,8 +33,8 @@ export class PgBossFilerJobs implements FilerJobs {
   constructor(private readonly connectionString: string) {}
 
   async start(): Promise<void> {
-    const { default: PgBossCtor } = await import("pg-boss")
-    const boss = new PgBossCtor(this.connectionString)
+    const { PgBoss: PgBossCtor } = await import("pg-boss")
+    const boss = new PgBossCtor({ connectionString: this.connectionString, schema: PGBOSS_SCHEMA })
     // Without a listener an internal pg-boss error would crash the process.
     boss.on("error", (err: Error) => console.error("pg-boss error:", err))
     await boss.start()
@@ -35,7 +42,7 @@ export class PgBossFilerJobs implements FilerJobs {
   }
 
   async stop(): Promise<void> {
-    await this.boss?.stop({ graceful: true, wait: true, timeout: STOP_TIMEOUT_MS })
+    await this.boss?.stop({ graceful: true, timeout: STOP_TIMEOUT_MS })
     this.boss = undefined
   }
 
@@ -45,10 +52,10 @@ export class PgBossFilerJobs implements FilerJobs {
   }
 
   async createQueue(name: FilingQueueName, options: FilingQueueOptions): Promise<void> {
-    const queue: PgBoss.Queue = { name, ...options }
-    // createQueue does nothing to a queue that exists; updateQueue brings its options to these.
-    await this.requireBoss().createQueue(name, queue)
-    await this.requireBoss().updateQueue(name, queue)
+    const { policy: _policy, ...retries } = options
+    // createQueue does nothing to a queue that exists; updateQueue brings its retries to these.
+    await this.requireBoss().createQueue(name, options)
+    await this.requireBoss().updateQueue(name, retries)
   }
 
   async enqueue(name: string, data: unknown, opts: EnqueueOptions = {}): Promise<string> {
@@ -59,7 +66,7 @@ export class PgBossFilerJobs implements FilerJobs {
   // that verdict is this one job's. The retry count tells a handler whether this try is its last.
   async work(name: string, handler: JobHandler, settings: FilerWorkSettings): Promise<void> {
     const options = { batchSize: settings.batchSize, includeMetadata: true as const }
-    await this.requireBoss().work(name, options, async (jobs: PgBoss.JobWithMetadata[]) => {
+    await this.requireBoss().work(name, options, async (jobs: JobWithMetadata[]) => {
       for (const job of jobs) {
         await handler({
           id: job.id,
