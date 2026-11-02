@@ -22,7 +22,7 @@
 
 # The digest is the multi-arch index (it carries linux/arm64 and linux/amd64), so a rebuild of the same
 # commit gets the same base; the tag only tells a reader which line it is. Move both together.
-FROM node:22-bookworm-slim@sha256:de170b39439eb0e5a3444ad7d60b015614a381e10fecae2e30ec9e735122f38d AS base
+FROM node:22-bookworm-slim@sha256:4b150b48b4116e2a22f2c39cc27025fbf4f153e2078fd3b14d159fdb5c7279da AS base
 ENV PNPM_HOME="/pnpm" \
     PATH="/pnpm:$PATH" \
     # Keep pnpm output terse + deterministic in CI.
@@ -46,7 +46,7 @@ RUN pnpm --filter @civfix/api... build
 RUN --mount=type=cache,id=pnpm-store,target=/pnpm/store \
     pnpm --filter @civfix/api --prod deploy /out
 
-FROM node:22-bookworm-slim@sha256:de170b39439eb0e5a3444ad7d60b015614a381e10fecae2e30ec9e735122f38d AS runtime
+FROM node:22-bookworm-slim@sha256:4b150b48b4116e2a22f2c39cc27025fbf4f153e2078fd3b14d159fdb5c7279da AS runtime
 # No package manager here: pnpm would reinstall /app/node_modules in place and empty it, which took down
 # the dependency tree of a live prod container on 2026-09-23. npm goes too: nothing runs it, and its
 # bundled dependency tree is where the image scan finds fixable HIGH advisories (pacote, sigstore,
