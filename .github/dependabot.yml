@@ -1,13 +1,7 @@
 version: 2
-registries:
-  civfix:
-    type: npm-registry
-    url: https://repo.civfix.org
-    replaces-base: false
 updates:
   - package-ecosystem: npm
     directory: "/"
-    registries: [civfix]
     schedule: { interval: weekly, day: monday, time: "06:00", timezone: America/Los_Angeles }
     cooldown: { default-days: 3 }
     open-pull-requests-limit: 5
