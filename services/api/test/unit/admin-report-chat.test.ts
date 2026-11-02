@@ -1,7 +1,14 @@
-import { describe, expect, it } from "vitest"
+import { afterEach, describe, expect, it } from "vitest"
+import type { FastifyInstance } from "fastify"
 import { AppError, type ChatMessageDTO, type UserMentionDTO } from "@civfix/contract"
-import { type ChatHistoryPage } from "@civfix/seams"
+import { FakeMailer, type ChatHistoryPage } from "@civfix/seams"
 import type { PersistChatInput } from "@civfix/seams"
+import { makeServer } from "../../src/server.js"
+import { loadEnv } from "../../src/env.js"
+import { InMemoryCacheClient } from "../../src/auth/cache.js"
+import { makeInMemoryStores } from "../../src/auth/stores.js"
+import { makeAuthServices } from "../../src/auth/auth-services.js"
+import { StubJwksVerifier } from "../helpers/auth.js"
 import { makeAdminReportChatService } from "../../src/services/admin/admin-report-chat-service.js"
 import { InMemoryAdminReportChatRepository } from "../helpers/admin/admin-report-chat-repository.memory.js"
 import {
@@ -359,6 +366,191 @@ describe("admin report chat send (official-account message, no membership requir
 
     expect(message.mentions).toEqual([])
     expect(h.send.broadcasts).toHaveLength(1)
+  })
+})
+
+const SLUR_REJECTION = {
+  code: "VALIDATION",
+  fields: { body: "This contains language that isn't allowed." },
+}
+
+async function rejectionOf(pending: Promise<unknown>): Promise<unknown> {
+  const err: unknown = await pending.then(
+    () => null,
+    (reason: unknown) => reason,
+  )
+  expect(err).toBeInstanceOf(AppError)
+  return err
+}
+
+describe("admin report chat send refuses a slur", () => {
+  it("T1: rejects with the edit path's error and has no effect at all", async () => {
+    const h = serviceHarness()
+    h.repo.seedReport(REPORT_ID)
+
+    const err = await rejectionOf(
+      h.svc.sendMessage(REPORT_ID, { body: "you retard", actorId: OPERATOR_ID }),
+    )
+
+    expect(err).toMatchObject(SLUR_REJECTION)
+    expect(h.send.persisted).toEqual([])
+    expect(h.send.broadcasts).toEqual([])
+    expect(h.send.recorded).toEqual([])
+    expect(h.send.bells).toEqual([])
+    expect(h.send.notified).toEqual([])
+    expect(h.send.forwarded).toEqual([])
+  })
+
+  it("T2: a message tagging the city never reaches the forward", async () => {
+    const h = serviceHarness()
+    h.repo.seedReport(REPORT_ID)
+
+    const err = await rejectionOf(
+      h.svc.sendMessage(REPORT_ID, { body: "@losangeles you retard", actorId: OPERATOR_ID }),
+    )
+
+    expect(err).toMatchObject(SLUR_REJECTION)
+    expect(h.send.forwarded).toEqual([])
+    expect(h.send.persisted).toEqual([])
+  })
+
+  it("T3: surrounding whitespace does not change the verdict", async () => {
+    const h = serviceHarness()
+    h.repo.seedReport(REPORT_ID)
+
+    const err = await rejectionOf(
+      h.svc.sendMessage(REPORT_ID, { body: "  you retard  ", actorId: OPERATOR_ID }),
+    )
+
+    expect(err).toMatchObject(SLUR_REJECTION)
+    expect(h.send.persisted).toEqual([])
+  })
+
+  it("T4: a missing report answers not found ahead of the slur check", async () => {
+    const h = serviceHarness()
+
+    const err = await rejectionOf(
+      h.svc.sendMessage(REPORT_ID, { body: "you retard", actorId: OPERATOR_ID }),
+    )
+
+    expect(err).toMatchObject({ code: "NOT_FOUND" })
+    expect(h.send.persisted).toEqual([])
+    expect(h.send.broadcasts).toEqual([])
+    expect(h.send.forwarded).toEqual([])
+  })
+
+  it("T8: a clean message tagging the city is posted and forwarded", async () => {
+    const h = serviceHarness()
+    h.repo.seedReport(REPORT_ID)
+
+    await h.svc.sendMessage(REPORT_ID, { body: "@losangeles please fix", actorId: OPERATOR_ID })
+
+    expect(h.send.persisted).toHaveLength(1)
+    expect(h.send.persisted[0]?.body).toBe("@losangeles please fix")
+    expect(h.send.forwarded).toHaveLength(1)
+    expect(h.send.forwarded[0]?.reportId).toBe(REPORT_ID)
+    expect(h.send.forwarded[0]?.actorUserId).toBe(OPERATOR_ID)
+    expect(h.send.forwarded[0]?.message.body).toBe("@losangeles please fix")
+  })
+})
+
+describe("POST /v1/admin/reports/:id/messages refuses a slur", () => {
+  const OPERATOR_EMAIL = "ops@civfix.org"
+  const MESSAGES_URL = `/v1/admin/reports/${REPORT_ID}/messages`
+
+  // requestId differs per request; the code and message are what the caller is told.
+  const errorOf = (res: { json(): unknown }) => {
+    const { code, message } = res.json() as { code: string; message: string }
+    return { code, message }
+  }
+
+  let app: FastifyInstance | undefined
+  afterEach(async () => {
+    await app?.close()
+    app = undefined
+  })
+
+  async function routeHarness() {
+    const stores = makeInMemoryStores()
+    const services = makeAuthServices({
+      stores,
+      cache: new InMemoryCacheClient(() => Date.now()),
+      mailer: new FakeMailer(),
+      oauthConfig: {},
+      verifier: new StubJwksVerifier(),
+      now: () => Date.now(),
+    })
+    const env = loadEnv({ NODE_ENV: "test", ADMIN_EMAILS: OPERATOR_EMAIL })
+    const server = await makeServer({ env, authServices: services })
+    app = server
+    const repo = new InMemoryAdminReportChatRepository()
+    repo.seedReport(REPORT_ID)
+    const send = sendHarness()
+    server.adminReportChatOverrides = {
+      repo,
+      chatRepo: {} as unknown as ChatRepository,
+      send: send.deps,
+    }
+    const tokenFor = async (email: string, role: "operator" | "citizen"): Promise<string> => {
+      const user = await stores.users.create(email, {
+        displayName: role,
+        role,
+        emailVerified: true,
+      })
+      return services.sessions.createSession(user.id, [role])
+    }
+    const post = (body: string, token?: string) =>
+      server.inject({
+        method: "POST",
+        url: MESSAGES_URL,
+        headers: {
+          "x-client": "mobile",
+          ...(token === undefined ? {} : { authorization: `Bearer ${token}` }),
+        },
+        payload: { body },
+      })
+    return { send, tokenFor, post }
+  }
+
+  it("T5: an operator gets 422 VALIDATION on body and nothing happens", async () => {
+    const h = await routeHarness()
+    const token = await h.tokenFor(OPERATOR_EMAIL, "operator")
+
+    const res = await h.post("you retard", token)
+
+    expect(res.statusCode).toBe(422)
+    expect(res.json()).toMatchObject({
+      ...SLUR_REJECTION,
+      message: "This contains language that isn't allowed.",
+    })
+    expect(h.send.persisted).toEqual([])
+    expect(h.send.broadcasts).toEqual([])
+    expect(h.send.forwarded).toEqual([])
+  })
+
+  it("T6: no session gets the same 401 with or without a slur", async () => {
+    const h = await routeHarness()
+
+    const slur = await h.post("you retard")
+    const clean = await h.post("Crew dispatched.")
+
+    expect(slur.statusCode).toBe(401)
+    expect(clean.statusCode).toBe(401)
+    expect(errorOf(slur)).toEqual(errorOf(clean))
+    expect(h.send.persisted).toEqual([])
+  })
+
+  it("T7: a citizen gets the same 403 with or without a slur", async () => {
+    const h = await routeHarness()
+    const token = await h.tokenFor("citizen@example.com", "citizen")
+
+    const slur = await h.post("you retard", token)
+    const clean = await h.post("Crew dispatched.", token)
+
+    expect(slur.statusCode).toBe(403)
+    expect(clean.statusCode).toBe(403)
+    expect(errorOf(slur)).toEqual(errorOf(clean))
+    expect(h.send.persisted).toEqual([])
   })
 })
 

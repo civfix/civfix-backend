@@ -54,7 +54,7 @@ const SPACED_OUT_RUN_RE = /\b[a-z0-9](?: [a-z0-9])+\b/gi
 
 const SPACE_RE = / /g
 
-const SLUR_MESSAGE = "This contains language that isn't allowed."
+export const SLUR_MESSAGE = "This contains language that isn't allowed."
 
 function deLeet(s: string): string {
   let out = ""
