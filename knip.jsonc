@@ -37,6 +37,8 @@
     },
     "services/media-worker": {
       "project": ["src/**/*.ts", "test/**/*.ts"],
+      // The download proxy test makes its throwaway self-signed TLS certificate with it.
+      "ignoreBinaries": ["openssl"],
       // tsdown inlines @civfix/api (alwaysBundle) but keeps these external, so the bundled api code
       // resolves them from the worker's own node_modules at runtime. knip reads the named externals from
       // tsdown.config.ts itself; these are the ones its /^@aws-sdk\// pattern covers.

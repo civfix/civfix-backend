@@ -160,6 +160,7 @@ let proxyDispatcher: import("undici").EnvHttpProxyAgent | undefined
 async function proxyAwareFetch(url: string, signal: AbortSignal): Promise<Response> {
   if (loadHttpsProxy() === null) return fetch(url, { signal })
   const { fetch: undiciFetch, EnvHttpProxyAgent } = await import("undici")
-  proxyDispatcher ??= new EnvHttpProxyAgent()
+  // undici 8 offers HTTP/2 by default; downloads keep the HTTP/1.1 they had on undici 7.
+  proxyDispatcher ??= new EnvHttpProxyAgent({ allowH2: false })
   return await undiciFetch(url, { signal, dispatcher: proxyDispatcher })
 }

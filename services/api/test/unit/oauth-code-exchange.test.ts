@@ -53,7 +53,7 @@ function html(status: number, body: string): ProviderAnswer {
 
 function stubTokenEndpoint(expectedUrl: string, answer: ProviderAnswer): TokenCall[] {
   const calls: TokenCall[] = []
-  vi.stubGlobal("fetch", async (input: RequestInfo | URL, init?: RequestInit) => {
+  vi.stubGlobal("fetch", async (input: string | URL | Request, init?: RequestInit) => {
     const request = new Request(input, init)
     if (request.url !== expectedUrl) throw new Error(`unexpected fetch to ${request.url}`)
     calls.push({

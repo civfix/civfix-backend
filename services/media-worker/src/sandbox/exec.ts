@@ -223,13 +223,12 @@ export async function runTool(
 
   let result: ToolResult
   const subprocess = execa(spawned.command, spawned.argv, execaOpts)
-  const leaderPid = typeof subprocess.pid === "number" ? subprocess.pid : undefined
+  // No pid means the spawn failed: there is no group to track or kill.
+  const leaderPid = subprocess.pid
   const cleanup = trackSandboxChild(leaderPid)
   let killTimer: ReturnType<typeof setTimeout> | undefined
   if (leaderPid !== undefined) {
-    if (typeof subprocess.once === "function") {
-      subprocess.once("exit", () => killProcessGroup(leaderPid))
-    }
+    subprocess.nodeChildProcess.once("exit", () => killProcessGroup(leaderPid))
     killTimer = setTimeout(() => killProcessGroup(leaderPid), opts.timeoutMs)
     killTimer.unref?.()
   }
@@ -262,7 +261,12 @@ export async function runTool(
   }
 }
 
-type ToolResult = Awaited<ReturnType<typeof execa>>
+// The fields runTool reads. execa 10's full result type does not accept its own resolved value under
+// exactOptionalPropertyTypes (`message` is optional on one side only).
+type ToolResult = Pick<
+  Awaited<ReturnType<typeof execa>>,
+  "stdout" | "stderr" | "exitCode" | "failed" | "timedOut"
+>
 
 function outputText(output: ToolResult["stderr"]): string {
   if (typeof output === "string") return output

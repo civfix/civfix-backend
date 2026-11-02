@@ -22,10 +22,10 @@ import { loadSandboxIdentity } from "../../src/config.js"
 function resolvedSubprocess(result: Record<string, unknown>, pid?: number): unknown {
   const promise = Promise.resolve(result) as Promise<unknown> & {
     pid?: number
-    once?: (event: string, listener: () => void) => void
+    nodeChildProcess?: { once: (event: string, listener: () => void) => void }
   }
   if (pid !== undefined) promise.pid = pid
-  promise.once = () => {}
+  promise.nodeChildProcess = { once: () => {} }
   return promise
 }
 
