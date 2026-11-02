@@ -2412,10 +2412,10 @@ SELECT g.id FROM cleanup_guests g WHERE g.cleanup_id = $1 AND g.id > $2 AND g.ca
 
 exports[`sql transcripts > makeDrizzleBroadcastRepository.applyDeliveryOutcomes 1`] = `
 "-- empty
-UPDATE broadcast_deliveries d SET status = t.status, suppression_reason = t.suppression_reason, failure_kind = t.failure_kind, provider_message_id = t.provider_message_id, sent_at = t.sent_at, updated_at = now() FROM unnest( $1::uuid[], $2::text[], $3::text[], $4::text[], $5::text[], $6::timestamptz[] ) AS t(id, status, suppression_reason, failure_kind, provider_message_id, sent_at) WHERE d.id = t.id -- [["id-1"],["sent"],["banned"],["permanent"],["providerMessageId-1"],["2026-03-04T05:06:07.000Z"]]
+UPDATE broadcast_deliveries d SET status = t.status, suppression_reason = t.suppression_reason, failure_kind = t.failure_kind, provider_message_id = t.provider_message_id, sent_at = t.sent_at, updated_at = now() FROM unnest( $1::uuid[], $2::text[], $3::text[], $4::text[], $5::text[], $6::timestamptz[] ) AS t(id, status, suppression_reason, failure_kind, provider_message_id, sent_at) WHERE d.id = t.id -- [["id-1"],["sent"],["banned"],["unknown"],["providerMessageId-1"],["2026-03-04T05:06:07.000Z"]]
 => undefined
 -- row
-UPDATE broadcast_deliveries d SET status = t.status, suppression_reason = t.suppression_reason, failure_kind = t.failure_kind, provider_message_id = t.provider_message_id, sent_at = t.sent_at, updated_at = now() FROM unnest( $1::uuid[], $2::text[], $3::text[], $4::text[], $5::text[], $6::timestamptz[] ) AS t(id, status, suppression_reason, failure_kind, provider_message_id, sent_at) WHERE d.id = t.id -- [["id-1"],["sent"],["banned"],["permanent"],["providerMessageId-1"],["2026-03-04T05:06:07.000Z"]]
+UPDATE broadcast_deliveries d SET status = t.status, suppression_reason = t.suppression_reason, failure_kind = t.failure_kind, provider_message_id = t.provider_message_id, sent_at = t.sent_at, updated_at = now() FROM unnest( $1::uuid[], $2::text[], $3::text[], $4::text[], $5::text[], $6::timestamptz[] ) AS t(id, status, suppression_reason, failure_kind, provider_message_id, sent_at) WHERE d.id = t.id -- [["id-1"],["sent"],["banned"],["unknown"],["providerMessageId-1"],["2026-03-04T05:06:07.000Z"]]
 => undefined"
 `;
 
@@ -6792,6 +6792,15 @@ INSERT INTO push_tokens (user_id, platform, token, device_id) VALUES ($1, $2, $3
 INSERT INTO push_tokens (user_id, platform, token, device_id) VALUES ($1, $2, $3, $4) ON CONFLICT (platform, token) DO UPDATE SET user_id = EXCLUDED.user_id, device_id = EXCLUDED.device_id, revoked_at = NULL, created_at = now() WHERE push_tokens.user_id = EXCLUDED.user_id OR push_tokens.revoked_at IS NOT NULL RETURNING id -- ["userId-1","ios","token-1","deviceId-1"]
 UPDATE push_tokens SET revoked_at = now() WHERE user_id = $1 AND revoked_at IS NULL AND id NOT IN ( SELECT id FROM push_tokens WHERE user_id = $2 AND revoked_at IS NULL ORDER BY created_at DESC, id DESC LIMIT $3 ) -- ["userId-1","userId-1",10]
 => "stored""
+`;
+
+exports[`sql transcripts > makeDrizzleNotificationRepository.usersNotifiedSince 1`] = `
+"-- empty
+SELECT DISTINCT user_id FROM notifications WHERE user_id = ANY($1::uuid[]) AND type = $2 AND link = $3 AND created_at > $4 -- [["userId-1"],"system","link-1","2026-03-04T05:06:07.000Z"]
+=> []
+-- row
+SELECT DISTINCT user_id FROM notifications WHERE user_id = ANY($1::uuid[]) AND type = $2 AND link = $3 AND created_at > $4 -- [["userId-1"],"system","link-1","2026-03-04T05:06:07.000Z"]
+=> ["user_id-row"]"
 `;
 
 exports[`sql transcripts > makeDrizzleNotificationSettingsRepository.disableEmail 1`] = `

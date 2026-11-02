@@ -3968,7 +3968,7 @@ export const cases: TranscriptCase[] = [
           id: "id-1",
           status: "sent",
           suppressionReason: "banned",
-          failureKind: "permanent",
+          failureKind: "unknown",
           providerMessageId: "providerMessageId-1",
           sentAt: new Date("2026-03-04T05:06:07.000Z"),
         },
@@ -7489,6 +7489,16 @@ export const cases: TranscriptCase[] = [
         platform: "ios",
         token: "token-1",
         deviceId: "deviceId-1",
+      }),
+  },
+  {
+    key: "makeDrizzleNotificationRepository.usersNotifiedSince",
+    run: async (sql: any) =>
+      (m106 as any).makeDrizzleNotificationRepository(sql).usersNotifiedSince({
+        userIds: ["userId-1"],
+        type: "system",
+        link: "link-1",
+        since: new Date("2026-03-04T05:06:07.000Z"),
       }),
   },
   {

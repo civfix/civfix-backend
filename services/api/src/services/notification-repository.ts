@@ -79,6 +79,14 @@ export interface NotificationRepository {
 
   deleteNotification(userId: string, id: string): Promise<boolean>
 
+  /** Which of these users already have a notification of this type and link since the given time. */
+  usersNotifiedSince(args: {
+    userIds: readonly string[]
+    type: NotificationType
+    link: string
+    since: Date
+  }): Promise<string[]>
+
   insertUnlessRecentDuplicate(
     args: NewNotificationArgs & { since: Date },
   ): Promise<{ record: NotificationRecord; deduped: boolean }>

@@ -55,7 +55,7 @@ export const es: Partial<Record<MessageKey, string>> = {
   "role.coordinator": "coordinador",
   "role.staff": "personal de apoyo",
 
-  "notification.cleanup_cancelled.title": "Evento cancelado",
+  "notification.cleanup_cancelled.title": "{{title}} fue cancelado",
   "notification.cleanup_cancelled.body": "Este evento ha sido cancelado por el anfitrión.",
   "notification.cleanup_cancelled.body_reason":
     "Este evento ha sido cancelado por el anfitrión. Motivo: {{reason}}",
