@@ -26,6 +26,8 @@ export interface ErrorReportingOptions {
   dsn?: string
   environment?: string
   release?: string
+  // Tests pass a recording transport, so the exact envelope the SDK would send can be asserted.
+  transport?: SentryNode.NodeOptions["transport"]
 }
 
 const REDACTED = "[redacted]"
@@ -209,6 +211,7 @@ export async function initErrorReporting(opts: ErrorReportingOptions): Promise<b
       dsn: opts.dsn,
       environment: opts.environment,
       release: opts.release,
+      ...(opts.transport ? { transport: opts.transport } : {}),
       tracesSampleRate: TRACES_SAMPLE_RATE,
       sendDefaultPii: false,
       beforeSend: (event) => scrubEvent(event as unknown as SentryEventLike) as never,
