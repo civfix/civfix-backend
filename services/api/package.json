@@ -96,7 +96,7 @@
     "nodemailer": "^10.2.1",
     "oslo": "^1.2.1",
     "pdfkit": "^0.19.1",
-    "pg-boss": "^10.4.2",
+    "pg-boss": "^12.38.0",
     "postgres": "^3.4.9",
     "qrcode-generator": "^2.0.4",
     "tldts": "^7.4.16",

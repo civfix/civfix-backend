@@ -1,13 +1,14 @@
+export const MEDIA_CHECKS_JOB = "media.checks"
+export const ANON_HOLD_RELEASE_JOB = "anon.hold.release"
+
 // The schema pg-boss 12 runs in. pg-boss 12 cannot migrate the pg-boss 10 `pgboss` schema in place, so
 // it starts on a new one and db/pgboss-move-to-v12.ts carries the waiting jobs over.
 export const PGBOSS_SCHEMA = "pgboss_v12"
 
-export const MEDIA_CHECKS_JOB = "media.checks"
-export const ANON_HOLD_RELEASE_JOB = "anon.hold.release"
-
-// The API and the media worker both create media.checks and anon.hold.release with this policy. pg-boss
-// keeps the last createQueue/updateQueue policy, so a mismatch silently breaks singletonKey dedup on
-// those queues.
+// The API and the media worker both create media.checks and anon.hold.release with this policy.
+// pg-boss's createQueue leaves an existing queue as it is and updateQueue cannot change a policy, so
+// whichever creator runs first fixes it for good: a mismatch would break singletonKey dedup on those
+// queues depending on boot order.
 export const SHARED_QUEUE_POLICY = "short"
 
 export const JURISDICTION_DISCOVERY_JOB = "jurisdiction.discovery"
@@ -39,7 +40,7 @@ export const MEDIA_STUCK_SWEEP_JOB = "media.stuck.sweep"
 export const MEDIA_UPLOAD_REAP_JOB = "media.upload.reap"
 
 // City filing (DECISIONS §64). The API creates all six queues; the filer creates the ones it touches with
-// the same options, since pg-boss keeps whichever createQueue/updateQueue ran last.
+// the same options, since the first creator fixes the policy and the last updateQueue sets the retries.
 export const FILING_EMAIL_JOB = "filing.email"
 export const FILING_RUN_JOB = "filing.run"
 export const FILING_RESULT_JOB = "filing.result"

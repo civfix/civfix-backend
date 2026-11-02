@@ -354,7 +354,7 @@ Operator notes:
 
 ## 3. media-worker `stop_grace_period` (civfix-infra, different repo)
 
-On SIGTERM the worker stops fetching jobs at once and gives the `media.checks` jobs in flight 30s (`IN_FLIGHT_GRACE_MS` in `services/media-worker/src/worker-jobs.ts`). A job still running after that is interrupted: its decoders are killed and it is handed back to the queue as a fresh job, so it runs again after the restart without spending a retry, and its upload is untouched. `boss.stop({ graceful: true, wait: true, timeout })` gets `STOP_GRACE_MS` = **45s**, which leaves 15s for a job that was already writing its result. The graceful stop no longer depends on `MEDIA_JOB_TIMEOUT_MS`.
+On SIGTERM the worker stops fetching jobs at once and gives the `media.checks` jobs in flight 30s (`IN_FLIGHT_GRACE_MS` in `services/media-worker/src/worker-jobs.ts`). A job still running after that is interrupted: its decoders are killed and it is handed back to the queue as a fresh job, so it runs again after the restart without spending a retry, and its upload is untouched. `boss.stop({ graceful: true, timeout })` gets `STOP_GRACE_MS` = **45s**, which leaves 15s for a job that was already writing its result. The graceful stop no longer depends on `MEDIA_JOB_TIMEOUT_MS`.
 
 **The container's `stop_grace_period` in the civfix-infra compose file must exceed 45s.** Docker's default is 10s, so without it the runtime SIGKILLs the process before an interrupted job is handed back, and pg-boss later fails that job, costing it one retry. The compose sets 200s.
 
@@ -415,3 +415,23 @@ Re-running the migration file is the repair: its backfill `UPDATE` is guarded by
 
 Verified against a throwaway `postgis/postgis:16-3.4` with all 60 migration files (`0000`–`0059`) applied (37 assertions, all green): the backfill reproduces the aggregate including both tombstone directions; a second and third apply of the file rewrite nothing; `addFollow` twice moves each counter exactly once and `removeFollow` twice moves it back; a follow of a tombstoned user is refused with the counters untouched; a reciprocal follow-back and a repo-level self-follow (the case a two-statement bump would get wrong) both stay consistent; and every read path above (plus the extracted literal text of `loadAuthors`) returns the maintained values with zero drift at the end. The Docker-gated `test/integration/social-notifications-pg.test.ts` "follow/unfollow: idempotent, created flag, follower counts" case is the standing regression guard.
 
+## 7. Moving waiting jobs to pg-boss 12 (`pgboss_v12`)
+
+The API, the media worker and the city filer run pg-boss 12 on a new schema, `pgboss_v12`. pg-boss 12 cannot migrate pg-boss 10's `pgboss` schema in place, so the new images start on an empty one and create their queues at boot. During the blue/green switch the old API color still enqueues into `pgboss` until it stops, and nothing on pg-boss 12 reads those jobs. `dist/db/pgboss-move-to-v12.js`, in the API image, copies them over.
+
+**When:** once per environment, after its switch is complete, so no process is still on pg-boss 10: on staging after the deploy that lands the pg-boss 12 change, on production after the release has flipped both colors. The new API must have booted once first, so the queues exist in `pgboss_v12`.
+
+```sh
+# on the box, in the api container (it carries DATABASE_URL)
+node dist/db/pgboss-move-to-v12.js            # dry run: prints what it would move, writes nothing
+node dist/db/pgboss-move-to-v12.js --apply    # moves them
+```
+
+It prints one line per queue: `<queue>: moved <n>, skipped (already in pgboss_v12) <n>, skipped (no queue in pgboss_v12) <n>`.
+
+- Only `created` and `retry` jobs move. In one transaction each is copied into `pgboss_v12.job` and its old row is marked `cancelled`, so the script is safe to run again: a second run moves nothing.
+- A job already waiting in `pgboss_v12` (the same id, or the same `singletonKey` on a `short` queue) is skipped, counted and its old row cancelled too.
+- A job whose queue does not exist in `pgboss_v12` is counted and left in `pgboss` untouched. A count there means a queue nothing creates any more, or an API that never booted on pg-boss 12: look before re-running.
+- With no `pgboss` schema it says so and does nothing.
+
+**The old schema stays.** The move is one-way (pg-boss cannot go back below schema 25), and `pgboss` is left in place until a founder drops it, within 30 days of the production release.
