@@ -10,9 +10,8 @@ name: Build release images
 # deploy-staging.yml calls it on every push to main. Giving it its own `push` trigger would race that
 # caller and build every commit twice.
 #
-# NATIVE ARM64, NOT QEMU. Both VPSes are Oracle Ampere (arm64) boxes. `ubuntu-24.04-arm` is a GitHub
-# larger runner (available on the Team plan, billed per-minute rather than from the free allotment) and
-# builds ~5-10x faster than cross-building an image with this much native compilation in it: the
+# NATIVE ARM64, NOT QEMU. Both VPSes are Oracle Ampere (arm64) boxes. `ubuntu-24.04-arm` is a standard
+# runner, free on this public repo, and builds ~5-10x faster than cross-building an image with this much native compilation in it: the
 # media-worker alone compiles ffmpeg from source and installs sharp/libvips bindings. `platform` is an input so
 # a future amd64 box is a one-line change at the call site rather than a rewrite.
 #
@@ -123,7 +122,7 @@ jobs:
       #
       # The gha layer cache stays although these are release images: a run on main restores only caches
       # written on main, and the only writer there is this workflow building main's own commits. No PR
-      # or merge-queue run can reach that scope.
+      # or merge-queue run can write to that scope (ci.yml's smoke job reads it, never writes).
       #
       # PUSHED BY DIGEST, UNTAGGED. Nothing reads an image until the `publish` job tags it, and that job
       # only runs once both images passed the smoke test and the scan, so an image that fails either
