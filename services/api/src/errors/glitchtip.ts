@@ -112,6 +112,27 @@ const GLITCHTIP_FLUSH_TIMEOUT_MS = 2000
 // Tracing would ship request spans (URLs, timings) to the error tracker; only errors are reported.
 const TRACES_SAMPLE_RATE = 0
 
+// Sentry 11 collects request headers, cookies, bodies, query strings, IP addresses and local variables by
+// default; none of it has ever been sent (D12), so every kind of collection is off.
+const DATA_COLLECTION: NonNullable<SentryNode.NodeOptions["dataCollection"]> = {
+  userInfo: false,
+  cookies: false,
+  httpHeaders: false,
+  httpBodies: [],
+  urlQueryParams: false,
+  databaseQueryData: false,
+  queues: false,
+  stackFrameVariables: false,
+  graphQL: { document: false, variables: false },
+  genAI: { inputs: false, outputs: false },
+  mcp: { inputs: false, outputs: false },
+}
+
+// Sentry's Fastify integration captures thrown errors on its own: it reads an AppError (httpStatus, not
+// statusCode) as a 500, so a thrown 404 is reported, and dedupe then drops our handler's capture, the one
+// carrying the requestId. The error handler is the only place request errors are reported.
+const FASTIFY_INTEGRATION = "Fastify"
+
 // Network and query breadcrumbs carry URLs and SQL text, so they are dropped whole.
 const DROPPED_BREADCRUMB_CATEGORIES: ReadonlySet<string> = new Set(["http", "fetch", "xhr"])
 const QUERY_BREADCRUMB_MARKER = "query"
@@ -213,7 +234,8 @@ export async function initErrorReporting(opts: ErrorReportingOptions): Promise<b
       release: opts.release,
       ...(opts.transport ? { transport: opts.transport } : {}),
       tracesSampleRate: TRACES_SAMPLE_RATE,
-      sendDefaultPii: false,
+      dataCollection: DATA_COLLECTION,
+      integrations: (defaults) => defaults.filter((i) => i.name !== FASTIFY_INTEGRATION),
       beforeSend: (event) => scrubEvent(event as unknown as SentryEventLike) as never,
       beforeBreadcrumb: (crumb) =>
         scrubBreadcrumb(crumb as unknown as SentryBreadcrumbLike) as never,

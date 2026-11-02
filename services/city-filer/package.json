@@ -24,7 +24,7 @@
     "@aws-sdk/s3-request-presigner": "^3.1147.0",
     "@civfix/api": "workspace:*",
     "@civfix/contract": "^0.71.1",
-    "@sentry/node": "^10.76.1",
+    "@sentry/node": "^11.10.0",
     "@smithy/node-http-handler": "4.7.5",
     "drizzle-orm": "^0.45.3",
     "https-proxy-agent": "7.0.6",
