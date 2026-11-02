@@ -42,6 +42,9 @@ export const KIND_NOTIFICATION_TYPE: Record<BroadcastKind, NotificationType> = {
   announcement: "event_broadcast",
 }
 
+// Wide enough for a broadcast the stale sweep resumes days late; an event is only cancelled once.
+const BELL_LOOKBACK_MS = 7 * 24 * 60 * 60 * 1000
+
 export interface BroadcastInAppSenderDeps {
   repo: BroadcastRepository
   config: Pick<BroadcastConfig, "linkAllowedHosts" | "webBaseUrl">
@@ -101,6 +104,31 @@ export function makeBroadcastInAppSender(deps: BroadcastInAppSenderDeps) {
       critical: CRITICAL_BROADCAST_KINDS.has(record.kind),
       allowedLinkHosts: config.linkAllowedHosts,
     })
+  }
+
+  // A cancellation also rings a bell for the event's members, which still reaches them when host messaging
+  // is killed or they muted the event. This broadcast then covers only the people that bell missed, such as
+  // ticket holders who left the member list, so each person hears once. A failed check risks a duplicate
+  // notice rather than none.
+  async function dropBellAlreadyRung(
+    record: BroadcastRecord,
+    deliverable: Map<string, RenderedBroadcast>,
+  ): Promise<void> {
+    if (record.kind !== "event_cancelled" || deliverable.size === 0) return
+    try {
+      const rung = await deps.notifications.usersNotifiedSince({
+        userIds: [...deliverable.keys()],
+        type: "cleanup_cancelled",
+        link: `/cleanups/${record.cleanupId}`,
+        since: new Date(deps.now().getTime() - BELL_LOOKBACK_MS),
+      })
+      for (const userId of rung) deliverable.delete(userId)
+    } catch (err) {
+      deps.logger?.error(
+        { err, broadcastId: record.id },
+        "broadcast: cancellation bell check failed",
+      )
+    }
   }
 
   async function fanOut(
@@ -199,6 +227,7 @@ export function makeBroadcastInAppSender(deps: BroadcastInAppSenderDeps) {
       outcomes.push({ id: claim.id, status: "sent", sentAt: at })
     }
 
+    await dropBellAlreadyRung(record, deliverable)
     if (deliverable.size === 0) return
     const { undelivered, fanOutError } = await fanOut(record, event, deliverable)
     if (undelivered.size === 0) return

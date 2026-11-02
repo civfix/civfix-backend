@@ -270,6 +270,25 @@ export class InMemoryNotificationRepository implements NotificationRepository {
   }
 
   // Find and insert run in one synchronous step, the single-threaded twin of the SQL key lock.
+  usersNotifiedSince(args: {
+    userIds: readonly string[]
+    type: NotificationType
+    link: string
+    since: Date
+  }): Promise<string[]> {
+    const wanted = new Set(args.userIds)
+    const found = this.notifications
+      .filter(
+        (n) =>
+          wanted.has(n.userId) &&
+          n.type === args.type &&
+          n.link === args.link &&
+          n.createdAt > args.since,
+      )
+      .map((n) => n.userId)
+    return Promise.resolve([...new Set(found)])
+  }
+
   insertUnlessRecentDuplicate(
     args: NewNotificationArgs & { since: Date },
   ): Promise<{ record: NotificationRecord; deduped: boolean }> {

@@ -86,11 +86,6 @@ function deliveryRowsFor(
     const chunkNo = Math.floor(index / chunkSize)
     for (const channel of record.channels) {
       if (recipient.kind === "guest" && channel !== "email" && channel !== "sms") continue
-      // Members hear of a cancellation in-app and by push from its bell, which also reaches them when host
-      // messaging is killed or they muted the event. Sending both here too would notify them twice.
-      if (recipient.kind === "member" && record.kind === "event_cancelled" && channel !== "email") {
-        continue
-      }
       rows.push({
         broadcastId: record.id,
         chunkNo,

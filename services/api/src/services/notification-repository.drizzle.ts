@@ -370,6 +370,18 @@ export function makeDrizzleNotificationRepository(sql: Sql): NotificationReposit
       await sql`DELETE FROM push_tokens WHERE user_id = ${userId}`
     },
 
+    async usersNotifiedSince({ userIds, type, link, since }) {
+      if (userIds.length === 0) return []
+      const rows = await sql<{ user_id: string }[]>`
+        SELECT DISTINCT user_id FROM notifications
+        WHERE user_id = ANY(${[...userIds]}::uuid[])
+          AND type = ${type}
+          AND link = ${link}
+          AND created_at > ${since}
+      `
+      return rows.map((r) => r.user_id)
+    },
+
     async insertUnlessRecentDuplicate(
       args: NewNotificationArgs & { since: Date },
     ): Promise<{ record: NotificationRecord; deduped: boolean }> {

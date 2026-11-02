@@ -384,7 +384,7 @@ describe("makeBroadcastPipeline", () => {
     expect((await repo.findById(created.id))?.failedCount).toBe(0)
   })
 
-  it("a cancellation broadcast only emails members, because the cancellation bell carries in-app and push", async () => {
+  it("a cancellation broadcast skips in-app and push for whoever its bell already reached", async () => {
     await n.set(B, "hostAnnouncements", OFF)
     await n.set(C, "hostAnnouncements", [true, true, true])
     repo.notificationSettings = n.settings
@@ -423,19 +423,23 @@ describe("makeBroadcastPipeline", () => {
       segment: { kind: "all_registered" },
       channels: ["inapp", "push", "email"],
     })
+    await n.service.createNotification(B, {
+      type: "cleanup_cancelled",
+      title: "Rang by the bell",
+      link: `/cleanups/${EVENT}`,
+      email: "never",
+    })
+    await flushNotificationDispatch()
     await repo.transition(created.id, ["draft"], "sending", { startedAt: NOW })
     expect((await pipeline.plan(created.id)).kind).toBe("planned")
     for (const chunkNo of chunks) await pipeline.runChunk(created.id, chunkNo)
     await flushNotificationDispatch()
 
-    expect(n.rows(C)).toEqual([])
-    expect(n.pushesTo(C)).toEqual([])
+    expect(n.rows(B).map((r) => r.title)).toEqual(["Rang by the bell"])
+    expect(n.pushesTo(B)).toHaveLength(1)
+    expect(mailTo(`${B}@example.test`)).toHaveLength(1)
+    expect(n.rows(C)).toHaveLength(1)
+    expect(n.pushesTo(C)).toHaveLength(1)
     expect(mailTo(`${C}@example.test`)).toHaveLength(1)
-    expect(
-      repo
-        .allDeliveries()
-        .filter((d) => d.userId === C)
-        .map((d) => d.channel),
-    ).toEqual(["email"])
   })
 })

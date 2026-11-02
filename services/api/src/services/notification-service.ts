@@ -155,6 +155,12 @@ export interface NotificationService extends SocialNotifier, PostNotifier {
     input: CreateNotificationInput,
   ): Promise<FanOutNotificationResult>
   clearByTypeAndLink(userId: string, type: NotificationType, link: string): Promise<string[]>
+  usersNotifiedSince(args: {
+    userIds: readonly string[]
+    type: NotificationType
+    link: string
+    since: Date
+  }): Promise<string[]>
 }
 
 type FallbackLane = "coalesce" | "dedupe"
@@ -791,6 +797,8 @@ export function makeNotificationService(deps: NotificationServiceDeps): Notifica
     ): Promise<FanOutNotificationResult> {
       return doCreateNotifications(userIds, input)
     },
+
+    usersNotifiedSince: (args) => deps.repo.usersNotifiedSince(args),
 
     async clearByTypeAndLink(
       userId: string,
