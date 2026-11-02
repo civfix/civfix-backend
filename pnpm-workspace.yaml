@@ -5,7 +5,7 @@ packages:
 # A dependency that declares it cannot run on our Node must stop the install, not print a warning CI ignores.
 engineStrict: true
 
-# `pnpm deploy` (both Dockerfiles build the runtime tree with it) requires injected workspace
+# pnpm 10's `pnpm deploy` (both Dockerfiles build the runtime tree with it) requires injected workspace
 # packages. dedupeInjectedDeps (on by default) keeps them symlinked in the workspace, so local installs
 # are unchanged.
 injectWorkspacePackages: true
