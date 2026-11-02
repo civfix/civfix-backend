@@ -269,7 +269,6 @@ export class InMemoryNotificationRepository implements NotificationRepository {
     return Promise.resolve()
   }
 
-  // Find and insert run in one synchronous step, the single-threaded twin of the SQL key lock.
   usersNotifiedSince(args: {
     userIds: readonly string[]
     type: NotificationType
@@ -289,6 +288,7 @@ export class InMemoryNotificationRepository implements NotificationRepository {
     return Promise.resolve([...new Set(found)])
   }
 
+  // Find and insert run in one synchronous step, the single-threaded twin of the SQL key lock.
   insertUnlessRecentDuplicate(
     args: NewNotificationArgs & { since: Date },
   ): Promise<{ record: NotificationRecord; deduped: boolean }> {
