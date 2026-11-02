@@ -19,11 +19,9 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  build:
-    name: lint / typecheck / build / test
+  static:
+    name: static checks + build
     runs-on: ubuntu-latest
-    env:
-      PLAYWRIGHT_BROWSERS_PATH: /ms-playwright
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -36,19 +34,11 @@ jobs:
       - name: Setup Node 22
         uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
-          node-version: 22
+          node-version-file: .nvmrc
           cache: pnpm
 
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
-
-      # The city-filer tests (services/city-filer) drive a real Chromium. This is the same
-      # playwright-core the kit and @playwright/mcp pin (epic civfix/issue-tracker#164 D9): change the three together.
-      - name: Install Playwright Chromium
-        run: |
-          sudo mkdir -p /ms-playwright
-          sudo chown "$(id -u):$(id -g)" /ms-playwright
-          npx --yes playwright-core@1.64.0-alpha-1790635538000 install --with-deps chromium
 
       # The backend depends ONLY on the framework-free @civfix/contract and @civfix/tokens; fail if it ever pulls in
       # frontend runtime deps (react / react-dom / react-native / react-native-web / @civfix/ui).
@@ -117,29 +107,170 @@ jobs:
       - name: Build
         run: pnpm build
 
-      # Unit and integration suites in one run per package, so the coverage printed here counts both;
-      # the thresholds are the unit-only baseline, which a run without Docker also has to meet.
-      - name: Test (unit + integration, coverage thresholds)
-        run: pnpm test:coverage
-
-  media-worker-sandbox:
-    name: media-worker image sandbox smoke
+  # The API suite is most of the wait, and each runner adds 4 free cores. Three shards keep each below
+  # the static job's own runtime.
+  api-tests:
+    name: api tests (${{ matrix.shard }}/3)
     runs-on: ubuntu-latest
-    timeout-minutes: 30
-    # Proves the decoder-sandbox contract on every build instead of at deploy time: the image's
-    # entrypoint must be able to drop root -> node while keeping ambient CAP_SETUID/CAP_SETGID under the
-    # PRODUCTION capability set (cap_drop ALL + cap_add SETUID,SETGID + no-new-privileges), and the
-    # worker's preflight must then prove that a child spawned through setpriv has the sandbox uid and NO
-    # capabilities, and that the image and video lanes actually run. None of this is reachable from a unit test.
-    # Independent of every other job: nothing else here needs Docker.
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3]
+    env:
+      CIVFIX_TEST_SHARD: ${{ matrix.shard }}
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
 
+      - name: Setup pnpm
+        uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+
+      - name: Setup Node 22
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version-file: .nvmrc
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build
+        run: pnpm build
+
+      - name: Test (unit + integration)
+        run: >-
+          pnpm --filter @civfix/api exec vitest run --shard="$CIVFIX_TEST_SHARD/3" --coverage
+          --reporter=default --reporter=blob --outputFile.blob="$RUNNER_TEMP/api-reports/shard-$CIVFIX_TEST_SHARD.json"
+
+      - name: Upload the shard's report
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: api-report-${{ matrix.shard }}
+          path: ${{ runner.temp }}/api-reports/
+          retention-days: 1
+          overwrite: true
+          if-no-files-found: error
+
+  # Coverage counts unit and integration together, so the thresholds apply to the combined report: no
+  # single shard could meet them.
+  api-coverage:
+    name: api coverage thresholds
+    runs-on: ubuntu-latest
+    needs: api-tests
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+
+      - name: Setup Node 22
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version-file: .nvmrc
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Download the shard reports
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: api-report-*
+          path: ${{ runner.temp }}/api-reports
+          merge-multiple: true
+
+      - name: Merge the reports and check the thresholds
+        run: pnpm --filter @civfix/api exec vitest run --merge-reports="$RUNNER_TEMP/api-reports" --coverage --reporter=dot
+
+  other-tests:
+    name: other package tests
+    runs-on: ubuntu-latest
+    env:
+      PLAYWRIGHT_BROWSERS_PATH: /ms-playwright
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+
+      - name: Setup Node 22
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version-file: .nvmrc
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      # The city-filer tests (services/city-filer) drive a real Chromium. This is the same
+      # playwright-core the kit and @playwright/mcp pin (epic civfix/issue-tracker#164 D9): change the three together.
+      - name: Install Playwright Chromium
+        run: |
+          sudo mkdir -p /ms-playwright
+          sudo chown "$(id -u):$(id -g)" /ms-playwright
+          npx --yes playwright-core@1.64.0-alpha-1790635538000 install --with-deps chromium
+
+      # Thresholds are per package, and each of these runs whole, so turbo checks them here.
+      - name: Test (unit + integration, coverage thresholds)
+        run: pnpm turbo run test:coverage --continue --filter='!@civfix/api'
+
+  # The ruleset requires this name, so the split jobs stay invisible to the merge queue. A check GitHub
+  # sees as skipped counts as passed, hence always() and the explicit test of every result.
+  required:
+    name: lint / typecheck / build / test
+    runs-on: ubuntu-latest
+    if: always()
+    needs: [static, api-tests, api-coverage, other-tests]
+    steps:
+      - name: Every job passed
+        env:
+          RESULTS: ${{ join(needs.*.result, ' ') }}
+        run: |
+          for result in $RESULTS; do
+            if [ "$result" != success ]; then
+              echo "::error::a required CI job finished as $result: $RESULTS"
+              exit 1
+            fi
+          done
+
+  media-worker-sandbox:
+    name: media-worker image sandbox smoke
+    timeout-minutes: 30
+    # Proves the decoder-sandbox contract on every build instead of at deploy time: the image's
+    # entrypoint must be able to drop root -> node while keeping ambient CAP_SETUID/CAP_SETGID under the
+    # PRODUCTION capability set (cap_drop ALL + cap_add SETUID,SETGID + no-new-privileges), and the
+    # worker's preflight must then prove that a child spawned through setpriv has the sandbox uid and NO
+    # capabilities, and that the image and video lanes actually run. None of this is reachable from a unit test.
+    # Runs on arm64 like the boxes, which also lets it reuse main's release layers from build-images.yml
+    # instead of compiling ffmpeg each time. Read-only: nothing a PR builds reaches that cache.
+    runs-on: ubuntu-24.04-arm
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+
       - name: Build the media-worker image
-        run: docker build -f services/media-worker/Dockerfile -t civfix/media-worker:ci .
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: .
+          file: services/media-worker/Dockerfile
+          platforms: linux/arm64
+          tags: civfix/media-worker:ci
+          load: true
+          provenance: false
+          sbom: false
+          cache-from: type=gha,scope=media-worker
 
       # The same gate build-images.yml holds the release images to, so a fixable HIGH or CRITICAL in the
       # base image or the worker's dependencies fails the PR rather than the post-merge release build.
