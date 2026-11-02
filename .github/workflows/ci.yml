@@ -107,8 +107,7 @@ jobs:
       - name: Build
         run: pnpm build
 
-  # The API suite is most of the wait, and each runner adds 4 free cores. Three shards keep each below
-  # the static job's own runtime.
+  # The API suite is most of the wait, and each runner adds 4 free cores.
   api-tests:
     name: api tests (${{ matrix.shard }}/3)
     runs-on: ubuntu-latest
