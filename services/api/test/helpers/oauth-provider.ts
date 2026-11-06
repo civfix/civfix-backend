@@ -1,4 +1,5 @@
 import { generateKeyPairSync } from "node:crypto"
+import type { LightMyRequestResponse } from "fastify"
 import { expect, vi } from "vitest"
 import type { OAuthConfig } from "../../src/auth/oauth.js"
 import type { AuthHarness } from "./auth.js"
@@ -94,6 +95,11 @@ export async function startHandshake(
   return { state, cookie: `civfix_oauth=${encodeURIComponent(handshake)}` }
 }
 
+export interface CallbackResult {
+  res: LightMyRequestResponse
+  calls: TokenCall[]
+}
+
 export interface CallbackOptions {
   /** The `redirect` sign-in starts with. */
   redirect?: string
@@ -106,7 +112,7 @@ export async function googleCallback(
   h: AuthHarness,
   answer: ProviderAnswer,
   opts: CallbackOptions = {},
-) {
+): Promise<CallbackResult> {
   const { state, cookie } = await startHandshake(h, "google", opts.redirect)
   const calls = stubTokenEndpoint(GOOGLE_TOKEN_URL, answer)
   const res = await h.app.inject({
@@ -122,7 +128,7 @@ export async function appleCallback(
   h: AuthHarness,
   answer: ProviderAnswer,
   opts: CallbackOptions = {},
-) {
+): Promise<CallbackResult> {
   const { state, cookie } = await startHandshake(h, "apple", opts.redirect)
   const calls = stubTokenEndpoint(APPLE_TOKEN_URL, answer)
   const res = await h.app.inject({
