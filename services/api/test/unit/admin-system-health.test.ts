@@ -98,7 +98,9 @@ describe("system health assembly", () => {
       },
       { err: new Error("probe timed out after 2000ms"), val: "Timed out" },
       {
-        err: Object.assign(new Error('relation "pgboss.job" does not exist'), { code: "42P01" }),
+        err: Object.assign(new Error('relation "pgboss_v12.job" does not exist'), {
+          code: "42P01",
+        }),
         val: "Not provisioned",
       },
     ]

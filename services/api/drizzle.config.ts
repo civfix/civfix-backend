@@ -12,7 +12,7 @@ import { defineConfig } from "drizzle-kit"
  *   2. drizzle-kit@0.28 loads the schema through esbuild-register (CJS), which does not rewrite the
  *      NodeNext-style ".js" import specifiers our schema uses (e.g. import ... from "./types.js").
  *      As a result `db:generate` may fail to resolve those relative imports on this toolchain. That
- *      is expected and harmless: tsc / tsup / tsx all resolve ".js" -> ".ts" correctly, the build,
+ *      is expected and harmless: tsc / tsdown / tsx all resolve ".js" -> ".ts" correctly, the build,
  *      typecheck, and tests are green, and the hand SQL remains the source of truth. If you want a
  *      working diff, run drizzle-kit against a transpiled copy of the schema; do not "fix" this by
  *      dropping the ".js" extensions, which NodeNext requires for the rest of the toolchain.

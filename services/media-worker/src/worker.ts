@@ -52,7 +52,8 @@ const MEDIA_CHECKS_RETRY_LIMIT = 5
 const UPLOAD_REAP_RETRY_LIMIT = 3
 const COMPOSE_STOP_GRACE_HEADROOM_SEC = 15
 
-const QUEUES: readonly [name: string, options: QueueOptions][] = [
+/** Every queue the worker creates, with the options it creates it with. */
+export const WORKER_QUEUES: readonly [name: string, options: QueueOptions][] = [
   [
     MEDIA_CHECKS_JOB,
     { policy: SHARED_QUEUE_POLICY, retryLimit: MEDIA_CHECKS_RETRY_LIMIT, retryBackoff: true },
@@ -93,7 +94,7 @@ async function shouldEnqueueHoldRelease(seams: WorkerSeams, reportId: string): P
   return isAnonHeldReport(await seams.anonHoldRepo.findReport(reportId))
 }
 
-function makeMediaChecksHandler(
+export function makeMediaChecksHandler(
   jobs: WorkerJobs,
   seams: WorkerSeams,
   stopSignal: AbortSignal,
@@ -308,7 +309,7 @@ async function registerHandlers(
   limits: WorkerLimits,
   stopSignal: AbortSignal,
 ): Promise<void> {
-  for (const [name, options] of QUEUES) {
+  for (const [name, options] of WORKER_QUEUES) {
     await jobs.createQueue(name, options)
   }
 

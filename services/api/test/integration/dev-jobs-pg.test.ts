@@ -1,6 +1,6 @@
 /**
- * The developer console's jobs reads against real pg-boss tables. pg-boss is started once to create its
- * schema and the queues, then stopped, so its maintenance never moves the rows these tests write.
+ * The developer console's jobs reads against real pg-boss 12 tables. pg-boss is started once to create
+ * its schema and the queues, then stopped, so its maintenance never moves the rows these tests write.
  */
 
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest"
@@ -10,7 +10,7 @@ import { withPg, type PgHarness } from "../helpers/pg.js"
 import { makeDrizzleDevJobsRepository } from "../../src/services/admin/dev-jobs-repository.drizzle.js"
 import type { DevJobsRepository } from "../../src/services/admin/dev-jobs-repository.js"
 import { makeDevJobsService } from "../../src/services/admin/dev-jobs-service.js"
-import { ALL_QUEUE_NAMES } from "../../src/lib/queue-names.js"
+import { ALL_QUEUE_NAMES, PGBOSS_SCHEMA } from "../../src/lib/queue-names.js"
 
 const pg = await withPg()
 
@@ -24,10 +24,13 @@ const QUEUES = [
   "data.export",
   "host.export",
 ]
+// Queues of their own for this slice's cases, so no real queue's rows can leak into them.
+const Q = "gh297.q"
+const R = "gh297.r"
 
 type State = "created" | "retry" | "active" | "completed" | "failed"
 
-describe.skipIf(!pg)("developer jobs reads (pg-boss)", () => {
+describe.skipIf(!pg)("developer jobs reads (pg-boss 12)", () => {
   let h: PgHarness
   let repo: DevJobsRepository
   let t0: Date
@@ -42,32 +45,13 @@ describe.skipIf(!pg)("developer jobs reads (pg-boss)", () => {
     at: { startAfter?: Date; completedOn?: Date | null } = {},
   ): Promise<void> {
     await h.sql`
-      INSERT INTO pgboss.job (name, state, start_after, started_on, completed_on)
+      INSERT INTO pgboss_v12.job (name, state, start_after, started_on, completed_on)
       VALUES (
         ${name},
-        ${state}::pgboss.job_state,
+        ${state}::pgboss_v12.job_state,
         ${at.startAfter ?? ago(HOUR)},
         ${state === "created" || state === "retry" ? null : ago(HOUR)},
         ${at.completedOn ?? null}
-      )
-    `
-  }
-
-  async function archived(
-    name: string,
-    state: State,
-    completedOn: Date,
-    archivedOn: Date,
-  ): Promise<void> {
-    await h.sql`
-      INSERT INTO pgboss.archive (
-        id, name, priority, state, retry_limit, retry_count, retry_delay, retry_backoff,
-        start_after, started_on, expire_in, created_on, completed_on, keep_until, archived_on
-      )
-      VALUES (
-        gen_random_uuid(), ${name}, 0, ${state}::pgboss.job_state, 0, 0, 0, false,
-        ${completedOn}, ${completedOn}, interval '15 minutes', ${completedOn}, ${completedOn},
-        ${archivedOn}, ${archivedOn}
       )
     `
   }
@@ -90,18 +74,17 @@ describe.skipIf(!pg)("developer jobs reads (pg-boss)", () => {
 
   beforeAll(async () => {
     h = pg as PgHarness
-    const { default: PgBoss } = await import("pg-boss")
-    const boss = new PgBoss({ connectionString: h.uri })
+    const { PgBoss } = await import("pg-boss")
+    const boss = new PgBoss({ connectionString: h.uri, schema: PGBOSS_SCHEMA })
     await boss.start()
-    for (const name of QUEUES) await boss.createQueue(name)
-    await boss.stop({ graceful: false, wait: true })
+    for (const name of [...QUEUES, Q, R]) await boss.createQueue(name)
+    await boss.stop({ graceful: false })
     repo = makeDrizzleDevJobsRepository(h.sql)
   })
 
   beforeEach(async () => {
-    await h.sql`DELETE FROM pgboss.job`
-    await h.sql`DELETE FROM pgboss.archive`
-    await h.sql`DELETE FROM pgboss.schedule`
+    await h.sql`DELETE FROM pgboss_v12.job`
+    await h.sql`DELETE FROM pgboss_v12.schedule`
     t0 = new Date()
   })
 
@@ -109,17 +92,12 @@ describe.skipIf(!pg)("developer jobs reads (pg-boss)", () => {
     await h?.teardown()
   })
 
-  it("T28: reads the job table, the 48-hour archive window and the schedule", async () => {
+  it("T28: reads the job table and the schedule", async () => {
     for (const state of ["created", "retry", "active"] as const) await job("inbound.sweep", state)
     await job("inbound.sweep", "failed", { completedOn: t0 })
+    await job("inbound.sweep", "completed", { completedOn: ago(47 * HOUR) })
     await job("inbound.sweep", "completed", { completedOn: ago(48 * HOUR) })
-    await archived("inbound.sweep", "failed", ago(47 * HOUR), ago(47 * HOUR))
-    await archived("inbound.sweep", "completed", ago(47 * HOUR), ago(47 * HOUR))
-    // Completions no real row could have (archived before they completed): only the window keeps
-    // them out.
-    await archived("inbound.sweep", "failed", ago(MINUTE), ago(49 * HOUR))
-    await archived("inbound.sweep", "completed", ago(MINUTE), ago(49 * HOUR))
-    await h.sql`INSERT INTO pgboss.schedule (name, cron) VALUES ('inbound.sweep', '*/5 * * * *')`
+    await h.sql`INSERT INTO pgboss_v12.schedule (name, cron) VALUES ('inbound.sweep', '*/5 * * * *')`
 
     const snapshot = await repo.snapshot(ALL_QUEUE_NAMES)
     expect(snapshot.stats).toEqual([
@@ -152,10 +130,10 @@ describe.skipIf(!pg)("developer jobs reads (pg-boss)", () => {
     }
   })
 
-  it("T28/T20: failedLast24h across the job table and the archive window, end to end", async () => {
+  it("T28/T20: failedLast24h, end to end", async () => {
     await job("outreach.digest", "failed", { completedOn: ago(2 * HOUR) })
-    await archived("outreach.digest", "failed", ago(20 * HOUR), ago(8 * HOUR))
-    await archived("outreach.digest", "failed", ago(30 * HOUR), ago(8 * HOUR))
+    await job("outreach.digest", "failed", { completedOn: ago(20 * HOUR) })
+    await job("outreach.digest", "failed", { completedOn: ago(30 * HOUR) })
     await job("outreach.digest", "failed", { completedOn: ago(25 * HOUR) })
     expect((await queue("outreach.digest")).failedLast24h).toBe(2)
   })
@@ -167,19 +145,19 @@ describe.skipIf(!pg)("developer jobs reads (pg-boss)", () => {
     await job("inbound.sweep", "active", { startAfter: ago(1000 * SECOND) })
     expect((await queue("inbound.sweep")).oldestPendingSeconds).toBe(300)
 
-    await h.sql`DELETE FROM pgboss.job WHERE state IN ('created', 'retry') AND start_after <= now()`
+    await h.sql`DELETE FROM pgboss_v12.job WHERE state IN ('created', 'retry') AND start_after <= now()`
     expect((await queue("inbound.sweep")).oldestPendingSeconds).toBe(0)
   })
 
   it("T28/T22: lastCompletedAt, end to end", async () => {
     await job("event.metrics.rollup", "completed", { completedOn: ago(2 * HOUR) })
-    await archived("event.metrics.rollup", "completed", ago(HOUR), ago(HOUR))
+    await job("event.metrics.rollup", "completed", { completedOn: ago(HOUR) })
     await job("event.metrics.rollup", "failed", { completedOn: ago(MINUTE) })
     expect((await queue("event.metrics.rollup")).lastCompletedAt).toBe(ago(HOUR).toISOString())
   })
 
   it("T28/T23: schedule, end to end", async () => {
-    await h.sql`INSERT INTO pgboss.schedule (name, cron) VALUES ('inbound.sweep', '*/5 * * * *')`
+    await h.sql`INSERT INTO pgboss_v12.schedule (name, cron) VALUES ('inbound.sweep', '*/5 * * * *')`
     expect((await queue("inbound.sweep")).schedule).toBe("*/5 * * * *")
     expect((await queue("data.export")).schedule).toBe(null)
   })
@@ -194,11 +172,84 @@ describe.skipIf(!pg)("developer jobs reads (pg-boss)", () => {
     })
   })
 
-  it("T29: a read gives up after the 2-second statement timeout", async () => {
+  it("GH297-T18: live counts, the last day's failures and the last completion from pgboss_v12.job", async () => {
+    await job(Q, "created", { startAfter: ago(10 * MINUTE) })
+    await job(Q, "retry", { startAfter: ago(5 * MINUTE) })
+    await job(Q, "active")
+    await job(Q, "failed", { completedOn: ago(HOUR) })
+    await job(Q, "failed", { completedOn: ago(25 * HOUR) })
+    await job(Q, "completed", { completedOn: ago(HOUR) })
+    await job(Q, "completed", { completedOn: ago(25 * HOUR) })
+
+    const { stats } = await repo.snapshot([Q])
+    expect(stats).toEqual([
+      {
+        name: Q,
+        created: 1,
+        retry: 1,
+        active: 1,
+        failed: 2,
+        failedLast24h: 1,
+        oldestDueAt: ago(10 * MINUTE),
+        lastCompletedAt: ago(HOUR),
+      },
+    ])
+  })
+
+  it("GH297-T19: a queue with only day-old finished jobs still reports its last completion", async () => {
+    await job(R, "completed", { completedOn: ago(25 * HOUR) })
+    await job(R, "failed", { completedOn: ago(25 * HOUR) })
+
+    const { stats } = await repo.snapshot([R])
+    expect(stats).toEqual([
+      {
+        name: R,
+        created: 0,
+        retry: 0,
+        active: 0,
+        failed: 1,
+        failedLast24h: 0,
+        oldestDueAt: null,
+        lastCompletedAt: ago(25 * HOUR),
+      },
+    ])
+  })
+
+  it("GH297-T20: each entry keeps the response keys, and schedules come from pgboss_v12.schedule", async () => {
+    await job(Q, "created")
+    await job(R, "completed", { completedOn: ago(HOUR) })
+    await h.sql`INSERT INTO pgboss_v12.schedule (name, cron) VALUES ('inbound.sweep', '*/5 * * * *')`
+
+    const snapshot = await repo.snapshot([Q, R, "inbound.sweep"])
+    expect(snapshot.stats).toHaveLength(2)
+    for (const entry of snapshot.stats) {
+      expect(Object.keys(entry).sort()).toEqual(
+        [
+          "name",
+          "created",
+          "retry",
+          "active",
+          "failed",
+          "failedLast24h",
+          "oldestDueAt",
+          "lastCompletedAt",
+        ].sort(),
+      )
+    }
+    expect(snapshot.schedules).toEqual([{ name: "inbound.sweep", cron: "*/5 * * * *" }])
+  })
+
+  it("GH297-T21: runState reads pgboss_v12.queue and pgboss_v12.job", async () => {
+    await job(Q, "created", { startAfter: ago(MINUTE) })
+    expect(await repo.runState(Q)).toEqual({ exists: true, waiting: true })
+    expect(await repo.runState("no.such.queue")).toEqual({ exists: false, waiting: false })
+  })
+
+  it("T29/GH297-T22: a read gives up after the 2-second statement timeout", async () => {
     const holder = await h.sql.reserve()
     try {
       await holder`BEGIN`
-      await holder`LOCK TABLE pgboss.job IN ACCESS EXCLUSIVE MODE`
+      await holder`LOCK TABLE pgboss_v12.job IN ACCESS EXCLUSIVE MODE`
       const started = Date.now()
       const error = await repo.snapshot(ALL_QUEUE_NAMES).then(
         () => null,
@@ -225,7 +276,7 @@ describe.skipIf(!pg)("developer jobs reads (pg-boss)", () => {
     await job("inbound.sweep", "created", { startAfter: ago(-HOUR) })
     expect(await repo.runState("inbound.sweep")).toEqual({ exists: true, waiting: true })
 
-    await h.sql`DELETE FROM pgboss.job`
+    await h.sql`DELETE FROM pgboss_v12.job`
     await job("inbound.sweep", "retry")
     expect(await repo.runState("inbound.sweep")).toEqual({ exists: true, waiting: true })
   })

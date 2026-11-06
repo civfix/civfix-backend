@@ -2,13 +2,14 @@
  * PgBossWorkerJobs against a STUBBED pg-boss (the real adapter, offline).
  *
  * Everything else in the suite runs on FakeWorkerJobs, whose `work()` just invokes handlers inline from
- * `enqueue()`. That cannot reach the piece of this class that actually carries risk: pg-boss v10 hands the
+ * `enqueue()`. That cannot reach the piece of this class that actually carries risk: pg-boss hands the
  * work callback a BATCH and treats the callback's outcome as a verdict on the WHOLE batch, so the adapter
  * completes/fails each job INDIVIDUALLY by id and resolves. Before that change, one job's retryable throw
  * re-delivered every clean sibling (burning its retry budget and duplicating its side effects), and before
  * the change to fail on ANY throw, an unexpected error silently marked the job COMPLETE and wedged the
- * asset. Neither had a test; both are pinned here, together with the queue-policy writes (whose omission
- * silently clobbers the API's `short` policy) and the DERIVED graceful-stop timeout.
+ * asset. Neither had a test; both are pinned here, together with the queue-policy writes (the first
+ * creator fixes a queue's policy, so the worker must pass the API's `short`) and the DERIVED graceful-stop
+ * timeout.
  *
  * The stub records calls only - it never mimics pg-boss semantics, so nothing here can pass by pretending.
  */
@@ -19,10 +20,10 @@ import type { JobHandler } from "@civfix/seams"
 
 /** The recorded surface of the stub (kept in a hoisted box so the vi.mock factory can reach it). */
 interface StubBoss {
-  connectionString: string
+  options: { connectionString?: string; schema?: string }
   events: string[]
   startCount: number
-  stopCalls: { graceful?: boolean; wait?: boolean; timeout?: number }[]
+  stopCalls: unknown[]
   createQueueCalls: { name: string; policy: Record<string, unknown> }[]
   updateQueueCalls: { name: string; policy: Record<string, unknown> }[]
   sendCalls: { name: string; data: unknown; opts: Record<string, unknown> }[]
@@ -45,7 +46,7 @@ const boxed = vi.hoisted(() => ({ instances: [] as unknown[] }))
 
 vi.mock("pg-boss", () => {
   class StubPgBoss {
-    connectionString: string
+    options: unknown
     events: string[] = []
     startCount = 0
     stopCalls: unknown[] = []
@@ -62,8 +63,8 @@ vi.mock("pg-boss", () => {
     rejectFailFor: string | null = null
     private handler: ((jobs: unknown[]) => Promise<void>) | undefined
 
-    constructor(connectionString: string) {
-      this.connectionString = connectionString
+    constructor(options: unknown) {
+      this.options = options
       boxed.instances.push(this)
     }
     on(event: string): this {
@@ -120,7 +121,7 @@ vi.mock("pg-boss", () => {
       return this.handler(jobs)
     }
   }
-  return { default: StubPgBoss }
+  return { PgBoss: StubPgBoss }
 })
 
 const { JobInterruptedError, PgBossWorkerJobs, makeJobs } = await import("../../src/worker-jobs.js")
@@ -145,7 +146,7 @@ describe("PgBossWorkerJobs lifecycle", () => {
     await jobs.start()
 
     expect(boxed.instances).toHaveLength(1)
-    expect(lastBoss().connectionString).toBe("postgres://stub/civfix")
+    expect(lastBoss().options.connectionString).toBe("postgres://stub/civfix")
     expect(lastBoss().events).toEqual(["error"])
     expect(lastBoss().startCount).toBe(1)
   })
@@ -159,14 +160,25 @@ describe("PgBossWorkerJobs lifecycle", () => {
     expect(boxed.instances).toHaveLength(0)
   })
 
+  it("T5: start() constructs pg-boss on the pgboss_v12 schema with the connection string", async () => {
+    const jobs = new PgBossWorkerJobs("postgres://stub/civfix")
+    await jobs.start()
+
+    expect(lastBoss().options).toMatchObject({
+      connectionString: "postgres://stub/civfix",
+      schema: "pgboss_v12",
+    })
+  })
+
   // 30s for the jobs in flight, then 15s for an interrupted job to hand itself back: well inside the
   // compose stop_grace_period of 200s, whatever the job budget is.
-  it("stop() waits 45s for the jobs in flight, then forgets the boss", async () => {
+  it("T7: stop() waits 45s for the jobs in flight, then forgets the boss", async () => {
     const jobs = new PgBossWorkerJobs("postgres://stub/civfix")
     await jobs.start()
     await jobs.stop()
 
-    expect(lastBoss().stopCalls).toEqual([{ graceful: true, wait: true, timeout: 45_000 }])
+    expect(lastBoss().stopCalls).toHaveLength(1)
+    expect(lastBoss().stopCalls[0]).toStrictEqual({ graceful: true, timeout: 45_000 })
     // A second stop is a no-op (the handle dropped the boss), not a second pg-boss stop.
     await jobs.stop()
     expect(lastBoss().stopCalls).toHaveLength(1)
@@ -180,16 +192,26 @@ describe("PgBossWorkerJobs lifecycle", () => {
 })
 
 describe("PgBossWorkerJobs queue policy", () => {
-  it("createQueue writes the policy AND re-applies it via updateQueue (existing queues are not left stale)", async () => {
+  it("T6: createQueue sets the policy once and re-applies only the retries via updateQueue", async () => {
     const jobs = new PgBossWorkerJobs("postgres://stub/civfix")
     await jobs.start()
     await jobs.createQueue(QUEUE, { policy: "short", retryLimit: 5, retryBackoff: true })
+    await jobs.createQueue("orphan.sweep", { policy: "singleton" })
 
-    const expected = { name: QUEUE, retryLimit: 5, retryBackoff: true, policy: "short" }
-    expect(lastBoss().createQueueCalls).toEqual([{ name: QUEUE, policy: expected }])
-    // updateQueue is what actually migrates a queue created earlier with a different policy - and it must
-    // carry `policy`, because pg-boss rewrites an omitted policy back to "standard" (clobbering the API's).
-    expect(lastBoss().updateQueueCalls).toEqual([{ name: QUEUE, policy: expected }])
+    const [checks, sweep] = lastBoss().createQueueCalls
+    expect(checks).toMatchObject({
+      name: QUEUE,
+      policy: { policy: "short", retryLimit: 5, retryBackoff: true },
+    })
+    expect(sweep).toMatchObject({ name: "orphan.sweep", policy: { policy: "singleton" } })
+    // updateQueue is what brings a queue created earlier to these retries; pg-boss refuses a policy
+    // there, and the first creator's policy is final anyway.
+    expect(lastBoss().updateQueueCalls).toHaveLength(1)
+    expect(lastBoss().updateQueueCalls[0]!.name).toBe(QUEUE)
+    expect(lastBoss().updateQueueCalls[0]!.policy).toStrictEqual({
+      retryLimit: 5,
+      retryBackoff: true,
+    })
   })
 
   it("createQueue with NO options does not issue an updateQueue (nothing to migrate)", async () => {
@@ -197,20 +219,8 @@ describe("PgBossWorkerJobs queue policy", () => {
     await jobs.start()
     await jobs.createQueue("orphan.sweep")
 
-    expect(lastBoss().createQueueCalls).toEqual([
-      { name: "orphan.sweep", policy: { name: "orphan.sweep" } },
-    ])
+    expect(lastBoss().createQueueCalls).toEqual([{ name: "orphan.sweep", policy: {} }])
     expect(lastBoss().updateQueueCalls).toEqual([])
-  })
-
-  it("a policy-only queue still gets the updateQueue write", async () => {
-    const jobs = new PgBossWorkerJobs("postgres://stub/civfix")
-    await jobs.start()
-    await jobs.createQueue("anon.hold.release", { policy: "short" })
-
-    expect(lastBoss().updateQueueCalls).toEqual([
-      { name: "anon.hold.release", policy: { name: "anon.hold.release", policy: "short" } },
-    ])
   })
 })
 
@@ -497,7 +507,7 @@ describe("makeJobs seam selection", () => {
     await handle.start()
     await handle.stop()
 
-    expect(lastBoss().connectionString).toBe("postgres://stub/civfix")
-    expect(lastBoss().stopCalls).toEqual([{ graceful: true, wait: true, timeout: 45_000 }])
+    expect(lastBoss().options.connectionString).toBe("postgres://stub/civfix")
+    expect(lastBoss().stopCalls).toEqual([{ graceful: true, timeout: 45_000 }])
   })
 })

@@ -9,9 +9,10 @@ import {
   SignJWT,
   exportJWK,
   generateKeyPair,
+  importJWK,
   createLocalJWKSet,
+  type CryptoKey,
   type JWTVerifyGetKey,
-  type KeyLike,
 } from "jose"
 import { createAccessVerifier } from "../../src/auth/cf-access.js"
 
@@ -20,10 +21,10 @@ const AUD = "access-app-aud-tag"
 const KID = "test-key-1"
 
 async function setup(): Promise<{
-  privateKey: KeyLike
+  privateKey: CryptoKey
   verify: ReturnType<typeof createAccessVerifier>
 }> {
-  const { publicKey, privateKey } = await generateKeyPair("RS256")
+  const { publicKey, privateKey } = await generateKeyPair("RS256", { extractable: true })
   const jwk = await exportJWK(publicKey)
   jwk.kid = KID
   jwk.alg = "RS256"
@@ -39,7 +40,11 @@ interface SignOpts {
   expEpoch?: number
 }
 
-function sign(key: KeyLike, claims: Record<string, unknown>, opts: SignOpts = {}): Promise<string> {
+function sign(
+  key: CryptoKey,
+  claims: Record<string, unknown>,
+  opts: SignOpts = {},
+): Promise<string> {
   const nowSec = Math.floor(Date.now() / 1000)
   return new SignJWT(claims)
     .setProtectedHeader({ alg: opts.alg ?? "RS256", kid: KID })
@@ -100,8 +105,10 @@ describe("createAccessVerifier", () => {
 
   it("rejects a non-RS256 algorithm (alg-confusion defense)", async () => {
     const { privateKey, verify } = await setup()
-    // The same RSA key can sign PS256; the verifier pins RS256, so a PS256 token must be refused.
-    const token = await sign(privateKey, { email: "ops@civfix.org" }, { alg: "PS256" })
+    // The same RSA key can sign PS256; the verifier pins RS256, so a PS256 token must be refused. A WebCrypto
+    // key is bound to one algorithm, so the key material is re-imported for PS256.
+    const pssKey = (await importJWK(await exportJWK(privateKey), "PS256")) as CryptoKey
+    const token = await sign(pssKey, { email: "ops@civfix.org" }, { alg: "PS256" })
     await expect(verify(token)).rejects.toThrow()
   })
 })

@@ -57,7 +57,7 @@ Verified static, not variable, at vendoring time (fontkit): each file reports ze
 **Why `.otf` and not `.ttf`.** Noto Sans KR has no static TTF anywhere upstream: `google/fonts` ships only
 `NotoSansKR[wght].ttf` (variable, 10.4 MB) and `notofonts/noto-cjk` ships statics as CFF-flavoured OpenType
 (`Sans/SubsetOTF/KR/*.otf`). Instancing the variable font would need `fonttools varLib.instancer`, i.e.
-Python, which the `node:22-bookworm-slim` runtime image does not have, and instancing at build time is
+Python, which the `node:24-trixie-slim` runtime image does not have, and instancing at build time is
 forbidden for exactly that reason. pdfkit/fontkit embed and subset CFF OpenType as happily as TrueType
 (`Type0` / `CIDFontType0`), which the Hangul fixture in `test/unit/certificate-pdf.test.ts` proves on every
 run. The `SubsetOTF` in the upstream path means "Korean subset of the pan-CJK family", not "already

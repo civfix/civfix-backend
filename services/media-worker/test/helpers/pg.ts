@@ -29,7 +29,7 @@ import { drizzle } from "drizzle-orm/postgres-js"
 import { schema, type Db, type Sql } from "@civfix/api/db"
 import { applyMigrations } from "@civfix/api/migrate"
 
-const DEFAULT_POSTGIS_IMAGE = "postgis/postgis:16-3.4"
+const DEFAULT_POSTGIS_IMAGE = "postgis/postgis:18-3.6"
 
 /**
  * Same override as the API harness's postgisImage (services/api/test/helpers/pg-container.ts):

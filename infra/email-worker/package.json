@@ -5,6 +5,7 @@
   "license": "AGPL-3.0-only",
   "description": "Cloudflare Email Worker: catch-all *@civfix.org inbound mail -> R2 -> backend webhook nudge.",
   "type": "module",
+  "packageManager": "pnpm@12.17.0+sha512.b8d223ebec04b580a89ed206daa71d1bccb6a1ee1d52efa95cc3b0db75271561df8f0d8e2c43add39c5ec08018af7a8a95108e7090f95a29f88727b7a40fd53d",
   "scripts": {
     "dev": "wrangler dev",
     "deploy": "wrangler deploy --env production",
@@ -16,10 +17,11 @@
   "devDependencies": {
     "@civfix/testing": "link:../../packages/testing",
     "@cloudflare/workers-types": "^5.20261026.1",
-    "@types/node": "^22.20.5",
-    "@vitest/coverage-v8": "^4.1.12",
-    "typescript": "^5.6.0",
-    "vitest": "^4.1.12",
+    "@types/node": "^24.19.2",
+    "@typescript/native": "npm:typescript@^7.0.2",
+    "@vitest/coverage-v8": "^5.0.5",
+    "typescript": "npm:@typescript/typescript6@^6.0.2",
+    "vitest": "^5.0.5",
     "wrangler": "^4.152.0"
   }
 }

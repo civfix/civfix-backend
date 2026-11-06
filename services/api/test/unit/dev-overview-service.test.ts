@@ -96,7 +96,7 @@ describe("makeDevOverviewService", () => {
   it("T12: the worker's last job is the newest completion of a worker-owned queue", async () => {
     const { repo, service } = setup({ USE_FAKE_JOBS: "false" })
     repo.addJob("orphan.sweep", "completed", { completedOn: ago(3 * HOUR) })
-    repo.addArchived("retention.sweep", "completed", ago(HOUR), ago(HOUR))
+    repo.addJob("retention.sweep", "completed", { completedOn: ago(HOUR) })
     repo.addJob("inbound.sweep", "completed", { completedOn: ago(60 * 1000) })
     repo.addJob("media.checks", "failed", { completedOn: ago(30 * 1000) })
     expect((await service.overview()).worker.lastJobCompletedAt).toBe(ago(HOUR).toISOString())

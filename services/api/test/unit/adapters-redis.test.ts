@@ -39,6 +39,18 @@ describe("makeRedis (F129)", () => {
     }
   })
 
+  it("T8: speaks RESP2 on the client and on every connection duplicated from it", () => {
+    const client = makeRedis("redis://127.0.0.1:6379")
+    const duplicate = client.duplicate()
+    try {
+      expect((client.options as { protocol?: number }).protocol).toBe(2)
+      expect((duplicate.options as { protocol?: number }).protocol).toBe(2)
+    } finally {
+      duplicate.disconnect()
+      client.disconnect()
+    }
+  })
+
   it("honors an explicit commandTimeout override", () => {
     const client = makeRedis("redis://127.0.0.1:6379", { commandTimeout: 1234 })
     try {
