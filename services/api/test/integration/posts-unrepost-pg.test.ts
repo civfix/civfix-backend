@@ -113,8 +113,10 @@ describe.skipIf(!pg)("F148: un-reposting never destroys other users' content", (
     const original = await newPost(author, "original")
     const reply = await newReplyTo(stranger, original, "reply")
 
+    // Postgres 18 reports a RESTRICT refusal as restrict_violation (23001); 16 and the arm64 test image
+    // report foreign_key_violation (23503).
     await expect(h.sql`DELETE FROM posts WHERE id = ${original}`).rejects.toMatchObject({
-      code: "23503",
+      code: expect.toBeOneOf(["23001", "23503"]),
     })
     expect(await postRow(reply)).toBeDefined()
   })

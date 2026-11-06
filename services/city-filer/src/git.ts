@@ -292,7 +292,7 @@ async function failClosed(
   try {
     await forgetProved(deps.workspaceDir, hosts, deps.log, why)
   } catch (forgetErr) {
-    throw new AggregateError([err, forgetErr], `confinement failed (${why})`)
+    throw new AggregateError([err, forgetErr], `confinement failed (${why})`, { cause: forgetErr })
   }
   throw err
 }

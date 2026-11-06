@@ -10,19 +10,19 @@
 #     docker build -f services/api/Dockerfile -t civfix/api:latest .
 #
 # Stages:
-#   base    pinned Node 22 (Debian bookworm-slim, glibc) with corepack enabled.
-#   build   install the FULL workspace (incl. dev tooling), build the api with turbo/tsup, then
+#   base    pinned Node 24 (Debian trixie-slim, glibc) with corepack enabled.
+#   build   install the FULL workspace (incl. dev tooling), build the api with turbo/tsdown, then
 #           `pnpm deploy --prod` the API into a self-contained, dev-pruned directory (/out) whose
 #           node_modules contains only production deps with @civfix/contract resolved via the pnpm store.
 #   runtime copy /out, drop privileges, expose the port, healthcheck GET /healthz.
 #
-# Why deploy: tsup keeps registry packages like @civfix/contract EXTERNAL (skipNodeModulesBundle), so the
+# Why deploy: tsdown keeps registry packages like @civfix/contract EXTERNAL (deps.neverBundle), so the
 # runtime needs them resolvable in node_modules. `pnpm deploy` produces exactly that (prod-only deps),
 # so the runtime image carries no build toolchain. @civfix/seams is TypeScript source and is bundled in.
 
 # The digest is the multi-arch index (it carries linux/arm64 and linux/amd64), so a rebuild of the same
 # commit gets the same base; the tag only tells a reader which line it is. Move both together.
-FROM node:22-bookworm-slim@sha256:de170b39439eb0e5a3444ad7d60b015614a381e10fecae2e30ec9e735122f38d AS base
+FROM node:24-trixie-slim@sha256:0820eaa85e07d0490446dd01d14707e17e6108a36988cf374899cd057eb3812d AS base
 ENV PNPM_HOME="/pnpm" \
     PATH="/pnpm:$PATH" \
     # Keep pnpm output terse + deterministic in CI.
@@ -37,7 +37,7 @@ COPY package.json ./
 RUN corepack install
 # The .dockerignore keeps node_modules/dist/tests out of this copy.
 COPY . .
-# Dev deps are needed here: tsup/turbo do the build. --frozen-lockfile fails the build on a stale
+# Dev deps are needed here: tsdown/turbo do the build. --frozen-lockfile fails the build on a stale
 # lockfile.
 RUN --mount=type=cache,id=pnpm-store,target=/pnpm/store \
     pnpm install --frozen-lockfile
@@ -46,7 +46,7 @@ RUN pnpm --filter @civfix/api... build
 RUN --mount=type=cache,id=pnpm-store,target=/pnpm/store \
     pnpm --filter @civfix/api --prod deploy /out
 
-FROM node:22-bookworm-slim@sha256:de170b39439eb0e5a3444ad7d60b015614a381e10fecae2e30ec9e735122f38d AS runtime
+FROM node:24-trixie-slim@sha256:0820eaa85e07d0490446dd01d14707e17e6108a36988cf374899cd057eb3812d AS runtime
 # No package manager here: pnpm would reinstall /app/node_modules in place and empty it, which took down
 # the dependency tree of a live prod container on 2026-09-23. npm goes too: nothing runs it, and its
 # bundled dependency tree is where the image scan finds fixable HIGH advisories (pacote, sigstore,
@@ -68,7 +68,7 @@ COPY --from=build --chown=node:node /out /app
 USER node
 EXPOSE 8080
 # Liveness: GET /healthz is pure (no DB/Redis) and returns 200 while the process is up. Uses Node's
-# global fetch (Node 22) so the slim image needs no curl/wget.
+# global fetch (Node 24) so the slim image needs no curl/wget.
 HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
     CMD node -e "fetch('http://127.0.0.1:'+(process.env.PORT||8080)+'/healthz').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"
 CMD ["node", "--enable-source-maps", "dist/main.js"]

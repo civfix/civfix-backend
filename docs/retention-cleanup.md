@@ -150,8 +150,8 @@ in `src/server.ts`, queue declared in `src/adapters/jobs.pgboss.ts` with the
 same explicit `policy: "short"` every API queue uses). Its `singletonKey` is
 `<kind>:<roomId>:<throttle bucket>`, so simultaneous enqueues from different API
 processes collapse into one run. The job payload is IDS ONLY (`{kind, roomId,
-messageId}`), deliberately: `pgboss.job` has its own archive retention that was
-never reviewed for message bodies, so the handler re-reads the message through
+messageId}`), deliberately: pg-boss keeps a finished job's row for 7 days, a
+retention never reviewed for message bodies, so the handler re-reads the message through
 the room-scoped repository (which also preserves the "Deleted User" rendering)
 instead of carrying a preview through the queue. The handler also drops a
 message that was TOMBSTONED between the enqueue and the run: the finders

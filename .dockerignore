@@ -30,7 +30,7 @@
 # the api/worker image.
 infra
 
-# Tests + fixtures are not needed for a production image build (build stage only runs tsup, not tests)
+# Tests + fixtures are not needed for a production image build (build stage only runs tsdown, not tests)
 **/test
 **/__tests__
 **/*.test.ts
@@ -39,7 +39,7 @@ infra
 # Drizzle generated inspection output (the canonical hand SQL in services/api/drizzle/*.sql is kept)
 **/drizzle/_generated
 
-# Documentation and repo tooling: neither the build stage (tsup over the services' src) nor the runtime
+# Documentation and repo tooling: neither the build stage (tsdown over the services' src) nor the runtime
 # image reads any of it. The font licence (assets/fonts/OFL.txt) and LICENSE files stay in.
 docs
 scripts

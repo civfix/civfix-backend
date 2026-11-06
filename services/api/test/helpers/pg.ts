@@ -4,7 +4,7 @@
  * `withPg()` hands back a private, fully migrated + seeded database: a postgres-js tag (`sql`), a Drizzle
  * client (`db`), its `uri`, and a `teardown()`.
  *
- * The container is NOT started here. test/global-setup-pg.ts starts ONE `postgis/postgis:16-3.4`
+ * The container is NOT started here. test/global-setup-pg.ts starts ONE `postgis/postgis:18-3.6`
  * container per vitest run and applies the canonical migrations + jurisdiction seed once into a TEMPLATE
  * database; this helper clones that template (`CREATE DATABASE ... TEMPLATE ...`, an in-server file copy)
  * so each test FILE still gets an isolated database (the same isolation a private container gave it),

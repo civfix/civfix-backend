@@ -1,5 +1,5 @@
 /**
- * The demo CLIs' shared PRNG. Guard-free (no runIfMain) so both can import it: tsup (splitting: false)
+ * The demo CLIs' shared PRNG. Guard-free (no runIfMain) so both can import it: tsdown (codeSplitting: false)
  * inlines imports into each bundled entry, and an imported runIfMain guard would fire inside the
  * importing bundle.
  *

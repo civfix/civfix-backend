@@ -47,6 +47,8 @@ describe.skipIf(!pg)("0194 report_confirmations migration (integration)", () => 
     const constraints = await h.sql`
       SELECT contype, pg_get_constraintdef(oid) AS def
       FROM pg_constraint WHERE conrelid = to_regclass('report_confirmations')
+        -- Postgres 18 also records each NOT NULL here; information_schema's is_nullable covers those.
+        AND contype <> 'n'
       ORDER BY contype, def
     `
     const indexes = await h.sql<{ tablename: string; indexdef: string }[]>`

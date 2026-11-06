@@ -106,7 +106,7 @@ describe("media-worker wiring", () => {
     await worker.stop()
   })
 
-  it("creates a queue for EVERY job it registers a handler on (pg-boss v10 requires it first)", async () => {
+  it("creates a queue for EVERY job it registers a handler on (pg-boss requires it first)", async () => {
     const handle = makeJobs()
     const queues: string[] = []
     const worked = new Set<string>()

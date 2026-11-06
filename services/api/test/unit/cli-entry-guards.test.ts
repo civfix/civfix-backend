@@ -3,7 +3,7 @@ import { dirname, join, relative, resolve } from "node:path"
 import { fileURLToPath } from "node:url"
 import { describe, expect, it } from "vitest"
 
-// tsup bundles every CLI entry with splitting off, so an imported module's import.meta.url becomes
+// tsdown bundles every CLI entry with code splitting off, so an imported module's import.meta.url becomes
 // the entry's own URL. A run-as-main guard in any module a CLI imports then fires inside that CLI and
 // runs the wrong main.
 const API_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "../..")

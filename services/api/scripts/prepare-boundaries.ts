@@ -12,7 +12,7 @@
  * box, then `node dist/db/ingest-jurisdictions.js <file> <layer> [geoid-prefix]` per layer there.
  *
  * Scope + constraints: REQUIRES GDAL/ogr2ogr; run on a box that has it (never inside the API image: this
- * is a `scripts/` tsx tool, never a tsup entry). Touches NO database, NO env, NO npm deps beyond node
+ * is a `scripts/` tsx tool, never a tsdown entry). Touches NO database, NO env, NO npm deps beyond node
  * builtins. It does NOT download the sources; it expects each job's source already extracted under
  * `<outDir>/sources/` at the path the manifest's `sourcePath` names (TIGER `.shp`; PAD-US `.gdb`).
  *

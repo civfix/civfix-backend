@@ -1,4 +1,5 @@
 import eslint from "@eslint/js"
+import { defineConfig } from "eslint/config"
 import tseslint from "typescript-eslint"
 import globals from "globals"
 import vitest from "@vitest/eslint-plugin"
@@ -50,7 +51,7 @@ export function typed(parserOptions) {
 }
 
 export function config(...extra) {
-  return tseslint.config(
+  return defineConfig(
     {
       ignores: [
         "dist/**",

@@ -230,6 +230,9 @@ export interface DiscussionForwardInput {
 }
 
 const DISCUSSION_FORWARD_ANONYMOUS_AUTHOR = "A neighbor"
+// The resident's words reach the city in civfix's own mail thread, so the email says whose they are.
+const DISCUSSION_FORWARD_DISCLAIMER =
+  "This comment was written by a resident, not by civfix. civfix does not endorse it."
 
 function discussionForwardAuthor(displayName: string | null | undefined): string {
   const trimmed = (displayName ?? "").trim()
@@ -254,6 +257,7 @@ export function buildDiscussionForwardPacket(
       paragraph(lede),
       heading("Their comment"),
       quote(body),
+      paragraph(DISCUSSION_FORWARD_DISCLAIMER),
       paragraph(`Reference: ${input.reportId}`, { muted: true }),
     ],
   })

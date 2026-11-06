@@ -61,6 +61,10 @@ function userOf(memberId: string): string {
   return idx === -1 ? memberId : memberId.slice(0, idx)
 }
 
+// ZRANGE's stop index for "through the last member". ioredis 6 types `stop` as a string only; Redis receives
+// the same "-1" either way.
+const ZRANGE_LAST = "-1"
+
 // ZREMRANGEBYSCORE max bound: the "(" makes it exclusive, so an entry seen exactly at the cutoff survives
 // as it does in the in-memory prune.
 function staleScoreBound(now: number): string {
@@ -118,7 +122,7 @@ export class RedisChatPresence implements ChatPresence {
       .zremrangebyscore(key, "-inf", staleScoreBound(now))
       .zadd(key, now, member(userId, connId))
       .expire(key, PRESENCE_KEY_TTL_SECONDS)
-      .zrange(key, 0, -1)
+      .zrange(key, 0, ZRANGE_LAST)
       .exec()
     const members = presenceMembers(replies)
     // presenceMembers verified the zadd applied, so === 1 is exact; an impossible 0 cannot be masked into
@@ -134,7 +138,7 @@ export class RedisChatPresence implements ChatPresence {
       .multi()
       .zrem(key, member(userId, connId))
       .zremrangebyscore(key, "-inf", staleScoreBound(now))
-      .zrange(key, 0, -1)
+      .zrange(key, 0, ZRANGE_LAST)
       .exec()
     const members = presenceMembers(replies)
     // The ZREM's own reply slot decides whether this connection was really present; without it a `leave`
@@ -160,7 +164,7 @@ export class RedisChatPresence implements ChatPresence {
     const replies = await this.redis
       .multi()
       .zremrangebyscore(key, "-inf", staleScoreBound(now))
-      .zrange(key, 0, -1)
+      .zrange(key, 0, ZRANGE_LAST)
       .exec()
     return distinctUsers(presenceMembers(replies))
   }
