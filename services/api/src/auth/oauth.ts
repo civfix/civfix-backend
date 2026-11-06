@@ -1,4 +1,4 @@
-import { Apple, Google, generateCodeVerifier, generateState } from "arctic"
+import { Apple, Google, OAuth2RequestError, generateCodeVerifier, generateState } from "arctic"
 import { AppError, collapseWhitespace } from "@civfix/contract"
 import { containsSlur } from "../abuse/slur-filter.js"
 import {
@@ -29,6 +29,21 @@ export const PROVIDER_APPLE = "apple"
 
 const UNVERIFIED_ACCOUNT_EXISTS_MESSAGE =
   "An account already uses this email address. Sign in the way you did before, or contact support."
+
+/**
+ * The provider's token endpoint refused the authorization code (expired, already used or revoked). Only
+ * the provider's OAuth error code is kept: its free-text description is the provider's to fill and is
+ * never logged.
+ */
+export class OAuthCodeRefusedError extends Error {
+  readonly providerError: string
+
+  constructor(providerError: string) {
+    super("the provider refused the authorization code")
+    this.name = "OAuthCodeRefusedError"
+    this.providerError = providerError
+  }
+}
 
 export interface OAuthConfig {
   google?: {
@@ -98,7 +113,7 @@ export class OAuthService {
 
   async completeGoogleCallback(code: string, codeVerifier: string): Promise<UserRecord> {
     const client = this.requireGoogle()
-    const tokens = await client.validateAuthorizationCode(code, codeVerifier)
+    const tokens = await refusalAware(() => client.validateAuthorizationCode(code, codeVerifier))
     const idToken = tokens.idToken()
     const claims = await this.verifyGoogleIdToken(idToken)
     return this.upsertFromClaims(PROVIDER_GOOGLE, claims)
@@ -114,7 +129,7 @@ export class OAuthService {
 
   async completeAppleCallback(code: string, fullName?: string): Promise<UserRecord> {
     const client = this.requireAppleWeb()
-    const tokens = await client.validateAuthorizationCode(code)
+    const tokens = await refusalAware(() => client.validateAuthorizationCode(code))
     const idToken = tokens.idToken()
     const claims = await this.verifyAppleWebIdToken(idToken)
     return this.upsertFromClaims(PROVIDER_APPLE, claims, fullName)
@@ -274,6 +289,17 @@ export class OAuthService {
       issuers: [APPLE_ISSUER],
       audiences: [apple.webClientId],
     })
+  }
+}
+
+// arctic throws OAuth2RequestError only for a 400/401 token response carrying an OAuth `error` code; an
+// unreachable provider or any other answer is a different error and stays a server failure.
+async function refusalAware<T>(exchange: () => Promise<T>): Promise<T> {
+  try {
+    return await exchange()
+  } catch (err) {
+    if (err instanceof OAuth2RequestError) throw new OAuthCodeRefusedError(err.code)
+    throw err
   }
 }
 
