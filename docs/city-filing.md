@@ -91,7 +91,7 @@ script with its own dry run, then runs it live once.
 
 Locked in `services/city-filer/tools`, transitive dependencies included: Claude Code 2.1.314 and
 `@playwright/mcp` 0.0.83 in `package-lock.json`, installed with `npm ci` into `/opt/filer-tools`, the build
-checking that its `playwright-core` is the kit's; claude-swap 0.28.0 in the hash-locked `requirements.txt`,
+checking that its `playwright-core` is the kit's; claude-swap 0.29.0 in the hash-locked `requirements.txt`,
 in its own venv on Python 3.12 under `/opt/uv`. uv is 0.13.5 (its `FROM` line, by digest). To bump, edit
 `package.json` and run `npm install --package-lock-only`, or edit `requirements.in` and rerun the
 `uv pip compile` command at the top of `requirements.txt`, then let `city-filer image smoke` run.
