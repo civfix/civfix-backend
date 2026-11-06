@@ -4,7 +4,7 @@
   "private": true,
   "license": "AGPL-3.0-only",
   "dependencies": {
-    "@anthropic-ai/claude-code": "2.1.310",
+    "@anthropic-ai/claude-code": "2.1.314",
     "@playwright/mcp": "0.0.83"
   }
 }

@@ -89,7 +89,7 @@ and reads the cities' emails (with `FILER_CLASSIFY_MODEL`, `playbook/classify.md
 runs as `filer`, one Claude process at a time. It never presses a live submit: the wrapper proves each
 script with its own dry run, then runs it live once.
 
-Locked in `services/city-filer/tools`, transitive dependencies included: Claude Code 2.1.310 and
+Locked in `services/city-filer/tools`, transitive dependencies included: Claude Code 2.1.314 and
 `@playwright/mcp` 0.0.83 in `package-lock.json`, installed with `npm ci` into `/opt/filer-tools`, the build
 checking that its `playwright-core` is the kit's; claude-swap 0.28.0 in the hash-locked `requirements.txt`,
 in its own venv on Python 3.12 under `/opt/uv`. uv is 0.13.5 (its `FROM` line, by digest). To bump, edit
