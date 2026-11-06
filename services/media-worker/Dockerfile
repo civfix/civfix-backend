@@ -73,7 +73,7 @@
 
 # The digest is the multi-arch index (it carries linux/arm64 and linux/amd64), so a rebuild of the same
 # commit gets the same base; the tag only tells a reader which line it is. Move both together.
-FROM node:24-trixie-slim@sha256:54f84b4cf8432b21aaffd5d3ce8d41e12cea0d10d33c09d2f3c9879d49d6b446 AS base
+FROM node:24-trixie-slim@sha256:0820eaa85e07d0490446dd01d14707e17e6108a36988cf374899cd057eb3812d AS base
 ENV PNPM_HOME="/pnpm" \
     PATH="/pnpm:$PATH" \
     CI=true
@@ -163,7 +163,7 @@ RUN --mount=type=cache,id=pnpm-store,target=/pnpm/store \
 # From the plain Node image, not `base`: the runtime needs no package manager, and corepack and the pnpm it
 # installs carry their own bundled dependency trees (tar, glob, minimatch, cross-spawn, ...) that the image
 # scan flags. Same digest as `base`, so both move together.
-FROM node:24-trixie-slim@sha256:54f84b4cf8432b21aaffd5d3ce8d41e12cea0d10d33c09d2f3c9879d49d6b446 AS runtime
+FROM node:24-trixie-slim@sha256:0820eaa85e07d0490446dd01d14707e17e6108a36988cf374899cd057eb3812d AS runtime
 # Same contract as the api image: the release identity is a property of the promoted artifact, not of the
 # deploy that placed it. Read by src/seams.ts as the GlitchTip `release`.
 ARG SERVICE_VERSION=0.0.0
