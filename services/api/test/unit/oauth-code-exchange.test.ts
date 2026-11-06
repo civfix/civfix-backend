@@ -1,74 +1,27 @@
-import { generateKeyPairSync } from "node:crypto"
 import { afterEach, describe, expect, it, vi } from "vitest"
 import { ErrorCode } from "@civfix/contract"
 import { OAuthService, PROVIDER_APPLE, PROVIDER_GOOGLE } from "../../src/auth/oauth.js"
-import type { OAuthConfig } from "../../src/auth/oauth.js"
 import { InMemoryOAuthIdentityStore, InMemoryUserStore } from "../../src/auth/stores.js"
 import type { VerifiedIdToken } from "../../src/auth/jwks.js"
 import { makeAuthHarness, StubJwksVerifier, type AuthHarness } from "../helpers/auth.js"
+import {
+  APPLE_TOKEN_URL,
+  GOOGLE_TOKEN_URL,
+  OAUTH_CONFIG,
+  WEB_ORIGIN,
+  appleCallback,
+  cookieValue,
+  googleCallback,
+  html,
+  json,
+  stubTokenEndpoint,
+  type ProviderAnswer,
+} from "../helpers/oauth-provider.js"
 
 // Drives the real arctic token exchange against a stubbed provider endpoint, so an arctic major that
-// changes the request it sends or the errors it throws shows up here. Every provider failure maps to the
-// same 500 INTERNAL as before, and no session is issued.
-
-const GOOGLE_TOKEN_URL = "https://oauth2.googleapis.com/token"
-const APPLE_TOKEN_URL = "https://appleid.apple.com/auth/token"
-const WEB_ORIGIN = "https://app.civfix.org"
-
-const APPLE_PRIVATE_KEY = generateKeyPairSync("ec", { namedCurve: "prime256v1" })
-  .privateKey.export({ type: "pkcs8", format: "pem" })
-  .toString()
-
-const OAUTH_CONFIG: OAuthConfig = {
-  google: {
-    clientId: "test-google-client",
-    clientSecret: "test-google-secret",
-    redirectUri: "http://localhost:8080/auth/google/callback",
-  },
-  apple: {
-    clientId: "test-apple-client",
-    teamId: "TEAMID",
-    keyId: "KEYID",
-    privateKey: APPLE_PRIVATE_KEY,
-    redirectUri: "http://localhost:8080/auth/apple/callback",
-    webClientId: "org.civfix.web",
-  },
-}
-
-interface TokenCall {
-  url: string
-  method: string
-  body: URLSearchParams
-}
-
-type ProviderAnswer = { status: number; body: string; contentType: string } | Error
-
-function json(status: number, body: unknown): ProviderAnswer {
-  return { status, body: JSON.stringify(body), contentType: "application/json" }
-}
-
-function html(status: number, body: string): ProviderAnswer {
-  return { status, body, contentType: "text/html" }
-}
-
-function stubTokenEndpoint(expectedUrl: string, answer: ProviderAnswer): TokenCall[] {
-  const calls: TokenCall[] = []
-  vi.stubGlobal("fetch", async (input: string | URL | Request, init?: RequestInit) => {
-    const request = new Request(input, init)
-    if (request.url !== expectedUrl) throw new Error(`unexpected fetch to ${request.url}`)
-    calls.push({
-      url: request.url,
-      method: request.method,
-      body: new URLSearchParams(await request.text()),
-    })
-    if (answer instanceof Error) throw answer
-    return new Response(answer.body, {
-      status: answer.status,
-      headers: { "content-type": answer.contentType },
-    })
-  })
-  return calls
-}
+// changes the request it sends or the errors it throws shows up here. A provider that is unreachable or
+// answers with something other than an OAuth error maps to the same 500 INTERNAL, and no session is
+// issued; a refused code is oauth-callback-code-refused.test.ts.
 
 function claims(sub: string, email: string | null = null): VerifiedIdToken {
   return { sub, email, emailVerified: email !== null, name: null, picture: null }
@@ -92,49 +45,14 @@ afterEach(async () => {
   }
 })
 
-function cookieValue(setCookie: string | string[] | undefined, name: string): string | null {
-  const lines = Array.isArray(setCookie) ? setCookie : setCookie ? [setCookie] : []
-  for (const line of lines) {
-    if (!line.startsWith(`${name}=`)) continue
-    return decodeURIComponent(line.split(";")[0]!.slice(name.length + 1))
-  }
-  return null
-}
-
-async function startHandshake(
-  h: AuthHarness,
-  provider: "google" | "apple",
-): Promise<{ state: string; cookie: string }> {
-  const start = await h.app.inject({ method: "GET", url: `/auth/${provider}/start` })
-  expect(start.statusCode).toBe(302)
-  const state = new URL(start.headers.location as string).searchParams.get("state")!
-  const handshake = cookieValue(start.headers["set-cookie"], "civfix_oauth")!
-  return { state, cookie: `civfix_oauth=${encodeURIComponent(handshake)}` }
-}
-
 async function googleCallbackWith(answer: ProviderAnswer) {
   harness = await makeAuthHarness({ webOrigins: [WEB_ORIGIN], oauthConfig: OAUTH_CONFIG })
-  const { state, cookie } = await startHandshake(harness, "google")
-  const calls = stubTokenEndpoint(GOOGLE_TOKEN_URL, answer)
-  const res = await harness.app.inject({
-    method: "GET",
-    url: `/auth/google/callback?code=bad-code&state=${encodeURIComponent(state)}`,
-    headers: { cookie },
-  })
-  return { res, calls }
+  return googleCallback(harness, answer)
 }
 
 async function appleCallbackWith(answer: ProviderAnswer) {
   harness = await makeAuthHarness({ webOrigins: [WEB_ORIGIN], oauthConfig: OAUTH_CONFIG })
-  const { state, cookie } = await startHandshake(harness, "apple")
-  const calls = stubTokenEndpoint(APPLE_TOKEN_URL, answer)
-  const res = await harness.app.inject({
-    method: "POST",
-    url: "/auth/apple/callback",
-    headers: { "content-type": "application/x-www-form-urlencoded", cookie },
-    payload: new URLSearchParams({ code: "bad-code", state }).toString(),
-  })
-  return { res, calls }
+  return appleCallback(harness, answer)
 }
 
 describe("Google code exchange", () => {
@@ -155,16 +73,6 @@ describe("Google code exchange", () => {
     expect(calls[0]!.method).toBe("POST")
     expect(calls[0]!.body.get("code")).toBe("good-code")
     expect(calls[0]!.body.get("code_verifier")).toBe(verifierString)
-  })
-
-  it("T11: a bad code (400 invalid_grant) is a 500 INTERNAL with no session", async () => {
-    const { res, calls } = await googleCallbackWith(
-      json(400, { error: "invalid_grant", error_description: "Bad Request" }),
-    )
-    expect(calls).toHaveLength(1)
-    expect(res.statusCode).toBe(500)
-    expect(res.json().code).toBe(ErrorCode.INTERNAL)
-    expect(cookieValue(res.headers["set-cookie"], "civfix_session")).toBeNull()
   })
 
   it("T12: a provider 503 with an HTML body is a 500 INTERNAL with no session", async () => {
@@ -199,14 +107,6 @@ describe("Apple code exchange", () => {
     expect(identity?.userId).toBe(user.id)
     expect(calls).toHaveLength(1)
     expect(calls[0]!.body.get("code")).toBe("good-code")
-  })
-
-  it("T15: a bad code (400 invalid_grant) is a 500 INTERNAL with no session", async () => {
-    const { res, calls } = await appleCallbackWith(json(400, { error: "invalid_grant" }))
-    expect(calls).toHaveLength(1)
-    expect(res.statusCode).toBe(500)
-    expect(res.json().code).toBe(ErrorCode.INTERNAL)
-    expect(cookieValue(res.headers["set-cookie"], "civfix_session")).toBeNull()
   })
 
   it("T16: a provider 503 with an HTML body is a 500 INTERNAL with no session", async () => {
