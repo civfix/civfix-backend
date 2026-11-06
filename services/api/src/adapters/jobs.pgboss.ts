@@ -1,4 +1,4 @@
-import type PgBoss from "pg-boss"
+import type { JobWithMetadata, PgBoss, Queue, SendOptions } from "pg-boss"
 import type { Jobs, EnqueueOptions, JobHandler } from "@civfix/seams"
 import type { JobHandlerArgWithAttempt } from "../services/job-attempt.js"
 import {
@@ -28,6 +28,7 @@ import {
   JURISDICTION_DISCOVERY_JOB,
   MEDIA_CHECKS_JOB,
   OUTREACH_DIGEST_JOB,
+  PGBOSS_SCHEMA,
   PUSH_CLEAR_JOB,
   SHARED_QUEUE_POLICY,
   WAITLIST_EXPIRE_SWEEP_JOB,
@@ -47,7 +48,6 @@ const consoleLogger: PgBossJobsLogger = {
 
 export interface PgBossJobsConfig {
   connectionString: string
-  schema?: string
   logger?: PgBossJobsLogger
 }
 
@@ -84,12 +84,13 @@ export const API_QUEUE_NAMES = [
 
 type ApiQueueName = (typeof API_QUEUE_NAMES)[number]
 
-type QueueOptions = Pick<
-  PgBoss.Queue,
-  "retryLimit" | "retryDelay" | "retryBackoff" | "expireInSeconds"
->
+type QueueOptions = Pick<Queue, "retryLimit" | "retryDelay" | "retryBackoff" | "expireInSeconds">
 
 const DATA_EXPORT_RETRY_LIMIT = 10
+
+// pg-boss's own default, which the API relied on before it named one: a shutdown waits this long for
+// the jobs the API works (filing results, exports, fan-outs) before pg-boss fails what is still active.
+const STOP_TIMEOUT_MS = 30_000
 
 // A data export that fails on a mail credential or approved-sender fault has to wait for an operator to
 // fix the config. pg-boss's default (2 immediate retries) would rebuild and resend the whole export three
@@ -101,15 +102,16 @@ const QUEUE_OPTIONS: Partial<Record<ApiQueueName, QueueOptions>> = {
     retryDelay: SECONDS_PER_MINUTE,
     retryBackoff: true,
   },
-  ...FILING_QUEUE_OPTIONS,
+  ...Object.fromEntries(
+    Object.entries(FILING_QUEUE_OPTIONS).map(([name, { policy: _policy, ...retries }]) => [
+      name,
+      retries,
+    ]),
+  ),
 }
 
-function queueOptions(name: ApiQueueName): PgBoss.Queue {
-  return { name, policy: SHARED_QUEUE_POLICY, ...QUEUE_OPTIONS[name] }
-}
-
-function toSendOptions(opts?: EnqueueOptions): PgBoss.SendOptions {
-  const out: PgBoss.SendOptions = {}
+function toSendOptions(opts?: EnqueueOptions): SendOptions {
+  const out: SendOptions = {}
   if (opts?.singletonKey !== undefined) out.singletonKey = opts.singletonKey
   if (opts?.startAfter !== undefined) out.startAfter = opts.startAfter
   if (opts?.retryLimit !== undefined) out.retryLimit = opts.retryLimit
@@ -126,24 +128,26 @@ export class PgBossJobs implements Jobs {
 
   async start(): Promise<void> {
     if (this.boss) return
-    const { default: PgBossCtor } = await import("pg-boss")
+    const { PgBoss: PgBossCtor } = await import("pg-boss")
     const boss = new PgBossCtor({
       connectionString: this.config.connectionString,
-      ...(this.config.schema !== undefined ? { schema: this.config.schema } : {}),
+      schema: PGBOSS_SCHEMA,
     })
     const logger = this.config.logger ?? consoleLogger
     boss.on("error", (err: Error) => logger.error({ err }, "pg-boss error"))
     await boss.start()
     for (const name of API_QUEUE_NAMES) {
-      await boss.createQueue(name, queueOptions(name))
-      await boss.updateQueue(name, queueOptions(name))
+      const retries = QUEUE_OPTIONS[name]
+      await boss.createQueue(name, { policy: SHARED_QUEUE_POLICY, ...retries })
+      // createQueue leaves an existing queue as it is, so updateQueue brings its retries to these.
+      if (retries !== undefined) await boss.updateQueue(name, retries)
     }
     this.boss = boss
   }
 
   async stop(): Promise<void> {
     if (!this.boss) return
-    await this.boss.stop({ graceful: true, wait: true })
+    await this.boss.stop({ graceful: true, timeout: STOP_TIMEOUT_MS })
     this.boss = undefined
   }
 
@@ -165,7 +169,7 @@ export class PgBossJobs implements Jobs {
     await this.requireBoss().work(
       name,
       { includeMetadata: true },
-      async (jobs: PgBoss.JobWithMetadata[]) => {
+      async (jobs: JobWithMetadata[]) => {
         await Promise.all(
           jobs.map((j) => {
             const arg: JobHandlerArgWithAttempt = {

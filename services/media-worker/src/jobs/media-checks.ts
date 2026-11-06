@@ -133,7 +133,7 @@ export async function runMediaChecksJobDetailed(
 ): Promise<MediaChecksOutcome> {
   const obs = resolveJobObs(deps)
 
-  let asset: MediaWorkerAsset | null = null
+  let asset: MediaWorkerAsset | null
   try {
     asset = await deps.repo.findById(payload.mediaId)
     asset ??= await deps.repo.findByUploadId(payload.uploadId)

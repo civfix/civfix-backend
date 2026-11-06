@@ -151,11 +151,20 @@ export function findViolations(report, allowedPackages = ALLOWED_PACKAGES) {
 }
 
 function main() {
-  const output = execFileSync("pnpm", ["licenses", "list", "--prod", "--json"], {
+  // --recursive: pnpm 12 lists only the current project without it, and the root has no production
+  // dependencies of its own.
+  const output = execFileSync("pnpm", ["licenses", "list", "--prod", "--json", "--recursive"], {
     encoding: "utf8",
     maxBuffer: 64 * 1024 * 1024,
   })
-  const violations = findViolations(JSON.parse(output))
+  const report = JSON.parse(output)
+  // An empty report means pnpm's command or output changed, not that the tree is clean.
+  if (Object.keys(report).length === 0) {
+    console.error("check-licenses: pnpm listed no production dependencies, so nothing was checked.")
+    process.exitCode = 1
+    return
+  }
+  const violations = findViolations(report)
   if (violations.length === 0) {
     console.log("check-licenses: every production dependency has an AGPL-3.0-compatible license.")
     return

@@ -62,6 +62,7 @@ function assertExecutable(tool: MediaTool, key: string, path: string): void {
   } catch (err) {
     throw new Error(
       `media-worker: ${key}="${path}" is not an executable file (${tool}): ${String(err)}`,
+      { cause: err },
     )
   }
 }

@@ -33,7 +33,7 @@ export type DbSslOption = false | "require" | "verify-full" | { rejectUnauthoriz
  * containers; production never reaches that branch because loadEnv refuses a non-TLS sslmode.
  */
 export function sslOptionForUrl(databaseUrl: string): DbSslOption {
-  let mode: string | null = null
+  let mode: string | null
   try {
     mode = new URL(databaseUrl).searchParams.get("sslmode")
   } catch {

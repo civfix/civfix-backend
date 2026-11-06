@@ -13,7 +13,6 @@ import {
 import { WsChatService } from "../../src/adapters/chat-service.ws.js"
 import { InMemoryChatPubSub } from "../../src/adapters/chat-pubsub.js"
 import { InMemoryChatPresence, RedisChatPresence } from "../../src/adapters/chat-presence.js"
-import RedisMock from "ioredis-mock"
 import type { RedisClient } from "../../src/adapters/redis.js"
 import { InMemoryChatRepository, MockConnection } from "../helpers/chat.js"
 
@@ -123,8 +122,78 @@ describe("H6: presence.leave only reports userGone when it actually removed the 
   })
 })
 
+type MultiOp = (sets: Map<string, Map<string, number>>) => unknown
+
+/**
+ * The sorted-set MULTI commands RedisChatPresence sends, answered the way Redis does over RESP2. ioredis-mock
+ * 8 cannot run ZRANGE on ioredis 6 (it calls ioredis's reply transformer without the protocol it now needs).
+ */
+function sortedSetRedis(): RedisClient {
+  const sets = new Map<string, Map<string, number>>()
+  const setFor = (key: string): Map<string, number> => {
+    let set = sets.get(key)
+    if (!set) {
+      set = new Map()
+      sets.set(key, set)
+    }
+    return set
+  }
+  const belowBound = (score: number, bound: string): boolean =>
+    bound.startsWith("(") ? score < Number(bound.slice(1)) : score <= Number(bound)
+  return {
+    multi() {
+      const ops: MultiOp[] = []
+      const chain = {
+        zremrangebyscore(key: string, _min: "-inf", max: string) {
+          ops.push(() => {
+            const set = setFor(key)
+            let removed = 0
+            for (const [m, score] of set) {
+              if (belowBound(score, max)) {
+                set.delete(m)
+                removed++
+              }
+            }
+            return removed
+          })
+          return chain
+        },
+        zadd(key: string, score: number, m: string) {
+          ops.push(() => {
+            const set = setFor(key)
+            const added = set.has(m) ? 0 : 1
+            set.set(m, score)
+            return added
+          })
+          return chain
+        },
+        expire(_key: string, _seconds: number) {
+          ops.push(() => 1)
+          return chain
+        },
+        zrem(key: string, m: string) {
+          ops.push(() => (setFor(key).delete(m) ? 1 : 0))
+          return chain
+        },
+        zrange(key: string, _start: 0, _stop: "-1") {
+          ops.push(() =>
+            [...setFor(key)]
+              .sort(([a, sa], [b, sb]) => sa - sb || (a < b ? -1 : a > b ? 1 : 0))
+              .map(([m]) => m),
+          )
+          return chain
+        },
+        exec() {
+          return Promise.resolve(ops.map((op) => [null, op(sets)]))
+        },
+      }
+      return chain
+    },
+  } as unknown as RedisClient
+}
+
 describe("H6: RedisChatPresence.leave reads the ZREM's own reply slot", () => {
-  const makeRedis = (): RedisClient => new RedisMock()
+  const makeRedis = (): RedisClient => sortedSetRedis()
 
   it("reports userGone:false for a connection that was never in the sorted set", async () => {
     const redis = makeRedis()

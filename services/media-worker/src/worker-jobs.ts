@@ -7,7 +7,7 @@
  * its own pg-boss handle because it needs the WORKER side (work/schedule/createQueue), which the API's
  * enqueue-only adapter does not expose.
  *
- * pg-boss v10 notes:
+ * pg-boss 12 notes:
  *   - queues must exist before send/work, so the handle exposes createQueue (idempotent).
  *   - work(name, options, handler) delivers an ARRAY of jobs; we adapt to the shared single-job
  *     JobHandler by iterating, and use batchSize to bound in-flight concurrency.
@@ -15,10 +15,19 @@
  *     callback, which pg-boss treats as a verdict on the whole batch (see workWithSettings).
  */
 
-import type PgBoss from "pg-boss"
+import type {
+  JobWithMetadata,
+  PgBoss,
+  Queue,
+  ScheduleOptions as PgBossScheduleOptions,
+  SendOptions,
+  UpdateQueueOptions,
+  WorkOptions,
+} from "pg-boss"
 import type { Jobs, EnqueueOptions, JobHandler } from "@civfix/seams"
 import { FakeJobs } from "@civfix/seams"
 import { parseBool } from "@civfix/api/env-parsers"
+import { PGBOSS_SCHEMA } from "@civfix/api/queue-names"
 import { assertRealSeamInProd } from "./config.js"
 
 /** Default ON outside production so the worker boots offline; an explicit ON in prod fails boot. */
@@ -35,7 +44,7 @@ export interface WorkSettings {
 
 /**
  * The queue-level retry policy is what makes media.checks' infra throws (MediaInfraError) recover with
- * bounded backoff. pg-boss v10's default retryLimit is 2 (retries are opt-OUT), but callers set it
+ * bounded backoff. pg-boss's default retryLimit is 2 (retries are opt-OUT), but callers set it
  * explicitly so the value is intentional, not inherited. The worker owns the work side, so it is set on
  * the worker's createQueue; the fake ignores it.
  */
@@ -44,14 +53,15 @@ export interface QueueOptions {
   retryBackoff?: boolean
   /**
    * pg-boss queue policy. MUST be set explicitly for any queue the worker shares with another creator or
-   * relies on singletonKey dedup for: pg-boss `updateQueue` rewrites `policy` to its default ("standard")
-   * whenever it is omitted, which would silently CLOBBER a policy a different creator set. The API creates
-   * `media.checks` with policy "short" so its `enqueue(..., { singletonKey })` dedups duplicate pending
-   * jobs (the partial-unique index only fires under "short"); the worker also creates that queue, so it
-   * must pass the SAME "short" or its boot-time updateQueue would break the dedup on boot-order-dependent
-   * deploys. The worker likewise enqueues `anon.hold.release` with a singletonKey, so that queue needs it too.
+   * relies on singletonKey dedup for: pg-boss sets a queue's policy once, when the first createQueue runs
+   * (a later createQueue leaves the queue as it is, and updateQueue refuses to change it), so whichever of
+   * the API and the worker boots first decides it. The API creates `media.checks` with policy "short" so
+   * its `enqueue(..., { singletonKey })` dedups duplicate pending jobs (the partial-unique index only
+   * fires under "short"); the worker must pass the SAME "short", or a deploy where the worker boots first
+   * would create the queue without the dedup for good. The worker likewise enqueues `anon.hold.release`
+   * with a singletonKey, so that queue needs it too.
    */
-  policy?: PgBoss.Queue["policy"]
+  policy?: Queue["policy"]
 }
 
 export interface ScheduleOptions {
@@ -64,7 +74,7 @@ export interface ScheduleOptions {
 export interface WorkerJobs extends Jobs {
   start(): Promise<void>
   stop(): Promise<void>
-  /** Idempotent; pg-boss v10 requires the queue before send/work. */
+  /** Idempotent; pg-boss requires the queue before send/work. */
   createQueue(name: string, options?: QueueOptions): Promise<void>
   workWithSettings(name: string, handler: JobHandler, settings?: WorkSettings): Promise<void>
   schedule(name: string, cron: string, data?: unknown, options?: ScheduleOptions): Promise<void>
@@ -78,21 +88,20 @@ function toFailureOutput(err: unknown): object {
   return err instanceof Error ? err : { message: String(err) }
 }
 
-function toSendOptions(opts?: EnqueueOptions): PgBoss.SendOptions {
-  const out: PgBoss.SendOptions = {}
+function toSendOptions(opts?: EnqueueOptions): SendOptions {
+  const out: SendOptions = {}
   if (opts?.singletonKey !== undefined) out.singletonKey = opts.singletonKey
   if (opts?.startAfter !== undefined) out.startAfter = opts.startAfter
   if (opts?.retryLimit !== undefined) out.retryLimit = opts.retryLimit
   return out
 }
 
-function toQueueOptions(
+function toRetryOptions(
   opts?: QueueOptions,
-): Pick<PgBoss.Queue, "retryLimit" | "retryBackoff" | "policy"> {
-  const out: Pick<PgBoss.Queue, "retryLimit" | "retryBackoff" | "policy"> = {}
+): Pick<UpdateQueueOptions, "retryLimit" | "retryBackoff"> {
+  const out: Pick<UpdateQueueOptions, "retryLimit" | "retryBackoff"> = {}
   if (opts?.retryLimit !== undefined) out.retryLimit = opts.retryLimit
   if (opts?.retryBackoff !== undefined) out.retryBackoff = opts.retryBackoff
-  if (opts?.policy !== undefined) out.policy = opts.policy
   return out
 }
 
@@ -136,7 +145,7 @@ export class JobInterruptedError extends Error {
  * duplicate (the asset's status makes the second run a no-op) rather than a lost job. Under the "short"
  * policy a job already waiting with the same singletonKey dedups the send, and that job does the work.
  */
-async function handBack(boss: PgBoss, name: string, job: PgBoss.JobWithMetadata): Promise<void> {
+async function handBack(boss: PgBoss, name: string, job: JobWithMetadata): Promise<void> {
   const requeuedAs = await boss.send(
     name,
     job.data,
@@ -146,7 +155,7 @@ async function handBack(boss: PgBoss, name: string, job: PgBoss.JobWithMetadata)
 }
 
 /**
- * pg-boss v10 delivers a BATCH array and treats the callback's outcome as a verdict on the WHOLE batch: it
+ * pg-boss delivers a BATCH array and treats the callback's outcome as a verdict on the WHOLE batch: it
  * completes every id when the callback resolves and FAILS every id when it throws (manager.js onFetch).
  * Both are wrong for us. The media.checks handler deliberately throws MediaInfraError to request a retry,
  * so throwing out of the callback would re-deliver every clean sibling (burning its retryLimit and
@@ -164,7 +173,7 @@ async function handBack(boss: PgBoss, name: string, job: PgBoss.JobWithMetadata)
 async function settleEachJob(
   boss: PgBoss,
   name: string,
-  jobs: PgBoss.JobWithMetadata[],
+  jobs: JobWithMetadata[],
   handler: JobHandler,
 ): Promise<void> {
   const settled = await Promise.allSettled(
@@ -200,8 +209,8 @@ export class PgBossWorkerJobs implements WorkerJobs {
 
   async start(): Promise<void> {
     if (this.boss) return
-    const { default: PgBossCtor } = await import("pg-boss")
-    const boss = new PgBossCtor(this.connectionString)
+    const { PgBoss: PgBossCtor } = await import("pg-boss")
+    const boss = new PgBossCtor({ connectionString: this.connectionString, schema: PGBOSS_SCHEMA })
     // Without a listener an internal pg-boss error would crash the process.
     boss.on("error", (err: Error) => console.error("pg-boss error:", err))
     await boss.start()
@@ -217,7 +226,7 @@ export class PgBossWorkerJobs implements WorkerJobs {
     // OPERATOR REQUIREMENT (different repo): the media-worker container's `stop_grace_period` in the
     // civfix-infra compose file must EXCEED STOP_GRACE_MS (45s), or the runtime SIGKILLs the process
     // before an interrupted job is handed back (Docker's default is 10s). The compose sets 200s.
-    await this.boss.stop({ graceful: true, wait: true, timeout: STOP_GRACE_MS })
+    await this.boss.stop({ graceful: true, timeout: STOP_GRACE_MS })
     this.boss = undefined
   }
 
@@ -228,17 +237,14 @@ export class PgBossWorkerJobs implements WorkerJobs {
 
   async createQueue(name: string, options?: QueueOptions): Promise<void> {
     const boss = this.requireBoss()
-    // createQueue is a no-op if the queue already exists, so updateQueue is what brings a
-    // previously-created (e.g. retryLimit=0) queue to the right policy. Mirrors the API adapter.
-    const queuePolicy: PgBoss.Queue = { name, ...toQueueOptions(options) }
-    await boss.createQueue(name, queuePolicy)
-    if (
-      options?.retryLimit !== undefined ||
-      options?.retryBackoff !== undefined ||
-      options?.policy !== undefined
-    ) {
-      await boss.updateQueue(name, queuePolicy)
-    }
+    const retries = toRetryOptions(options)
+    await boss.createQueue(name, {
+      ...(options?.policy !== undefined ? { policy: options.policy } : {}),
+      ...retries,
+    })
+    // createQueue leaves an existing queue as it is, so updateQueue is what brings a previously-created
+    // (e.g. retryLimit=0) queue to these retries. Mirrors the API adapter.
+    if (Object.keys(retries).length > 0) await boss.updateQueue(name, retries)
   }
 
   async enqueue(name: string, data: unknown, opts?: EnqueueOptions): Promise<string> {
@@ -252,7 +258,7 @@ export class PgBossWorkerJobs implements WorkerJobs {
     data?: unknown,
     options?: ScheduleOptions,
   ): Promise<void> {
-    const sendOpts: PgBoss.ScheduleOptions = {}
+    const sendOpts: PgBossScheduleOptions = {}
     if (options?.expireInSeconds !== undefined) sendOpts.expireInSeconds = options.expireInSeconds
     if (options?.singletonKey !== undefined) sendOpts.singletonKey = options.singletonKey
     await this.requireBoss().schedule(name, cron, (data as object) ?? {}, sendOpts)
@@ -268,19 +274,19 @@ export class PgBossWorkerJobs implements WorkerJobs {
     settings?: WorkSettings,
   ): Promise<void> {
     // The metadata carries the singletonKey a handed-back job is re-sent with.
-    const options: PgBoss.WorkOptions & { includeMetadata: true } = { includeMetadata: true }
+    const options: WorkOptions & { includeMetadata: true } = { includeMetadata: true }
     if (settings?.batchSize !== undefined) options.batchSize = settings.batchSize
     if (settings?.pollingIntervalSeconds !== undefined) {
       options.pollingIntervalSeconds = settings.pollingIntervalSeconds
     }
     const boss = this.requireBoss()
-    await boss.work(name, options, (jobs: PgBoss.JobWithMetadata[]) =>
+    await boss.work(name, options, (jobs: JobWithMetadata[]) =>
       settleEachJob(boss, name, jobs, handler),
     )
   }
 
   async complete(jobId: string): Promise<void> {
-    // The shared Jobs.complete is name-agnostic; pg-boss v10 needs the queue name. workWithSettings
+    // The shared Jobs.complete is name-agnostic; pg-boss needs the queue name. workWithSettings
     // completes each delivered job itself (where the queue name IS known), so nothing on the worker calls
     // this. Log if it ever is (a silent no-op would mask a misuse) rather than guessing a queue name.
     console.warn(

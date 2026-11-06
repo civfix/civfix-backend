@@ -33,4 +33,4 @@ export function renderMessage(locale: unknown, key: MessageKey, vars?: MessageVa
   return interpolate(template, vars)
 }
 
-export type { Locale, MessageKey }
+export type { MessageKey }
