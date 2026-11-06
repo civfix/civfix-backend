@@ -47,6 +47,7 @@ import {
   type ClientKind,
 } from "../auth/transport.js"
 import type { UserRecord } from "../auth/stores.js"
+import { OAuthCodeRefusedError } from "../auth/oauth.js"
 import { avatarPresigner, type AvatarPresigner } from "../services/user-avatar.js"
 
 const OAUTH_STATE_COOKIE = "civfix_oauth"
@@ -222,8 +223,13 @@ async function registerWebOAuthRoutes(app: FastifyInstance, ctx: AuthRouteContex
         throw AppError.unauthorized(INVALID_OAUTH_STATE_MESSAGE)
       }
       clearOAuthStateCookie(reply)
-      const user = await services.oauth.completeGoogleCallback(query.code, stash.codeVerifier)
       const target = resolvePostLoginRedirect(stash.redirect, webOrigins)
+      let user: UserRecord
+      try {
+        user = await services.oauth.completeGoogleCallback(query.code, stash.codeVerifier)
+      } catch (err) {
+        return redirectOnCodeRefused(err, request, reply, target)
+      }
       return issueSessionForUser(ctx, request, reply, user, {
         forceKind: "web",
         webRedirectTo: target,
@@ -263,8 +269,13 @@ async function registerWebOAuthRoutes(app: FastifyInstance, ctx: AuthRouteContex
         }
         clearOAuthStateCookie(reply)
         const fullName = appleFullNameFromUserField(body.user)
-        const user = await services.oauth.completeAppleCallback(body.code, fullName)
         const target = resolvePostLoginRedirect(stash.redirect, webOrigins)
+        let user: UserRecord
+        try {
+          user = await services.oauth.completeAppleCallback(body.code, fullName)
+        } catch (err) {
+          return redirectOnCodeRefused(err, request, reply, target)
+        }
         return issueSessionForUser(ctx, request, reply, user, {
           forceKind: "web",
           webRedirectTo: target,
@@ -563,6 +574,22 @@ function redirectOnProviderError(
   if (own) clearOAuthStateCookie(reply)
   request.log.info({ providerError: failure.error }, "web OAuth sign-in ended at the provider")
   return reply.redirect(resolvePostLoginRedirect(own ? stash.redirect : undefined, webOrigins))
+}
+
+// A refused code (expired, already used, revoked) ends sign-in like a cancel at the provider: the state
+// was already proven this browser's, so it goes back to its own saved target. Any other failure is rethrown.
+function redirectOnCodeRefused(
+  err: unknown,
+  request: FastifyRequest,
+  reply: FastifyReply,
+  target: string,
+): FastifyReply {
+  if (!(err instanceof OAuthCodeRefusedError)) throw err
+  request.log.info(
+    { providerError: err.providerError.slice(0, MAX_PROVIDER_ERROR_LENGTH) },
+    "web OAuth sign-in refused by the provider",
+  )
+  return reply.redirect(target)
 }
 
 const MAX_PROVIDER_ERROR_LENGTH = 128
