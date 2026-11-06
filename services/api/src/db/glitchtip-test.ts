@@ -31,12 +31,13 @@ export async function runGlitchtipTest(
     console.log("GLITCHTIP_DSN is not set, so nothing was sent.")
     return
   }
-  await initErrorReporting({
+  const started = await initErrorReporting({
     dsn,
     environment: firstNonEmpty(process.env.NODE_ENV) ?? DEFAULT_ENVIRONMENT,
     release: SERVICE_VERSION,
     ...(transport ? { transport } : {}),
   })
+  if (!started) throw new Error("error reporting did not start, so nothing was sent")
   Sentry.withScope((scope) => {
     scope.setTag(TEST_TAG, "true")
     scope.setUser({ email: FAKE_EMAIL, ip_address: FAKE_IP_ADDRESS })

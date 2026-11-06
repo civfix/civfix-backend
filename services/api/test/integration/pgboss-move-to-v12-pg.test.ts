@@ -10,6 +10,7 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest"
 import { withPg, type PgHarness } from "../helpers/pg.js"
 import { PgBossJobs } from "../../src/adapters/jobs.pgboss.js"
 import { movePgBossJobsToV12, type PgBossMoveResult } from "../../src/db/pgboss-move-to-v12.js"
+import { PGBOSS_SCHEMA } from "../../src/lib/queue-names.js"
 
 const pg = await withPg()
 
@@ -75,7 +76,7 @@ describe.skipIf(!pg)("pg-boss move to pgboss_v12 (integration)", () => {
         ${job.priority ?? 0}, ${job.retryLimit ?? 2}, ${job.retryCount ?? 0}, ${job.retryDelay ?? 0},
         ${job.retryBackoff ?? false}, ${job.singletonKey ?? null}, ${job.startAfter ?? new Date()},
         ${job.expireIn ?? "15 minutes"}::interval,
-        ${job.state === "active" || job.state === "completed" ? new Date() : null},
+        ${job.state === "created" ? null : new Date(Date.now() - 60 * 1000)},
         ${job.state === "completed" ? new Date() : null},
         now() - interval '1 hour'
       )
@@ -183,7 +184,7 @@ describe.skipIf(!pg)("pg-boss move to pgboss_v12 (integration)", () => {
       const { a, b, c, d } = await fourJobs()
       const columns = h.sql`
         name, id, priority, data, state::text AS state, retry_limit, retry_count, retry_delay,
-        retry_backoff, singleton_key, singleton_on, start_after, created_on, dead_letter
+        retry_backoff, singleton_key, singleton_on, start_after, started_on, created_on, dead_letter
       `
       const before = await h.sql`
         SELECT ${columns} FROM pgboss.job WHERE id IN (${a}, ${b}) ORDER BY id
@@ -207,6 +208,28 @@ describe.skipIf(!pg)("pg-boss move to pgboss_v12 (integration)", () => {
         [c]: "active",
         [d]: "completed",
       })
+    })
+
+    it("T33: pg-boss 12 counts the next run of a moved retry job against its retries", async () => {
+      const e = await oldJob({ state: "retry", retryCount: 1, retryLimit: 2 })
+      await movePgBossJobsToV12(h.sql, { apply: true })
+      const { PgBoss } = await import("pg-boss")
+      const boss = new PgBoss({ connectionString: h.uri, schema: PGBOSS_SCHEMA })
+      const errors: Error[] = []
+      boss.on("error", (err: Error) => errors.push(err))
+      await boss.start()
+      try {
+        const fetched = await boss.fetch(CHECKS)
+        expect(fetched.map((job) => job.id)).toEqual([e])
+      } finally {
+        await boss.stop({ graceful: false })
+      }
+
+      const [row] = await h.sql<{ state: string; retry_count: number }[]>`
+        SELECT state::text AS state, retry_count FROM pgboss_v12.job WHERE id = ${e}
+      `
+      expect(row).toEqual({ state: "active", retry_count: 2 })
+      expect(errors).toEqual([])
     })
 
     it("T25: when cancelling the old rows fails, nothing is copied either", async () => {

@@ -36,3 +36,21 @@ it("T9: sends one event tagged glitchtip-test with the fake personal data stripp
   expect(options.sendDefaultPii).toBe(false)
   expect(options).not.toHaveProperty("dataCollection")
 })
+
+it("T9: fails instead of reporting a send when error reporting does not start", async () => {
+  vi.stubEnv("GLITCHTIP_DSN", FAKE_GLITCHTIP_DSN)
+  const log = vi.spyOn(console, "log").mockImplementation(() => undefined)
+  vi.resetModules()
+  vi.doMock("../../src/errors/glitchtip.js", async (importOriginal) => ({
+    ...(await importOriginal<typeof import("../../src/errors/glitchtip.js")>()),
+    initErrorReporting: () => Promise.resolve(false),
+  }))
+  try {
+    const { runGlitchtipTest: run } = await import("../../src/db/glitchtip-test.js")
+    await expect(run()).rejects.toThrow("error reporting did not start, so nothing was sent")
+    expect(log).not.toHaveBeenCalled()
+  } finally {
+    vi.doUnmock("../../src/errors/glitchtip.js")
+    vi.resetModules()
+  }
+})

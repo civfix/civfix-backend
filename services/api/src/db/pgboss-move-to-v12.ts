@@ -65,7 +65,7 @@ async function moveIntoTarget(tx: TransactionSql): Promise<QueueMoveCounts[]> {
         SELECT
           j.name, j.id, j.priority, j.data, j.state::text AS state, j.retry_limit, j.retry_count,
           j.retry_delay, j.retry_backoff, j.singleton_key, j.singleton_on, j.start_after,
-          j.created_on, j.dead_letter, j.expire_in, q.policy AS target_policy,
+          j.started_on, j.created_on, j.dead_letter, j.expire_in, q.policy AS target_policy,
           q.name IS NOT NULL AS has_queue
         FROM pgboss.job j
         LEFT JOIN pgboss_v12.queue q ON q.name = j.name
@@ -75,12 +75,13 @@ async function moveIntoTarget(tx: TransactionSql): Promise<QueueMoveCounts[]> {
       inserted AS (
         INSERT INTO pgboss_v12.job (
           name, id, priority, data, state, retry_limit, retry_count, retry_delay, retry_backoff,
-          singleton_key, singleton_on, start_after, created_on, dead_letter, expire_seconds, policy
+          singleton_key, singleton_on, start_after, started_on, created_on, dead_letter,
+          expire_seconds, policy
         )
         SELECT
           name, id, priority, data, state::pgboss_v12.job_state, retry_limit, retry_count,
-          retry_delay, retry_backoff, singleton_key, singleton_on, start_after, created_on,
-          dead_letter, extract(epoch FROM expire_in)::int, target_policy
+          retry_delay, retry_backoff, singleton_key, singleton_on, start_after, started_on,
+          created_on, dead_letter, extract(epoch FROM expire_in)::int, target_policy
         FROM waiting
         WHERE has_queue
         ON CONFLICT DO NOTHING
@@ -109,7 +110,9 @@ async function moveIntoTarget(tx: TransactionSql): Promise<QueueMoveCounts[]> {
 /**
  * Copies the jobs still waiting in pg-boss 10's `pgboss` schema into pg-boss 12's, for the jobs an API
  * color still on pg-boss 10 enqueued during the blue/green switch. Only created and retry jobs move;
- * every column D26 lists carries over, and every other column takes pg-boss 12's default. A dry run is
+ * every column D26 lists carries over, and so does started_on: pg-boss 12's fetch counts a retry only
+ * when it is set, so a retry job moved without it would get one run more than its retry_limit allows.
+ * Every other column takes pg-boss 12's default. A dry run is
  * the same transaction rolled back, so its counts are exactly what --apply would do.
  */
 export async function movePgBossJobsToV12(
