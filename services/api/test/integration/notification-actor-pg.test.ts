@@ -307,13 +307,13 @@ describe.skipIf(!pg)("notification actor on GET /notifications (integration)", (
     ])
   })
 
-  it("T10: a like merged into an earlier one inside the dedupe window keeps the first liker", async () => {
+  it("T10: a like, unlike and like again inside the dedupe window is one item naming the liker", async () => {
     const a = await person("Alma")
     const b = await person("Benito")
-    const c = await person("Carmen")
     const postId = await postBy(a, "A's post")
     await ok(send(b.session, "POST", `/v1/posts/${postId}/like`))
-    await ok(send(c.session, "POST", `/v1/posts/${postId}/like`))
+    await ok(send(b.session, "DELETE", `/v1/posts/${postId}/like`))
+    await ok(send(b.session, "POST", `/v1/posts/${postId}/like`))
     const item = await only(a, "post_like")
     expect(item.actor?.id).toBe(b.id)
   })
