@@ -53,6 +53,11 @@ FROM node:24-trixie-slim@sha256:0820eaa85e07d0490446dd01d14707e17e6108a36988cf37
 # ip-address, brace-expansion, picomatch). Run db scripts with `node dist/db/<script>.js`.
 RUN rm -rf /usr/local/bin/corepack /usr/local/lib/node_modules/corepack /usr/local/bin/yarn /usr/local/bin/yarnpkg /opt/yarn-* \
     /usr/local/bin/npm /usr/local/bin/npx /usr/local/lib/node_modules/npm
+# Debian's security update of zlib1g (CVE-2026-76844, CVE-2026-85091), which the image scan fails on: the
+# base digest still ships 1+b1. Drop this step once a base digest ships zlib1g 1+deb13u1 or later.
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends --only-upgrade zlib1g \
+ && rm -rf /var/lib/apt/lists/*
 # SERVICE_VERSION is the RELEASE IDENTITY and it is baked in at BUILD time on purpose. It is the
 # GlitchTip `release` (src/server.ts), so without it every production error report is tagged "0.0.0" and
 # cannot be attributed to a build. It belongs to the IMAGE rather than to the deploy because the image is

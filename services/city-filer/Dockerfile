@@ -59,9 +59,11 @@ ENV NODE_ENV=production \
 WORKDIR /app
 COPY --from=build --chown=node:node /out /app
 # Chromium comes from the deployed playwright-core's own CLI, so the browser is the one the kit's pin
-# drives.
+# drives. The zlib1g upgrade is Debian's security update (CVE-2026-76844, CVE-2026-85091), which the image
+# scan fails on: the base digest still ships 1+b1. Drop it once a base digest ships zlib1g 1+deb13u1 or later.
 RUN apt-get update \
  && apt-get install -y --no-install-recommends util-linux git ca-certificates \
+ && apt-get install -y --no-install-recommends --only-upgrade zlib1g \
  && /app/node_modules/.bin/playwright-core install --with-deps chromium \
  && rm -rf /var/lib/apt/lists/* \
  && groupadd --system --gid 1001 filer \

@@ -174,8 +174,11 @@ WORKDIR /app
 # where the image scan finds fixable HIGH advisories.
 RUN rm -rf /usr/local/bin/corepack /usr/local/lib/node_modules/corepack /usr/local/bin/yarn /usr/local/bin/yarnpkg /opt/yarn-* \
     /usr/local/bin/npm /usr/local/bin/npx /usr/local/lib/node_modules/npm
+# The zlib1g upgrade is Debian's security update (CVE-2026-76844, CVE-2026-85091), which the image scan
+# fails on: the base digest still ships 1+b1. Drop it once a base digest ships zlib1g 1+deb13u1 or later.
 RUN apt-get update \
  && apt-get install -y --no-install-recommends util-linux \
+ && apt-get install -y --no-install-recommends --only-upgrade zlib1g \
  && rm -rf /var/lib/apt/lists/* \
  && groupadd --system --gid 1001 mediatools \
  && useradd --system --uid 1001 --gid 1001 --no-create-home --shell /usr/sbin/nologin mediatools \
