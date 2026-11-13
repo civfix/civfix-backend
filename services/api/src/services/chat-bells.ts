@@ -67,6 +67,7 @@ async function bellGroupMember(
   recipientId: string,
   kind: GroupRoomKind,
   roomId: string,
+  actorUserId: string,
   message: ChatMessageDTO,
   titleKey: MessageKey,
 ): Promise<void> {
@@ -84,6 +85,7 @@ async function bellGroupMember(
     vars: { name: messageAuthorName(message) },
     ...previewBody(message),
     link: CONVERSATION_BELL[kind].link(roomId),
+    actorId: actorUserId,
     ...(conversationName !== undefined ? { conversationName } : {}),
   })
 }
@@ -107,7 +109,15 @@ export function makeChatMentionNotifier(
     if (await deps.isMutedFor(mentionedUserId, kind, roomId)) return
     if (!(await isGroupMember(deps, kind, roomId, mentionedUserId))) return
     if (await deps.isBlockedEitherWay(actorUserId, mentionedUserId)) return
-    await bellGroupMember(deps, mentionedUserId, kind, roomId, message, CHAT_MENTION_TITLE_KEY)
+    await bellGroupMember(
+      deps,
+      mentionedUserId,
+      kind,
+      roomId,
+      actorUserId,
+      message,
+      CHAT_MENTION_TITLE_KEY,
+    )
   }
 }
 
@@ -130,7 +140,15 @@ export function makeChatReplyNotifier(deps: ChatBellDeps): OnChatReply {
       }
       if (online.includes(targetUserId)) return
     }
-    await bellGroupMember(deps, targetUserId, kind, roomId, message, CHAT_REPLY_TITLE_KEY)
+    await bellGroupMember(
+      deps,
+      targetUserId,
+      kind,
+      roomId,
+      actorUserId,
+      message,
+      CHAT_REPLY_TITLE_KEY,
+    )
   }
 }
 

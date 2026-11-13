@@ -521,12 +521,22 @@ export function makePostService(deps: PostServiceDeps): PostService {
     const { replyParentAuthor, quoteTargetAuthor } = targets
     if (replyParentAuthor !== null && (await shouldNotify(authorId, replyParentAuthor))) {
       await safeNotify((notifier) =>
-        notifier.onPostReply({ recipientId: replyParentAuthor, actorName, postId }),
+        notifier.onPostReply({
+          recipientId: replyParentAuthor,
+          actorId: authorId,
+          actorName,
+          postId,
+        }),
       )
     }
     if (quoteTargetAuthor !== null && (await shouldNotify(authorId, quoteTargetAuthor))) {
       await safeNotify((notifier) =>
-        notifier.onPostQuote({ recipientId: quoteTargetAuthor, actorName, postId }),
+        notifier.onPostQuote({
+          recipientId: quoteTargetAuthor,
+          actorId: authorId,
+          actorName,
+          postId,
+        }),
       )
     }
     const recipients = mentions.map((m) => m.id).filter((id) => id !== authorId)
@@ -534,7 +544,9 @@ export function makePostService(deps: PostServiceDeps): PostService {
     const blocked = await blockedIdsAmong(authorId, recipients)
     const unblocked = recipients.filter((id) => !blocked.has(id))
     await mapWithLimit(unblocked, MENTION_NOTIFY_CONCURRENCY, (recipientId) =>
-      safeNotify((notifier) => notifier.onPostMention({ recipientId, actorName, postId })),
+      safeNotify((notifier) =>
+        notifier.onPostMention({ recipientId, actorId: authorId, actorName, postId }),
+      ),
     )
   }
 
@@ -621,6 +633,7 @@ export function makePostService(deps: PostServiceDeps): PostService {
         await safeNotify((notifier) =>
           notifier.onPostLike({
             recipientId: subject.authorId,
+            actorId: viewerId,
             actorName,
             postId: subject.id,
           }),
@@ -662,6 +675,7 @@ export function makePostService(deps: PostServiceDeps): PostService {
           await safeNotify((notifier) =>
             notifier.onPostRepost({
               recipientId: targetBrief.authorId,
+              actorId: viewerId,
               actorName,
               postId: targetId,
             }),

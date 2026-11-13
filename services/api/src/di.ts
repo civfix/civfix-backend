@@ -520,7 +520,7 @@ export function makeContainer(env: Env): Container {
     if (logger !== undefined) serverLogger ??= logger
     if (notificationService === undefined || (logger !== undefined && !notificationLoggerWired)) {
       notificationService = makeNotificationService({
-        repo: makeDrizzleNotificationRepository(getDb().sql),
+        repo: makeDrizzleNotificationRepository(getDb().sql, presignAvatar),
         settingsRepo: makeDrizzleNotificationSettingsRepository(getDb().sql),
         pushSender: pushSender.get(),
         userChannel: userChannel.get(),

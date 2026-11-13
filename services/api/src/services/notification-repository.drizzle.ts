@@ -8,6 +8,7 @@ import {
 import type {
   CoalescedNotificationArgs,
   EmailRecipientRecord,
+  ListedNotificationRecord,
   NewNotificationArgs,
   NotificationPrefsPatch,
   NotificationPrefsRecord,
@@ -19,6 +20,12 @@ import { DEFAULT_PREFS, FEED_HIDDEN_NOTIFICATION_TYPES } from "./notification-se
 import { AppError } from "@civfix/contract"
 import type { NotificationType, PushPlatform } from "@civfix/contract"
 import { requireRow } from "../db/rows.js"
+import {
+  resolveAvatarColumns,
+  userAvatarColumns,
+  type AvatarPresigner,
+  type UserAvatarColumns,
+} from "./user-avatar.js"
 
 const QUIET_TIME_RE = /^([01]\d|2[0-3]):[0-5]\d(:[0-5]\d)?$/
 
@@ -36,6 +43,15 @@ interface NotificationRowSelect {
   read_at: Date | null
   created_at: Date
 }
+
+type ListedRowSelect = NotificationRowSelect &
+  UserAvatarColumns<"actor_"> & {
+    cursor_at: string | null
+    actor_id: string | null
+    actor_display_name: string | null
+    actor_handle: string | null
+    actor_is_following: boolean
+  }
 
 interface PrefsRowSelect {
   push: boolean
@@ -60,6 +76,22 @@ function toRecord(r: NotificationRowSelect): NotificationRecord {
     link: r.link,
     readAt: r.read_at,
     createdAt: r.created_at,
+  }
+}
+
+function toListedRecord(r: ListedRowSelect): ListedNotificationRecord {
+  return {
+    ...toRecord(r),
+    actor:
+      r.actor_id !== null && r.actor_display_name !== null
+        ? {
+            id: r.actor_id,
+            displayName: r.actor_display_name,
+            handle: r.actor_handle,
+            avatarUrl: r.actor_avatar_url,
+            isFollowing: r.actor_is_following,
+          }
+        : null,
   }
 }
 
@@ -140,12 +172,15 @@ export function explainMarkAllRead(sql: Queryable, userId: string): Promise<stri
   return explain(sql, markAllReadStatement(sql, userId))
 }
 
-export function makeDrizzleNotificationRepository(sql: Sql): NotificationRepository {
+export function makeDrizzleNotificationRepository(
+  sql: Sql,
+  presignAvatar?: AvatarPresigner,
+): NotificationRepository {
   return {
     async insertNotification(args: NewNotificationArgs): Promise<NotificationRecord> {
       const rows = await sql<NotificationRowSelect[]>`
-        INSERT INTO notifications (user_id, type, title, body, link)
-        VALUES (${args.userId}, ${args.type}, ${args.title}, ${args.body}, ${args.link})
+        INSERT INTO notifications (user_id, type, title, body, link, actor_id)
+        VALUES (${args.userId}, ${args.type}, ${args.title}, ${args.body}, ${args.link}, ${args.actorId ?? null})
         RETURNING id, user_id, type, title, body, link, read_at, created_at
       `
       return toRecord(requireRow(rows, "notification insert"))
@@ -155,25 +190,49 @@ export function makeDrizzleNotificationRepository(sql: Sql): NotificationReposit
       userId: string,
       cursor: string | null,
       limit: number,
-    ): Promise<{ records: NotificationRecord[]; nextCursor: string | null }> {
+    ): Promise<{ records: ListedNotificationRecord[]; nextCursor: string | null }> {
       const parsed = parseKeysetCursor(cursor)
       const cursorFilter =
         parsed !== null ? sql`AND ${keysetPredicate(sql, sql`created_at`, sql`id`, parsed)}` : sql``
-      const rows = await sql<(NotificationRowSelect & { cursor_at: string | null })[]>`
-        SELECT id, user_id, type, title, body, link, read_at, created_at,
-               ${keysetInstant(sql, sql`created_at`)} AS cursor_at
-        FROM notifications
-        WHERE user_id = ${userId}
-          AND type <> ALL(${[...FEED_HIDDEN_NOTIFICATION_TYPES]}::text[])
-          ${cursorFilter}
-        ORDER BY created_at DESC, id DESC
-        LIMIT ${limit + 1}
+      // The page is cut first and the actors joined onto it, so the joins never touch more than one
+      // page of rows. A deleted actor, or one either side blocks, joins as no one.
+      const rows = await sql<ListedRowSelect[]>`
+        SELECT n.id, n.user_id, n.type, n.title, n.body, n.link, n.read_at, n.created_at, n.cursor_at,
+               u.id AS actor_id,
+               u.display_name AS actor_display_name,
+               u.handle AS actor_handle,
+               ${userAvatarColumns(sql, "u", "am", "actor_")},
+               EXISTS (
+                 SELECT 1 FROM follows_people f
+                 WHERE f.follower_id = ${userId} AND f.followee_id = u.id
+               ) AS actor_is_following
+        FROM (
+          SELECT id, user_id, type, title, body, link, read_at, created_at, actor_id,
+                 ${keysetInstant(sql, sql`created_at`)} AS cursor_at
+          FROM notifications
+          WHERE user_id = ${userId}
+            AND type <> ALL(${[...FEED_HIDDEN_NOTIFICATION_TYPES]}::text[])
+            ${cursorFilter}
+          ORDER BY created_at DESC, id DESC
+          LIMIT ${limit + 1}
+        ) n
+        LEFT JOIN users u
+          ON u.id = n.actor_id
+          AND u.deleted_at IS NULL
+          AND NOT EXISTS (
+            SELECT 1 FROM user_blocks b
+            WHERE (b.blocker_id = ${userId} AND b.blocked_id = n.actor_id)
+               OR (b.blocker_id = n.actor_id AND b.blocked_id = ${userId})
+          )
+        LEFT JOIN media_assets am ON am.id = u.avatar_media_id
+        ORDER BY n.created_at DESC, n.id DESC
       `
       const { items, nextCursor } = paginateKeyset(rows, limit, (r) => ({
         atText: r.cursor_at,
         id: r.id,
       }))
-      return { records: items.map(toRecord), nextCursor }
+      await resolveAvatarColumns(presignAvatar, items, ["actor_"])
+      return { records: items.map(toListedRecord), nextCursor }
     },
 
     async markRead(userId: string, ids: string[]): Promise<string[]> {
@@ -406,8 +465,8 @@ export function makeDrizzleNotificationRepository(sql: Sql): NotificationReposit
         `
         if (existing[0]) return { record: toRecord(existing[0]), deduped: true }
         const rows = await tx<NotificationRowSelect[]>`
-          INSERT INTO notifications (user_id, type, title, body, link)
-          VALUES (${args.userId}, ${args.type}, ${args.title}, ${args.body}, ${args.link})
+          INSERT INTO notifications (user_id, type, title, body, link, actor_id)
+          VALUES (${args.userId}, ${args.type}, ${args.title}, ${args.body}, ${args.link}, ${args.actorId ?? null})
           RETURNING id, user_id, type, title, body, link, read_at, created_at
         `
         return { record: toRecord(requireRow(rows, "notification insert")), deduped: false }

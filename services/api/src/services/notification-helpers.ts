@@ -1,12 +1,18 @@
-import { NotificationCategorySchema } from "@civfix/contract"
+import { NotificationCategorySchema, avatarGradient } from "@civfix/contract"
 import type {
+  NotificationActorDTO,
   NotificationCategory,
   NotificationDTO,
   NotificationPrefsDTO,
   NotificationType,
   UpdateNotificationPrefsRequest,
 } from "@civfix/contract"
-import type { NotificationPrefsRecord, NotificationRecord } from "./notification-repository.js"
+import type {
+  ListedNotificationRecord,
+  NotificationActorRecord,
+  NotificationPrefsRecord,
+  NotificationRecord,
+} from "./notification-repository.js"
 import type { NotificationSettingsPatch } from "./notification-settings-repository.js"
 import type { EffectiveNotificationSettings } from "./notification-settings-service.js"
 import { MINUTES_PER_HOUR } from "../lib/time.js"
@@ -189,5 +195,24 @@ export function toNotificationDTO(record: NotificationRecord): NotificationDTO {
     read: record.readAt !== null,
     createdAt: record.createdAt.toISOString(),
     ...(record.link !== null ? { link: record.link } : {}),
+  }
+}
+
+// Field for field as toPersonDTO serves the same person.
+function toActorDTO(actor: NotificationActorRecord): NotificationActorDTO {
+  return {
+    id: actor.id,
+    name: actor.displayName,
+    handle: actor.handle,
+    avatar: avatarGradient(actor.id),
+    ...(actor.avatarUrl !== null ? { avatarUrl: actor.avatarUrl } : {}),
+    isFollowing: actor.isFollowing,
+  }
+}
+
+export function toListedNotificationDTO(record: ListedNotificationRecord): NotificationDTO {
+  return {
+    ...toNotificationDTO(record),
+    actor: record.actor !== null ? toActorDTO(record.actor) : null,
   }
 }

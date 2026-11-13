@@ -50,7 +50,8 @@ function erasureDb() {
   return drizzle(client as never, { schema })
 }
 
-const post = { recipientId: B, actorName: "Ana", postId: "p1" }
+const ANA = "aaaaaaaa-0000-4000-8000-000000000001"
+const post = { recipientId: B, actorId: ANA, actorName: "Ana", postId: "p1" }
 
 describe("per-path category", () => {
   it("T48: a post mention, reply and quote are Mentions and replies", async () => {

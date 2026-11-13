@@ -240,8 +240,8 @@ importers:
   packages/seams:
     dependencies:
       '@civfix/contract':
-        specifier: ^0.71.1
-        version: 0.71.1
+        specifier: ^0.72.0
+        version: 0.72.0
     devDependencies:
       '@civfix/config':
         specifier: workspace:*
@@ -307,8 +307,8 @@ importers:
         specifier: ^3.1147.0
         version: 3.1147.0
       '@civfix/contract':
-        specifier: ^0.71.1
-        version: 0.71.1
+        specifier: ^0.72.0
+        version: 0.72.0
       '@civfix/tokens':
         specifier: ^0.1.1
         version: 0.1.1
@@ -464,8 +464,8 @@ importers:
         specifier: workspace:*
         version: link:../api
       '@civfix/contract':
-        specifier: ^0.71.1
-        version: 0.71.1
+        specifier: ^0.72.0
+        version: 0.72.0
       '@sentry/node':
         specifier: ^10.76.1
         version: 10.76.1(@opentelemetry/core@2.12.0(@opentelemetry/api@1.9.1))(supports-color@7.2.0)
@@ -531,8 +531,8 @@ importers:
         specifier: workspace:*
         version: link:../api
       '@civfix/contract':
-        specifier: ^0.71.1
-        version: 0.71.1
+        specifier: ^0.72.0
+        version: 0.72.0
       '@sentry/node':
         specifier: ^10.76.1
         version: 10.76.1(@opentelemetry/core@2.12.0(@opentelemetry/api@1.9.1))(supports-color@7.2.0)
@@ -727,9 +727,9 @@ packages:
   '@cacheable/utils@2.5.0':
     resolution: {integrity: sha512-buipgOVDkkPXNR5+xBpDw7Zk2n1EvU7qBJCNUcL7rhQ//kfpOXPAvQ511Os0vpLYJ1pZnvudNytkQt2hst3wqA==}
 
-  '@civfix/contract@0.71.1':
-    resolution: {integrity: sha512-jg5VpST3D+BljDsuGnwHtguSZCCat/S0ooCXPQx2I0QF6rhGtEkhRgJkF8F+UCWuBRjDfOfbfrPRbBZgcAl4hw==}
-    engines: {node: '>=20'}
+  '@civfix/contract@0.72.0':
+    resolution: {integrity: sha512-SFoAgVy543lY6G4hyBD1XKiUPM4K9nXyr8B9WqcSTPvrxUSbO32FgUsBEvEcSOWNZ7c247j+xK1gXwMQz1ijyA==}
+    engines: {node: ^24.15}
 
   '@civfix/tokens@0.1.1':
     resolution: {integrity: sha512-q8X1kGM90fEAbbk1tEuy91cA9Dr8Z/l9v3gdKN5DibEZrSnVbPnclJCMotmW7HzC8AjhqBo1MHxxrBaooGUPkw==}
@@ -5164,7 +5164,7 @@ snapshots:
       hashery: 1.5.1
       keyv: 5.6.0
 
-  '@civfix/contract@0.71.1':
+  '@civfix/contract@0.72.0':
     dependencies:
       zod: 4.6.7
 

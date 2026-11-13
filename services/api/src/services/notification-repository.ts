@@ -11,12 +11,29 @@ export interface NotificationRecord {
   createdAt: Date
 }
 
+/** The person a listed notification is about, as the viewer may see them. */
+export interface NotificationActorRecord {
+  id: string
+  displayName: string
+  handle: string | null
+  /** Already resolved the way every user avatar is (user-avatar.ts). */
+  avatarUrl: string | null
+  isFollowing: boolean
+}
+
+export interface ListedNotificationRecord extends NotificationRecord {
+  /** Null when the row has no actor, the actor's account is deleted, or either blocks the other. */
+  actor: NotificationActorRecord | null
+}
+
 export interface NewNotificationArgs {
   userId: string
   type: NotificationType
   title: string
   body: string | null
   link: string | null
+  /** Who the notification is about, when it is about a person. */
+  actorId?: string
 }
 
 export interface NotificationPrefsRecord {
@@ -66,7 +83,7 @@ export interface NotificationRepository {
     userId: string,
     cursor: string | null,
     limit: number,
-  ): Promise<{ records: NotificationRecord[]; nextCursor: string | null }>
+  ): Promise<{ records: ListedNotificationRecord[]; nextCursor: string | null }>
 
   markRead(userId: string, ids: string[]): Promise<string[]>
 
