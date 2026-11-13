@@ -18,7 +18,7 @@ of the retired 2026-07-24 security review (git history); its open items live in 
 node dist/db/migrate.js        # == pnpm --filter @civfix/api db:migrate
 ```
 
-`drizzle/` holds **186 files**, `0000_extensions.sql` … `0231_consent_records_actions.sql`. The nine rows
+`drizzle/` holds **187 files**, `0000_extensions.sql` … `0232_notifications_actor.sql`. The nine rows
 below are exactly what this change set adds (`0052`–`0060`, contiguous, no gaps) and everything from
 `0000` through `0051_social_posts.sql` predates it. (`0060` arrived later than the rest, with the feed
 redesign; it is listed here because this table is the single operator runbook. `0061`–`0064` arrived
