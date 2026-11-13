@@ -21,6 +21,7 @@ import {
   isWithinQuietHours,
   prefsFromSettings,
   settingsPatchFromPrefs,
+  toListedNotificationDTO,
   toNotificationDTO,
 } from "./notification-helpers.js"
 import { categoryForType, categorySettingOf, categorySettings } from "./notification-categories.js"
@@ -93,6 +94,8 @@ export interface CreateNotificationInput {
   category?: NotificationCategory
   email?: "auto" | "never"
   conversationName?: string
+  /** Who the notification is about; a deduped notification keeps the one it was first written with. */
+  actorId?: string
 }
 
 export interface NotificationServiceDeps {
@@ -108,6 +111,7 @@ export interface NotificationServiceDeps {
 
 export interface PostActivity {
   recipientId: string
+  actorId: string
   actorName: string
   postId: string
 }
@@ -427,6 +431,7 @@ export function makeNotificationService(deps: NotificationServiceDeps): Notifica
           title,
           body,
           link,
+          ...(input.actorId !== undefined ? { actorId: input.actorId } : {}),
           since: new Date(now().getTime() - input.dedupeWindowMs),
         })
       } catch (err) {
@@ -439,6 +444,7 @@ export function makeNotificationService(deps: NotificationServiceDeps): Notifica
       title,
       body,
       link,
+      ...(input.actorId !== undefined ? { actorId: input.actorId } : {}),
     })
     return { record, deduped: false }
   }
@@ -502,6 +508,7 @@ export function makeNotificationService(deps: NotificationServiceDeps): Notifica
       bodyKey: spec.bodyKey,
       vars: { name: a.actorName },
       link: postLink(a.postId),
+      actorId: a.actorId,
       ...(spec.deduped ? { dedupeWindowMs: NOTIFICATION_DEDUPE_WINDOW_MS } : {}),
     })
   }
@@ -693,7 +700,7 @@ export function makeNotificationService(deps: NotificationServiceDeps): Notifica
         pagination.cursor ?? null,
         pagination.limit ?? NOTIFICATIONS_DEFAULT_LIMIT,
       )
-      return { items: records.map(toNotificationDTO), nextCursor }
+      return { items: records.map(toListedNotificationDTO), nextCursor }
     },
 
     async hasUnread(userId: string): Promise<NotificationUnreadResponse> {
@@ -817,6 +824,7 @@ export function makeNotificationService(deps: NotificationServiceDeps): Notifica
         bodyKey: "notification.follower.body",
         vars: { name: actorDisplayName(args.follower.displayName, args.follower.handle) },
         link: personLink(args.follower.id),
+        actorId: args.follower.id,
         dedupeWindowMs: NOTIFICATION_DEDUPE_WINDOW_MS,
       })
     },

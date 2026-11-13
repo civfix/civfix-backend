@@ -3,6 +3,7 @@ import type { Container } from "../di.js"
 import { makeNotificationService, type NotificationService } from "./notification-service.js"
 import { makeDrizzleNotificationRepository } from "./notification-repository.drizzle.js"
 import { makeDrizzleNotificationSettingsRepository } from "./notification-settings-repository.drizzle.js"
+import { avatarPresigner } from "./user-avatar.js"
 
 /**
  * Built per call: the Drizzle repos are thin wrappers over the lazily-created `sql` tag, so this opens
@@ -13,7 +14,10 @@ export function makeRouteNotificationService(
   logger?: Pick<FastifyBaseLogger, "warn" | "error">,
 ): NotificationService {
   return makeNotificationService({
-    repo: makeDrizzleNotificationRepository(container.getDb().sql),
+    repo: makeDrizzleNotificationRepository(
+      container.getDb().sql,
+      avatarPresigner(container.storage),
+    ),
     settingsRepo: makeDrizzleNotificationSettingsRepository(container.getDb().sql),
     pushSender: container.pushSender,
     userChannel: container.userChannel,

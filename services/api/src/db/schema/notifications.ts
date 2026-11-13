@@ -18,6 +18,7 @@ export const notifications = pgTable(
     title: text("title").notNull(),
     body: text("body"),
     link: text("link"),
+    actorId: uuid("actor_id"),
     readAt: timestamp("read_at", { withTimezone: true }),
     createdAt: timestamp("created_at", { withTimezone: true }).defaultNow(),
   },

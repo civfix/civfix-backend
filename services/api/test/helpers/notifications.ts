@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto"
 import type { CreateNotificationInput } from "../../src/services/notification-service.js"
 import type {
   EmailRecipientRecord,
+  ListedNotificationRecord,
   NewNotificationArgs,
   NotificationPrefsPatch,
   NotificationPrefsRecord,
@@ -94,7 +95,7 @@ export class InMemoryNotificationRepository implements NotificationRepository {
     userId: string,
     cursor: string | null,
     limit: number,
-  ): Promise<{ records: NotificationRecord[]; nextCursor: string | null }> {
+  ): Promise<{ records: ListedNotificationRecord[]; nextCursor: string | null }> {
     const mine = this.notifications
       .filter((n) => n.userId === userId && isFeedVisibleType(n.type))
       .sort((a, b) => {
@@ -115,7 +116,8 @@ export class InMemoryNotificationRepository implements NotificationRepository {
         : mine
 
     const { items, nextCursor } = paginate(after, limit, (n) => ({ at: n.createdAt, id: n.id }))
-    return Promise.resolve({ records: items, nextCursor })
+    // No users here to join an actor from.
+    return Promise.resolve({ records: items.map((n) => ({ ...n, actor: null })), nextCursor })
   }
 
   markRead(userId: string, ids: string[]): Promise<string[]> {

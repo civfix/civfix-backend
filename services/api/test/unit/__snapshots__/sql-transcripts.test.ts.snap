@@ -7017,10 +7017,10 @@ SELECT EXISTS ( SELECT 1 FROM notifications WHERE user_id = $1 AND read_at IS NU
 
 exports[`sql transcripts > makeDrizzleNotificationRepository.insertNotification 1`] = `
 "-- empty
-INSERT INTO notifications (user_id, type, title, body, link) VALUES ($1, $2, $3, $4, $5) RETURNING id, user_id, type, title, body, link, read_at, created_at -- ["userId-1","system","title-1","body-1","link-1"]
+INSERT INTO notifications (user_id, type, title, body, link, actor_id) VALUES ($1, $2, $3, $4, $5, $6) RETURNING id, user_id, type, title, body, link, read_at, created_at -- ["userId-1","system","title-1","body-1","link-1","actorId-1"]
 => throws Error: notification insert: expected a row, got none
 -- row
-INSERT INTO notifications (user_id, type, title, body, link) VALUES ($1, $2, $3, $4, $5) RETURNING id, user_id, type, title, body, link, read_at, created_at -- ["userId-1","system","title-1","body-1","link-1"]
+INSERT INTO notifications (user_id, type, title, body, link, actor_id) VALUES ($1, $2, $3, $4, $5, $6) RETURNING id, user_id, type, title, body, link, read_at, created_at -- ["userId-1","system","title-1","body-1","link-1","actorId-1"]
 => {"id":"id-row","userId":"user_id-row","type":"type-row","title":"title-row","body":"body-row","link":"link-row","readAt":"2026-03-04T05:06:07.000Z","createdAt":"2026-03-04T05:06:07.000Z"}"
 `;
 
@@ -7029,7 +7029,7 @@ exports[`sql transcripts > makeDrizzleNotificationRepository.insertUnlessRecentD
 BEGIN tx1
 [tx1] SELECT pg_advisory_xact_lock( hashtext('notification_dedupe:' || $1 || ':' || $2 || ':' || COALESCE($3::text, '')) ) -- [undefined,undefined,null]
 [tx1] SELECT id, user_id, type, title, body, link, read_at, created_at FROM notifications WHERE user_id = $1 AND type = $2 AND link IS NOT DISTINCT FROM $3 AND body IS NOT DISTINCT FROM $4 AND created_at > $5 ORDER BY created_at DESC LIMIT 1 -- [undefined,undefined,null,undefined,undefined]
-[tx1] INSERT INTO notifications (user_id, type, title, body, link) VALUES ($1, $2, $3, $4, $5) RETURNING id, user_id, type, title, body, link, read_at, created_at -- [undefined,undefined,undefined,undefined,null]
+[tx1] INSERT INTO notifications (user_id, type, title, body, link, actor_id) VALUES ($1, $2, $3, $4, $5, $6) RETURNING id, user_id, type, title, body, link, read_at, created_at -- [undefined,undefined,undefined,undefined,null,null]
 ROLLBACK tx1
 => throws Error: notification insert: expected a row, got none
 -- row
@@ -7042,11 +7042,11 @@ COMMIT tx1
 
 exports[`sql transcripts > makeDrizzleNotificationRepository.listNotifications 1`] = `
 "-- empty
-SELECT id, user_id, type, title, body, link, read_at, created_at, to_char(created_at AT TIME ZONE 'UTC', $1) AS cursor_at FROM notifications WHERE user_id = $2 AND type <> ALL($3::text[]) ORDER BY created_at DESC, id DESC LIMIT $4 -- ["YYYY-MM-DD\\"T\\"HH24:MI:SS.US\\"Z\\"","userId-1",["dm","cleanup_chat","group_chat","report_chat"],4]
+SELECT n.id, n.user_id, n.type, n.title, n.body, n.link, n.read_at, n.created_at, n.cursor_at, u.id AS actor_id, u.display_name AS actor_display_name, u.handle AS actor_handle, <helper ["u"]>.avatar_url AS <helper ["actor_avatar_url"]>, <helper ["am"]>.status AS <helper ["actor_avatar_media_status"]>, <helper ["am"]>.served_key AS <helper ["actor_avatar_served_key"]>, <helper ["am"]>.thumb_key AS <helper ["actor_avatar_thumb_key"]> , EXISTS ( SELECT 1 FROM follows_people f WHERE f.follower_id = $1 AND f.followee_id = u.id ) AS actor_is_following FROM ( SELECT id, user_id, type, title, body, link, read_at, created_at, actor_id, to_char(created_at AT TIME ZONE 'UTC', $2) AS cursor_at FROM notifications WHERE user_id = $3 AND type <> ALL($4::text[]) ORDER BY created_at DESC, id DESC LIMIT $5 ) n LEFT JOIN users u ON u.id = n.actor_id AND u.deleted_at IS NULL AND NOT EXISTS ( SELECT 1 FROM user_blocks b WHERE (b.blocker_id = $6 AND b.blocked_id = n.actor_id) OR (b.blocker_id = n.actor_id AND b.blocked_id = $7) ) LEFT JOIN media_assets am ON am.id = u.avatar_media_id ORDER BY n.created_at DESC, n.id DESC -- ["userId-1","YYYY-MM-DD\\"T\\"HH24:MI:SS.US\\"Z\\"","userId-1",["dm","cleanup_chat","group_chat","report_chat"],4,"userId-1","userId-1"]
 => {"records":[],"nextCursor":null}
 -- row
-SELECT id, user_id, type, title, body, link, read_at, created_at, to_char(created_at AT TIME ZONE 'UTC', $1) AS cursor_at FROM notifications WHERE user_id = $2 AND type <> ALL($3::text[]) ORDER BY created_at DESC, id DESC LIMIT $4 -- ["YYYY-MM-DD\\"T\\"HH24:MI:SS.US\\"Z\\"","userId-1",["dm","cleanup_chat","group_chat","report_chat"],4]
-=> {"records":[{"id":"id-row","userId":"user_id-row","type":"type-row","title":"title-row","body":"body-row","link":"link-row","readAt":"2026-03-04T05:06:07.000Z","createdAt":"2026-03-04T05:06:07.000Z"}],"nextCursor":null}"
+SELECT n.id, n.user_id, n.type, n.title, n.body, n.link, n.read_at, n.created_at, n.cursor_at, u.id AS actor_id, u.display_name AS actor_display_name, u.handle AS actor_handle, <helper ["u"]>.avatar_url AS <helper ["actor_avatar_url"]>, <helper ["am"]>.status AS <helper ["actor_avatar_media_status"]>, <helper ["am"]>.served_key AS <helper ["actor_avatar_served_key"]>, <helper ["am"]>.thumb_key AS <helper ["actor_avatar_thumb_key"]> , EXISTS ( SELECT 1 FROM follows_people f WHERE f.follower_id = $1 AND f.followee_id = u.id ) AS actor_is_following FROM ( SELECT id, user_id, type, title, body, link, read_at, created_at, actor_id, to_char(created_at AT TIME ZONE 'UTC', $2) AS cursor_at FROM notifications WHERE user_id = $3 AND type <> ALL($4::text[]) ORDER BY created_at DESC, id DESC LIMIT $5 ) n LEFT JOIN users u ON u.id = n.actor_id AND u.deleted_at IS NULL AND NOT EXISTS ( SELECT 1 FROM user_blocks b WHERE (b.blocker_id = $6 AND b.blocked_id = n.actor_id) OR (b.blocker_id = n.actor_id AND b.blocked_id = $7) ) LEFT JOIN media_assets am ON am.id = u.avatar_media_id ORDER BY n.created_at DESC, n.id DESC -- ["userId-1","YYYY-MM-DD\\"T\\"HH24:MI:SS.US\\"Z\\"","userId-1",["dm","cleanup_chat","group_chat","report_chat"],4,"userId-1","userId-1"]
+=> {"records":[{"id":"id-row","userId":"user_id-row","type":"type-row","title":"title-row","body":"body-row","link":"link-row","readAt":"2026-03-04T05:06:07.000Z","createdAt":"2026-03-04T05:06:07.000Z","actor":{"id":"actor_id-row","displayName":"actor_display_name-row","handle":"actor_handle-row","avatarUrl":"actor_avatar_url-row","isFollowing":"actor_is_following-row"}}],"nextCursor":null}"
 `;
 
 exports[`sql transcripts > makeDrizzleNotificationRepository.markAllRead 1`] = `

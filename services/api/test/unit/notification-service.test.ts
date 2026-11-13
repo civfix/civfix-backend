@@ -27,6 +27,7 @@ const TOK_V = "d4".repeat(32)
 
 const U = "11111111-1111-1111-1111-111111111111"
 const V = "22222222-2222-2222-2222-222222222222"
+const BOB = "33333333-3333-3333-3333-333333333333"
 
 function makeHarness(nowFn?: () => Date): {
   repo: InMemoryNotificationRepository
@@ -599,7 +600,7 @@ describe("toggle-bell de-duplication (F015)", () => {
     const { repo, settings, push, service } = makeHarness(() => new Date(nowMs))
     await settings.upsertSettings(U, { likesAndReposts: { push: true } })
     for (let i = 0; i < 4; i++) {
-      await service.onPostLike({ recipientId: U, actorName: "Mallory", postId: "p1" })
+      await service.onPostLike({ recipientId: U, actorId: V, actorName: "Mallory", postId: "p1" })
       nowMs += 1000
     }
     const bells = repo.notifications.filter((n) => n.userId === U && n.type === "post_like")
@@ -610,8 +611,8 @@ describe("toggle-bell de-duplication (F015)", () => {
 
   it("a DIFFERENT actor liking the same post still rings (dedupe keys on actor via body)", async () => {
     const { repo, service } = makeHarness(() => at(12, 0))
-    await service.onPostLike({ recipientId: U, actorName: "Alice", postId: "p1" })
-    await service.onPostLike({ recipientId: U, actorName: "Bob", postId: "p1" })
+    await service.onPostLike({ recipientId: U, actorId: V, actorName: "Alice", postId: "p1" })
+    await service.onPostLike({ recipientId: U, actorId: BOB, actorName: "Bob", postId: "p1" })
     const bells = repo.notifications.filter((n) => n.userId === U && n.type === "post_like")
     expect(bells).toHaveLength(2)
   })

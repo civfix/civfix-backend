@@ -565,7 +565,9 @@ describe("PostService notification fan-out", () => {
     const spy = spyNotifier()
     const svc = makePostService({ repo, sql: throwingSql, notifier: spy.notifier })
     await svc.likePost("p1", "liker")
-    expect(spy.likes).toEqual([{ recipientId: "author", actorName: "Actor Zed", postId: "p1" }])
+    expect(spy.likes).toEqual([
+      { recipientId: "author", actorId: "liker", actorName: "Actor Zed", postId: "p1" },
+    ])
   })
 
   it("does NOT notify on a self-like", async () => {
@@ -613,7 +615,12 @@ describe("PostService notification fan-out", () => {
       "replier",
     )
     expect(spy.replies).toEqual([
-      { recipientId: "parentAuthor", actorName: "Actor Zed", postId: "new-post-id" },
+      {
+        recipientId: "parentAuthor",
+        actorId: "replier",
+        actorName: "Actor Zed",
+        postId: "new-post-id",
+      },
     ])
   })
 
@@ -631,7 +638,7 @@ describe("PostService notification fan-out", () => {
     await svc.likePost("shell", "liker")
     expect(likeCalls).toEqual(["orig"])
     expect(spy.likes).toEqual([
-      { recipientId: "origAuthor", actorName: "Actor Zed", postId: "orig" },
+      { recipientId: "origAuthor", actorId: "liker", actorName: "Actor Zed", postId: "orig" },
     ])
   })
 })
@@ -695,7 +702,12 @@ describe("PostService: replyToId alone makes a reply, whatever `kind` claims", (
     await svc.createPost(kindlessReply(), "replier")
     expect(repo.created[0]).toMatchObject({ kind: "reply", replyToId: "parent" })
     expect(spy.replies).toEqual([
-      { recipientId: "parentAuthor", actorName: "Actor Zed", postId: "new-post-id" },
+      {
+        recipientId: "parentAuthor",
+        actorId: "replier",
+        actorName: "Actor Zed",
+        postId: "new-post-id",
+      },
     ])
   })
 

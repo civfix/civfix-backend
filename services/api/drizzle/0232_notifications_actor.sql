@@ -1,0 +1,22 @@
+-- =============================================================================
+-- 0232_notifications_actor.sql
+-- -----------------------------------------------------------------------------
+-- WHY. A notification about a person (a new follower, a like, a reply, a
+-- mention) records who that person is, so the notification center can show
+-- their photo and a Follow back / Message action (GH#308). Rows about no one,
+-- and every row written before this column existed, keep NULL.
+--
+-- notifications is a hot table. A nullable column with no default is a catalog
+-- change only: no rewrite, no backfill, and the lock is held for milliseconds.
+-- No foreign key: adding one validates every row while users and notifications
+-- are locked, and users are never hard-deleted (an erased account stays as an
+-- anonymized tombstone), so the list's join on users.id already reads a
+-- deleted actor as none. No index: the list joins users on its primary key
+-- and follows_people on its key, from the page the feed index already bounds.
+--
+-- CANONICAL DDL: hand-authored source of truth. Mirror: schema/notifications.ts.
+--
+-- Conventions: one transaction per file; idempotent. Forward-only, no down.
+-- =============================================================================
+
+ALTER TABLE notifications ADD COLUMN IF NOT EXISTS actor_id uuid;

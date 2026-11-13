@@ -465,7 +465,7 @@ describe("notification emails: what they say", () => {
     const h = harness()
     await h.set(U, "mentions", [true, false, true])
 
-    await h.service.onPostMention({ recipientId: U, actorName: "Ana", postId: P })
+    await h.service.onPostMention({ recipientId: U, actorId: V, actorName: "Ana", postId: P })
     await settle()
 
     const row = h.rows(U)[0]!

@@ -7704,160 +7704,195 @@ export const cases: TranscriptCase[] = [
     key: "makeDrizzleNotificationRepository.clearByTypeAndLink",
     run: async (sql: any) =>
       (m112 as any)
-        .makeDrizzleNotificationRepository(sql)
+        .makeDrizzleNotificationRepository(sql, () => Promise.resolve("presignAvatarResult-1"))
         .clearByTypeAndLink("userId-1", "system", "link-1"),
   },
   {
     key: "makeDrizzleNotificationRepository.createDefaultPrefs",
     run: async (sql: any) =>
-      (m112 as any).makeDrizzleNotificationRepository(sql).createDefaultPrefs("userId-1"),
+      (m112 as any)
+        .makeDrizzleNotificationRepository(sql, () => Promise.resolve("presignAvatarResult-1"))
+        .createDefaultPrefs("userId-1"),
   },
   {
     key: "makeDrizzleNotificationRepository.deleteAllNotificationsForUser",
     run: async (sql: any) =>
       (m112 as any)
-        .makeDrizzleNotificationRepository(sql)
+        .makeDrizzleNotificationRepository(sql, () => Promise.resolve("presignAvatarResult-1"))
         .deleteAllNotificationsForUser("userId-1"),
   },
   {
     key: "makeDrizzleNotificationRepository.deleteNotification",
     run: async (sql: any) =>
-      (m112 as any).makeDrizzleNotificationRepository(sql).deleteNotification("userId-1", "id-1"),
+      (m112 as any)
+        .makeDrizzleNotificationRepository(sql, () => Promise.resolve("presignAvatarResult-1"))
+        .deleteNotification("userId-1", "id-1"),
   },
   {
     key: "makeDrizzleNotificationRepository.deletePushTokensForUser",
     run: async (sql: any) =>
-      (m112 as any).makeDrizzleNotificationRepository(sql).deletePushTokensForUser("userId-1"),
+      (m112 as any)
+        .makeDrizzleNotificationRepository(sql, () => Promise.resolve("presignAvatarResult-1"))
+        .deletePushTokensForUser("userId-1"),
   },
   {
     key: "makeDrizzleNotificationRepository.findEmailRecipients",
     run: async (sql: any) =>
-      (m112 as any).makeDrizzleNotificationRepository(sql).findEmailRecipients(["userId-1"]),
+      (m112 as any)
+        .makeDrizzleNotificationRepository(sql, () => Promise.resolve("presignAvatarResult-1"))
+        .findEmailRecipients(["userId-1"]),
   },
   {
     key: "makeDrizzleNotificationRepository.findPrefs",
     run: async (sql: any) =>
-      (m112 as any).makeDrizzleNotificationRepository(sql).findPrefs("userId-1"),
+      (m112 as any)
+        .makeDrizzleNotificationRepository(sql, () => Promise.resolve("presignAvatarResult-1"))
+        .findPrefs("userId-1"),
   },
   {
     key: "makeDrizzleNotificationRepository.findPrefsMany",
     run: async (sql: any) =>
-      (m112 as any).makeDrizzleNotificationRepository(sql).findPrefsMany(["userId-1"]),
+      (m112 as any)
+        .makeDrizzleNotificationRepository(sql, () => Promise.resolve("presignAvatarResult-1"))
+        .findPrefsMany(["userId-1"]),
   },
   {
     key: "makeDrizzleNotificationRepository.findUserLocale",
     run: async (sql: any) =>
-      (m112 as any).makeDrizzleNotificationRepository(sql).findUserLocale("userId-1"),
+      (m112 as any)
+        .makeDrizzleNotificationRepository(sql, () => Promise.resolve("presignAvatarResult-1"))
+        .findUserLocale("userId-1"),
   },
   {
     key: "makeDrizzleNotificationRepository.findUserLocaleMany",
     run: async (sql: any) =>
-      (m112 as any).makeDrizzleNotificationRepository(sql).findUserLocaleMany(["userId-1"]),
+      (m112 as any)
+        .makeDrizzleNotificationRepository(sql, () => Promise.resolve("presignAvatarResult-1"))
+        .findUserLocaleMany(["userId-1"]),
   },
   {
     key: "makeDrizzleNotificationRepository.hasUnread",
     run: async (sql: any) =>
-      (m112 as any).makeDrizzleNotificationRepository(sql).hasUnread("userId-1"),
+      (m112 as any)
+        .makeDrizzleNotificationRepository(sql, () => Promise.resolve("presignAvatarResult-1"))
+        .hasUnread("userId-1"),
   },
   {
     key: "makeDrizzleNotificationRepository.insertNotification",
     run: async (sql: any) =>
-      (m112 as any).makeDrizzleNotificationRepository(sql).insertNotification({
-        userId: "userId-1",
-        type: "system",
-        title: "title-1",
-        body: "body-1",
-        link: "link-1",
-      }),
+      (m112 as any)
+        .makeDrizzleNotificationRepository(sql, () => Promise.resolve("presignAvatarResult-1"))
+        .insertNotification({
+          userId: "userId-1",
+          type: "system",
+          title: "title-1",
+          body: "body-1",
+          link: "link-1",
+          actorId: "actorId-1",
+        }),
   },
   {
     key: "makeDrizzleNotificationRepository.insertUnlessRecentDuplicate",
     run: async (sql: any) =>
       (m112 as any)
-        .makeDrizzleNotificationRepository(sql)
+        .makeDrizzleNotificationRepository(sql, () => Promise.resolve("presignAvatarResult-1"))
         .insertUnlessRecentDuplicate("args-unsupported"),
   },
   {
     key: "makeDrizzleNotificationRepository.listNotifications",
     run: async (sql: any) =>
       (m112 as any)
-        .makeDrizzleNotificationRepository(sql)
+        .makeDrizzleNotificationRepository(sql, () => Promise.resolve("presignAvatarResult-1"))
         .listNotifications("userId-1", "cursor-1", 3),
   },
   {
     key: "makeDrizzleNotificationRepository.markAllRead",
     run: async (sql: any) =>
-      (m112 as any).makeDrizzleNotificationRepository(sql).markAllRead("userId-1"),
+      (m112 as any)
+        .makeDrizzleNotificationRepository(sql, () => Promise.resolve("presignAvatarResult-1"))
+        .markAllRead("userId-1"),
   },
   {
     key: "makeDrizzleNotificationRepository.markRead",
     run: async (sql: any) =>
-      (m112 as any).makeDrizzleNotificationRepository(sql).markRead("userId-1", ["id-1"]),
+      (m112 as any)
+        .makeDrizzleNotificationRepository(sql, () => Promise.resolve("presignAvatarResult-1"))
+        .markRead("userId-1", ["id-1"]),
   },
   {
     key: "makeDrizzleNotificationRepository.refreshUnreadNotification",
     run: async (sql: any) =>
-      (m112 as any).makeDrizzleNotificationRepository(sql).refreshUnreadNotification({
-        userId: "userId-1",
-        type: "system",
-        link: "link-1",
-        title: "title-1",
-        body: "body-1",
-        since: new Date("2026-03-04T05:06:07.000Z"),
-      }),
+      (m112 as any)
+        .makeDrizzleNotificationRepository(sql, () => Promise.resolve("presignAvatarResult-1"))
+        .refreshUnreadNotification({
+          userId: "userId-1",
+          type: "system",
+          link: "link-1",
+          title: "title-1",
+          body: "body-1",
+          since: new Date("2026-03-04T05:06:07.000Z"),
+        }),
   },
   {
     key: "makeDrizzleNotificationRepository.revokeToken",
     run: async (sql: any) =>
       (m112 as any)
-        .makeDrizzleNotificationRepository(sql)
+        .makeDrizzleNotificationRepository(sql, () => Promise.resolve("presignAvatarResult-1"))
         .revokeToken("userId-1", "ios", "token-1"),
   },
   {
     key: "makeDrizzleNotificationRepository.upsertCoalescedNotification",
     run: async (sql: any) =>
-      (m112 as any).makeDrizzleNotificationRepository(sql).upsertCoalescedNotification({
-        userId: "userId-1",
-        type: "system",
-        link: "link-1",
-        title: "title-1",
-        body: "body-1",
-        since: new Date("2026-03-04T05:06:07.000Z"),
-      }),
+      (m112 as any)
+        .makeDrizzleNotificationRepository(sql, () => Promise.resolve("presignAvatarResult-1"))
+        .upsertCoalescedNotification({
+          userId: "userId-1",
+          type: "system",
+          link: "link-1",
+          title: "title-1",
+          body: "body-1",
+          since: new Date("2026-03-04T05:06:07.000Z"),
+        }),
   },
   {
     key: "makeDrizzleNotificationRepository.upsertPrefs",
     run: async (sql: any) =>
-      (m112 as any).makeDrizzleNotificationRepository(sql).upsertPrefs("userId-1", {
-        push: true,
-        cleanupChat: true,
-        reportUpdates: true,
-        follows: true,
-        mentions: true,
-        postInteractions: true,
-        hostBroadcasts: true,
-        quietHours: { start: "start-1", end: "end-1", tz: "tz-1" },
-      }),
+      (m112 as any)
+        .makeDrizzleNotificationRepository(sql, () => Promise.resolve("presignAvatarResult-1"))
+        .upsertPrefs("userId-1", {
+          push: true,
+          cleanupChat: true,
+          reportUpdates: true,
+          follows: true,
+          mentions: true,
+          postInteractions: true,
+          hostBroadcasts: true,
+          quietHours: { start: "start-1", end: "end-1", tz: "tz-1" },
+        }),
   },
   {
     key: "makeDrizzleNotificationRepository.upsertPushToken",
     run: async (sql: any) =>
-      (m112 as any).makeDrizzleNotificationRepository(sql).upsertPushToken({
-        userId: "userId-1",
-        platform: "ios",
-        token: "token-1",
-        deviceId: "deviceId-1",
-      }),
+      (m112 as any)
+        .makeDrizzleNotificationRepository(sql, () => Promise.resolve("presignAvatarResult-1"))
+        .upsertPushToken({
+          userId: "userId-1",
+          platform: "ios",
+          token: "token-1",
+          deviceId: "deviceId-1",
+        }),
   },
   {
     key: "makeDrizzleNotificationRepository.usersNotifiedSince",
     run: async (sql: any) =>
-      (m112 as any).makeDrizzleNotificationRepository(sql).usersNotifiedSince({
-        userIds: ["userId-1"],
-        type: "system",
-        link: "link-1",
-        since: new Date("2026-03-04T05:06:07.000Z"),
-      }),
+      (m112 as any)
+        .makeDrizzleNotificationRepository(sql, () => Promise.resolve("presignAvatarResult-1"))
+        .usersNotifiedSince({
+          userIds: ["userId-1"],
+          type: "system",
+          link: "link-1",
+          since: new Date("2026-03-04T05:06:07.000Z"),
+        }),
   },
   {
     key: "makeDrizzleNotificationSettingsRepository.disableEmail",
