@@ -73,7 +73,7 @@
 
 # The digest is the multi-arch index (it carries linux/arm64 and linux/amd64), so a rebuild of the same
 # commit gets the same base; the tag only tells a reader which line it is. Move both together.
-FROM node:24-trixie-slim@sha256:0820eaa85e07d0490446dd01d14707e17e6108a36988cf374899cd057eb3812d AS base
+FROM node:24-trixie-slim@sha256:af02d57b57719b9657a45199a79264a9437940cd55b3c7b3fc99615654f124a0 AS base
 ENV PNPM_HOME="/pnpm" \
     PATH="/pnpm:$PATH" \
     CI=true
@@ -163,7 +163,7 @@ RUN --mount=type=cache,id=pnpm-store,target=/pnpm/store \
 # From the plain Node image, not `base`: the runtime needs no package manager, and corepack and the pnpm it
 # installs carry their own bundled dependency trees (tar, glob, minimatch, cross-spawn, ...) that the image
 # scan flags. Same digest as `base`, so both move together.
-FROM node:24-trixie-slim@sha256:0820eaa85e07d0490446dd01d14707e17e6108a36988cf374899cd057eb3812d AS runtime
+FROM node:24-trixie-slim@sha256:af02d57b57719b9657a45199a79264a9437940cd55b3c7b3fc99615654f124a0 AS runtime
 # Same contract as the api image: the release identity is a property of the promoted artifact, not of the
 # deploy that placed it. Read by src/seams.ts as the GlitchTip `release`.
 ARG SERVICE_VERSION=0.0.0
@@ -175,6 +175,7 @@ WORKDIR /app
 RUN rm -rf /usr/local/bin/corepack /usr/local/lib/node_modules/corepack /usr/local/bin/yarn /usr/local/bin/yarnpkg /opt/yarn-* \
     /usr/local/bin/npm /usr/local/bin/npx /usr/local/lib/node_modules/npm
 RUN apt-get update \
+ && apt-get upgrade -y \
  && apt-get install -y --no-install-recommends util-linux \
  && rm -rf /var/lib/apt/lists/* \
  && groupadd --system --gid 1001 mediatools \
