@@ -270,6 +270,7 @@ jobs:
           provenance: false
           sbom: false
           cache-from: type=gha,scope=media-worker
+          no-cache-filters: runtime
 
       # The same gate build-images.yml holds the release images to, so a fixable HIGH or CRITICAL in the
       # base image or the worker's dependencies fails the PR rather than the post-merge release build.

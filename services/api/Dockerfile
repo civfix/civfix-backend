@@ -22,7 +22,7 @@
 
 # The digest is the multi-arch index (it carries linux/arm64 and linux/amd64), so a rebuild of the same
 # commit gets the same base; the tag only tells a reader which line it is. Move both together.
-FROM node:24-trixie-slim@sha256:0820eaa85e07d0490446dd01d14707e17e6108a36988cf374899cd057eb3812d AS base
+FROM node:24-trixie-slim@sha256:af02d57b57719b9657a45199a79264a9437940cd55b3c7b3fc99615654f124a0 AS base
 ENV PNPM_HOME="/pnpm" \
     PATH="/pnpm:$PATH" \
     # Keep pnpm output terse + deterministic in CI.
@@ -46,7 +46,14 @@ RUN pnpm --filter @civfix/api... build
 RUN --mount=type=cache,id=pnpm-store,target=/pnpm/store \
     pnpm --filter @civfix/api --prod deploy /out
 
-FROM node:24-trixie-slim@sha256:0820eaa85e07d0490446dd01d14707e17e6108a36988cf374899cd057eb3812d AS runtime
+FROM node:24-trixie-slim@sha256:af02d57b57719b9657a45199a79264a9437940cd55b3c7b3fc99615654f124a0 AS runtime
+# The newest base digest can trail a Debian security advisory by days (DSA-6613, zlib, was fixed in
+# trixie-security while every node:24-trixie-slim still shipped the vulnerable package), and the image
+# scan fails on any fixable HIGH. Upgrading at build time takes those fixes into the image that is then
+# promoted unchanged to prod; the pinned digest still moves with Dependabot's weekly docker PR.
+RUN apt-get update \
+ && apt-get upgrade -y \
+ && rm -rf /var/lib/apt/lists/*
 # No package manager here: pnpm would reinstall /app/node_modules in place and empty it, which took down
 # the dependency tree of a live prod container on 2026-09-23. npm goes too: nothing runs it, and its
 # bundled dependency tree is where the image scan finds fixable HIGH advisories (pacote, sigstore,
