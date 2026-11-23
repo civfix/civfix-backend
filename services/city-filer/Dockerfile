@@ -30,7 +30,7 @@
 # #178 smoke run (docs/city-filing.md). @playwright/mcp drives the Chromium the kit's playwright-core installed: the build
 # fails unless both use the same playwright-core, so there is one browser in /ms-playwright.
 
-FROM ghcr.io/astral-sh/uv:0.13.8@sha256:5cc1805e2426484abca4ad46ea783bab281fdb225fd82d8ce6d66a81254bac85 AS uv
+FROM ghcr.io/astral-sh/uv:0.13.9@sha256:d3b601f0c7b118bc1753febf7c41cc80981df678445e0254284eecf84db79a7d AS uv
 
 FROM node:24-trixie-slim@sha256:af02d57b57719b9657a45199a79264a9437940cd55b3c7b3fc99615654f124a0 AS base
 ENV PNPM_HOME="/pnpm" \
